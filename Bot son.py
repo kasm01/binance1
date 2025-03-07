@@ -16,6 +16,7 @@ import nest_asyncio
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
 from kucoin.client import Trade, Market
+from okx import MarketData, Trade
 from web3 import Web3
 from stable_baselines3 import PPO
 import gym
