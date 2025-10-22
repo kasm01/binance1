@@ -1,0 +1,17 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: binance1-pro-bot
+spec:
+  template:
+    spec:
+      containers:
+        - image: gcr.io/YOUR_PROJECT_ID/binance1-pro-bot:latest
+          env:
+            - name: ENV_FILE
+              value: ".env"
+          resources:
+            limits:
+              memory: 2Gi
+              cpu: 1
+      containerConcurrency: 1
