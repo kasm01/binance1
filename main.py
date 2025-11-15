@@ -7,8 +7,7 @@ from aiohttp import web
 # ------------------------------
 # Core & Config
 # ------------------------------
-from config.load_env import load_environment_variables
-from config.validate_env import validate_env
+from config.credentials import Credentials
 from core.logger import setup_logger
 from core.exceptions import GlobalExceptionHandler
 
@@ -57,22 +56,29 @@ from telegram.telegram_bot import TelegramBot
 logger = logging.getLogger("binance1_pro_main")
 
 
+# ------------------------------
+# Bot Ana Döngüsü
+# ------------------------------
+
 async def run_bot():
     """
     Binance1-Pro botunun ana akışı.
     Cloud Run içinde arka planda çalışan, sonsuz döngülü görev.
-    Hata aldığında bekleyip tekrar deniyor.
+    Hata aldığında bekleyip tekrar dener.
     """
+
     setup_logger("binance1_pro_bot")
     GlobalExceptionHandler.register()
 
     while True:
         try:
-            logger.info("🔄 [BOT] Environment doğrulanıyor...")
-            validate_env()
-            env_vars = load_environment_variables()
+            logger.info("🔄 [BOT] Credentials doğrulanıyor...")
+            Credentials.validate()
 
-            logger.info("✅ [BOT] Environment yüklendi, bileşenler başlatılıyor...")
+            # Env bilgilerini basitçe os.environ'dan alıyoruz
+            env_vars = dict(os.environ)
+
+            logger.info("✅ [BOT] Bileşenler başlatılıyor...")
 
             # 4️⃣ Data loader & feature engineering
             data_loader = DataLoader(env_vars)
@@ -107,7 +113,7 @@ async def run_bot():
             trade_executor = TradeExecutor(env_vars)
             multi_trade_engine = MultiTradeEngine(trade_executor, position_manager)
 
-            # 9️⃣ Websocket
+            # 9️⃣ WebSocket
             ws = BinanceWebSocket(env_vars, multi_trade_engine)
 
             # 10️⃣ Monitoring
@@ -119,13 +125,11 @@ async def run_bot():
             # 11️⃣ Telegram
             telegram_bot = TelegramBot(env_vars)
 
-            logger.info("🚀 [BOT] Binance1-Pro Bot başlatılıyor (WebSocket bağlanıyor)...")
-
-            # WebSocket bağlantısı genelde sonsuz bir async döngü olacaktır
+            logger.info("🚀 [BOT] Binance1-Pro Bot WebSocket'e bağlanıyor...")
             await ws.connect()
 
-            # Eğer ws.connect() dönerse (disconnect vs.), tekrar döngüye girsin
-            logger.warning("⚠️ [BOT] WebSocket bağlantısı sona erdi. 10 sn sonra yeniden denenecek.")
+            # Eğer ws.connect() dönerse (disconnect vs.), biraz bekleyip yeniden dene
+            logger.warning("⚠️ [BOT] WebSocket bağlantısı sona erdi. 10 sn sonra tekrar denenecek.")
             await asyncio.sleep(10)
 
         except Exception as e:
@@ -208,3 +212,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
