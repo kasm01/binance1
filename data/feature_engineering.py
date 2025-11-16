@@ -102,3 +102,4 @@ class FeatureEngineer:
         macd_signal = macd.ewm(span=signal, adjust=False).mean()
         macd_hist = macd - macd_signal
         return macd, macd_signal, macd_hist
+
