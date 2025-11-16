@@ -1,4 +1,3 @@
-# main.py
 import os
 import asyncio
 import logging
@@ -19,6 +18,7 @@ async def bot_worker():
     """
     Binance1-Pro çekirdek bot döngüsü.
     Aşama 1'de sadece heartbeat + basit Redis kontrolü yapıyor.
+    Aşama 2-3'te buraya veri, model ve trading eklenecek.
     """
     system_logger.info("🚀 [BOT] Binance1-Pro core worker started.")
 
