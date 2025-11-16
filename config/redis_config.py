@@ -1,10 +1,14 @@
+# config/redis_config.py
 import redis
+
 from .settings import Settings
 from .credentials import Credentials
 
+
 class RedisConfig:
     """
-    Redis connection handler for caching market data and model predictions.
+    Redis bağlantı yöneticisi.
+    Market verisi, sinyal ve model tahmin cache için kullanılacak.
     """
 
     def __init__(self):
@@ -12,23 +16,31 @@ class RedisConfig:
         self.port = Settings.REDIS_PORT
         self.db = Settings.REDIS_DB
         self.password = Credentials.REDIS_PASSWORD
-        self.client = None
+        self._client: redis.Redis | None = None
 
-    def connect(self):
+    def connect(self) -> redis.Redis | None:
+        if self._client is not None:
+            return self._client
+
         try:
-            self.client = redis.Redis(
+            self._client = redis.Redis(
                 host=self.host,
                 port=self.port,
                 db=self.db,
                 password=self.password,
-                decode_responses=True
+                decode_responses=True,
             )
-            self.client.ping()
+            self._client.ping()
             print("[INFO] Redis connection established successfully.")
         except Exception as e:
             print(f"[ERROR] Redis connection failed: {e}")
+            self._client = None
 
-    def get_client(self):
-        if not self.client:
-            self.connect()
-        return self.client
+        return self._client
+
+    @property
+    def client(self) -> redis.Redis | None:
+        if self._client is None:
+            return self.connect()
+        return self._client
+
