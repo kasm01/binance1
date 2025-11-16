@@ -1,20 +1,36 @@
+# core/logger.py
 import logging
-from core.utils import retry
+import os
+import sys
 
-def setup_logger(name, log_file, level=logging.INFO):
-    """Logger oluşturur."""
-    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
-    
-    handler = logging.FileHandler(log_file)        
-    handler.setFormatter(formatter)
+from config.settings import Settings
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
+
+def setup_logger(name: str | None = None) -> logging.Logger:
+    """
+    Tek bir yerde logging formatını tanımla.
+    Hem lokal hem Cloud Run için stdout'a log basar.
+    """
+    log_level = getattr(logging, Settings.LOG_LEVEL, logging.INFO)
+
+    logger = logging.getLogger(name if name else Settings.PROJECT_NAME)
+    logger.setLevel(log_level)
+
     if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        fmt = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        )
+        handler.setFormatter(fmt)
         logger.addHandler(handler)
+
+    # logging.basicConfig ile çakışmayı önlemek için propagate kapatılabilir
+    logger.propagate = False
     return logger
 
-# Örnek logger kullanımı
-system_logger = setup_logger('system', 'logs/system.log')
-error_logger = setup_logger('error', 'logs/errors.log')
-trade_logger = setup_logger('trade', 'logs/trades.log')
+
+# Sık kullanılan loggerlar
+system_logger = setup_logger("system")
+error_logger = setup_logger("error")
+trade_logger = setup_logger("trade")
+
