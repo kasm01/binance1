@@ -18,23 +18,17 @@ logger = logging.getLogger("binance1_pro_main")
 async def bot_worker():
     """
     Binance1-Pro çekirdek bot döngüsü.
-    Aşama 1'de sadece heartbeat + basit kontrol yapıyor.
-    Aşama 2-3'te: data pipeline, model ve trading entegrasyonu buraya eklenecek.
+    Aşama 1: sadece heartbeat + basit Redis kontrolü.
+    Aşama 2-3'te buraya veri, model ve trading eklenecek.
     """
     system_logger.info("🚀 [BOT] Binance1-Pro core worker started.")
 
-    # Basit Redis kontrolü
     cache = CacheManager()
     cache.set("binance1:heartbeat", "alive", ex=30)
 
     while True:
         try:
             system_logger.info("⏱ [BOT] Heartbeat - bot worker running...")
-            # İleride burada:
-            # - veri çekme
-            # - feature engineering
-            # - sinyal üretimi
-            # - trade execution
             await asyncio.sleep(15)
         except asyncio.CancelledError:
             system_logger.info("🛑 [BOT] Worker cancelled, shutting down.")
@@ -69,11 +63,9 @@ async def cleanup_background_tasks(app: web.Application):
 
 
 async def create_app() -> web.Application:
-    # Logging + global exception hook
     setup_logger("binance1_pro")
     GlobalExceptionHandler.register()
 
-    # Credentials temel doğrulama
     Credentials.validate()
 
     app = web.Application()
