@@ -1,27 +1,69 @@
+# core/utils.py
 import time
 import functools
+from typing import Callable, Iterable, Tuple, Type
+
 from core.exceptions import RetryLimitExceeded
 
-def retry(max_attempts=3, delay=2, exceptions=(Exception,)):
+
+def retry(
+    _func: Callable | None = None,
+    *,
+    exceptions: Tuple[Type[BaseException], ...] = (Exception,),
+    tries: int | None = None,
+    max_attempts: int | None = None,
+    delay: float = 1.0,
+    backoff: float = 1.0,
+) -> Callable:
     """
-    Fonksiyon çağrısı başarısız olursa retry mekanizması uygular.
-    Args:
-        max_attempts (int): Maksimum deneme sayısı.
-        delay (int | float): Her deneme arasında bekleme süresi (saniye).
-        exceptions (tuple): Hangi exception'larda retry yapılacağı.
+    Esnek retry decorator'u.
+    Hem eski kullanım:
+        @retry(max_attempts=5, delay=2, exceptions=(...))
+    Hem yeni kullanım:
+        @retry(exceptions=(...), tries=3, delay=2, backoff=2)
+    ile uyumlu.
+
+    :param exceptions: Hangi exception'larda retry yapılacağı
+    :param tries: Toplam deneme sayısı
+    :param max_attempts: tries ile aynı, geriye dönük uyumluluk için
+    :param delay: İlk bekleme süresi (saniye)
+    :param backoff: Her denemede delay *= backoff
     """
-    def decorator(func):
+
+    if tries is None and max_attempts is None:
+        total_tries = 3
+    else:
+        total_tries = tries if tries is not None else max_attempts
+
+    def decorator_retry(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            attempts = 0
-            while attempts < max_attempts:
+            _tries = total_tries
+            _delay = delay
+
+            attempt = 0
+            while _tries > 0:
                 try:
                     return func(*args, **kwargs)
                 except exceptions as e:
-                    attempts += 1
-                    print(f"Retry {attempts}/{max_attempts} for {func.__name__} due to {e}")
-                    time.sleep(delay)
-                    if attempts >= max_attempts:
-                        raise RetryLimitExceeded(f"{func.__name__} retry limit exceeded") from e
+                    attempt += 1
+                    _tries -= 1
+                    if _tries <= 0:
+                        raise RetryLimitExceeded(
+                            f"{func.__name__} retry limit exceeded after {attempt} attempts"
+                        ) from e
+
+                    print(
+                        f"[retry] {func.__name__} exception: {e}. "
+                        f"Retrying {attempt}/{total_tries} after {_delay} seconds..."
+                    )
+                    time.sleep(_delay)
+                    _delay *= backoff
+
         return wrapper
-    return decorator
+
+    if _func is not None:
+        return decorator_retry(_func)
+
+    return decorator_retry
+
