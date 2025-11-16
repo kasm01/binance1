@@ -18,13 +18,14 @@ def retry(
     """
     Esnek retry decorator'u.
 
-    Desteklenen kullanımlar:
+    Destekler:
         @retry(max_attempts=5, delay=2, exceptions=(...))
         @retry(exceptions=(...), tries=3, delay=2, backoff=2)
+        @retry  (parametresiz kullanım)
 
     :param exceptions: Hangi exception'larda retry yapılacağı
     :param tries: Toplam deneme sayısı
-    :param max_attempts: tries ile aynı, geriye dönük uyumluluk için
+    :param max_attempts: tries ile aynı anlamda, geriye dönük uyumluluk
     :param delay: İlk bekleme süresi (saniye)
     :param backoff: Her denemede delay *= backoff
     """
@@ -39,8 +40,8 @@ def retry(
         def wrapper(*args, **kwargs):
             _tries = total_tries
             _delay = delay
-
             attempt = 0
+
             while _tries > 0:
                 try:
                     return func(*args, **kwargs)
@@ -62,7 +63,7 @@ def retry(
 
         return wrapper
 
-    # @retry şeklinde parametresiz kullanım için
+    # @retry parametresiz kullanım için
     if _func is not None:
         return decorator_retry(_func)
 
