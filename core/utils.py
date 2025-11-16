@@ -1,7 +1,7 @@
 # core/utils.py
 import time
 import functools
-from typing import Callable, Iterable, Tuple, Type
+from typing import Callable, Tuple, Type
 
 from core.exceptions import RetryLimitExceeded
 
@@ -17,11 +17,10 @@ def retry(
 ) -> Callable:
     """
     Esnek retry decorator'u.
-    Hem eski kullanım:
+
+    Desteklenen kullanımlar:
         @retry(max_attempts=5, delay=2, exceptions=(...))
-    Hem yeni kullanım:
         @retry(exceptions=(...), tries=3, delay=2, backoff=2)
-    ile uyumlu.
 
     :param exceptions: Hangi exception'larda retry yapılacağı
     :param tries: Toplam deneme sayısı
@@ -48,6 +47,7 @@ def retry(
                 except exceptions as e:
                     attempt += 1
                     _tries -= 1
+
                     if _tries <= 0:
                         raise RetryLimitExceeded(
                             f"{func.__name__} retry limit exceeded after {attempt} attempts"
@@ -62,8 +62,8 @@ def retry(
 
         return wrapper
 
+    # @retry şeklinde parametresiz kullanım için
     if _func is not None:
         return decorator_retry(_func)
 
     return decorator_retry
-
