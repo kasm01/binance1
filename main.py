@@ -18,8 +18,7 @@ logger = logging.getLogger("binance1_pro_main")
 async def bot_worker():
     """
     Binance1-Pro çekirdek bot döngüsü.
-    Aşama 1: sadece heartbeat + basit Redis kontrolü.
-    Aşama 2-3'te buraya veri, model ve trading eklenecek.
+    Aşama 1'de sadece heartbeat + basit Redis kontrolü yapıyor.
     """
     system_logger.info("🚀 [BOT] Binance1-Pro core worker started.")
 
