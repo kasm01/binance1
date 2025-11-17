@@ -1,16 +1,23 @@
 import os
 import asyncio
 import logging
+from typing import Optional
 
 from aiohttp import web
 import pandas as pd
 import numpy as np
 
+# ------------------------------
+# Core & Config
+# ------------------------------
 from config.credentials import Credentials
 from config.settings import Settings
 from core.logger import setup_logger, system_logger
 from core.exceptions import GlobalExceptionHandler
 
+# ------------------------------
+# Data & ML
+# ------------------------------
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
@@ -20,11 +27,11 @@ from data.online_learning import OnlineLearner
 
 logger = logging.getLogger("binance1_pro_main")
 
-# -----------------------------
+# ------------------------------
 # Global model state
-# -----------------------------
-batch_model = None
-online_learner: OnlineLearner | None = None
+# ------------------------------
+batch_model: Optional[object] = None
+online_learner: Optional[OnlineLearner] = None
 
 
 def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
@@ -36,37 +43,47 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
 
     try:
         # 1) Veri çek
-        system_logger.info(f"[DATA] Fetching {limit} klines from Binance for {symbol} ({interval})")
+        system_logger.info(
+            f"[DATA] Fetching {limit} klines from Binance for {symbol} ({interval})"
+        )
 
         data_loader = DataLoader(api_keys={})
-        raw_df = data_loader.fetch_binance_data(symbol=symbol, interval=interval, limit=limit)
+        raw_df = data_loader.fetch_binance_data(
+            symbol=symbol, interval=interval, limit=limit
+        )
 
         if raw_df is None or raw_df.empty:
             system_logger.warning("[DATA] Empty DataFrame returned from Binance.")
             return
 
-        # 2) Tip dönüşümleri
+        # Tip dönüşümleri
         for col in ["open", "high", "low", "close", "volume"]:
-            try:
-                raw_df[col] = raw_df[col].astype(float)
-            except Exception as e:
-                logger.warning(f"[DATA] Failed to cast column {col} to float: {e}")
+            if col in raw_df.columns:
+                try:
+                    raw_df[col] = raw_df[col].astype(float)
+                except Exception as e:
+                    logger.warning(f"[DATA] Failed to cast column {col} to float: {e}")
 
         # Zaman index'i
-        try:
-            raw_df["open_time"] = pd.to_datetime(raw_df["open_time"], unit="ms")
-            raw_df.set_index("open_time", inplace=True)
-        except Exception as e:
-            logger.warning(f"[DATA] Failed to set datetime index: {e}")
+        if "open_time" in raw_df.columns:
+            try:
+                raw_df["open_time"] = pd.to_datetime(raw_df["open_time"], unit="ms")
+                raw_df.set_index("open_time", inplace=True)
+            except Exception as e:
+                logger.warning(f"[DATA] Failed to set datetime index: {e}")
 
         system_logger.info(f"[DATA] Raw DF shape: {raw_df.shape}")
 
-        # 3) Feature engineering
+        # 2) Feature engineering
         fe = FeatureEngineer(raw_data=raw_df)
         features_df = fe.transform()
         system_logger.info(f"[FE] Features DF shape: {features_df.shape}")
 
-        # 4) Anomali tespiti
+        if features_df is None or features_df.empty:
+            system_logger.warning("[FE] Empty features_df, skipping further steps.")
+            return
+
+        # 3) Anomali tespiti
         detector = AnomalyDetector(features_df=features_df)
         clean_df = detector.remove_anomalies()
         system_logger.info(
@@ -74,18 +91,24 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             f"(removed {len(features_df) - len(clean_df)} rows)"
         )
 
+        if clean_df is None or clean_df.empty:
+            system_logger.warning("[ANOM] Empty clean_df after anomaly removal.")
+            return
+
         # -----------------------------
-        # 5) Label (target) üretimi
+        # 4) Label (target) üretimi
         # -----------------------------
         if "close" not in clean_df.columns:
-            system_logger.warning("[LABEL] 'close' column not found; skipping model training.")
+            system_logger.warning(
+                "[LABEL] 'close' column not found in clean_df; skipping model training."
+            )
             return
 
         df_model = clean_df.copy()
         label_horizon = 5  # 5 bar sonrası
         df_model["future_close"] = df_model["close"].shift(-label_horizon)
         df_model["target"] = (df_model["future_close"] > df_model["close"]).astype(int)
-        df_model = df_model.dropna(subset=["future_close"])
+        df_model = df_model.dropna(subset=["future_close", "target"])
 
         if len(df_model) < 200:
             system_logger.info(
@@ -94,13 +117,15 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             return
 
         # -----------------------------
-        # 6) X / y hazırlanması
+        # 5) X / y hazırlanması (OnlineLearner için)
         # -----------------------------
-        numeric_cols = df_model.select_dtypes(
+        df_for_xy = df_model.dropna().copy()
+
+        numeric_cols = df_for_xy.select_dtypes(
             include=["float32", "float64", "int32", "int64"]
         ).columns.tolist()
 
-        if "target" not in df_model.columns:
+        if "target" not in df_for_xy.columns:
             system_logger.warning("[MODEL] 'target' column missing; skipping training.")
             return
 
@@ -109,66 +134,78 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             numeric_cols.remove("target")
 
         if not numeric_cols:
-            system_logger.warning("[MODEL] No numeric feature columns found; skipping training.")
+            system_logger.warning(
+                "[MODEL] No numeric feature columns found; skipping training."
+            )
             return
 
-        X = df_model[numeric_cols].values
-        y = df_model["target"].astype(int).values
+        X = df_for_xy[numeric_cols].values
+        y = df_for_xy["target"].astype(int).values
 
         system_logger.info(
             f"[MODEL] Training batch model on {X.shape[0]} samples, {X.shape[1]} features."
         )
 
         # -----------------------------
-        # 7) Batch training
+        # 6) Batch training
         # -----------------------------
         try:
             batch_learner = BatchLearner(features_df=df_model, target_column="target")
-            batch_model = batch_learner.train()
+            batch_model_local = batch_learner.train()
+            batch_model = batch_model_local
         except Exception as e:
             logger.exception(f"[MODEL] BatchLearner training failed: {e}")
             return
 
         # -----------------------------
-        # 8) Online learner init / update
+        # 7) Online learner init / update
         # -----------------------------
         if online_learner is None:
             system_logger.info("[ONLINE] Initializing OnlineLearner with batch data.")
-            online_learner_local = OnlineLearner(base_model=batch_model, classes=(0, 1))
+            online_local = OnlineLearner(base_model=batch_model, classes=(0, 1))
             try:
-                online_learner_local.initialize_with_batch(X, y)
-                online_learner = online_learner_local
+                online_local.initialize_with_batch(X, y)
+                online_learner = online_local
             except Exception as e:
                 logger.exception(f"[ONLINE] initialize_with_batch failed: {e}")
                 return
         else:
-            # Son 50 örnekle incremental update
             tail_n = min(50, X.shape[0])
             X_new = X[-tail_n:]
             y_new = y[-tail_n:]
             try:
                 online_learner.partial_update(X_new, y_new)
-                system_logger.info(f"[ONLINE] partial_update done on last {tail_n} samples.")
+                system_logger.info(
+                    f"[ONLINE] partial_update done on last {tail_n} samples."
+                )
             except Exception as e:
                 logger.exception(f"[ONLINE] partial_update failed: {e}")
 
         # -----------------------------
-        # 9) Son bar için sinyal logla
+        # 8) Son bar için sinyal logla
         # -----------------------------
         try:
             X_last = X[-1:].copy()
             if online_learner is not None:
                 proba = online_learner.predict_proba(X_last)[0, 1]
+            elif batch_model is not None and hasattr(batch_model, "predict_proba"):
+                proba = batch_model.predict_proba(X_last)[0, 1]
             else:
                 proba = 0.5
+
             system_logger.info(f"[SIGNAL] Latest p_buy={proba:.3f} for {symbol}")
         except Exception as e:
             logger.warning(f"[SIGNAL] Could not compute latest signal: {e}")
 
     except Exception as e:
-        logger.exception(f"[PIPELINE] Error in data/feature/anomaly/model pipeline for {symbol}: {e}")
+        logger.exception(
+            f"[PIPELINE] Error in data/feature/anomaly/model pipeline for {symbol}: {e}"
+        )
 
 
+# ------------------------------
+# Bot Loop
+# ------------------------------
 async def bot_loop():
     """
     Binance1-Pro botunun çekirdek döngüsü.
@@ -189,20 +226,23 @@ async def bot_loop():
 
     while True:
         try:
-            # Data + model pipeline'ı ayrı thread'de çalıştır
             await asyncio.to_thread(run_data_pipeline, symbol, interval, limit)
-
-            system_logger.info("⏱ [BOT] Heartbeat - bot_loop running with data+model pipeline.")
+            system_logger.info(
+                "⏱ [BOT] Heartbeat - bot_loop running with data+model pipeline."
+            )
         except asyncio.CancelledError:
             system_logger.info("🛑 [BOT] bot_loop cancelled, shutting down.")
             break
         except Exception as e:
             logger.exception(f"[BOT] Unexpected error in bot_loop: {e}")
 
-        # 60 sn bekle (rate limit'e saygı)
+        # Binance rate-limit'e saygı: her loop sonrası 60 sn bekle
         await asyncio.sleep(60)
 
 
+# ------------------------------
+# HTTP Handlers (Cloud Run)
+# ------------------------------
 async def health_handler(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
@@ -251,7 +291,9 @@ def main():
     Credentials.validate()
 
     port = int(os.environ.get("PORT", "8080"))
-    system_logger.info(f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{port} (ENV={Settings.ENV})")
+    system_logger.info(
+        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{port} (ENV={Settings.ENV})"
+    )
 
     web.run_app(create_app(), host="0.0.0.0", port=port)
 
