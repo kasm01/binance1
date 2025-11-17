@@ -97,6 +97,9 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
 
         # -----------------------------
         # 4) Label (target) üretimi
+        #    - future_return = (future_close - close) / close
+        #    - target = 1  if future_return > up_thresh
+        #              0  otherwise
         # -----------------------------
         if "close" not in clean_df.columns:
             system_logger.warning(
@@ -105,10 +108,17 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             return
 
         df_model = clean_df.copy()
-        label_horizon = 5  # 5 bar sonrası
+        label_horizon = 5  # 5 bar sonrası (1m ise ~5 dakika)
         df_model["future_close"] = df_model["close"].shift(-label_horizon)
-        df_model["target"] = (df_model["future_close"] > df_model["close"]).astype(int)
-        df_model = df_model.dropna(subset=["future_close", "target"])
+        df_model["future_return"] = (
+            df_model["future_close"] - df_model["close"]
+        ) / df_model["close"]
+
+        up_thresh = 0.002  # %0.2 üzeri hareketleri '1' say
+        df_model["target"] = (df_model["future_return"] > up_thresh).astype(int)
+
+        # Geleceği bilmeyen satırları bırak (son label_horizon satırı düşer)
+        df_model = df_model.dropna(subset=["future_close", "future_return", "target"])
 
         if len(df_model) < 200:
             system_logger.info(
@@ -116,8 +126,31 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             )
             return
 
+        # Label istatistiklerini logla
+        pos_ratio = float(df_model["target"].mean())
+        num_pos = int(df_model["target"].sum())
+        num_neg = int(len(df_model) - num_pos)
+        system_logger.info(
+            "[LABEL] future_return mean=%.4f, std=%.4f, positive ratio=%.3f (%.1f%%), "
+            "pos=%d, neg=%d, n=%d",
+            float(df_model["future_return"].mean()),
+            float(df_model["future_return"].std()),
+            pos_ratio,
+            pos_ratio * 100,
+            num_pos,
+            num_neg,
+            len(df_model),
+        )
+
+        if num_pos < 20:
+            system_logger.warning(
+                "[LABEL] Too few positive samples (%d); training this loop may be unstable.",
+                num_pos,
+            )
+
         # -----------------------------
         # 5) X / y hazırlanması (OnlineLearner için)
+        #    !! Gelecek bilgisi içeren kolonları feature'dan çıkar !!
         # -----------------------------
         df_for_xy = df_model.dropna().copy()
 
@@ -125,17 +158,13 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             include=["float32", "float64", "int32", "int64"]
         ).columns.tolist()
 
-        if "target" not in df_for_xy.columns:
-            system_logger.warning("[MODEL] 'target' column missing; skipping training.")
-            return
-
-        # target'ı feature listesinden çıkar
-        if "target" in numeric_cols:
-            numeric_cols.remove("target")
+        # Feature olarak kullanılmayacak kolonlar
+        exclude_cols = ["target", "future_close", "future_return"]
+        numeric_cols = [c for c in numeric_cols if c not in exclude_cols]
 
         if not numeric_cols:
             system_logger.warning(
-                "[MODEL] No numeric feature columns found; skipping training."
+                "[MODEL] No numeric feature columns left after exclusion; skipping training."
             )
             return
 
@@ -143,14 +172,15 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
         y = df_for_xy["target"].astype(int).values
 
         system_logger.info(
-            f"[MODEL] Training batch model on {X.shape[0]} samples, {X.shape[1]} features."
+            f"[MODEL] Training batch model on {X.shape[0]} samples, "
+            f"{X.shape[1]} features. Using {len(numeric_cols)} feature columns."
         )
 
         # -----------------------------
         # 6) Batch training
         # -----------------------------
         try:
-            batch_learner = BatchLearner(features_df=df_model, target_column="target")
+            batch_learner = BatchLearner(features_df=df_for_xy, target_column="target")
             batch_model_local = batch_learner.train()
             batch_model = batch_model_local
         except Exception as e:
@@ -193,7 +223,10 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             else:
                 proba = 0.5
 
-            system_logger.info(f"[SIGNAL] Latest p_buy={proba:.3f} for {symbol}")
+            system_logger.info(
+                f"[SIGNAL] Latest p_buy={proba:.3f} for {symbol} "
+                f"(up_thresh={up_thresh:.4f}, horizon={label_horizon})"
+            )
         except Exception as e:
             logger.warning(f"[SIGNAL] Could not compute latest signal: {e}")
 
@@ -201,6 +234,7 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
         logger.exception(
             f"[PIPELINE] Error in data/feature/anomaly/model pipeline for {symbol}: {e}"
         )
+
 
 
 # ------------------------------
