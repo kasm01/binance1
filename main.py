@@ -4,6 +4,7 @@ import logging
 
 from aiohttp import web
 import pandas as pd
+import numpy as np
 
 from config.credentials import Credentials
 from config.settings import Settings
@@ -13,21 +14,30 @@ from core.exceptions import GlobalExceptionHandler
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
+from data.batch_learning import BatchLearner
+from data.online_learning import OnlineLearner
 
 
 logger = logging.getLogger("binance1_pro_main")
 
+# -----------------------------
+# Global model state
+# -----------------------------
+batch_model = None
+online_learner: OnlineLearner | None = None
+
 
 def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
+    """
+    Sync çalışan data + feature + anomaly + model pipeline.
+    bot_loop içinde asyncio.to_thread(...) ile çağrılıyor.
+    """
+    global batch_model, online_learner
 
-    """
-    Bloklayıcı data + feature + anomali pipeline'ını ayrı fonksiyonda topladık.
-    asyncio.to_thread ile çağıracağız ki event loop kilitlenmesin.
-    """
     try:
+        # 1) Veri çek
         system_logger.info(f"[DATA] Fetching {limit} klines from Binance for {symbol} ({interval})")
 
-        # DataLoader sync çalışıyor, o yüzden bu fonksiyon sync.
         data_loader = DataLoader(api_keys={})
         raw_df = data_loader.fetch_binance_data(symbol=symbol, interval=interval, limit=limit)
 
@@ -35,11 +45,14 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             system_logger.warning("[DATA] Empty DataFrame returned from Binance.")
             return
 
-        # Kolonları numeric tipe çevir
+        # 2) Tip dönüşümleri
         for col in ["open", "high", "low", "close", "volume"]:
-            raw_df[col] = raw_df[col].astype(float)
+            try:
+                raw_df[col] = raw_df[col].astype(float)
+            except Exception as e:
+                logger.warning(f"[DATA] Failed to cast column {col} to float: {e}")
 
-        # Zaman kolonu → datetime index (opsiyonel ama güzel)
+        # Zaman index'i
         try:
             raw_df["open_time"] = pd.to_datetime(raw_df["open_time"], unit="ms")
             raw_df.set_index("open_time", inplace=True)
@@ -48,12 +61,12 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
 
         system_logger.info(f"[DATA] Raw DF shape: {raw_df.shape}")
 
-        # Feature engineering
+        # 3) Feature engineering
         fe = FeatureEngineer(raw_data=raw_df)
         features_df = fe.transform()
         system_logger.info(f"[FE] Features DF shape: {features_df.shape}")
 
-        # Anomali tespiti
+        # 4) Anomali tespiti
         detector = AnomalyDetector(features_df=features_df)
         clean_df = detector.remove_anomalies()
         system_logger.info(
@@ -61,23 +74,114 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             f"(removed {len(features_df) - len(clean_df)} rows)"
         )
 
+        # -----------------------------
+        # 5) Label (target) üretimi
+        # -----------------------------
+        if "close" not in clean_df.columns:
+            system_logger.warning("[LABEL] 'close' column not found; skipping model training.")
+            return
+
+        df_model = clean_df.copy()
+        label_horizon = 5  # 5 bar sonrası
+        df_model["future_close"] = df_model["close"].shift(-label_horizon)
+        df_model["target"] = (df_model["future_close"] > df_model["close"]).astype(int)
+        df_model = df_model.dropna(subset=["future_close"])
+
+        if len(df_model) < 200:
+            system_logger.info(
+                f"[LABEL] Not enough samples for training (have {len(df_model)}, need >= 200)."
+            )
+            return
+
+        # -----------------------------
+        # 6) X / y hazırlanması
+        # -----------------------------
+        numeric_cols = df_model.select_dtypes(
+            include=["float32", "float64", "int32", "int64"]
+        ).columns.tolist()
+
+        if "target" not in df_model.columns:
+            system_logger.warning("[MODEL] 'target' column missing; skipping training.")
+            return
+
+        # target'ı feature listesinden çıkar
+        if "target" in numeric_cols:
+            numeric_cols.remove("target")
+
+        if not numeric_cols:
+            system_logger.warning("[MODEL] No numeric feature columns found; skipping training.")
+            return
+
+        X = df_model[numeric_cols].values
+        y = df_model["target"].astype(int).values
+
+        system_logger.info(
+            f"[MODEL] Training batch model on {X.shape[0]} samples, {X.shape[1]} features."
+        )
+
+        # -----------------------------
+        # 7) Batch training
+        # -----------------------------
+        try:
+            batch_learner = BatchLearner(features_df=df_model, target_column="target")
+            batch_model = batch_learner.train()
+        except Exception as e:
+            logger.exception(f"[MODEL] BatchLearner training failed: {e}")
+            return
+
+        # -----------------------------
+        # 8) Online learner init / update
+        # -----------------------------
+        if online_learner is None:
+            system_logger.info("[ONLINE] Initializing OnlineLearner with batch data.")
+            online_learner_local = OnlineLearner(base_model=batch_model, classes=(0, 1))
+            try:
+                online_learner_local.initialize_with_batch(X, y)
+                online_learner = online_learner_local
+            except Exception as e:
+                logger.exception(f"[ONLINE] initialize_with_batch failed: {e}")
+                return
+        else:
+            # Son 50 örnekle incremental update
+            tail_n = min(50, X.shape[0])
+            X_new = X[-tail_n:]
+            y_new = y[-tail_n:]
+            try:
+                online_learner.partial_update(X_new, y_new)
+                system_logger.info(f"[ONLINE] partial_update done on last {tail_n} samples.")
+            except Exception as e:
+                logger.exception(f"[ONLINE] partial_update failed: {e}")
+
+        # -----------------------------
+        # 9) Son bar için sinyal logla
+        # -----------------------------
+        try:
+            X_last = X[-1:].copy()
+            if online_learner is not None:
+                proba = online_learner.predict_proba(X_last)[0, 1]
+            else:
+                proba = 0.5
+            system_logger.info(f"[SIGNAL] Latest p_buy={proba:.3f} for {symbol}")
+        except Exception as e:
+            logger.warning(f"[SIGNAL] Could not compute latest signal: {e}")
+
     except Exception as e:
-        logger.exception(f"[PIPELINE] Error in data/feature/anomaly pipeline for {symbol}: {e}")
+        logger.exception(f"[PIPELINE] Error in data/feature/anomaly/model pipeline for {symbol}: {e}")
 
 
 async def bot_loop():
     """
     Binance1-Pro botunun çekirdek döngüsü.
+
     Şu an:
       - Belirli aralıklarla Binance'ten veri çekiyor
       - Feature üretiyor
       - Anomali temizliği yapıyor
-      - Heartbeat log atıyor
-    Daha sonra buraya model + strategy + trade executor katmanlarını ekleyeceğiz.
+      - Label üretip Batch + Online model eğitiyor
+      - En son p_buy oranını logluyor
     """
     system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
 
-    # Ayarlardan sembol listesi al, boşsa fallback BTCUSDT
     symbols = Settings.TRADE_SYMBOLS or ["BTCUSDT"]
     symbol = symbols[0]
     interval = "1m"
@@ -85,17 +189,17 @@ async def bot_loop():
 
     while True:
         try:
-            # Data pipeline'ı ayrı thread'de çalıştır (blocking fonksiyonlar için)
+            # Data + model pipeline'ı ayrı thread'de çalıştır
             await asyncio.to_thread(run_data_pipeline, symbol, interval, limit)
 
-            system_logger.info("⏱ [BOT] Heartbeat - bot_loop running with data pipeline.")
+            system_logger.info("⏱ [BOT] Heartbeat - bot_loop running with data+model pipeline.")
         except asyncio.CancelledError:
             system_logger.info("🛑 [BOT] bot_loop cancelled, shutting down.")
             break
         except Exception as e:
             logger.exception(f"[BOT] Unexpected error in bot_loop: {e}")
 
-        # Binance'i çok sık dövmeyelim; 60 saniyede bir yeterli
+        # 60 sn bekle (rate limit'e saygı)
         await asyncio.sleep(60)
 
 
