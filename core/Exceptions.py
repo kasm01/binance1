@@ -1,18 +1,52 @@
 import logging
 import sys
-import traceback
-
-
-class RetryLimitExceeded(Exception):
-    """
-    Retry mekanizması belirlenen deneme sayısını aştığında fırlatılan hata.
-    """
-    pass
 
 
 class Binance1ProError(Exception):
     """
     Binance1-Pro botuna özel genel hata sınıfı.
+    """
+    pass
+
+
+class DataProcessingException(Binance1ProError):
+    """
+    Veri yükleme, temizleme, feature engineering sırasında oluşan hatalar.
+    """
+    pass
+
+
+class APIRequestException(Binance1ProError):
+    """
+    Harici API (Binance, CoinGlass, The Graph, Infura vb.) istek hataları.
+    """
+    pass
+
+
+class WebSocketConnectionError(Binance1ProError):
+    """
+    WebSocket bağlantı sorunları için.
+    """
+    pass
+
+
+class TradingLogicException(Binance1ProError):
+    """
+    Strateji / trade yürütme sırasında oluşan mantık hataları için.
+    """
+    pass
+
+
+class ConfigValidationException(Binance1ProError):
+    """
+    Eksik veya hatalı konfigürasyon / credential durumları için.
+    """
+    pass
+
+
+class RetryLimitExceeded(Binance1ProError):
+    """
+    Retry mekanizması belirlenen deneme sayısını aştığında fırlatılan hata.
     """
     pass
 
