@@ -218,22 +218,23 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
             X_last = X[-1:].copy()
             if online_learner is not None:
                 proba = online_learner.predict_proba(X_last)[0, 1]
+                source = "online"
             elif batch_model is not None and hasattr(batch_model, "predict_proba"):
                 proba = batch_model.predict_proba(X_last)[0, 1]
+                source = "batch"
             else:
                 proba = 0.5
+                source = "fallback"
+
+            decision = "BUY" if proba >= 0.5 else "NO-TRADE"
 
             system_logger.info(
-                f"[SIGNAL] Latest p_buy={proba:.3f} for {symbol} "
-                f"(up_thresh={up_thresh:.4f}, horizon={label_horizon})"
+                f"[SIGNAL] {symbol} p_buy={proba:.6f} "
+                f"decision={decision} source={source}"
             )
         except Exception as e:
             logger.warning(f"[SIGNAL] Could not compute latest signal: {e}")
 
-    except Exception as e:
-        logger.exception(
-            f"[PIPELINE] Error in data/feature/anomaly/model pipeline for {symbol}: {e}"
-        )
 
 
 
