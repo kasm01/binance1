@@ -18,7 +18,8 @@ from data.anomaly_detection import AnomalyDetector
 logger = logging.getLogger("binance1_pro_main")
 
 
-async def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
+def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
+
     """
     Bloklayıcı data + feature + anomali pipeline'ını ayrı fonksiyonda topladık.
     asyncio.to_thread ile çağıracağız ki event loop kilitlenmesin.
