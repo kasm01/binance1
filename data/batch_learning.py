@@ -19,10 +19,6 @@ class BatchLearner:
     Beklenti:
       - DataFrame içinde 'target' isimli label kolonu bulunur.
       - Geriye, predict/predict_proba çağrılabilen bir model döner.
-
-    main.py'de kullanım:
-        batch_learner = BatchLearner(clean_features)
-        batch_model = batch_learner.train()
     """
 
     def __init__(
@@ -32,7 +28,9 @@ class BatchLearner:
         test_size: float = 0.2,
         random_state: int = 42,
     ):
-        self.features_df = features_df.copy() if features_df is not None else pd.DataFrame()
+        self.features_df = (
+            features_df.copy() if features_df is not None else pd.DataFrame()
+        )
         self.target_column = target_column
         self.test_size = test_size
         self.random_state = random_state
@@ -43,26 +41,43 @@ class BatchLearner:
         X ve y arraylerini üretir.
         """
         if self.features_df.empty:
-            raise DataProcessingException("BatchLearner: boş DataFrame ile eğitim yapılamaz.")
+            raise DataProcessingException(
+                "BatchLearner: boş DataFrame ile eğitim yapılamaz."
+            )
 
         if self.target_column not in self.features_df.columns:
             raise DataProcessingException(
                 f"BatchLearner: '{self.target_column}' hedef kolonu DataFrame içinde bulunamadı."
             )
 
-        df = self.features_df.dropna().copy()
+        df = self.features_df.dropna(subset=[self.target_column]).copy()
 
         y = df[self.target_column].astype(int).values
-        X = df.drop(columns=[self.target_column]).select_dtypes(
+
+        # Sadece sayısal kolonlar (target hariç)
+        X_df = df.drop(columns=[self.target_column]).select_dtypes(
             include=["float32", "float64", "int32", "int64"]
         )
 
-        if X.empty:
+        if X_df.empty:
             raise DataProcessingException(
                 "BatchLearner: Sayısal feature kolonları bulunamadı (X boş)."
             )
 
-        return X.values, y
+        X = X_df.values
+
+        # Label dağılımını logla
+        pos_ratio = float((y == 1).mean())
+        logger.info(
+            "[BatchLearner] Label ratio: positive=%.3f (%.1f%%), negative=%.3f (%.1f%%), n=%d",
+            pos_ratio,
+            pos_ratio * 100,
+            1.0 - pos_ratio,
+            (1.0 - pos_ratio) * 100,
+            len(y),
+        )
+
+        return X, y
 
     def train(self) -> Optional[RandomForestClassifier]:
         """
@@ -70,6 +85,16 @@ class BatchLearner:
         """
         try:
             X, y = self._split_xy()
+
+            # Çok az positive varsa yine de loglayıp eğitelim ama uyarı verelim
+            num_pos = int((y == 1).sum())
+            if num_pos < 20:
+                logger.warning(
+                    "[BatchLearner] Positive sample sayısı çok düşük: %d (n=%d). "
+                    "Model dengesiz olabilir.",
+                    num_pos,
+                    len(y),
+                )
 
             X_train, X_val, y_train, y_val = train_test_split(
                 X,
@@ -80,9 +105,12 @@ class BatchLearner:
                 stratify=y if len(np.unique(y)) > 1 else None,
             )
 
+            # Daha kontrollü, sınıf dengesini gözeten RF
             self.model = RandomForestClassifier(
-                n_estimators=200,
-                max_depth=None,
+                n_estimators=300,
+                max_depth=8,
+                min_samples_leaf=5,
+                class_weight="balanced_subsample",
                 n_jobs=-1,
                 random_state=self.random_state,
             )
