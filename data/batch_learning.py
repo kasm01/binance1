@@ -41,9 +41,7 @@ class BatchLearner:
         X ve y arraylerini üretir.
         """
         if self.features_df.empty:
-            raise DataProcessingException(
-                "BatchLearner: boş DataFrame ile eğitim yapılamaz."
-            )
+            raise DataProcessingException("BatchLearner: boş DataFrame ile eğitim yapılamaz.")
 
         if self.target_column not in self.features_df.columns:
             raise DataProcessingException(
@@ -66,18 +64,21 @@ class BatchLearner:
 
         X = X_df.values
 
-        # Label dağılımını logla
+        # 🔎 Label dağılımını logla
         pos_ratio = float((y == 1).mean())
+        num_pos = int((y == 1).sum())
+        num_neg = int(len(y) - num_pos)
         logger.info(
-            "[BatchLearner] Label ratio: positive=%.3f (%.1f%%), negative=%.3f (%.1f%%), n=%d",
+            "[BatchLearner] Label stats -> pos=%d, neg=%d, n=%d, pos_ratio=%.3f (%.1f%%)",
+            num_pos,
+            num_neg,
+            len(y),
             pos_ratio,
             pos_ratio * 100,
-            1.0 - pos_ratio,
-            (1.0 - pos_ratio) * 100,
-            len(y),
         )
 
         return X, y
+
 
     def train(self) -> Optional[RandomForestClassifier]:
         """
