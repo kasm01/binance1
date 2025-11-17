@@ -70,7 +70,8 @@ class FeatureEngineer:
 
             # NaN'leri doldur
             df = df.replace([np.inf, -np.inf], np.nan)
-            df = df.fillna(method="bfill").fillna(method="ffill")
+            df = df.bfill().ffill()
+
 
             logger.info("[FeatureEngineer] Feature engineering başarıyla tamamlandı.")
             return df
