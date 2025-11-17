@@ -13,14 +13,17 @@ lightgbm==4.1.0
 catboost==1.2.2
 tensorflow==2.15.0
 keras==2.15.0
+# xgboost şimdilik kaldırıldı; gerekirse sonra ekleriz.
 
 # Websocket & Binance API
 websocket-client==1.6.3
 python-binance==1.0.16
-aiohttp==3.8.0
+aiohttp==3.9.3
+# asyncio, Python ile birlikte geliyor; ekstra pakete gerek yok.
 
 # Redis & Caching
 redis==5.3.1
+# aioredis kaldırıldı; şu anda sync redis kullanıyoruz.
 
 # Telegram Integration
 python-telegram-bot==20.3
@@ -40,6 +43,5 @@ pyod==1.1.0
 
 # Optional APIs & Helpers
 web3==6.0.0
-infura==21.0.0
-coinglass==1.0.0
-thegraph==1.0.0
+# infura, coinglass, thegraph gibi placeholder paketler kaldırıldı.
+# Gerekirse bunlar için HTTP client'ı kendimiz yazarız.
