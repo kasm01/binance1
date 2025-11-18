@@ -1,116 +1,188 @@
+# data/online_learning.py
+
+from __future__ import annotations
+
+import os
 import logging
-from typing import Optional
+from typing import Any, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.linear_model import SGDClassifier
 
-from core.exceptions import DataProcessingException
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("system")
 
 
 class OnlineLearner:
     """
-    Batch olarak eğitilmiş bir modelin üzerine,
-    yeni gelen verilerle (stream / online) kademeli güncelleme yapan katman.
+    Basit online (inkremental) öğrenme sınıfı.
 
-    main.py'de kullanım:
-        batch_learner = BatchLearner(clean_features)
-        batch_model = batch_learner.train()
-        online_learner = OnlineLearner(batch_model)
+    main.py içinde aşağıdaki gibi kullanılmaya uygundur:
+
+        online_learner = OnlineLearner(
+            model=batch_model,            # opsiyonel, yoksa kendi SGDClassifier'ını kurar
+            feature_columns=feature_cols, # opsiyonel, sadece bilgi amaçlı tutulur
+            model_dir="models",           # verilmezse "models" kullanılır
+            base_model_name="online_btcusdt"
+        )
+
+        # Yeni gelen verilerle:
+        online_learner.partial_fit(X_new, y_new)
     """
 
-    def __init__(self, base_model: Optional[object] = None, classes=(0, 1)):
+    def __init__(
+        self,
+        model: Optional[Any] = None,
+        feature_columns: Optional[Sequence[str]] = None,
+        model_dir: Optional[str] = None,
+        base_model_name: str = "online_model",
+        classes: Iterable[int] = (0, 1),
+        random_state: int = 42,
+        **kwargs: Any,
+    ) -> None:
         """
-        :param base_model: BatchLearner tarafından dönen model (isteğe bağlı)
-        :param classes: Sınıf etiketleri (binary için varsayılan (0,1))
+        model          : Eğer partial_fit destekleyen bir model verirsen onu kullanır.
+                         Vermezsen kendi SGDClassifier'ını oluşturur.
+        feature_columns: Sadece referans için tutulur (log, debug vs).
+        model_dir      : Modellerin kaydedileceği klasör. None ise 'models'.
+        base_model_name: Kaydedilen model dosyasının temel adı.
+        classes        : partial_fit için sınıf listesi (binary: (0,1)).
         """
-        self.base_model = base_model
-        self.classes = np.array(classes)
 
-        # Online learning için ayrı bir SGDClassifier kullanıyoruz
-        self.online_model = SGDClassifier(
-            loss="log_loss",
-            learning_rate="optimal",
-            max_iter=5,
-            tol=1e-3,
-            random_state=42,
+        self.feature_columns: Optional[List[str]] = (
+            list(feature_columns) if feature_columns is not None else None
         )
-        self._is_fitted = False
+        self.model_dir = model_dir or "models"
+        self.base_model_name = base_model_name
+        self.classes = np.array(list(classes))
+        self.random_state = random_state
 
-    def initialize_with_batch(self, X: np.ndarray, y: np.ndarray):
+        # Dışarıdan model geldiyse ve partial_fit destekliyorsa onu kullan
+        if model is not None and hasattr(model, "partial_fit"):
+            self.model = model
+            logger.info(
+                "[ONLINE] Using provided model with partial_fit for online learning."
+            )
+        else:
+            # Kendi SGDClassifier'ını kur (logistic regression benzeri)
+            self.model = SGDClassifier(
+                loss="log_loss",
+                learning_rate="optimal",
+                alpha=0.0001,
+                penalty="l2",
+                random_state=self.random_state,
+            )
+            logger.info(
+                "[ONLINE] Initialized new SGDClassifier for online learning "
+                "(loss=log_loss)."
+            )
+
+        logger.info(
+            "[ONLINE] OnlineLearner initialized with model_dir=%s, base_model_name=%s, "
+            "n_classes=%d",
+            self.model_dir,
+            self.base_model_name,
+            len(self.classes),
+        )
+        if self.feature_columns is not None:
+            logger.info(
+                "[ONLINE] feature_columns set with %d columns.", len(self.feature_columns)
+            )
+
+        # kwargs içinden şimdilik hiçbir şeyi zorunlu kullanmıyoruz ama
+        # gelebilecek extra parametreler hataya sebep olmasın diye yutuyoruz.
+        self.extra_params: Dict[str, Any] = dict(kwargs)
+
+    # ------------------------------------------------------------------
+    # Yardımcı: numpy/pandas konversiyonları
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _to_numpy_X(X: Any) -> np.ndarray:
+        if isinstance(X, pd.DataFrame):
+            return X.values
+        return np.asarray(X)
+
+    @staticmethod
+    def _to_numpy_y(y: Any) -> np.ndarray:
+        if isinstance(y, (pd.Series, pd.DataFrame)):
+            return np.asarray(y).ravel()
+        return np.asarray(y).ravel()
+
+    # ------------------------------------------------------------------
+    # Online eğitim
+    # ------------------------------------------------------------------
+    def partial_fit(self, X: Any, y: Any) -> None:
         """
-        İlk kez partial_fit yapmak için batch veriyi kullan.
+        Yeni gelen batch ile online (inkremental) eğitim yapar.
+
+        X : features (DataFrame veya numpy array)
+        y : target (Series, array vs.)
         """
         try:
-            if X is None or len(X) == 0:
-                logger.warning("[OnlineLearner] initialize_with_batch: boş X, atlanıyor.")
-                return
+            X_arr = self._to_numpy_X(X)
+            y_arr = self._to_numpy_y(y)
 
-            self.online_model.partial_fit(X, y, classes=self.classes)
-            self._is_fitted = True
-            logger.info("[OnlineLearner] İlk online model fit işlemi tamamlandı.")
+            logger.info(
+                "[ONLINE] partial_fit called with %d samples, %d features.",
+                X_arr.shape[0],
+                X_arr.shape[1],
+            )
+
+            # İlk çağrıda classes parametresi gerekli, sonrakilerde opsiyonel ama
+            # güvenli olsun diye her seferinde geçiyoruz.
+            self.model.partial_fit(X_arr, y_arr, classes=self.classes)
+            logger.info("[ONLINE] partial_fit completed successfully.")
+
         except Exception as e:
-            logger.exception(f"[OnlineLearner] initialize_with_batch hatası: {e}")
-            raise DataProcessingException(f"OnlineLearner initialize_with_batch failed: {e}") from e
+            logger.exception("[ONLINE] partial_fit failed: %s", str(e))
+            raise RuntimeError(f"Online partial_fit failed: {e}") from e
 
-    def partial_update(self, X_new: np.ndarray, y_new: np.ndarray):
+    # ------------------------------------------------------------------
+    # Tahmin fonksiyonları
+    # ------------------------------------------------------------------
+    def predict_proba(self, X: Any) -> np.ndarray:
         """
-        Yeni gelen küçük bir batch ile modeli günceller.
+        Olasılık tahmini döner (model destekliyorsa).
         """
-        if X_new is None or len(X_new) == 0:
-            logger.warning("[OnlineLearner] partial_update: boş X_new, atlanıyor.")
-            return
+        X_arr = self._to_numpy_X(X)
+        if not hasattr(self.model, "predict_proba"):
+            raise AttributeError(
+                "[ONLINE] Current model does not support predict_proba."
+            )
+        return self.model.predict_proba(X_arr)
 
-        try:
-            if not self._is_fitted:
-                # İlk kez eğitilecekse sınıfları vererek başlat
-                self.online_model.partial_fit(X_new, y_new, classes=self.classes)
-                self._is_fitted = True
-                logger.info("[OnlineLearner] partial_update ile ilk fit tamamlandı.")
-            else:
-                self.online_model.partial_fit(X_new, y_new)
-                logger.info("[OnlineLearner] partial_update ile model güncellendi.")
-        except Exception as e:
-            logger.exception(f"[OnlineLearner] partial_update hatası: {e}")
-            raise DataProcessingException(f"OnlineLearner partial_update failed: {e}") from e
+    def predict(self, X: Any) -> np.ndarray:
+        """
+        Sınıf etiketi tahmini döner.
+        """
+        X_arr = self._to_numpy_X(X)
+        return self.model.predict(X_arr)
 
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """
-        Olasılık tahmini döner. Eğer online_model henüz eğitilmediyse,
-        base_model'den tahmin almayı dener, o da yoksa 0.5 döner.
-        """
-        try:
-            if self._is_fitted:
-                return self.online_model.predict_proba(X)
-            elif self.base_model is not None and hasattr(self.base_model, "predict_proba"):
-                logger.info("[OnlineLearner] Online model eğitilmemiş, base_model kullanılıyor.")
-                return self.base_model.predict_proba(X)
-            else:
-                logger.warning(
-                    "[OnlineLearner] Ne online model ne de base_model hazır, 0.5 olasılık dönüyor."
-                )
-                # shape: (n_samples, 2) -> [p0, p1]
-                n = X.shape[0]
-                return np.tile(np.array([[0.5, 0.5]]), (n, 1))
-        except Exception as e:
-            logger.exception(f"[OnlineLearner] predict_proba hatası: {e}")
-            raise DataProcessingException(f"OnlineLearner predict_proba failed: {e}") from e
+    # ------------------------------------------------------------------
+    # Model kaydet / yükle
+    # ------------------------------------------------------------------
+    def _get_model_path(self) -> str:
+        os.makedirs(self.model_dir, exist_ok=True)
+        filename = f"{self.base_model_name}.joblib"
+        return os.path.join(self.model_dir, filename)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def save_model(self) -> str:
         """
-        Sınıf tahmini döner (0/1). Eğer model hazır değilse,
-        predict_proba üzerinden 0.5 eşik ile karar verir.
+        Online modelin mevcut halini kaydeder ve dosya yolunu döner.
         """
-        try:
-            if self._is_fitted:
-                return self.online_model.predict(X)
-            else:
-                proba = self.predict_proba(X)
-                # p(class=1) > 0.5 ise 1, değilse 0
-                return (proba[:, 1] > 0.5).astype(int)
-        except Exception as e:
-            logger.exception(f"[OnlineLearner] predict hatası: {e}")
-            raise DataProcessingException(f"OnlineLearner predict failed: {e}") from e
+        path = self._get_model_path()
+        joblib.dump(self.model, path)
+        logger.info("[ONLINE] Online model saved to %s", path)
+        return path
 
+    def load_model(self) -> Any:
+        """
+        Daha önce kaydedilmiş online modeli yükler.
+        """
+        path = self._get_model_path()
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"[ONLINE] Model file not found: {path}")
+        self.model = joblib.load(path)
+        logger.info("[ONLINE] Online model loaded from %s", path)
+        return self.model
