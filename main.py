@@ -104,10 +104,30 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     2) Feature engineering uygula
     3) Anomali temizliği yap
     """
-    # 1) Data yükleme
     data_loader = DataLoader(env_vars)
-    raw_df = data_loader.load_recent_data()
-    # DataLoader içinde zaten [DATA] logları yazılıyor.
+
+    # DataLoader API'si değişmiş olabilir; esnek şekilde yüklemeyi dene
+    load_method = None
+    for name in ("load_recent_data", "load_data", "load"):
+        if hasattr(data_loader, name):
+            load_method = getattr(data_loader, name)
+            system_logger.info("[DATA] Using DataLoader.%s()", name)
+            break
+
+    if load_method is None:
+        # Hata verirken mevcut attribute'ları da loglayalım ki debug kolay olsun
+        available = [a for a in dir(data_loader) if not a.startswith("_")]
+        system_logger.error(
+            "[DATA] DataLoader has no method load_recent_data/load_data/load. Available: %s",
+            available,
+        )
+        raise AttributeError(
+            "DataLoader is missing load_recent_data/load_data/load. "
+            "Check data/data_loader.py"
+        )
+
+    # 1) Data yükleme
+    raw_df = load_method()  # DataLoader içi zaten [DATA] loglarını basıyor olmalı
 
     # 2) Feature engineering
     feature_engineer = FeatureEngineer(raw_df)
@@ -123,7 +143,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
 
 # ------------------------------
-# Yardımcı: Model pipeline
+# Yardımcı: X, y, feature listesi
 # ------------------------------
 def get_feature_target_matrices(
     labeled_df: pd.DataFrame,
@@ -145,6 +165,9 @@ def get_feature_target_matrices(
     return X, y, feature_cols
 
 
+# ------------------------------
+# Yardımcı: Son bar için sinyal
+# ------------------------------
 def compute_latest_signal(
     X: pd.DataFrame,
     feature_cols: List[str],
@@ -211,6 +234,9 @@ def compute_latest_signal(
     )
 
 
+# ------------------------------
+# Tam data + model pipeline
+# ------------------------------
 async def run_data_and_model_pipeline() -> None:
     """
     Tam pipeline:
