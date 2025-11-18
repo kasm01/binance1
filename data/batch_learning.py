@@ -8,41 +8,54 @@ import joblib
 from lightgbm import LGBMClassifier
 from sklearn.metrics import roc_auc_score
 
-from core.exceptions import ModelTrainingException
-
 logger = logging.getLogger("system")
+
+
+class ModelTrainingException(Exception):
+    """Batch model eğitiminde hata olduğunda fırlatılan özel exception."""
+    pass
 
 
 class BatchLearner:
     """
     Batch modda LightGBM modeli eğiten sınıf.
 
-    main.py içinde aşağıya benzer şekilde çağrılabilir:
+    main.py içinde şu şekilde çağrılması bekleniyor:
 
         batch_learner = BatchLearner(
-            X=batch_input,                 # pandas DataFrame veya numpy array
-            y=target,                      # pandas Series veya numpy array
-            feature_cols=feature_cols,     # liste (kolon isimleri)
-            target_column="target",        # hedef kolon adı (log için)
+            X=batch_input,
+            y=target,
+            feature_cols=feature_cols,
+            target_column="target",
             model_dir=env_vars.get("MODEL_DIR", "/app/models"),
-            model_name="lgbm_batch"        # opsiyonel
+            model_name="lgbm_batch"
         )
-        batch_learner.train()
 
-    Ek argümanlar gelirse **kwargs ile sessizce kabul edilir (hata vermez).
+    Burada hem keyword arg (X=, y=, feature_cols=...) hem de
+    pozisyonel argümanlar destekleniyor; fazladan gelen kwargs'lar
+    sessizce yok sayılıyor.
     """
 
-    def __init__(
-        self,
-        X: Any,
-        y: Any,
-        feature_cols: Optional[List[str]] = None,
-        target_column: str = "target",
-        model_dir: str = "/app/models",
-        model_name: str = "lgbm_batch",
-        **kwargs,
-    ):
-        # X ve y'yi numpy array'e çevir
+    def __init__(self, *args, **kwargs):
+        # Keyword arg olarak gelme ihtimali olanlar
+        X = kwargs.pop("X", None)
+        y = kwargs.pop("y", None)
+        feature_cols: Optional[List[str]] = kwargs.pop("feature_cols", None)
+        target_column: str = kwargs.pop("target_column", "target")
+        model_dir: str = kwargs.pop("model_dir", "/app/models")
+        model_name: str = kwargs.pop("model_name", "lgbm_batch")
+
+        # Pozisyonel argüman fallback
+        # Örn: BatchLearner(batch_input, target, feature_cols=...)
+        if X is None and len(args) > 0:
+            X = args[0]
+        if y is None and len(args) > 1:
+            y = args[1]
+
+        if X is None or y is None:
+            raise ValueError("BatchLearner requires both X and y inputs.")
+
+        # X ve y'yi numpy array'e çevir, feature_cols bilgisini ayarla
         if isinstance(X, pd.DataFrame):
             self.feature_cols = feature_cols or list(X.columns)
             self.X = X[self.feature_cols].values
@@ -51,7 +64,6 @@ class BatchLearner:
             self.feature_cols = feature_cols
 
         if isinstance(y, (pd.Series, pd.DataFrame)):
-            # DataFrame gelirse ilk kolonu alalım
             if isinstance(y, pd.DataFrame):
                 self.y = y.iloc[:, 0].values
             else:
@@ -61,12 +73,12 @@ class BatchLearner:
 
         self.target_column = target_column
 
-        # Model kayıt yeri
+        # Model kayıt klasörü
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
         self.model_path = os.path.join(self.model_dir, f"{model_name}.pkl")
 
-        # LightGBM batch modeli (makul default hiperparametreler)
+        # LightGBM batch modeli
         self.model = LGBMClassifier(
             n_estimators=300,
             learning_rate=0.05,
@@ -75,6 +87,12 @@ class BatchLearner:
             colsample_bytree=0.9,
             random_state=42,
             n_jobs=-1,
+        )
+
+        logger.info(
+            "[BATCH] BatchLearner initialized with %d samples, %d features.",
+            self.X.shape[0],
+            self.X.shape[1],
         )
 
     # -------------------------------------------------
