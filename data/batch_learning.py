@@ -1,97 +1,136 @@
+import os
+import logging
+from typing import Optional, List, Any, Dict
+
+import numpy as np
 import pandas as pd
+import joblib
 from lightgbm import LGBMClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_auc_score,
-    accuracy_score,
-    precision_score,
-    recall_score,
-)
-from core.logger import system_logger
+from sklearn.metrics import roc_auc_score
+
+from core.exceptions import ModelTrainingException
+
+logger = logging.getLogger("system")
 
 
 class BatchLearner:
     """
-    Batch eğitim: clean feature DF + target ile LightGBM modeli eğitir.
-    Aynı zamanda validation metriklerini log'a yazar.
+    Batch modda LightGBM modeli eğiten sınıf.
+
+    main.py içinde aşağıya benzer şekilde çağrılabilir:
+
+        batch_learner = BatchLearner(
+            X=batch_input,                 # pandas DataFrame veya numpy array
+            y=target,                      # pandas Series veya numpy array
+            feature_cols=feature_cols,     # liste (kolon isimleri)
+            target_column="target",        # hedef kolon adı (log için)
+            model_dir=env_vars.get("MODEL_DIR", "/app/models"),
+            model_name="lgbm_batch"        # opsiyonel
+        )
+        batch_learner.train()
+
+    Ek argümanlar gelirse **kwargs ile sessizce kabul edilir (hata vermez).
     """
 
-    def __init__(self, logger=None):
-        self.logger = logger or system_logger
+    def __init__(
+        self,
+        X: Any,
+        y: Any,
+        feature_cols: Optional[List[str]] = None,
+        target_column: str = "target",
+        model_dir: str = "/app/models",
+        model_name: str = "lgbm_batch",
+        **kwargs,
+    ):
+        # X ve y'yi numpy array'e çevir
+        if isinstance(X, pd.DataFrame):
+            self.feature_cols = feature_cols or list(X.columns)
+            self.X = X[self.feature_cols].values
+        else:
+            self.X = np.asarray(X)
+            self.feature_cols = feature_cols
 
-    def train(self, X: pd.DataFrame, y: pd.Series) -> LGBMClassifier:
-        # Temel istatistikler
-        n = len(y)
-        n_pos = int(y.sum())
-        n_neg = n - n_pos
-        pos_ratio = n_pos / n if n > 0 else 0.0
+        if isinstance(y, (pd.Series, pd.DataFrame)):
+            # DataFrame gelirse ilk kolonu alalım
+            if isinstance(y, pd.DataFrame):
+                self.y = y.iloc[:, 0].values
+            else:
+                self.y = y.values
+        else:
+            self.y = np.asarray(y)
 
-        self.logger.info(
-            "[BATCH] Preparing data for training: n=%d, pos=%d, neg=%d, pos_ratio=%.3f",
-            n, n_pos, n_neg, pos_ratio
-        )
+        self.target_column = target_column
 
-        if n < 200 or n_pos == 0 or n_neg == 0:
-            self.logger.warning(
-                "[BATCH] Data too small or only one class present. Falling back to simple model."
-            )
-            # Çok küçük veri ya da tek sınıf varsa bile model eğitiriz ama uyarı veririz
-            model = LGBMClassifier(
-                n_estimators=100,
-                learning_rate=0.05,
-                max_depth=3,
-                objective="binary",
-                n_jobs=-1,
-                random_state=42,
-            )
-            model.fit(X, y)
-            self.logger.info("[BATCH] LightGBM training completed (fallback settings).")
-            return model
+        # Model kayıt yeri
+        self.model_dir = model_dir
+        os.makedirs(self.model_dir, exist_ok=True)
+        self.model_path = os.path.join(self.model_dir, f"{model_name}.pkl")
 
-        # Train/Validation split
-        X_train, X_val, y_train, y_val = train_test_split(
-            X,
-            y,
-            test_size=0.2,
-            random_state=42,
-            stratify=y,
-        )
-
-        # LightGBM modeli (class_weight balanced ile)
-        model = LGBMClassifier(
+        # LightGBM batch modeli (makul default hiperparametreler)
+        self.model = LGBMClassifier(
             n_estimators=300,
-            learning_rate=0.03,
+            learning_rate=0.05,
             max_depth=-1,
-            num_leaves=31,
-            min_data_in_leaf=20,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="binary",
-            class_weight="balanced",   # dengesiz veri için önemli
-            n_jobs=-1,
+            subsample=0.9,
+            colsample_bytree=0.9,
             random_state=42,
+            n_jobs=-1,
         )
 
-        self.logger.info("[BATCH] Starting LightGBM training...")
-        model.fit(X_train, y_train)
-
-        # Validation tahminleri
-        y_proba = model.predict_proba(X_val)[:, 1]
-        y_pred = (y_proba >= 0.5).astype(int)
-
+    # -------------------------------------------------
+    # Eğitim
+    # -------------------------------------------------
+    def train(self) -> None:
+        """
+        Batch modeli eğitir, basit bir ROC-AUC hesaplar ve modeli diske kaydeder.
+        Hata durumunda ModelTrainingException fırlatır.
+        """
         try:
-            auc = roc_auc_score(y_val, y_proba)
-        except Exception:
-            auc = float("nan")
+            logger.info(
+                "[BATCH] Starting LightGBM training on %d samples, %d features.",
+                self.X.shape[0],
+                self.X.shape[1],
+            )
 
-        acc = accuracy_score(y_val, y_pred)
-        prec = precision_score(y_val, y_pred, zero_division=0)
-        rec = recall_score(y_val, y_pred, zero_division=0)
+            self.model.fit(self.X, self.y)
 
-        self.logger.info(
-            "[BATCH] Validation metrics: AUC=%.4f, ACC=%.4f, PREC=%.4f, REC=%.4f",
-            auc, acc, prec, rec
-        )
+            logger.info("[BATCH] LightGBM training completed successfully.")
 
-        self.logger.info("[BATCH] LightGBM training completed successfully.")
-        return model
+            # Basit in-sample ROC-AUC metriği (binary classification varsayımı)
+            try:
+                proba = self.model.predict_proba(self.X)[:, 1]
+                auc = roc_auc_score(self.y, proba)
+                logger.info("[BATCH] In-sample ROC-AUC: %.4f", auc)
+            except Exception as e:
+                logger.warning("[BATCH] Could not compute ROC-AUC: %s", e)
+
+            # Modeli kaydet
+            payload: Dict[str, Any] = {
+                "model": self.model,
+                "feature_cols": self.feature_cols,
+                "target_column": self.target_column,
+            }
+            joblib.dump(payload, self.model_path)
+            logger.info("[BATCH] Model saved to %s", self.model_path)
+
+        except Exception as e:
+            logger.error("[BATCH] Error during LightGBM training: %s", e)
+            raise ModelTrainingException(f"Batch training failed: {e}") from e
+
+    # -------------------------------------------------
+    # Tahmin
+    # -------------------------------------------------
+    def predict_proba(self, X_new: Any) -> np.ndarray:
+        """
+        Yeni veri için pozitif sınıf olasılıklarını döner.
+        X_new: DataFrame veya numpy array.
+        """
+        if isinstance(X_new, pd.DataFrame):
+            if self.feature_cols is not None:
+                X_arr = X_new[self.feature_cols].values
+            else:
+                X_arr = X_new.values
+        else:
+            X_arr = np.asarray(X_new)
+
+        return self.model.predict_proba(X_arr)[:, 1]
