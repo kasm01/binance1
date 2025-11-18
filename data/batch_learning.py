@@ -1,135 +1,117 @@
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.utils.class_weight import compute_class_weight
+from lightgbm import LGBMClassifier
 
-from core.exceptions import DataProcessingException
+from core.logger import system_logger
 
 logger = logging.getLogger(__name__)
 
 
 class BatchLearner:
     """
-    Temizlenmiş feature DataFrame'i ile batch (offline) model eğitimi yapar.
+    Batch (toplu) öğrenme yapan basit bir LightGBM eğiticisi.
 
-    Beklenti:
-      - DataFrame içinde 'target' isimli label kolonu bulunur.
-      - Geriye, predict/predict_proba çağrılabilen bir model döner.
+    Beklenen giriş:
+      - features_df: Feature kolonları + target kolonu içeren DataFrame
+      - target_column: Label kolonu ismi (örn: "target")
+
+    Çıkış:
+      - self.model: sklearn API’si olan (fit/predict/predict_proba) bir model
     """
 
-    def __init__(
-        self,
-        features_df: pd.DataFrame,
-        target_column: str = "target",
-        test_size: float = 0.2,
-        random_state: int = 42,
-    ):
-        self.features_df = (
-            features_df.copy() if features_df is not None else pd.DataFrame()
-        )
+    def __init__(self, features_df: pd.DataFrame, target_column: str = "target"):
+        if features_df is None or len(features_df) == 0:
+            raise ValueError("BatchLearner: features_df is empty or None")
+
+        if target_column not in features_df.columns:
+            raise ValueError(
+                f"BatchLearner: target_column='{target_column}' not in DataFrame columns"
+            )
+
+        self.features_df = features_df.copy()
         self.target_column = target_column
-        self.test_size = test_size
-        self.random_state = random_state
-        self.model: Optional[RandomForestClassifier] = None
+        self.model: Optional[LGBMClassifier] = None
 
-    def _split_xy(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _prepare_data(self):
         """
-        X ve y arraylerini üretir.
+        X, y ve class_weight hesaplama.
         """
-        if self.features_df.empty:
-            raise DataProcessingException("BatchLearner: boş DataFrame ile eğitim yapılamaz.")
+        df = self.features_df
 
-        if self.target_column not in self.features_df.columns:
-            raise DataProcessingException(
-                f"BatchLearner: '{self.target_column}' hedef kolonu DataFrame içinde bulunamadı."
-            )
+        X = df.drop(columns=[self.target_column])
+        y = df[self.target_column].astype(int)
 
-        df = self.features_df.dropna(subset=[self.target_column]).copy()
+        n_samples = len(y)
+        n_features = X.shape[1]
 
-        y = df[self.target_column].astype(int).values
+        # Sınıf dağılımı
+        classes, counts = np.unique(y, return_counts=True)
+        class_dist = {int(c): int(cnt) for c, cnt in zip(classes, counts)}
 
-        # Sadece sayısal kolonlar (target hariç)
-        X_df = df.drop(columns=[self.target_column]).select_dtypes(
-            include=["float32", "float64", "int32", "int64"]
+        system_logger.info(
+            "[BATCH] Preparing data for training: n_samples=%d, n_features=%d, class_dist=%s",
+            n_samples,
+            n_features,
+            class_dist,
         )
 
-        if X_df.empty:
-            raise DataProcessingException(
-                "BatchLearner: Sayısal feature kolonları bulunamadı (X boş)."
+        # Class weight (dengesiz veri için)
+        if len(classes) > 1:
+            cw = compute_class_weight(
+                class_weight="balanced",
+                classes=classes,
+                y=y,
             )
+            class_weight = {int(c): float(w) for c, w in zip(classes, cw)}
+        else:
+            class_weight = None
 
-        X = X_df.values
+        if class_weight is not None:
+            system_logger.info("[BATCH] Computed class_weight=%s", class_weight)
+        else:
+            system_logger.info("[BATCH] Single class detected, no class_weight used.")
 
-        # 🔎 Label dağılımını logla
-        pos_ratio = float((y == 1).mean())
-        num_pos = int((y == 1).sum())
-        num_neg = int(len(y) - num_pos)
-        logger.info(
-            "[BatchLearner] Label stats -> pos=%d, neg=%d, n=%d, pos_ratio=%.3f (%.1f%%)",
-            num_pos,
-            num_neg,
-            len(y),
-            pos_ratio,
-            pos_ratio * 100,
-        )
+        return X, y, class_weight
 
-        return X, y
-
-
-    def train(self) -> Optional[RandomForestClassifier]:
+    def train(self) -> Optional[LGBMClassifier]:
         """
-        Modeli eğitir ve döner. Hata durumunda None dönebilir.
+        Basit bir LightGBM classifier eğitir.
         """
         try:
-            X, y = self._split_xy()
+            X, y, class_weight = self._prepare_data()
 
-            # Çok az positive varsa yine de loglayıp eğitelim ama uyarı verelim
-            num_pos = int((y == 1).sum())
-            if num_pos < 20:
-                logger.warning(
-                    "[BatchLearner] Positive sample sayısı çok düşük: %d (n=%d). "
-                    "Model dengesiz olabilir.",
-                    num_pos,
-                    len(y),
-                )
+            params = {
+                "objective": "binary",
+                "boosting_type": "gbdt",
+                "learning_rate": 0.05,
+                "n_estimators": 300,
+                "num_leaves": 31,
+                "max_depth": -1,
+                "subsample": 0.9,
+                "colsample_bytree": 0.9,
+                "random_state": 42,
+                "n_jobs": -1,
+            }
 
-            X_train, X_val, y_train, y_val = train_test_split(
-                X,
-                y,
-                test_size=self.test_size,
-                random_state=self.random_state,
-                shuffle=True,
-                stratify=y if len(np.unique(y)) > 1 else None,
+            if class_weight is not None:
+                params["class_weight"] = class_weight
+
+            self.model = LGBMClassifier(**params)
+
+            system_logger.info(
+                "[BATCH] Starting LightGBM training with params=%s", params
             )
-
-            # Daha kontrollü, sınıf dengesini gözeten RF
-            self.model = RandomForestClassifier(
-                n_estimators=300,
-                max_depth=8,
-                min_samples_leaf=5,
-                class_weight="balanced_subsample",
-                n_jobs=-1,
-                random_state=self.random_state,
-            )
-
-            self.model.fit(X_train, y_train)
-
-            # Basit validasyon log'u
-            y_pred = self.model.predict(X_val)
-            report = classification_report(
-                y_val, y_pred, output_dict=False, zero_division=0
-            )
-            logger.info("[BatchLearner] RandomForest eğitim tamamlandı.\n%s", report)
+            self.model.fit(X, y)
+            system_logger.info("[BATCH] LightGBM training completed successfully.")
 
             return self.model
 
-        except DataProcessingException:
-            # Yukarıda zaten loglanmış olabilir
-            raise
         except Exception as e:
-            logger.exception(f"[BatchLearner] train hatası: {e}")
-            raise DataProcessingException(f"BatchLearner train failed: {e}") from e
+            logger.exception(f"[BATCH] Error while training batch model: {e}")
+            system_logger.error(f"[BATCH] Error while training batch model: {e}")
+            self.model = None
+            return None
