@@ -2,404 +2,415 @@ import asyncio
 import logging
 import os
 import signal
-from typing import Dict, List
+from contextlib import suppress
+from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
 from aiohttp import web
-from joblib import load as joblib_load
 
 from config.load_env import load_environment_variables
+
 from core.logger import setup_logger
-from core.exceptions import DataProcessingException, ModelTrainingException
+from core.exceptions import (
+    DataProcessingException,
+    ModelTrainingException,
+    OnlineLearningException,
+    SignalGenerationException,
+    EnvironmentException,
+)
+
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
+from data.labels import LabelGenerator
 from data.batch_learning import BatchLearner
 from data.online_learning import OnlineLearner
-
-# -----------------------------------------------------------------------------
-# Global config & logger
-# -----------------------------------------------------------------------------
-
-ENV_VARS: Dict[str, str] = load_environment_variables()
-logger = setup_logger(logger_name="system")
+from data.anomaly_detection import AnomalyDetector
 
 
-# -----------------------------------------------------------------------------
-# HTTP Handlers (Cloud Run health / root)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# Global logger
+# ---------------------------------------------------------
 
-async def handle_root(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "message": "Binance1-Pro bot running"})
-
-
-async def handle_health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "healthy"})
+LOGGER = setup_logger("system")
 
 
-async def init_app() -> web.Application:
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    app.router.add_get("/healthz", handle_health)
-    return app
+# ---------------------------------------------------------
+# Yardımcı fonksiyonlar
+# ---------------------------------------------------------
+
+def _get_env_int(env_vars: Dict[str, str], key: str, default: int) -> int:
+    try:
+        return int(env_vars.get(key, str(default)))
+    except Exception:
+        return default
 
 
-# -----------------------------------------------------------------------------
-# Data pipeline
-# -----------------------------------------------------------------------------
+def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
+    try:
+        return float(env_vars.get(key, str(default)))
+    except Exception:
+        return default
+
+
+# ---------------------------------------------------------
+# DATA PIPELINE
+# ---------------------------------------------------------
 
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     """
-    1) Binance'ten ham veriyi çeker
-    2) (Varsa) harici veri ile merge eder
-    3) Feature engineering uygular
-    4) Label ve future_return üretir
+    1) Binance'ten klines çek
+    2) (Varsa) EXTERNAL_DATA_URL ile dış veriyi merge et
+    3) Feature engineering uygula
+    4) Label üret ve temiz veri döndür
     """
     symbol = env_vars.get("SYMBOL", "BTCUSDT")
     interval = env_vars.get("INTERVAL", "1m")
-    limit = int(env_vars.get("HISTORY_LIMIT", "1000"))
+    history_limit = _get_env_int(env_vars, "HISTORY_LIMIT", 1000)
+    label_horizon = _get_env_int(env_vars, "LABEL_HORIZON", 10)
 
-    data_loader = DataLoader(env_vars=env_vars, logger=logger)
-
-    # --- 1) Binance verisi ---
-    logger.info("[DATA] Fetching %s klines from Binance for %s (%s)", limit, symbol, interval)
-    raw_df = data_loader.fetch_binance_data(symbol=symbol, interval=interval, limit=limit)
-    if raw_df is None or raw_df.empty:
-        raise DataProcessingException("[DATA] Binance returned empty dataframe.")
-    logger.info("[DATA] Raw DF shape: %s", raw_df.shape)
-
-    # --- 2) Harici veri (opsiyonel) ---
-    external_url = env_vars.get("EXTERNAL_DATA_URL")
-    if external_url:
-        try:
-            # DataLoader içindeki imzaya göre bu fonksiyonu düzenledik;
-            # burada sadece URL zorunlu, diğerleri DataLoader içinde env'den okunuyor.
-            ext_df = data_loader.fetch_external_data(url=external_url)
-            # İstersen burada raw_df ile merge mantığını ekleyebilirsin.
-            # Şimdilik sadece log atıp devam edelim:
-            logger.info("[DATA] External data fetched, shape: %s", getattr(ext_df, "shape", None))
-        except Exception as e:
-            logger.error(
-                "[DATA] Error in fetch_external_data, continuing with Binance data only: %s",
-                e,
-                exc_info=True,
-            )
-    else:
-        logger.warning("[DATA] No EXTERNAL_DATA_URL provided; skipping external data merge.")
-
-    # --- 3) Feature engineering ---
     try:
-        feature_engineer = FeatureEngineer(df=raw_df, logger=logger)
+        # --- 1) Binance verisi ---
+        data_loader = DataLoader(
+            symbol=symbol,
+            interval=interval,
+            limit=history_limit,
+            logger=LOGGER,
+        )
+
+        LOGGER.info("[DATA] Fetching %d klines from Binance for %s (%s)",
+                    history_limit, symbol, interval)
+        raw_df = await data_loader.fetch_klines()
+        LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
+
+        # --- 2) External data merge (opsiyonel) ---
+        external_url = env_vars.get("EXTERNAL_DATA_URL", "").strip()
+        if external_url:
+            try:
+                ext_df = data_loader.fetch_external_data(external_url)
+                LOGGER.info("[DATA] External DF shape: %s", ext_df.shape)
+                raw_df = data_loader.merge_external_data(raw_df, ext_df)
+                LOGGER.info("[DATA] After merge DF shape: %s", raw_df.shape)
+            except Exception as e:
+                LOGGER.error(
+                    "[DATA] Error in fetch_external_data, continuing with Binance data only: %s",
+                    e,
+                    exc_info=True,
+                )
+        else:
+            LOGGER.warning(
+                "[DATA] No EXTERNAL_DATA_URL provided; skipping external data merge."
+            )
+
+        # --- 3) Anomali temizleme (opsiyonel) ---
+        try:
+            anomaly_detector = AnomalyDetector(logger=LOGGER)
+            raw_df = anomaly_detector.remove_anomalies(raw_df)
+        except Exception as e:
+            LOGGER.error(
+                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
+            )
+
+        # --- 4) Feature Engineering ---
+        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
         features_df = feature_engineer.transform()
-        if features_df is None or features_df.empty:
-            raise DataProcessingException("[FE] FeatureEngineer returned empty dataframe.")
-        logger.info("[FE] Features DF shape: %s", features_df.shape)
-    except DataProcessingException:
-        # FeatureEngineer zaten DataProcessingException raise ediyorsa aynen yukarı fırlatalım
-        raise
+        LOGGER.info("[FE] Features DF shape: %s", features_df.shape)
+
+        # --- 5) Label Generation ---
+        label_generator = LabelGenerator(
+            df=features_df,
+            horizon=label_horizon,
+            logger=LOGGER,
+        )
+        clean_df = label_generator.generate_labels()
+
+        # LABEL logları: future_return istatistikleri
+        label_generator.log_label_stats()
+
+        return clean_df
+
     except Exception as e:
-        logger.error("[FE] Unexpected error in FeatureEngineer.transform(): %s", e, exc_info=True)
-        raise DataProcessingException(f"Feature engineering failed: {e}") from e
-
-    # --- 4) Label & future_return ---
-    df = features_df.copy()
-
-    # Close'un numerik olduğundan emin ol
-    if not np.issubdtype(df["close"].dtype, np.number):
-        df["close"] = pd.to_numeric(df["close"], errors="coerce")
-
-    horizon = int(env_vars.get("LABEL_HORIZON", "10"))  # kaç bar sonrasına bakarak future_return
-    df["future_return"] = df["close"].shift(-horizon) / df["close"] - 1
-
-    # future_return'i hesaplayamayan satırları at (tail kısmı)
-    df = df.dropna(subset=["future_return"])
-
-    # Label: gelecekteki getirisi pozitifse 1, değilse 0
-    df["label"] = (df["future_return"] > 0).astype(int)
-
-    n = len(df)
-    pos = int(df["label"].sum())
-    neg = n - pos
-    mean_fr = df["future_return"].mean()
-    std_fr = df["future_return"].std()
-    pos_ratio = pos / n if n > 0 else 0.0
-
-    logger.info(
-        "[LABEL] future_return mean=%.4f, std=%.4f, positive ratio=%.3f (%.1f%%), pos=%d, neg=%d, n=%d",
-        mean_fr,
-        std_fr,
-        pos_ratio,
-        pos_ratio * 100,
-        pos,
-        neg,
-        n,
-    )
-
-    return df
+        LOGGER.error("[DATA] run_data_pipeline failed: %s", e, exc_info=True)
+        raise DataProcessingException(f"Data pipeline failed: {e}") from e
 
 
-# -----------------------------------------------------------------------------
-# Model training & state update
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# MODEL TRAINING (Batch + Online)
+# ---------------------------------------------------------
+
+def _split_features_labels(clean_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
+    """
+    clean_df içinden feature kolonları ve label kolonunu ayırır.
+    Assumption:
+      - Label kolonu: 'label' (LabelGenerator ile aynı olmalı)
+      - Geri kalan sayısal kolonlar feature.
+    """
+    if "label" not in clean_df.columns:
+        raise ModelTrainingException("Column 'label' not found in dataframe.")
+
+    label_col = "label"
+
+    # Feature kolonlarını basitçe: tüm sayısal kolonlar - label & future_return
+    numeric_cols = clean_df.select_dtypes(include=["float64", "float32", "int64", "int32"]).columns.tolist()
+    feature_cols = [c for c in numeric_cols if c not in [label_col]]
+
+    if not feature_cols:
+        raise ModelTrainingException("No feature columns found for training.")
+
+    X = clean_df[feature_cols].copy()
+    y = clean_df[label_col].copy()
+
+    return X, y, feature_cols
+
 
 def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
     """
-    Batch ve online modelleri eğitir, model dosyalarını kaydeder.
+    - BatchLearner ile batch model eğitir
+    - OnlineLearner ile initial_fit + partial_update yapar
     """
-    # Özellik kolonları: label & future_return hariç her şey
-    feature_columns: List[str] = [
-        c for c in clean_df.columns if c not in ("future_return", "label")
-    ]
-
-    X = clean_df[feature_columns]
-    y = clean_df["label"]
-
-    n_samples, n_features = X.shape
-    logger.info(
-        "[MODEL] Training batch model on %d samples, %d features. Using %d feature columns.",
-        n_samples,
-        n_features,
-        len(feature_columns),
-    )
-
-    model_dir = env_vars.get("MODEL_DIR", "models")
-    batch_model_name = env_vars.get("BATCH_MODEL_NAME", "batch_model")
-    online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
-
-    os.makedirs(model_dir, exist_ok=True)
-
-    # --- Batch model ---
     try:
+        X, y, feature_cols = _split_features_labels(clean_df)
+        n_samples, n_features = X.shape
+
+        LOGGER.info(
+            "[MODEL] Training batch model on %d samples, %d features. Using %d feature columns.",
+            n_samples,
+            n_features,
+            len(feature_cols),
+        )
+
+        model_dir = env_vars.get("MODEL_DIR", "models")
+        batch_model_name = env_vars.get("BATCH_MODEL_NAME", "batch_model")
+        online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
+
+        # --- Batch Learner ---
         batch_learner = BatchLearner(
             X=X,
             y=y,
             model_dir=model_dir,
             base_model_name=batch_model_name,
-            logger=logger,
+            logger=LOGGER,
         )
         batch_model = batch_learner.fit()
-    except ModelTrainingException:
-        raise
-    except Exception as e:
-        logger.error("[BATCH] Unexpected error while training batch model: %s", e, exc_info=True)
-        raise ModelTrainingException(f"Batch model training failed: {e}") from e
+        # batch_model şu an RAM'de, ayrıca models/batch_model.joblib olarak da kayıtlı olmalı
 
-    # --- Online model ---
-    try:
-        logger.info("[ONLINE] Initializing OnlineLearner with batch data.")
-        n_classes = len(np.unique(y.values))
+        # --- Online Learner ---
+        LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
+
         online_learner = OnlineLearner(
             model_dir=model_dir,
             base_model_name=online_model_name,
-            n_classes=n_classes,
-            logger=logger,
+            n_classes=2,
+            logger=LOGGER,
         )
-        # initial_fit içinde:
-        #  - feature_columns set ediliyor,
-        #  - partial_fit yapılıyor,
-        #  - model dosyası kaydediliyor.
+
+        # İlk eğitim (tüm batch)
         online_learner.initial_fit(X, y)
+
+        # İsteğe bağlı: son N örnekle incremental update (örneğin son 100 bar)
+        tail_n = min(100, len(clean_df))
+        if tail_n > 0:
+            X_tail = X.iloc[-tail_n:]
+            y_tail = y.iloc[-tail_n:]
+            online_learner.partial_update(X_tail, y_tail)
+
+    except (DataProcessingException, ModelTrainingException, OnlineLearningException) as e:
+        LOGGER.error("💥 [MODEL] Known model pipeline error: %s", e, exc_info=True)
+        raise
     except Exception as e:
-        logger.error("[ONLINE] Unexpected error while initializing OnlineLearner: %s", e, exc_info=True)
-        # Online öğrenme başarısız olsa bile, batch model kaydedilmiş durumda;
-        # pipeline'ın tamamen çökmesini istemiyorsak burada fatal yapmayabiliriz.
-        # Ama şimdilik yukarı fırlatalım:
-        raise ModelTrainingException(f"Online model initialization failed: {e}") from e
+        LOGGER.error("💥 [MODEL] Unexpected error in train_models_and_update_state: %s", e, exc_info=True)
+        raise ModelTrainingException(f"Unexpected training error: {e}") from e
 
 
-# -----------------------------------------------------------------------------
-# Signal generation
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# SIGNAL GENERATION
+# ---------------------------------------------------------
 
 def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
     """
-    Eğitilmiş model(ler) ile en güncel satır için sinyal üretir.
-    - Önce online modeli (varsa) kullanır
-    - Yoksa batch modeline düşer
-    - Çıkan olasılıktan BUY / SELL / HOLD kararı çıkarır
+    - Son bar için feature'ları alır
+    - Online modelden BUY olasılığını (class=1) hesaplar
+    - BUY / SELL / HOLD kararı verip loglar
     """
-    model_dir = env_vars.get("MODEL_DIR", "models")
-    batch_model_name = env_vars.get("BATCH_MODEL_NAME", "batch_model")
-    online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
-
-    online_model_path = os.path.join(model_dir, f"{online_model_name}.joblib")
-    batch_model_path = os.path.join(model_dir, f"{batch_model_name}.joblib")
-
-    model = None
-    model_source = None
-
-    # Önce online modeli dene
-    if os.path.exists(online_model_path):
-        try:
-            model = joblib_load(online_model_path)
-            model_source = "online"
-            logger.info("[SIGNAL] Loaded online model from %s", online_model_path)
-        except Exception as e:
-            logger.error("[SIGNAL] Failed to load online model (%s): %s", online_model_path, e, exc_info=True)
-
-    # Online yoksa veya yüklenemezse batch model
-    if model is None and os.path.exists(batch_model_path):
-        try:
-            model = joblib_load(batch_model_path)
-            model_source = "batch"
-            logger.info("[SIGNAL] Loaded batch model from %s", batch_model_path)
-        except Exception as e:
-            logger.error("[SIGNAL] Failed to load batch model (%s): %s", batch_model_path, e, exc_info=True)
-
-    if model is None:
-        logger.error("[SIGNAL] No model available to generate signal (online/batch both missing).")
-        return
-
-    # Aynı feature kolonları: future_return ve label hariç
-    feature_columns: List[str] = [
-        c for c in clean_df.columns if c not in ("future_return", "label")
-    ]
-
-    if clean_df.empty:
-        logger.error("[SIGNAL] clean_df is empty; cannot generate signal.")
-        return
-
-    # En son satır (en güncel bar)
-    X_live = clean_df[feature_columns].iloc[[-1]]  # DataFrame olarak (1, n_features)
     try:
-        proba = model.predict_proba(X_live)  # Şekil genelde (1, n_classes)
-    except Exception as e:
-        logger.error("[SIGNAL] model.predict_proba failed: %s", e, exc_info=True)
-        return
+        if len(clean_df) == 0:
+            LOGGER.warning("[SIGNAL] Empty dataframe, cannot generate signal.")
+            return
 
-    # --- PROBA → scalar p_buy (sadece class=1 olasılığı) ---
-    # Burada asıl hatayı düzeltiyoruz:
-    #   TypeError: only length-1 arrays can be converted to Python scalars
-    # Çünkü predict_proba çıktısı bir array; doğrudan float() yapamayız.
-    if proba is None:
-        logger.error("[SIGNAL] predict_proba returned None.")
-        return
+        X, y, feature_cols = _split_features_labels(clean_df)
 
-    proba = np.asarray(proba)
+        # Sadece son bar için feature
+        X_live = X.iloc[[-1]]  # shape (1, n_features)
 
-    # class=1'in indexini güvenli şekilde bul
-    try:
+        model_dir = env_vars.get("MODEL_DIR", "models")
+        online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
+
+        BUY_THRESHOLD = _get_env_float(env_vars, "BUY_THRESHOLD", 0.6)
+        SELL_THRESHOLD = _get_env_float(env_vars, "SELL_THRESHOLD", 0.4)
+
+        # OnlineLearner tekrar yaratılıyor; mevcut modeli diskten yükleyecek
+        online_learner = OnlineLearner(
+            model_dir=model_dir,
+            base_model_name=online_model_name,
+            n_classes=2,
+            logger=LOGGER,
+        )
+        # feature_columns hizalaması
+        online_learner.feature_columns = feature_cols  # extra güvence
+        proba = online_learner.predict_proba(X_live)  # (1, n_classes) numpy array
+        proba = np.asarray(proba)
+
+        # BUY class'ı için index tespiti
+        model = online_learner.model
         if hasattr(model, "classes_") and 1 in model.classes_:
             buy_idx = int(np.where(model.classes_ == 1)[0][0])
         else:
-            # Eğer classes_ yoksa veya içinde 1 yoksa:
-            # son kolonu "BUY" varsayıyoruz
+            # Emniyet: son kolonu BUY kabul et
             buy_idx = -1
 
         if proba.ndim == 2:
             p_buy = float(proba[0, buy_idx])
         else:
-            # Olağan dışı durum: (n,) gibi tek boyutlu array
             p_buy = float(np.ravel(proba)[buy_idx])
+
+        LOGGER.info("[SIGNAL] p_buy=%.4f (BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f)",
+                    p_buy, BUY_THRESHOLD, SELL_THRESHOLD)
+
+        # Basit karar mantığı
+        if p_buy >= BUY_THRESHOLD:
+            signal = "BUY"
+        elif p_buy <= SELL_THRESHOLD:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
+
+        LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
+
+        # Burada ileride:
+        # - RiskManager
+        # - Binance emir açma/kapama
+        # - Telegram bildirimi
+        # gibi süreçlere entegre edebiliriz.
+
     except Exception as e:
-        logger.error("[SIGNAL] Failed to extract BUY probability from predict_proba output: %s", e, exc_info=True)
-        return
-
-    logger.info("[SIGNAL] Model source=%s, p_buy=%.4f", model_source, p_buy)
-
-    # Threshold'lar
-    buy_threshold = float(env_vars.get("BUY_THRESHOLD", "0.6"))
-    sell_threshold = float(env_vars.get("SELL_THRESHOLD", "0.4"))
-
-    action = "HOLD"
-    if p_buy >= buy_threshold:
-        action = "BUY"
-    elif p_buy <= sell_threshold:
-        action = "SELL"
-
-    logger.info(
-        "[SIGNAL] Decision=%s (p_buy=%.4f, buy_th=%.3f, sell_th=%.3f)",
-        action,
-        p_buy,
-        buy_threshold,
-        sell_threshold,
-    )
-
-    # Burada gerçek trade executer / risk manager entegrasyonunu çağırabilirsin.
-    # Örneğin:
-    # trade_executor = TradeExecutor(env_vars=env_vars, logger=logger)
-    # trade_executor.execute(action=action, prob=p_buy, latest_row=clean_df.iloc[-1])
-    # Şimdilik sadece log atmakla yetiniyoruz.
+        LOGGER.error("💥 [SIGNAL] Error while generating signal: %s", e, exc_info=True)
+        raise SignalGenerationException(f"Signal generation failed: {e}") from e
 
 
-# -----------------------------------------------------------------------------
-# Orkestrasyon: data + model + signal
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# BOT LOOP
+# ---------------------------------------------------------
 
 async def run_data_and_model_pipeline(env_vars: Dict[str, str]) -> None:
     """
-    Tam pipeline:
-      1) Data pipeline
-      2) Batch & online model eğitimi
-      3) Signal üretimi
+    Tek bir cycle:
+      - Data pipeline
+      - Model training (batch + online)
+      - Signal generation
     """
     clean_df = await run_data_pipeline(env_vars)
     train_models_and_update_state(clean_df, env_vars)
     generate_signal(clean_df, env_vars)
 
 
-# -----------------------------------------------------------------------------
-# Bot loop (background task)
-# -----------------------------------------------------------------------------
-
-async def bot_loop() -> None:
-    logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
-    interval = int(ENV_VARS.get("BOT_LOOP_INTERVAL", "60"))
+async def bot_loop(env_vars: Dict[str, str]) -> None:
+    """
+    Arka planda sürekli çalışan ana bot loop'u.
+    """
+    LOGGER.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
+    interval_sec = _get_env_int(env_vars, "BOT_LOOP_INTERVAL", 60)
 
     while True:
         try:
-            await run_data_and_model_pipeline(ENV_VARS)
+            await run_data_and_model_pipeline(env_vars)
         except Exception as e:
-            logger.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
-        await asyncio.sleep(interval)
+            LOGGER.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
+        finally:
+            await asyncio.sleep(interval_sec)
 
 
-# -----------------------------------------------------------------------------
-# Main entrypoint
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# Aiohttp HTTP Server
+# ---------------------------------------------------------
 
-async def main() -> None:
-    env_name = ENV_VARS.get("ENVIRONMENT", "production")
-    port = int(os.getenv("PORT", "8080"))
+routes = web.RouteTableDef()
 
-    logger.info("🌐 [MAIN] Starting HTTP server on 0.0.0.0:%d (ENV=%s)", port, env_name)
 
-    app = await init_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+@routes.get("/")
+async def root(request: web.Request) -> web.Response:
+    return web.json_response(
+        {
+            "status": "ok",
+            "message": "Binance1-Pro bot is running.",
+        }
+    )
 
-    logger.info("🔁 [MAIN] Starting background bot_loop task...")
-    bot_task = asyncio.create_task(bot_loop())
 
-    stop_event = asyncio.Event()
+@routes.get("/health")
+async def health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "healthy"})
 
-    def _handle_shutdown():
-        logger.info("🧹 [MAIN] Cleaning up background bot_loop task...")
-        if not bot_task.done():
+
+def create_app(env_vars: Dict[str, str]) -> web.Application:
+    app = web.Application()
+    app["env_vars"] = env_vars
+    app.add_routes(routes)
+
+    async def on_startup(app: web.Application):
+        LOGGER.info(
+            "🌐 [MAIN] Starting HTTP server on 0.0.0.0:8080 (ENV=%s)",
+            env_vars.get("ENVIRONMENT", "unknown"),
+        )
+        LOGGER.info("🔁 [MAIN] Starting background bot_loop task...")
+        app["bot_task"] = asyncio.create_task(bot_loop(app["env_vars"]))
+
+    async def on_cleanup(app: web.Application):
+        LOGGER.info("[MAIN] Cleanup: cancelling bot_loop task...")
+        bot_task = app.get("bot_task")
+        if bot_task:
             bot_task.cancel()
-        stop_event.set()
+            with suppress(asyncio.CancelledError):
+                await bot_task
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _handle_shutdown)
-        except NotImplementedError:
-            # Windows vb. ortamlarda signal handler olmayabilir, sorun değil.
-            pass
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    return app
 
+
+# ---------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------
+
+def main() -> None:
     try:
-        await stop_event.wait()
-    finally:
-        if not bot_task.done():
-            bot_task.cancel()
-        await runner.cleanup()
-        logger.info("🛑 [BOT] bot_loop cancelled, shutting down.")
+        env_vars = load_environment_variables()
+    except Exception as e:
+        LOGGER.error("💥 [MAIN] Failed to load environment variables: %s", e, exc_info=True)
+        raise EnvironmentException(f"Failed to load environment variables: {e}") from e
+
+    app = create_app(env_vars)
+
+    # Graceful shutdown için sinyal yakalama
+    loop = asyncio.get_event_loop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(
+            sig,
+            lambda s=sig: asyncio.create_task(_shutdown(loop, s)),
+        )
+
+    web.run_app(app, host="0.0.0.0", port=8080)
+
+
+async def _shutdown(loop: asyncio.AbstractEventLoop, sig: signal.Signals) -> None:
+    LOGGER.info("[MAIN] Received exit signal %s, shutting down...", sig.name)
+    tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    with suppress(asyncio.CancelledError):
+        await asyncio.gather(*tasks)
+    loop.stop()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    main()
