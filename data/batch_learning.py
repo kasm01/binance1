@@ -20,24 +20,24 @@ logger = logging.getLogger("system")
 class BatchLearner:
     """
     Basit batch öğrenme sınıfı.
+
     main.py içinde şöyle kullanılmak üzere tasarlandı:
 
         batch_learner = BatchLearner(
             X=features_df[feature_cols],
             y=features_df["target"],
-            model_dir=model_dir,
+            # model_dir verilmezse varsayılan "models" klasörünü kullanır
             base_model_name="batch_rf_btcusdt",
         )
         model = batch_learner.fit()
         path = batch_learner.save_model(model)
-
     """
 
     def __init__(
         self,
         X: pd.DataFrame,
         y: pd.Series,
-        model_dir: str,
+        model_dir: str | None = None,
         base_model_name: str = "batch_model",
         random_state: int = 42,
         **model_kwargs: Any,
@@ -50,10 +50,11 @@ class BatchLearner:
                 f"BatchLearner: X ve y uzunlukları uyuşmuyor: {len(X)} vs {len(y)}"
             )
 
-        # X ve y'yi sakla
         self.X = X
         self.y = y
-        self.model_dir = model_dir
+
+        # model_dir verilmezse varsayılan klasör "models" olsun
+        self.model_dir = model_dir or "models"
         self.base_model_name = base_model_name
         self.random_state = random_state
         self.model_kwargs: Dict[str, Any] = model_kwargs
@@ -63,7 +64,11 @@ class BatchLearner:
             X.shape[0],
             X.shape[1],
         )
-        logger.info("[BATCH] model_dir=%s, base_model_name=%s", model_dir, base_model_name)
+        logger.info(
+            "[BATCH] model_dir=%s, base_model_name=%s",
+            self.model_dir,
+            self.base_model_name,
+        )
 
     # ------------------------------------------------------------------
     # Model oluşturma
@@ -160,8 +165,6 @@ class BatchLearner:
             return model
 
         except Exception as e:
-            # Burada özel exception yerine RuntimeError kullanıyoruz,
-            # çünkü core.exceptions.ModelTrainingException yok.
             logger.exception("[BATCH] Batch training failed: %s", str(e))
             raise RuntimeError(f"Batch training failed: {e}") from e
 
@@ -192,4 +195,3 @@ class BatchLearner:
         model = joblib.load(path)
         logger.info("[BATCH] Model loaded from %s", path)
         return model
-
