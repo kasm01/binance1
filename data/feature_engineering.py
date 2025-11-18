@@ -1,106 +1,109 @@
-import pandas as pd
-import numpy as np
 import logging
+from typing import List
+
+import numpy as np
+import pandas as pd
 
 from core.exceptions import DataProcessingException
 
-logger = logging.getLogger(__name__)
+system_logger = logging.getLogger("system")
 
 
 class FeatureEngineer:
     """
-    Ham OHLCV verisinden teknik indikatörler ve model/features DataFrame'i üretir.
+    Ham OHLCV DataFrame'inden model için kullanılacak feature'ları üretir.
+
+    main.py içinde:
+
+        feature_engineer = FeatureEngineer(raw_df)
+        features_df = feature_engineer.transform()
+
+    şeklinde kullanılıyor.
     """
 
-    def __init__(self, raw_data: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+
+    def _ensure_numeric(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        raw_data: index'i timestamp olan, en azından
-        ['open', 'high', 'low', 'close', 'volume'] kolonlarını içeren DataFrame.
+        close, open, high, low, volume gibi kolonları numerik tipe çevirir.
+        String gelmesi durumunda pct_change vs. hatalarını engeller.
         """
-        self.raw_data = raw_data.copy() if raw_data is not None else pd.DataFrame()
+        numeric_cols: List[str] = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_asset_volume",
+            "taker_buy_base_asset_volume",
+            "taker_buy_quote_asset_volume",
+        ]
+
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # close NaN olan satırlar bizim için işe yaramaz; düşelim
+        if "close" in df.columns:
+            df = df[df["close"].notnull()].copy()
+
+        return df
 
     def transform(self) -> pd.DataFrame:
         """
-        Tüm feature engineering pipeline'ını çalıştırır.
-        Hata olursa DataProcessingException fırlatır.
+        Ana feature engineering fonksiyonu.
+        Burada:
+
+        - Numerik kolonları float'a çevir
+        - Basit getiriler (return_1, return_5, return_15)
+        - Volatilite (volatility_10, volatility_30)
+        - Hacim oranları (buy_ratio)
+        - Rolling istatistikler (örnekler…)
+
+        Hata olursa DataProcessingException fırlatılır.
         """
-        if self.raw_data.empty:
-            logger.warning("[FeatureEngineer] Boş veri alındı, features üretilemedi.")
-            return self.raw_data
+        df = self.df.copy()
 
         try:
-            df = self.raw_data.copy()
+            # 1) Numerik kolonları düzelt
+            df = self._ensure_numeric(df)
 
-            # Basit geri getiri
+            # 2) Getiriler
             df["return_1"] = df["close"].pct_change()
             df["return_5"] = df["close"].pct_change(5)
             df["return_15"] = df["close"].pct_change(15)
 
-            # Volatilite
-            df["volatility_15"] = df["return_1"].rolling(window=15).std()
-            df["volatility_50"] = df["return_1"].rolling(window=50).std()
+            # 3) Volatilite (return_1 üzerinden)
+            df["volatility_10"] = df["return_1"].rolling(window=10).std()
+            df["volatility_30"] = df["return_1"].rolling(window=30).std()
 
-            # Hareketli ortalamalar
-            df["ma_7"] = df["close"].rolling(window=7).mean()
-            df["ma_25"] = df["close"].rolling(window=25).mean()
-            df["ma_99"] = df["close"].rolling(window=99).mean()
+            # 4) Hacim oranları
+            if "volume" in df.columns and "taker_buy_base_asset_volume" in df.columns:
+                df["buy_ratio"] = (
+                    df["taker_buy_base_asset_volume"] / df["volume"]
+                )
 
-            # MA oranları
-            df["ma_7_25_ratio"] = df["ma_7"] / df["ma_25"]
-            df["ma_25_99_ratio"] = df["ma_25"] / df["ma_99"]
+            # 5) Basit hareketli ortalamalar (örnek)
+            df["ma_close_10"] = df["close"].rolling(window=10).mean()
+            df["ma_close_20"] = df["close"].rolling(window=20).mean()
+            df["ma_close_50"] = df["close"].rolling(window=50).mean()
 
-            # RSI
-            df["rsi_14"] = self._rsi(df["close"], window=14)
+            # 6) Momentum benzeri feature'lar
+            df["price_diff_1"] = df["close"].diff(1)
+            df["price_diff_5"] = df["close"].diff(5)
 
-            # MACD
-            macd, macd_signal, macd_hist = self._macd(df["close"])
-            df["macd"] = macd
-            df["macd_signal"] = macd_signal
-            df["macd_hist"] = macd_hist
+            # 7) Hacim hareketleri
+            if "volume" in df.columns:
+                df["volume_change_1"] = df["volume"].pct_change()
+                df["volume_ma_20"] = df["volume"].rolling(window=20).mean()
 
-            # Bollinger Bands
-            bb_mid = df["close"].rolling(window=20).mean()
-            bb_std = df["close"].rolling(window=20).std()
-            df["bb_upper"] = bb_mid + 2 * bb_std
-            df["bb_lower"] = bb_mid - 2 * bb_std
+            # NaN'leri kısmen temizle
+            df = df.dropna().copy()
 
-            # Hacim özellikleri
-            df["volume_ma_20"] = df["volume"].rolling(window=20).mean()
-            df["volume_spike"] = df["volume"] / (df["volume_ma_20"] + 1e-9)
-
-            # NaN'leri doldur
-            df = df.replace([np.inf, -np.inf], np.nan)
-            df = df.bfill().ffill()
-
-
-            logger.info("[FeatureEngineer] Feature engineering başarıyla tamamlandı.")
+            system_logger.info("[FE] Features DF shape: %s", df.shape)
             return df
 
         except Exception as e:
-            logger.exception(f"[FeatureEngineer] Feature engineering hatası: {e}")
+            system_logger.error("[FeatureEngineer] Feature engineering hatası: %s", e)
             raise DataProcessingException(f"Feature engineering failed: {e}") from e
-
-    @staticmethod
-    def _rsi(series: pd.Series, window: int = 14) -> pd.Series:
-        """
-        Basit RSI hesaplama.
-        """
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0.0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0.0)).rolling(window=window).mean()
-        rs = gain / (loss + 1e-9)
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-
-    @staticmethod
-    def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-        """
-        Basit MACD hesaplama.
-        """
-        ema_fast = series.ewm(span=fast, adjust=False).mean()
-        ema_slow = series.ewm(span=slow, adjust=False).mean()
-        macd = ema_fast - ema_slow
-        macd_signal = macd.ewm(span=signal, adjust=False).mean()
-        macd_hist = macd - macd_signal
-        return macd, macd_signal, macd_hist
-
