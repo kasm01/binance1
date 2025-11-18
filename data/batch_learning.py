@@ -1,154 +1,238 @@
+# data/batch_learning.py
+
+from __future__ import annotations
+
 import os
 import logging
-from typing import Optional, List, Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
 import joblib
-from lightgbm import LGBMClassifier
-from sklearn.metrics import roc_auc_score
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    roc_auc_score,
+    classification_report,
+)
+
+from core.exceptions import ModelTrainingException
 
 logger = logging.getLogger("system")
 
 
-class ModelTrainingException(Exception):
-    """Batch model eğitiminde hata olduğunda fırlatılan özel exception."""
-    pass
-
-
 class BatchLearner:
     """
-    Batch modda LightGBM modeli eğiten sınıf.
-
-    main.py içinde şu şekilde çağrılması bekleniyor:
-
-        batch_learner = BatchLearner(
-            X=batch_input,
-            y=target,
-            feature_cols=feature_cols,
-            target_column="target",
-            model_dir=env_vars.get("MODEL_DIR", "/app/models"),
-            model_name="lgbm_batch"
-        )
-
-    Burada hem keyword arg (X=, y=, feature_cols=...) hem de
-    pozisyonel argümanlar destekleniyor; fazladan gelen kwargs'lar
-    sessizce yok sayılıyor.
+    Basit ama sağlam bir batch öğrenme sınıfı.
+    - Girdi: X (features), y (target)
+    - Çıktı: Eğitilmiş bir sklearn modeli ve diske kaydedilmiş dosya.
     """
 
-    def __init__(self, *args, **kwargs):
-        # Keyword arg olarak gelme ihtimali olanlar
-        X = kwargs.pop("X", None)
-        y = kwargs.pop("y", None)
-        feature_cols: Optional[List[str]] = kwargs.pop("feature_cols", None)
-        target_column: str = kwargs.pop("target_column", "target")
-        model_dir: str = kwargs.pop("model_dir", "/app/models")
-        model_name: str = kwargs.pop("model_name", "lgbm_batch")
-
-        # Pozisyonel argüman fallback
-        # Örn: BatchLearner(batch_input, target, feature_cols=...)
-        if X is None and len(args) > 0:
-            X = args[0]
-        if y is None and len(args) > 1:
-            y = args[1]
-
+    def __init__(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        model_dir: str,
+        base_model_name: str = "batch_model",
+        model_type: str = "rf",
+        random_state: int = 42,
+        **model_kwargs: Any,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Özellik matrisi (n_samples, n_features)
+        y : pd.Series / array-like
+            Hedef (0/1)
+        model_dir : str
+            Modelin kaydedileceği klasör yolu.
+        base_model_name : str
+            Dosya ismi prefix'i (ör: 'batch_model').
+        model_type : str
+            Model tipi: 'rf', 'xgboost', 'lightgbm', 'catboost' (şimdilik rf odaklı).
+        random_state : int
+            Rastgelelik kontrolü.
+        model_kwargs : dict
+            Ek model parametreleri.
+        """
+        # Temel kontroller
         if X is None or y is None:
-            raise ValueError("BatchLearner requires both X and y inputs.")
+            raise ValueError("BatchLearner: X ve y boş olamaz.")
 
-        # X ve y'yi numpy array'e çevir, feature_cols bilgisini ayarla
-        if isinstance(X, pd.DataFrame):
-            self.feature_cols = feature_cols or list(X.columns)
-            self.X = X[self.feature_cols].values
-        else:
-            self.X = np.asarray(X)
-            self.feature_cols = feature_cols
+        if len(X) != len(y):
+            raise ValueError(
+                f"BatchLearner: X ve y uzunlukları uyuşmuyor: {len(X)} vs {len(y)}"
+            )
 
-        if isinstance(y, (pd.Series, pd.DataFrame)):
-            if isinstance(y, pd.DataFrame):
-                self.y = y.iloc[:, 0].values
-            else:
-                self.y = y.values
-        else:
-            self.y = np.asarray(y)
-
-        self.target_column = target_column
-
-        # Model kayıt klasörü
+        self.X = X
+        self.y = y
         self.model_dir = model_dir
-        os.makedirs(self.model_dir, exist_ok=True)
-        self.model_path = os.path.join(self.model_dir, f"{model_name}.pkl")
-
-        # LightGBM batch modeli
-        self.model = LGBMClassifier(
-            n_estimators=300,
-            learning_rate=0.05,
-            max_depth=-1,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            random_state=42,
-            n_jobs=-1,
-        )
+        self.base_model_name = base_model_name
+        self.model_type = model_type
+        self.random_state = random_state
+        self.model_kwargs: Dict[str, Any] = model_kwargs
 
         logger.info(
             "[BATCH] BatchLearner initialized with %d samples, %d features.",
-            self.X.shape[0],
-            self.X.shape[1],
+            X.shape[0],
+            X.shape[1],
         )
+        logger.info("[BATCH] model_type=%s, model_dir=%s", model_type, model_dir)
 
-    # -------------------------------------------------
-    # Eğitim
-    # -------------------------------------------------
-    def train(self) -> None:
+    # ------------------------------------------------------------------
+    # Model oluşturma
+    # ------------------------------------------------------------------
+    def _build_model(self):
         """
-        Batch modeli eğitir, basit bir ROC-AUC hesaplar ve modeli diske kaydeder.
-        Hata durumunda ModelTrainingException fırlatır.
+        model_type'a göre uygun modeli oluşturur.
+        Şimdilik en stabil olan RandomForest'ı default yapıyoruz.
         """
-        try:
+        # Default: RandomForestClassifier
+        if self.model_type.lower() in ["rf", "random_forest", "sklearn"]:
+            n_estimators = int(self.model_kwargs.get("n_estimators", 300))
+            max_depth = self.model_kwargs.get("max_depth", None)
+            min_samples_leaf = int(self.model_kwargs.get("min_samples_leaf", 2))
+
             logger.info(
-                "[BATCH] Starting LightGBM training on %d samples, %d features.",
-                self.X.shape[0],
-                self.X.shape[1],
+                "[BATCH] Using RandomForestClassifier (n_estimators=%d, max_depth=%s, min_samples_leaf=%d)",
+                n_estimators,
+                str(max_depth),
+                min_samples_leaf,
             )
 
-            self.model.fit(self.X, self.y)
+            return RandomForestClassifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_leaf=min_samples_leaf,
+                n_jobs=-1,
+                random_state=self.random_state,
+                class_weight="balanced",
+            )
 
-            logger.info("[BATCH] LightGBM training completed successfully.")
+        # (İstersen ileride xgboost/lightgbm/catboost ekleriz; şimdilik rf yeterli)
+        logger.warning(
+            "[BATCH] Unknown model_type=%s, falling back to RandomForestClassifier.",
+            self.model_type,
+        )
+        return RandomForestClassifier(
+            n_estimators=300,
+            n_jobs=-1,
+            random_state=self.random_state,
+            class_weight="balanced",
+        )
 
-            # Basit in-sample ROC-AUC metriği (binary classification varsayımı)
+    # ------------------------------------------------------------------
+    # Eğitim
+    # ------------------------------------------------------------------
+    def fit(self):
+        """
+        Batch modeli eğitir ve modeli döner.
+        main.py içinden:
+            batch_learner = BatchLearner(...)
+            model = batch_learner.fit()
+            path = batch_learner.save_model(model)
+        şeklinde kullanılmak için tasarlandı.
+        """
+        try:
+            # X, y'yi numpy/Series olarak hazırlayalım
+            if isinstance(self.X, pd.DataFrame):
+                X = self.X.values
+            else:
+                X = np.asarray(self.X)
+
+            if isinstance(self.y, (pd.Series, pd.DataFrame)):
+                y = np.asarray(self.y).ravel()
+            else:
+                y = np.asarray(self.y).ravel()
+
+            logger.info(
+                "[BATCH] Starting training on %d samples, %d features.",
+                X.shape[0],
+                X.shape[1],
+            )
+
+            # Basit bir train/validation bölmesi (sadece log için)
+            X_train, X_val, y_train, y_val = train_test_split(
+                X,
+                y,
+                test_size=0.2,
+                random_state=self.random_state,
+                stratify=y if len(np.unique(y)) > 1 else None,
+            )
+
+            model = self._build_model()
+            model.fit(X_train, y_train)
+
+            # Küçük bir validasyon raporu
             try:
-                proba = self.model.predict_proba(self.X)[:, 1]
-                auc = roc_auc_score(self.y, proba)
-                logger.info("[BATCH] In-sample ROC-AUC: %.4f", auc)
-            except Exception as e:
-                logger.warning("[BATCH] Could not compute ROC-AUC: %s", e)
+                y_pred = model.predict(X_val)
+                if hasattr(model, "predict_proba"):
+                    y_proba = model.predict_proba(X_val)[:, 1]
+                else:
+                    y_proba = None
 
-            # Modeli kaydet
-            payload: Dict[str, Any] = {
-                "model": self.model,
-                "feature_cols": self.feature_cols,
-                "target_column": self.target_column,
-            }
-            joblib.dump(payload, self.model_path)
-            logger.info("[BATCH] Model saved to %s", self.model_path)
+                acc = accuracy_score(y_val, y_pred)
+                f1 = f1_score(y_val, y_pred, zero_division=0)
+                logger.info(
+                    "[BATCH] Validation accuracy=%.4f, f1=%.4f",
+                    acc,
+                    f1,
+                )
+
+                if y_proba is not None and len(np.unique(y_val)) > 1:
+                    try:
+                        auc = roc_auc_score(y_val, y_proba)
+                        logger.info("[BATCH] Validation ROC-AUC=%.4f", auc)
+                    except Exception:
+                        pass
+
+                logger.debug(
+                    "[BATCH] Validation classification report:\n%s",
+                    classification_report(
+                        y_val, y_pred, zero_division=0, digits=4
+                    ),
+                )
+
+            except Exception as eval_err:
+                logger.warning(
+                    "[BATCH] Validation metrics failed: %s", str(eval_err)
+                )
+
+            logger.info("[BATCH] Batch model training completed successfully.")
+            return model
 
         except Exception as e:
-            logger.error("[BATCH] Error during LightGBM training: %s", e)
+            logger.exception("[BATCH] Batch training failed: %s", str(e))
             raise ModelTrainingException(f"Batch training failed: {e}") from e
 
-    # -------------------------------------------------
-    # Tahmin
-    # -------------------------------------------------
-    def predict_proba(self, X_new: Any) -> np.ndarray:
-        """
-        Yeni veri için pozitif sınıf olasılıklarını döner.
-        X_new: DataFrame veya numpy array.
-        """
-        if isinstance(X_new, pd.DataFrame):
-            if self.feature_cols is not None:
-                X_arr = X_new[self.feature_cols].values
-            else:
-                X_arr = X_new.values
-        else:
-            X_arr = np.asarray(X_new)
+    # ------------------------------------------------------------------
+    # Model kaydet / yükle
+    # ------------------------------------------------------------------
+    def _get_model_path(self) -> str:
+        os.makedirs(self.model_dir, exist_ok=True)
+        filename = f"{self.base_model_name}.joblib"
+        return os.path.join(self.model_dir, filename)
 
-        return self.model.predict_proba(X_arr)[:, 1]
+    def save_model(self, model) -> str:
+        """
+        Eğitilmiş modeli diske kaydeder ve dosya yolunu döner.
+        """
+        path = self._get_model_path()
+        joblib.dump(model, path)
+        logger.info("[BATCH] Model saved to %s", path)
+        return path
+
+    def load_model(self):
+        """
+        Kaydedilmiş modeli diskte bulup yükler.
+        """
+        path = self._get_model_path()
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"[BATCH] Model file not found: {path}")
+        model = joblib.load(path)
+        logger.info("[BATCH] Model loaded from %s", path)
+        return model
