@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,16 +18,19 @@ class OnlineLearner:
     """
     Basit online (inkremental) öğrenme sınıfı.
 
-    main.py içinde aşağıdaki gibi kullanılmaya uygundur:
+    main.py içinde şu tarz kullanım için tasarlandı:
 
         online_learner = OnlineLearner(
-            model=batch_model,            # opsiyonel, yoksa kendi SGDClassifier'ını kurar
-            feature_columns=feature_cols, # opsiyonel, sadece bilgi amaçlı tutulur
-            model_dir="models",           # verilmezse "models" kullanılır
-            base_model_name="online_btcusdt"
+            model=batch_model,            # opsiyonel, kendi SGDClassifier'ını da kullanabilir
+            feature_columns=feature_cols, # sadece bilgi amaçlı
+            model_dir="models",
+            base_model_name="online_model"
         )
 
-        # Yeni gelen verilerle:
+        # İlk eğitim:
+        online_learner.initial_fit(X, y)
+
+        # Yeni batch geldikçe:
         online_learner.partial_fit(X_new, y_new)
     """
 
@@ -42,12 +45,12 @@ class OnlineLearner:
         **kwargs: Any,
     ) -> None:
         """
-        model          : Eğer partial_fit destekleyen bir model verirsen onu kullanır.
-                         Vermezsen kendi SGDClassifier'ını oluşturur.
-        feature_columns: Sadece referans için tutulur (log, debug vs).
-        model_dir      : Modellerin kaydedileceği klasör. None ise 'models'.
+        model          : partial_fit destekleyen bir model (ör: SGDClassifier).
+                         Verilmezse burada yeni bir SGDClassifier oluşturulur.
+        feature_columns: Sadece referans için tutulur.
+        model_dir      : Online model dosyasının kaydedileceği klasör.
         base_model_name: Kaydedilen model dosyasının temel adı.
-        classes        : partial_fit için sınıf listesi (binary: (0,1)).
+        classes        : Sınıf etiketleri (binary: (0, 1)).
         """
 
         self.feature_columns: Optional[List[str]] = (
@@ -58,14 +61,14 @@ class OnlineLearner:
         self.classes = np.array(list(classes))
         self.random_state = random_state
 
-        # Dışarıdan model geldiyse ve partial_fit destekliyorsa onu kullan
+        # Dışarıdan partial_fit destekleyen bir model geldiyse onu kullan
         if model is not None and hasattr(model, "partial_fit"):
             self.model = model
             logger.info(
                 "[ONLINE] Using provided model with partial_fit for online learning."
             )
         else:
-            # Kendi SGDClassifier'ını kur (logistic regression benzeri)
+            # Kendi SGDClassifier'ını oluştur
             self.model = SGDClassifier(
                 loss="log_loss",
                 learning_rate="optimal",
@@ -90,12 +93,11 @@ class OnlineLearner:
                 "[ONLINE] feature_columns set with %d columns.", len(self.feature_columns)
             )
 
-        # kwargs içinden şimdilik hiçbir şeyi zorunlu kullanmıyoruz ama
-        # gelebilecek extra parametreler hataya sebep olmasın diye yutuyoruz.
+        # Gelecekte kullanılabilecek ekstra parametreler
         self.extra_params: Dict[str, Any] = dict(kwargs)
 
     # ------------------------------------------------------------------
-    # Yardımcı: numpy/pandas konversiyonları
+    # Yardımcı: numpy/pandas dönüştürücüleri
     # ------------------------------------------------------------------
     @staticmethod
     def _to_numpy_X(X: Any) -> np.ndarray:
@@ -110,9 +112,41 @@ class OnlineLearner:
         return np.asarray(y).ravel()
 
     # ------------------------------------------------------------------
-    # Online eğitim
+    # İlk eğitim (batch veriden online modeli başlatma)
     # ------------------------------------------------------------------
-    def partial_fit(self, X: Any, y: Any) -> None:
+    def initial_fit(self, X: Any, y: Any, save: bool = True) -> None:
+        """
+        BatchLearner ile üretilmiş ilk dataset (X, y) üzerinde
+        online modeli başlatmak için kullanılır.
+
+        main.py içinde şu çağrıyı karşılar:
+            online_learner.initial_fit(X, y)
+        """
+        try:
+            X_arr = self._to_numpy_X(X)
+            y_arr = self._to_numpy_y(y)
+
+            logger.info(
+                "[ONLINE] initial_fit called with %d samples, %d features.",
+                X_arr.shape[0],
+                X_arr.shape[1],
+            )
+
+            # İlk eğitimde mutlaka classes parametresini veriyoruz.
+            self.model.partial_fit(X_arr, y_arr, classes=self.classes)
+            logger.info("[ONLINE] initial_fit completed successfully.")
+
+            if save:
+                self.save_model()
+
+        except Exception as e:
+            logger.exception("[ONLINE] initial_fit failed: %s", str(e))
+            raise RuntimeError(f"Online initial_fit failed: {e}") from e
+
+    # ------------------------------------------------------------------
+    # Sonraki batch'ler için online eğitim
+    # ------------------------------------------------------------------
+    def partial_fit(self, X: Any, y: Any, save: bool = True) -> None:
         """
         Yeni gelen batch ile online (inkremental) eğitim yapar.
 
@@ -129,10 +163,12 @@ class OnlineLearner:
                 X_arr.shape[1],
             )
 
-            # İlk çağrıda classes parametresi gerekli, sonrakilerde opsiyonel ama
-            # güvenli olsun diye her seferinde geçiyoruz.
+            # İlk eğitim yapılmış olsa da, scikit-learn için classes vermek güvenli.
             self.model.partial_fit(X_arr, y_arr, classes=self.classes)
             logger.info("[ONLINE] partial_fit completed successfully.")
+
+            if save:
+                self.save_model()
 
         except Exception as e:
             logger.exception("[ONLINE] partial_fit failed: %s", str(e))
