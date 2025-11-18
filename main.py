@@ -100,41 +100,60 @@ def build_labels(
 # ------------------------------
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     """
-    1) Binance'ten son veriyi çek
-    2) Feature engineering uygula
-    3) Anomali temizliği yap
+    1) Binance'ten son veriyi çek (fetch_binance_data)
+    2) (Varsa) harici feature'ları ekle (fetch_external_data)
+    3) Feature engineering + anomali temizliği
     """
     data_loader = DataLoader(env_vars)
 
-    # DataLoader API'si değişmiş olabilir; esnek şekilde yüklemeyi dene
-    load_method = None
-    for name in ("load_recent_data", "load_data", "load"):
-        if hasattr(data_loader, name):
-            load_method = getattr(data_loader, name)
-            system_logger.info("[DATA] Using DataLoader.%s()", name)
-            break
-
-    if load_method is None:
-        # Hata verirken mevcut attribute'ları da loglayalım ki debug kolay olsun
+    # 1) Binance verisini al
+    if not hasattr(data_loader, "fetch_binance_data"):
         available = [a for a in dir(data_loader) if not a.startswith("_")]
         system_logger.error(
-            "[DATA] DataLoader has no method load_recent_data/load_data/load. Available: %s",
+            "[DATA] DataLoader has no method fetch_binance_data. Available: %s",
             available,
         )
         raise AttributeError(
-            "DataLoader is missing load_recent_data/load_data/load. "
+            "DataLoader is missing fetch_binance_data. "
             "Check data/data_loader.py"
         )
 
-    # 1) Data yükleme
-    raw_df = load_method()  # DataLoader içi zaten [DATA] loglarını basıyor olmalı
+    raw_df = data_loader.fetch_binance_data()
+    # DataLoader.fetch_binance_data içinde zaten [DATA] log'ları basıyor olmalı
+    # (örneğin: [DATA] Raw DF shape: (500, 12))
 
-    # 2) Feature engineering
+    # 2) Ek harici veri varsa merge etmeyi dene (opsiyonel)
+    if hasattr(data_loader, "fetch_external_data"):
+        try:
+            ext_df = data_loader.fetch_external_data()
+            if isinstance(ext_df, pd.DataFrame) and not ext_df.empty:
+                # En güvenli yaklaşım: index bazlı concat
+                # Eğer zaman kolonu ortak ise (örn. 'open_time'), join yapılabilir.
+                if "open_time" in raw_df.columns and "open_time" in ext_df.columns:
+                    raw_df = raw_df.merge(ext_df, on="open_time", how="left")
+                    system_logger.info(
+                        "[DATA] Merged external data on 'open_time'. Raw DF shape now: %s",
+                        raw_df.shape,
+                    )
+                else:
+                    raw_df = pd.concat([raw_df.reset_index(drop=True),
+                                        ext_df.reset_index(drop=True)], axis=1)
+                    system_logger.info(
+                        "[DATA] Concatenated external data by index. Raw DF shape now: %s",
+                        raw_df.shape,
+                    )
+        except Exception as e:
+            system_logger.exception(
+                "[DATA] Error in fetch_external_data, continuing with Binance data only: %s",
+                e,
+            )
+
+    # 3) Feature engineering
     feature_engineer = FeatureEngineer(raw_df)
     features_df = feature_engineer.transform()
     # FeatureEngineer içinde [FE] logları yazılıyor.
 
-    # 3) Anomali tespiti / temizliği
+    # 4) Anomali tespiti / temizliği
     anomaly_detector = AnomalyDetector(features_df)
     clean_df = anomaly_detector.remove_anomalies()
     # AnomalyDetector içinde [ANOM] logları yazılıyor.
@@ -151,7 +170,7 @@ def get_feature_target_matrices(
     """
     labeled_df içinden X (features), y (target) ve feature_columns listesini çıkarır.
     """
-    # target ve future_return dışındaki tüm numeric kolonları feature olarak al
+    # target ve future_return dışındaki tüm kolonları feature olarak al
     drop_cols = {"future_return", "target"}
     feature_cols = [c for c in labeled_df.columns if c not in drop_cols]
 
