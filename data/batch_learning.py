@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -12,23 +12,25 @@ import joblib
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    roc_auc_score,
-    classification_report,
-)
-
-from core.exceptions import ModelTrainingException
+from sklearn.metrics import accuracy_score, f1_score
 
 logger = logging.getLogger("system")
 
 
 class BatchLearner:
     """
-    Basit ama sağlam bir batch öğrenme sınıfı.
-    - Girdi: X (features), y (target)
-    - Çıktı: Eğitilmiş bir sklearn modeli ve diske kaydedilmiş dosya.
+    Basit batch öğrenme sınıfı.
+    main.py içinde şöyle kullanılmak üzere tasarlandı:
+
+        batch_learner = BatchLearner(
+            X=features_df[feature_cols],
+            y=features_df["target"],
+            model_dir=model_dir,
+            base_model_name="batch_rf_btcusdt",
+        )
+        model = batch_learner.fit()
+        path = batch_learner.save_model(model)
+
     """
 
     def __init__(
@@ -37,29 +39,9 @@ class BatchLearner:
         y: pd.Series,
         model_dir: str,
         base_model_name: str = "batch_model",
-        model_type: str = "rf",
         random_state: int = 42,
         **model_kwargs: Any,
     ) -> None:
-        """
-        Parameters
-        ----------
-        X : pd.DataFrame
-            Özellik matrisi (n_samples, n_features)
-        y : pd.Series / array-like
-            Hedef (0/1)
-        model_dir : str
-            Modelin kaydedileceği klasör yolu.
-        base_model_name : str
-            Dosya ismi prefix'i (ör: 'batch_model').
-        model_type : str
-            Model tipi: 'rf', 'xgboost', 'lightgbm', 'catboost' (şimdilik rf odaklı).
-        random_state : int
-            Rastgelelik kontrolü.
-        model_kwargs : dict
-            Ek model parametreleri.
-        """
-        # Temel kontroller
         if X is None or y is None:
             raise ValueError("BatchLearner: X ve y boş olamaz.")
 
@@ -68,11 +50,11 @@ class BatchLearner:
                 f"BatchLearner: X ve y uzunlukları uyuşmuyor: {len(X)} vs {len(y)}"
             )
 
+        # X ve y'yi sakla
         self.X = X
         self.y = y
         self.model_dir = model_dir
         self.base_model_name = base_model_name
-        self.model_type = model_type
         self.random_state = random_state
         self.model_kwargs: Dict[str, Any] = model_kwargs
 
@@ -81,49 +63,36 @@ class BatchLearner:
             X.shape[0],
             X.shape[1],
         )
-        logger.info("[BATCH] model_type=%s, model_dir=%s", model_type, model_dir)
+        logger.info("[BATCH] model_dir=%s, base_model_name=%s", model_dir, base_model_name)
 
     # ------------------------------------------------------------------
     # Model oluşturma
     # ------------------------------------------------------------------
-    def _build_model(self):
+    def _build_model(self) -> RandomForestClassifier:
         """
-        model_type'a göre uygun modeli oluşturur.
-        Şimdilik en stabil olan RandomForest'ı default yapıyoruz.
+        Şimdilik sabit bir RandomForestClassifier kullanıyoruz.
+        İstersen ileride XGBoost / LightGBM entegrasyonunu buraya ekleyebiliriz.
         """
-        # Default: RandomForestClassifier
-        if self.model_type.lower() in ["rf", "random_forest", "sklearn"]:
-            n_estimators = int(self.model_kwargs.get("n_estimators", 300))
-            max_depth = self.model_kwargs.get("max_depth", None)
-            min_samples_leaf = int(self.model_kwargs.get("min_samples_leaf", 2))
+        n_estimators = int(self.model_kwargs.get("n_estimators", 300))
+        max_depth = self.model_kwargs.get("max_depth", None)
+        min_samples_leaf = int(self.model_kwargs.get("min_samples_leaf", 2))
 
-            logger.info(
-                "[BATCH] Using RandomForestClassifier (n_estimators=%d, max_depth=%s, min_samples_leaf=%d)",
-                n_estimators,
-                str(max_depth),
-                min_samples_leaf,
-            )
-
-            return RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_leaf=min_samples_leaf,
-                n_jobs=-1,
-                random_state=self.random_state,
-                class_weight="balanced",
-            )
-
-        # (İstersen ileride xgboost/lightgbm/catboost ekleriz; şimdilik rf yeterli)
-        logger.warning(
-            "[BATCH] Unknown model_type=%s, falling back to RandomForestClassifier.",
-            self.model_type,
+        logger.info(
+            "[BATCH] Using RandomForestClassifier(n_estimators=%d, max_depth=%s, min_samples_leaf=%d)",
+            n_estimators,
+            str(max_depth),
+            min_samples_leaf,
         )
-        return RandomForestClassifier(
-            n_estimators=300,
+
+        model = RandomForestClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
             n_jobs=-1,
             random_state=self.random_state,
             class_weight="balanced",
         )
+        return model
 
     # ------------------------------------------------------------------
     # Eğitim
@@ -131,14 +100,10 @@ class BatchLearner:
     def fit(self):
         """
         Batch modeli eğitir ve modeli döner.
-        main.py içinden:
-            batch_learner = BatchLearner(...)
-            model = batch_learner.fit()
-            path = batch_learner.save_model(model)
-        şeklinde kullanılmak için tasarlandı.
+        Cloud Run log'unda çağırılan metot TAM OLARAK budur.
         """
         try:
-            # X, y'yi numpy/Series olarak hazırlayalım
+            # X ve y'yi numpy array'e çevir
             if isinstance(self.X, pd.DataFrame):
                 X = self.X.values
             else:
@@ -155,26 +120,30 @@ class BatchLearner:
                 X.shape[1],
             )
 
-            # Basit bir train/validation bölmesi (sadece log için)
-            X_train, X_val, y_train, y_val = train_test_split(
-                X,
-                y,
-                test_size=0.2,
-                random_state=self.random_state,
-                stratify=y if len(np.unique(y)) > 1 else None,
-            )
+            # Basit train/validation split (sadece metrik loglamak için)
+            if len(np.unique(y)) > 1:
+                X_train, X_val, y_train, y_val = train_test_split(
+                    X,
+                    y,
+                    test_size=0.2,
+                    random_state=self.random_state,
+                    stratify=y,
+                )
+            else:
+                # Tüm target tek sınıf ise stratify yapmayalım
+                X_train, X_val, y_train, y_val = train_test_split(
+                    X,
+                    y,
+                    test_size=0.2,
+                    random_state=self.random_state,
+                )
 
             model = self._build_model()
             model.fit(X_train, y_train)
 
-            # Küçük bir validasyon raporu
+            # Küçük validasyon raporu
             try:
                 y_pred = model.predict(X_val)
-                if hasattr(model, "predict_proba"):
-                    y_proba = model.predict_proba(X_val)[:, 1]
-                else:
-                    y_proba = None
-
                 acc = accuracy_score(y_val, y_pred)
                 f1 = f1_score(y_val, y_pred, zero_division=0)
                 logger.info(
@@ -182,21 +151,6 @@ class BatchLearner:
                     acc,
                     f1,
                 )
-
-                if y_proba is not None and len(np.unique(y_val)) > 1:
-                    try:
-                        auc = roc_auc_score(y_val, y_proba)
-                        logger.info("[BATCH] Validation ROC-AUC=%.4f", auc)
-                    except Exception:
-                        pass
-
-                logger.debug(
-                    "[BATCH] Validation classification report:\n%s",
-                    classification_report(
-                        y_val, y_pred, zero_division=0, digits=4
-                    ),
-                )
-
             except Exception as eval_err:
                 logger.warning(
                     "[BATCH] Validation metrics failed: %s", str(eval_err)
@@ -206,8 +160,10 @@ class BatchLearner:
             return model
 
         except Exception as e:
+            # Burada özel exception yerine RuntimeError kullanıyoruz,
+            # çünkü core.exceptions.ModelTrainingException yok.
             logger.exception("[BATCH] Batch training failed: %s", str(e))
-            raise ModelTrainingException(f"Batch training failed: {e}") from e
+            raise RuntimeError(f"Batch training failed: {e}") from e
 
     # ------------------------------------------------------------------
     # Model kaydet / yükle
@@ -236,3 +192,4 @@ class BatchLearner:
         model = joblib.load(path)
         logger.info("[BATCH] Model loaded from %s", path)
         return model
+
