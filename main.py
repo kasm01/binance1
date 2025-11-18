@@ -241,93 +241,84 @@ def run_data_pipeline(symbol: str, interval: str = "1m", limit: int = 500):
 # ------------------------------
 # Bot Loop
 # ------------------------------
+
 async def bot_loop():
     """
-    Binance1-Pro botunun çekirdek döngüsü.
-
-    Şu an:
-      - Belirli aralıklarla Binance'ten veri çekiyor
-      - Feature üretiyor
-      - Anomali temizliği yapıyor
-      - Label üretip Batch + Online model eğitiyor
-      - En son p_buy oranını logluyor
+    Ana periyodik bot döngüsü.
+    Her turda:
+      - Veri çek
+      - Feature üret
+      - Anomali temizle
+      - Modeli eğit/güncelle
+      - Son bar için sinyal üret
     """
     system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
 
-    symbols = Settings.TRADE_SYMBOLS or ["BTCUSDT"]
-    symbol = symbols[0]
-    interval = "1m"
-    limit = 500
-
+    # Sonsuz loop
     while True:
         try:
-            await asyncio.to_thread(run_data_pipeline, symbol, interval, limit)
+            # Tek tur data + model pipeline
+            await run_data_pipeline()
+
+            # Heartbeat
             system_logger.info(
                 "⏱ [BOT] Heartbeat - bot_loop running with data+model pipeline."
             )
-        except asyncio.CancelledError:
-            system_logger.info("🛑 [BOT] bot_loop cancelled, shutting down.")
-            break
-        except Exception as e:
-            logger.exception(f"[BOT] Unexpected error in bot_loop: {e}")
 
-        # Binance rate-limit'e saygı: her loop sonrası 60 sn bekle
+        except Exception as e:
+            # Burada try bloğunu kapattığımız için SyntaxError almayacağız
+            logger.exception(f"💥 [BOT] Unexpected error in bot_loop: {e}")
+
+        # Bir sonraki turdan önce bekleme (örn. 60 saniye)
         await asyncio.sleep(60)
 
 
 # ------------------------------
-# HTTP Handlers (Cloud Run)
+# Aiohttp App & Cloud Run Entry
 # ------------------------------
-async def health_handler(request: web.Request) -> web.Response:
+
+async def health_handler(request):
     return web.Response(text="OK")
 
 
-async def ready_handler(request: web.Request) -> web.Response:
+async def ready_handler(request):
     return web.Response(text="READY")
 
 
-async def start_background_tasks(app: web.Application):
+async def on_startup(app: web.Application):
     system_logger.info("🔁 [MAIN] Starting background bot_loop task...")
     app["bot_task"] = asyncio.create_task(bot_loop())
 
 
-async def cleanup_background_tasks(app: web.Application):
+async def on_cleanup(app: web.Application):
     system_logger.info("🧹 [MAIN] Cleaning up background bot_loop task...")
-    bot_task: asyncio.Task = app.get("bot_task")
-    if bot_task:
-        bot_task.cancel()
+    task = app.get("bot_task")
+    if task:
+        task.cancel()
         try:
-            await bot_task
+            await task
         except asyncio.CancelledError:
-            system_logger.info("✅ [MAIN] bot_loop cancelled gracefully.")
+            system_logger.info("🛑 [BOT] bot_loop cancelled, shutting down.")
 
 
-async def create_app() -> web.Application:
-    """
-    Hem health endpoint'lerini hem de background bot'u yöneten aiohttp uygulaması.
-    """
+def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", health_handler)
     app.router.add_get("/healthz", health_handler)
     app.router.add_get("/ready", ready_handler)
 
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
-
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
     return app
 
 
 def main():
-    """
-    Cloud Run için entry point.
-    """
     setup_logger("binance1_pro_entry")
     GlobalExceptionHandler.register()
-    Credentials.validate()
 
     port = int(os.environ.get("PORT", "8080"))
     system_logger.info(
-        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{port} (ENV={Settings.ENV})"
+        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{port} (ENV={os.getenv('ENV', 'production')})"
     )
 
     web.run_app(create_app(), host="0.0.0.0", port=port)
@@ -335,3 +326,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
