@@ -1,31 +1,63 @@
-import logging
-from typing import Optional
-
-import numpy as np
 import pandas as pd
-from sklearn.utils.class_weight import compute_class_weight
 from lightgbm import LGBMClassifier
-
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    roc_auc_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+)
 from core.logger import system_logger
-
-logger = logging.getLogger(__name__)
 
 
 class BatchLearner:
+    """
+    Batch eğitim: clean feature DF + target ile LightGBM modeli eğitir.
+    Aynı zamanda validation metriklerini log'a yazar.
+    """
+
     def __init__(self, logger=None):
         self.logger = logger or system_logger
 
     def train(self, X: pd.DataFrame, y: pd.Series) -> LGBMClassifier:
+        # Temel istatistikler
+        n = len(y)
         n_pos = int(y.sum())
-        n_neg = len(y) - n_pos
-        pos_ratio = n_pos / len(y) if len(y) > 0 else 0.0
+        n_neg = n - n_pos
+        pos_ratio = n_pos / n if n > 0 else 0.0
 
         self.logger.info(
             "[BATCH] Preparing data for training: n=%d, pos=%d, neg=%d, pos_ratio=%.3f",
-            len(y), n_pos, n_neg, pos_ratio
+            n, n_pos, n_neg, pos_ratio
         )
 
-        # class_weight ile pozitifleri biraz daha önemli yapıyoruz
+        if n < 200 or n_pos == 0 or n_neg == 0:
+            self.logger.warning(
+                "[BATCH] Data too small or only one class present. Falling back to simple model."
+            )
+            # Çok küçük veri ya da tek sınıf varsa bile model eğitiriz ama uyarı veririz
+            model = LGBMClassifier(
+                n_estimators=100,
+                learning_rate=0.05,
+                max_depth=3,
+                objective="binary",
+                n_jobs=-1,
+                random_state=42,
+            )
+            model.fit(X, y)
+            self.logger.info("[BATCH] LightGBM training completed (fallback settings).")
+            return model
+
+        # Train/Validation split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
+        )
+
+        # LightGBM modeli (class_weight balanced ile)
         model = LGBMClassifier(
             n_estimators=300,
             learning_rate=0.03,
@@ -35,104 +67,31 @@ class BatchLearner:
             subsample=0.8,
             colsample_bytree=0.8,
             objective="binary",
-            class_weight="balanced",   # 🔴 ÖNEMLİ
+            class_weight="balanced",   # dengesiz veri için önemli
             n_jobs=-1,
             random_state=42,
         )
 
-        model.fit(X, y)
-        self.logger.info("[BATCH] LightGBM training completed successfully.")
-        return model
+        self.logger.info("[BATCH] Starting LightGBM training...")
+        model.fit(X_train, y_train)
 
-    def __init__(self, features_df: pd.DataFrame, target_column: str = "target"):
-        if features_df is None or len(features_df) == 0:
-            raise ValueError("BatchLearner: features_df is empty or None")
+        # Validation tahminleri
+        y_proba = model.predict_proba(X_val)[:, 1]
+        y_pred = (y_proba >= 0.5).astype(int)
 
-        if target_column not in features_df.columns:
-            raise ValueError(
-                f"BatchLearner: target_column='{target_column}' not in DataFrame columns"
-            )
+        try:
+            auc = roc_auc_score(y_val, y_proba)
+        except Exception:
+            auc = float("nan")
 
-        self.features_df = features_df.copy()
-        self.target_column = target_column
-        self.model: Optional[LGBMClassifier] = None
+        acc = accuracy_score(y_val, y_pred)
+        prec = precision_score(y_val, y_pred, zero_division=0)
+        rec = recall_score(y_val, y_pred, zero_division=0)
 
-    def _prepare_data(self):
-        """
-        X, y ve class_weight hesaplama.
-        """
-        df = self.features_df
-
-        X = df.drop(columns=[self.target_column])
-        y = df[self.target_column].astype(int)
-
-        n_samples = len(y)
-        n_features = X.shape[1]
-
-        # Sınıf dağılımı
-        classes, counts = np.unique(y, return_counts=True)
-        class_dist = {int(c): int(cnt) for c, cnt in zip(classes, counts)}
-
-        system_logger.info(
-            "[BATCH] Preparing data for training: n_samples=%d, n_features=%d, class_dist=%s",
-            n_samples,
-            n_features,
-            class_dist,
+        self.logger.info(
+            "[BATCH] Validation metrics: AUC=%.4f, ACC=%.4f, PREC=%.4f, REC=%.4f",
+            auc, acc, prec, rec
         )
 
-        # Class weight (dengesiz veri için)
-        if len(classes) > 1:
-            cw = compute_class_weight(
-                class_weight="balanced",
-                classes=classes,
-                y=y,
-            )
-            class_weight = {int(c): float(w) for c, w in zip(classes, cw)}
-        else:
-            class_weight = None
-
-        if class_weight is not None:
-            system_logger.info("[BATCH] Computed class_weight=%s", class_weight)
-        else:
-            system_logger.info("[BATCH] Single class detected, no class_weight used.")
-
-        return X, y, class_weight
-
-    def train(self) -> Optional[LGBMClassifier]:
-        """
-        Basit bir LightGBM classifier eğitir.
-        """
-        try:
-            X, y, class_weight = self._prepare_data()
-
-            params = {
-                "objective": "binary",
-                "boosting_type": "gbdt",
-                "learning_rate": 0.05,
-                "n_estimators": 300,
-                "num_leaves": 31,
-                "max_depth": -1,
-                "subsample": 0.9,
-                "colsample_bytree": 0.9,
-                "random_state": 42,
-                "n_jobs": -1,
-            }
-
-            if class_weight is not None:
-                params["class_weight"] = class_weight
-
-            self.model = LGBMClassifier(**params)
-
-            system_logger.info(
-                "[BATCH] Starting LightGBM training with params=%s", params
-            )
-            self.model.fit(X, y)
-            system_logger.info("[BATCH] LightGBM training completed successfully.")
-
-            return self.model
-
-        except Exception as e:
-            logger.exception(f"[BATCH] Error while training batch model: {e}")
-            system_logger.error(f"[BATCH] Error while training batch model: {e}")
-            self.model = None
-            return None
+        self.logger.info("[BATCH] LightGBM training completed successfully.")
+        return model
