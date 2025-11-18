@@ -12,16 +12,37 @@ logger = logging.getLogger(__name__)
 
 
 class BatchLearner:
-    """
-    Batch (toplu) öğrenme yapan basit bir LightGBM eğiticisi.
+    def __init__(self, logger=None):
+        self.logger = logger or system_logger
 
-    Beklenen giriş:
-      - features_df: Feature kolonları + target kolonu içeren DataFrame
-      - target_column: Label kolonu ismi (örn: "target")
+    def train(self, X: pd.DataFrame, y: pd.Series) -> LGBMClassifier:
+        n_pos = int(y.sum())
+        n_neg = len(y) - n_pos
+        pos_ratio = n_pos / len(y) if len(y) > 0 else 0.0
 
-    Çıkış:
-      - self.model: sklearn API’si olan (fit/predict/predict_proba) bir model
-    """
+        self.logger.info(
+            "[BATCH] Preparing data for training: n=%d, pos=%d, neg=%d, pos_ratio=%.3f",
+            len(y), n_pos, n_neg, pos_ratio
+        )
+
+        # class_weight ile pozitifleri biraz daha önemli yapıyoruz
+        model = LGBMClassifier(
+            n_estimators=300,
+            learning_rate=0.03,
+            max_depth=-1,
+            num_leaves=31,
+            min_data_in_leaf=20,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="binary",
+            class_weight="balanced",   # 🔴 ÖNEMLİ
+            n_jobs=-1,
+            random_state=42,
+        )
+
+        model.fit(X, y)
+        self.logger.info("[BATCH] LightGBM training completed successfully.")
+        return model
 
     def __init__(self, features_df: pd.DataFrame, target_column: str = "target"):
         if features_df is None or len(features_df) == 0:
