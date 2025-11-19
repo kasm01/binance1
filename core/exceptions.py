@@ -1,59 +1,51 @@
-"""
-core.exceptions
+"""Custom exception classes for Binance1-Pro bot."""
 
-Bot içindeki tüm custom exception sınıfları burada toplanır.
-"""
-
-class BinanceBotException(Exception):
-    """Tüm özel bot hataları için base exception."""
-    pass
+from typing import Optional
 
 
-class ConfigException(BinanceBotException):
-    """Konfigürasyon / environment değişkenleri ile ilgili hatalar."""
-    pass
+class ConfigException(Exception):
+    """Raised when configuration or environment variables are invalid or missing."""
 
 
-class DataLoadingException(BinanceBotException):
-    """Veri yükleme (API, dosya, DB vb.) kaynaklı hatalar."""
-    pass
+class DataFetchException(Exception):
+    """Raised when fetching data from external sources (e.g., Binance API) fails."""
 
 
-class DataProcessingException(BinanceBotException):
-    """Veri işleme, feature engineering, label creation vb. hatalar."""
-    pass
+class DataProcessingException(Exception):
+    """Raised when cleaning, merging or transforming raw data fails."""
 
 
-class ModelTrainingException(BinanceBotException):
-    """Batch veya offline model eğitimi sırasında oluşan hatalar."""
-    pass
+class FeatureEngineeringException(Exception):
+    """Raised when feature engineering / indicator calculation fails."""
 
 
-class OnlineLearningException(BinanceBotException):
-    """Online / incremental öğrenme (SGDClassifier vb.) ile ilgili hatalar."""
-    pass
+class LabelGenerationException(Exception):
+    """Raised when label creation for supervised learning fails."""
 
 
-class PredictionException(BinanceBotException):
-    """Model tahmini (predict / predict_proba) aşamasındaki hatalar."""
-    pass
+class ModelTrainingException(Exception):
+    """Raised when batch model (e.g. RandomForest) training or saving fails."""
 
 
-class SignalGenerationException(BinanceBotException):
-    """Trading sinyali üretimi (BUY/SELL/HOLD) sırasında oluşan hatalar."""
-    pass
+class OnlineLearningException(Exception):
+    """Raised when online learning model (SGD, etc.) training, updating or saving fails."""
 
 
-class PipelineException(BinanceBotException):
-    """Genel pipeline akışı ile ilgili hatalar."""
-    pass
+class SignalGenerationException(Exception):
+    """Raised when generating trading signals from model predictions fails."""
 
 
-class BinanceAPIException(BinanceBotException):
-    """Binance API çağrıları sırasında oluşan hatalar."""
-    pass
+class RedisCacheException(Exception):
+    """Raised when operations with Redis cache fail."""
 
 
-class CacheException(BinanceBotException):
-    """Redis / cache yönetimi ile ilgili hatalar."""
-    pass
+class BinanceAPIException(Exception):
+    """Raised when interacting with Binance REST/WebSocket API fails."""
+
+
+class TelegramNotificationException(Exception):
+    """Raised when sending Telegram notifications fails."""
+
+
+class BotLoopException(Exception):
+    """Top-level exception for unexpected errors in the main bot loop."""
