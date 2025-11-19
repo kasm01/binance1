@@ -65,41 +65,48 @@ def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
 
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     """
-    1) Binance'ten klines çek
-    2) (Varsa) EXTERNAL_DATA_URL ile dış veriyi merge et
-    3) Feature engineering uygula
-    4) Label üret ve temiz veri döndür
-    """
-    symbol = env_vars.get("SYMBOL", "BTCUSDT")
-    interval = env_vars.get("INTERVAL", "1m")
-    history_limit = _get_env_int(env_vars, "HISTORY_LIMIT", 1000)
-    label_horizon = _get_env_int(env_vars, "LABEL_HORIZON", 10)
+    Tek cycle için data pipeline:
 
+      1) Binance'ten / cache'den ham veriyi çek
+      2) Gerekirse anomaly detection uygula
+      3) Feature engineering ile özellik dataframe'i üret
+      4) (Label kolonları artık data/feature_engineering veya başka bir yerde üretilmiş varsayılıyor)
+    """
     try:
-        # --- 1) Binance verisi ---
+        symbol = env_vars.get("SYMBOL", "BTCUSDT")
+        interval = env_vars.get("INTERVAL", "1m")
+        limit = _get_env_int(env_vars, "KLINES_LIMIT", 1000)
+
+        LOGGER.info(
+            "[DATA] Starting data pipeline for %s (%s, limit=%s)",
+            symbol,
+            interval,
+            limit,
+        )
+
+        # --- 1) Data Loading ---
         data_loader = DataLoader(
             symbol=symbol,
             interval=interval,
-            limit=history_limit,
+            limit=limit,
             logger=LOGGER,
         )
 
-        LOGGER.info("[DATA] Fetching %d klines from Binance for %s (%s)",
-                    history_limit, symbol, interval)
-        raw_df = await data_loader.fetch_klines()
+        raw_df = await data_loader.load()
+        if raw_df is None or len(raw_df) == 0:
+            raise DataLoadingException("DataLoader returned empty dataframe.")
+
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # --- 2) External data merge (opsiyonel) ---
-        external_url = env_vars.get("EXTERNAL_DATA_URL", "").strip()
+        # --- 2) (Opsiyonel) External Data Merge ---
+        external_url = env_vars.get("EXTERNAL_DATA_URL")
         if external_url:
             try:
-                ext_df = data_loader.fetch_external_data(external_url)
-                LOGGER.info("[DATA] External DF shape: %s", ext_df.shape)
-                raw_df = data_loader.merge_external_data(raw_df, ext_df)
-                LOGGER.info("[DATA] After merge DF shape: %s", raw_df.shape)
+                raw_df = await data_loader.merge_external_data(raw_df, external_url)
+                LOGGER.info("[DATA] After external merge DF shape: %s", raw_df.shape)
             except Exception as e:
-                LOGGER.error(
-                    "[DATA] Error in fetch_external_data, continuing with Binance data only: %s",
+                LOGGER.warning(
+                    "[DATA] External data merge failed, continuing without it: %s",
                     e,
                     exc_info=True,
                 )
@@ -108,36 +115,63 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
                 "[DATA] No EXTERNAL_DATA_URL provided; skipping external data merge."
             )
 
-        # --- 3) Anomali temizleme (opsiyonel) ---
+        # --- 3) Anomaly Detection (opsiyonel) ---
         try:
-            anomaly_detector = AnomalyDetector(logger=LOGGER)
-            raw_df = anomaly_detector.remove_anomalies(raw_df)
+            use_anomaly = env_vars.get("USE_ANOMALY_DETECTION", "false").lower() == "true"
+            if use_anomaly:
+                detector = AnomalyDetector(df=raw_df, logger=LOGGER)
+                clean_df = detector.filter_anomalies()
+                LOGGER.info(
+                    "[DATA] Anomaly detection applied. Clean DF shape: %s",
+                    clean_df.shape,
+                )
+            else:
+                clean_df = raw_df
+                LOGGER.info(
+                    "[DATA] Anomaly detection disabled. Using raw DF shape: %s",
+                    clean_df.shape,
+                )
         except Exception as e:
-            LOGGER.error(
+            LOGGER.warning(
                 "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
             )
+            clean_df = raw_df
 
         # --- 4) Feature Engineering ---
-        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
-        features_df = feature_engineer.transform()
-        LOGGER.info("[FE] Features DF shape: %s", features_df.shape)
+        try:
+            feature_engineer = FeatureEngineer(df=clean_df, logger=LOGGER)
+            features_df = feature_engineer.transform()
 
-        # --- 5) Label Generation ---
-        label_generator = LabelGenerator(
-            df=features_df,
-            horizon=label_horizon,
-            logger=LOGGER,
-        )
-        clean_df = label_generator.generate_labels()
+            # Özellik dataframe'ini logla (şekil + kolonlar)
+            LOGGER.info(
+                "[FE] Features DF shape: %s, columns=%s",
+                features_df.shape,
+                list(features_df.columns),
+            )
+        except Exception as e:
+            LOGGER.error("[FE] Feature engineering failed: %s", e, exc_info=True)
+            raise FeatureEngineeringException(f"Feature engineering failed: {e}") from e
 
-        # LABEL logları: future_return istatistikleri
-        label_generator.log_label_stats()
+        # NOT: Eskiden burada LabelGenerator vardı:
+        # from data.labels import LabelGenerator
+        # label_generator = LabelGenerator(df=features_df, horizon=label_horizon, logger=LOGGER)
+        # features_with_labels = label_generator.generate()
+        #
+        # Artık label kolonlarının (ör: 'label', 'future_return') feature pipeline içinde
+        # üretildiğini varsayıyoruz. Bu yüzden features_df doğrudan geri dönüyor.
 
-        return clean_df
+        if len(features_df) == 0:
+            raise DataProcessingException("Features dataframe is empty after pipeline.")
 
+        return features_df
+
+    except BinanceBotException:
+        # Zaten custom exception; yeniden fırlat
+        raise
     except Exception as e:
-        LOGGER.error("[DATA] run_data_pipeline failed: %s", e, exc_info=True)
+        LOGGER.error("💥 [PIPELINE] Unexpected error in data pipeline: %s", e, exc_info=True)
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
+
 
 
 # ---------------------------------------------------------
