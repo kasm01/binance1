@@ -1,76 +1,54 @@
 """
-core.exceptions
+Custom exception classes for the Binance1-Pro bot.
 
-Tüm bot için kullanılan custom exception sınıfları.
-Bu modüle yeni exception eklemek serbest; main.py ve diğer modüller buradan import eder.
+Bu dosyadaki sınıflar, projenin farklı katmanlarındaki
+hataları daha anlamlı bir şekilde yakalamak ve loglamak için kullanılır.
 """
 
 
-class BotBaseException(Exception):
-    """Bot içerisindeki tüm özel exception'ların taban sınıfı."""
+class ConfigException(Exception):
+    """Environment / config yükleme ile ilgili hatalar."""
     pass
 
 
-class ConfigException(BotBaseException):
-    """Config / .env / ortam değişkenleri ile ilgili hatalar."""
+class DataLoadingException(Exception):
+    """Veri indirme / yükleme sırasında oluşan hatalar."""
     pass
 
 
-class EnvironmentException(BotBaseException):
-    """Çalışma ortamı ile ilgili hatalar (Cloud Run, Python versiyonu vs.)."""
+class FeatureEngineeringException(Exception):
+    """Feature engineering aşamasında oluşan hatalar."""
     pass
 
 
-class DataLoadingException(BotBaseException):
-    """Veri yüklenirken (Binance, dış API vs.) oluşan hatalar."""
+class LabelGenerationException(Exception):
+    """Label (hedef değişken) oluştururken oluşan hatalar."""
     pass
 
 
-class DataProcessingException(BotBaseException):
-    """Feature engineering, label üretimi vb. data pipeline hataları."""
+class DataProcessingException(Exception):
+    """
+    Genel veri işleme hataları.
+    Örneğin, pipeline içindeki ara adımların beklenmedik çıktıları vb.
+    """
     pass
 
 
-class ModelTrainingException(BotBaseException):
-    """Batch model (RandomForest vs.) eğitimi sırasında oluşan hatalar."""
+class ModelTrainingException(Exception):
+    """Batch veya diğer modelleri eğitirken oluşan hatalar."""
     pass
 
 
-class OnlineLearningException(BotBaseException):
-    """Online/incremental öğrenme (SGDClassifier vb.) ile ilgili hatalar."""
+class OnlineLearningException(Exception):
+    """OnlineLearner ile ilgili hatalar (initial_fit, partial_update vb.)."""
     pass
 
 
-class SignalGenerationException(BotBaseException):
-    """Al/Sat sinyali üretimi sırasında oluşan hatalar."""
+class SignalGenerationException(Exception):
+    """Sinyal üretimi sırasında oluşan hatalar."""
     pass
 
 
-class CacheException(BotBaseException):
-    """Redis / cache katmanı ile ilgili hatalar."""
-    pass
-
-
-class APIException(BotBaseException):
-    """Dış API hataları (Binance, Telegram vb.)."""
-    pass
-
-
-class TradingException(BotBaseException):
-    """Order açma, kapama, position yönetimi vb. trading hataları."""
-    pass
-
-
-class RiskManagementException(BotBaseException):
-    """Risk yönetimi (limitler, max loss vs.) ile ilgili hatalar."""
-    pass
-
-
-class TelegramNotificationException(BotBaseException):
-    """Telegram bildirimleri ile ilgili hatalar."""
-    pass
-
-
-class BacktestException(BotBaseException):
-    """Backtest / performans ölçümü sırasında oluşan hatalar."""
+class CacheException(Exception):
+    """Redis / cache katmanındaki hatalar."""
     pass
