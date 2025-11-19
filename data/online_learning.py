@@ -184,4 +184,23 @@ class OnlineLearner:
 
         proba = self.model.predict_proba(X_live.values)
         return proba
+    def predict_proba_live(self, X):
+        """
+        Tek bir son satır (veya birkaç satır) için pozitif sınıf (1) olasılığını döndürür.
+        Dönen değer float olur.
+        """
+        if self.model is None:
+            raise OnlineLearningException("Online model is not initialized.")
+
+        import numpy as np
+        import pandas as pd
+
+        if isinstance(X, pd.DataFrame):
+            X_arr = X.values
+        else:
+            X_arr = np.asarray(X)
+
+        proba = self.model.predict_proba(X_arr)
+        # proba shape: (n_samples, 2) -> pozitif sınıf proba'sını al
+        return float(proba[-1, 1])
 
