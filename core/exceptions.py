@@ -7,12 +7,22 @@ class BinanceBotException(Exception):
     """Base exception for all Binance1-Pro bot related errors."""
 
 
+# ---- Config & Environment -------------------------------------------------
+
+
 class ConfigException(BinanceBotException):
     """Raised when configuration or environment variables are invalid or missing."""
 
 
+# ---- Data Layer -----------------------------------------------------------
+
+
 class DataFetchException(BinanceBotException):
     """Raised when fetching data from external sources (e.g., Binance API) fails."""
+
+
+class DataLoadingException(BinanceBotException):
+    """Raised when loading raw or cached data into DataFrames fails."""
 
 
 class DataProcessingException(BinanceBotException):
@@ -27,12 +37,18 @@ class LabelGenerationException(BinanceBotException):
     """Raised when label creation for supervised learning fails."""
 
 
+# ---- Models & Training ----------------------------------------------------
+
+
 class ModelTrainingException(BinanceBotException):
     """Raised when batch model (e.g. RandomForest) training or saving fails."""
 
 
 class OnlineLearningException(BinanceBotException):
     """Raised when online learning model (SGD, etc.) training, updating or saving fails."""
+
+
+# ---- Signal & Trading -----------------------------------------------------
 
 
 class SignalGenerationException(BinanceBotException):
@@ -49,6 +65,9 @@ class BinanceAPIException(BinanceBotException):
 
 class TelegramNotificationException(BinanceBotException):
     """Raised when sending Telegram notifications fails."""
+
+
+# ---- Bot Loop & Retry -----------------------------------------------------
 
 
 class BotLoopException(BinanceBotException):
