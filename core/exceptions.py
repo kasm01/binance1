@@ -48,6 +48,10 @@ class OnlineLearningException(BinanceBotException):
     """Raised when online learning model (SGD, etc.) training, updating or saving fails."""
 
 
+class PredictionException(BinanceBotException):
+    """Raised when generating or using model predictions fails."""
+
+
 # ---- Signal & Trading -----------------------------------------------------
 
 
