@@ -71,16 +71,19 @@ class TelegramNotificationException(BinanceBotException):
     """Raised when sending Telegram notifications fails."""
 
 
-# ---- Bot Loop, Pipeline & Retry -------------------------------------------
+# ---- Bot Loop & Retry -----------------------------------------------------
 
 
 class BotLoopException(BinanceBotException):
     """Top-level exception for unexpected errors in the main bot loop."""
 
 
-class PipelineException(BinanceBotException):
-    """Raised for high-level pipeline orchestration errors (data + model + signal)."""
-
-
 class RetryLimitExceeded(BinanceBotException):
     """Raised when the retry decorator exceeds the maximum retry attempts."""
+
+
+# ---- Pipeline -------------------------------------------------------------
+
+
+class PipelineException(BinanceBotException):
+    """Raised for generic end-to-end pipeline failures."""

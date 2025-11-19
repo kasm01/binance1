@@ -28,7 +28,6 @@ from core.exceptions import (
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
-from data.labels import LabelGenerator
 from data.batch_learning import BatchLearner
 from data.online_learning import OnlineLearner
 from data.anomaly_detection import AnomalyDetector
