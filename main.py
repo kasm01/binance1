@@ -245,10 +245,11 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             LOGGER.warning("[SIGNAL] Empty dataframe, cannot generate signal.")
             return
 
+        # Feature / label ayrımı
         X, y, feature_cols = _split_features_labels(clean_df)
 
-        # Sadece son bar için feature
-        X_live = X.iloc[[-1]]  # shape (1, n_features)
+        # Sadece son bar için feature (shape: (1, n_features))
+        X_live = X.iloc[[-1]]
 
         model_dir = env_vars.get("MODEL_DIR", "models")
         online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
@@ -256,33 +257,27 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         BUY_THRESHOLD = _get_env_float(env_vars, "BUY_THRESHOLD", 0.6)
         SELL_THRESHOLD = _get_env_float(env_vars, "SELL_THRESHOLD", 0.4)
 
-        # OnlineLearner tekrar yaratılıyor; mevcut modeli diskten yükleyecek
+        # OnlineLearner mevcut modeli diskten yükleyecek
         online_learner = OnlineLearner(
             model_dir=model_dir,
             base_model_name=online_model_name,
             n_classes=2,
             logger=LOGGER,
         )
-        # feature_columns hizalaması
+
+        # Feature kolon hizalaması
         online_learner.feature_columns = feature_cols
-        proba = online_learner.predict_proba(X_live)  # (1, n_classes) numpy array
-        proba = np.asarray(proba)
 
-        # BUY class'ı için index tespiti
-        model = online_learner.model
-        if hasattr(model, "classes_") and 1 in model.classes_:
-            buy_idx = int(np.where(model.classes_ == 1)[0][0])
-        else:
-            # Emniyet: son kolonu BUY kabul et
-            buy_idx = -1
+        # OnlineLearner içinden scalar BUY olasılığı (class=1) al
+        # (predict_proba_live, online_learning.py içinde float döndürüyor olmalı)
+        p_buy = online_learner.predict_proba_live(X_live)
 
-        if proba.ndim == 2:
-            p_buy = float(proba[0, buy_idx])
-        else:
-            p_buy = float(np.ravel(proba)[buy_idx])
-
-        LOGGER.info("[SIGNAL] p_buy=%.4f (BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f)",
-                    p_buy, BUY_THRESHOLD, SELL_THRESHOLD)
+        LOGGER.info(
+            "[SIGNAL] p_buy=%.4f (BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f)",
+            p_buy,
+            BUY_THRESHOLD,
+            SELL_THRESHOLD,
+        )
 
         # Basit karar mantığı
         if p_buy >= BUY_THRESHOLD:
@@ -294,11 +289,11 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 
         LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
 
-        # Buraya ileride:
-        # - RiskManager
+        # TODO:
+        # - RiskManager entegrasyonu
         # - Binance emir açma/kapama
         # - Telegram bildirimi
-        # entegre edeceğiz.
+        # buraya eklenecek.
 
     except Exception as e:
         LOGGER.error("💥 [SIGNAL] Error while generating signal: %s", e, exc_info=True)
@@ -335,6 +330,7 @@ async def bot_loop(env_vars: Dict[str, str]) -> None:
             LOGGER.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
         finally:
             await asyncio.sleep(interval_sec)
+
 
 
 # ---------------------------------------------------------
