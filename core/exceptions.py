@@ -1,66 +1,76 @@
 """
-Custom exception classes for the Binance1-Pro bot.
-Tüm modüllerde buradaki isimler import ediliyor.
+core.exceptions
+
+Tüm bot için kullanılan custom exception sınıfları.
+Bu modüle yeni exception eklemek serbest; main.py ve diğer modüller buradan import eder.
 """
 
-class EnvironmentConfigurationException(Exception):
-    """Raised when required environment variables or configuration are missing or invalid."""
+
+class BotBaseException(Exception):
+    """Bot içerisindeki tüm özel exception'ların taban sınıfı."""
     pass
 
 
-class DataValidationException(Exception):
-    """Raised when raw or intermediate data fails validation checks."""
+class ConfigException(BotBaseException):
+    """Config / .env / ortam değişkenleri ile ilgili hatalar."""
     pass
 
 
-class FeatureEngineeringException(Exception):
-    """Raised when feature generation / transformation fails."""
+class EnvironmentException(BotBaseException):
+    """Çalışma ortamı ile ilgili hatalar (Cloud Run, Python versiyonu vs.)."""
     pass
 
 
-class LabelGenerationException(Exception):
-    """Raised when target / label computation fails."""
+class DataLoadingException(BotBaseException):
+    """Veri yüklenirken (Binance, dış API vs.) oluşan hatalar."""
     pass
 
 
-class ModelTrainingException(Exception):
-    """Raised when batch or online model training fails."""
+class DataProcessingException(BotBaseException):
+    """Feature engineering, label üretimi vb. data pipeline hataları."""
     pass
 
 
-class SignalGenerationException(Exception):
-    """Raised when signal generation / decision logic fails."""
+class ModelTrainingException(BotBaseException):
+    """Batch model (RandomForest vs.) eğitimi sırasında oluşan hatalar."""
     pass
 
 
-class OnlineLearningException(Exception):
-    """Raised when online learning / partial fit fails."""
+class OnlineLearningException(BotBaseException):
+    """Online/incremental öğrenme (SGDClassifier vb.) ile ilgili hatalar."""
     pass
 
 
-class BatchLearningException(Exception):
-    """Raised when batch learning pipeline fails."""
+class SignalGenerationException(BotBaseException):
+    """Al/Sat sinyali üretimi sırasında oluşan hatalar."""
     pass
 
 
-class CacheException(Exception):
-    """Raised for cache/Redis related errors."""
+class CacheException(BotBaseException):
+    """Redis / cache katmanı ile ilgili hatalar."""
     pass
 
 
-class APIFetchException(Exception):
-    """Raised when fetching data from external APIs fails."""
+class APIException(BotBaseException):
+    """Dış API hataları (Binance, Telegram vb.)."""
     pass
 
 
-class RedisConnectionException(Exception):
-    """Raised when Redis cannot be reached or misconfigured."""
+class TradingException(BotBaseException):
+    """Order açma, kapama, position yönetimi vb. trading hataları."""
     pass
 
 
-class RetryLimitExceeded(Exception):
-    """
-    Raised by retry helpers when a callable keeps failing after max retries.
-    core.utils.retry bu class'a bağlı.
-    """
+class RiskManagementException(BotBaseException):
+    """Risk yönetimi (limitler, max loss vs.) ile ilgili hatalar."""
+    pass
+
+
+class TelegramNotificationException(BotBaseException):
+    """Telegram bildirimleri ile ilgili hatalar."""
+    pass
+
+
+class BacktestException(BotBaseException):
+    """Backtest / performans ölçümü sırasında oluşan hatalar."""
     pass
