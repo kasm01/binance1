@@ -142,15 +142,14 @@ def _split_features_labels(clean_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Ser
     """
     clean_df içinden feature kolonları ve label kolonunu ayırır.
     Assumption:
-      - Label kolonu: 'label' (LabelGenerator ile aynı olmalı)
-      - Geri kalan sayısal kolonlar feature.
+      - Label kolonu: 'label'
     """
     if "label" not in clean_df.columns:
         raise ModelTrainingException("Column 'label' not found in dataframe.")
 
     label_col = "label"
 
-    # Feature kolonlarını basitçe: tüm sayısal kolonlar - label & future_return
+    # Feature kolonlarını: tüm sayısal kolonlar - label
     numeric_cols = clean_df.select_dtypes(include=["float64", "float32", "int64", "int32"]).columns.tolist()
     feature_cols = [c for c in numeric_cols if c not in [label_col]]
 
@@ -192,7 +191,7 @@ def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, st
             logger=LOGGER,
         )
         batch_model = batch_learner.fit()
-        # batch_model şu an RAM'de, ayrıca models/batch_model.joblib olarak da kayıtlı olmalı
+        # batch_model RAM'de, ayrıca models/batch_model.joblib olarak kaydedilmeli
 
         # --- Online Learner ---
         LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
@@ -256,7 +255,7 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             logger=LOGGER,
         )
         # feature_columns hizalaması
-        online_learner.feature_columns = feature_cols  # extra güvence
+        online_learner.feature_columns = feature_cols
         proba = online_learner.predict_proba(X_live)  # (1, n_classes) numpy array
         proba = np.asarray(proba)
 
@@ -286,11 +285,11 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 
         LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
 
-        # Burada ileride:
+        # Buraya ileride:
         # - RiskManager
         # - Binance emir açma/kapama
         # - Telegram bildirimi
-        # gibi süreçlere entegre edebiliriz.
+        # entegre edeceğiz.
 
     except Exception as e:
         LOGGER.error("💥 [SIGNAL] Error while generating signal: %s", e, exc_info=True)
