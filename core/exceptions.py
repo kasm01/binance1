@@ -1,54 +1,59 @@
 """
-Custom exception classes for the Binance1-Pro bot.
+core.exceptions
 
-Bu dosyadaki sınıflar, projenin farklı katmanlarındaki
-hataları daha anlamlı bir şekilde yakalamak ve loglamak için kullanılır.
+Bot içindeki tüm custom exception sınıfları burada toplanır.
 """
 
-
-class ConfigException(Exception):
-    """Environment / config yükleme ile ilgili hatalar."""
+class BinanceBotException(Exception):
+    """Tüm özel bot hataları için base exception."""
     pass
 
 
-class DataLoadingException(Exception):
-    """Veri indirme / yükleme sırasında oluşan hatalar."""
+class ConfigException(BinanceBotException):
+    """Konfigürasyon / environment değişkenleri ile ilgili hatalar."""
     pass
 
 
-class FeatureEngineeringException(Exception):
-    """Feature engineering aşamasında oluşan hatalar."""
+class DataLoadingException(BinanceBotException):
+    """Veri yükleme (API, dosya, DB vb.) kaynaklı hatalar."""
     pass
 
 
-class LabelGenerationException(Exception):
-    """Label (hedef değişken) oluştururken oluşan hatalar."""
+class DataProcessingException(BinanceBotException):
+    """Veri işleme, feature engineering, label creation vb. hatalar."""
     pass
 
 
-class DataProcessingException(Exception):
-    """
-    Genel veri işleme hataları.
-    Örneğin, pipeline içindeki ara adımların beklenmedik çıktıları vb.
-    """
+class ModelTrainingException(BinanceBotException):
+    """Batch veya offline model eğitimi sırasında oluşan hatalar."""
     pass
 
 
-class ModelTrainingException(Exception):
-    """Batch veya diğer modelleri eğitirken oluşan hatalar."""
+class OnlineLearningException(BinanceBotException):
+    """Online / incremental öğrenme (SGDClassifier vb.) ile ilgili hatalar."""
     pass
 
 
-class OnlineLearningException(Exception):
-    """OnlineLearner ile ilgili hatalar (initial_fit, partial_update vb.)."""
+class PredictionException(BinanceBotException):
+    """Model tahmini (predict / predict_proba) aşamasındaki hatalar."""
     pass
 
 
-class SignalGenerationException(Exception):
-    """Sinyal üretimi sırasında oluşan hatalar."""
+class SignalGenerationException(BinanceBotException):
+    """Trading sinyali üretimi (BUY/SELL/HOLD) sırasında oluşan hatalar."""
     pass
 
 
-class CacheException(Exception):
-    """Redis / cache katmanındaki hatalar."""
+class PipelineException(BinanceBotException):
+    """Genel pipeline akışı ile ilgili hatalar."""
+    pass
+
+
+class BinanceAPIException(BinanceBotException):
+    """Binance API çağrıları sırasında oluşan hatalar."""
+    pass
+
+
+class CacheException(BinanceBotException):
+    """Redis / cache yönetimi ile ilgili hatalar."""
     pass
