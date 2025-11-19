@@ -4,41 +4,22 @@ from typing import Dict
 
 def load_environment_variables() -> Dict[str, str]:
     """
-    Cloud Run / lokal ortamdan environment variable'ları okuyup
-    bir dict olarak döner. Varsayılan değerler de burada tanımlı.
-
-    main.py içinde:
-        ENV_VARS = load_environment_variables()
-    şeklinde kullanıyoruz.
+    Ortam değişkenlerini sözlük olarak döndürür.
+    İleride istersen .env dosyası okuma, ekstra kontroller vs ekleyebiliriz.
     """
+    env_vars = dict(os.environ)
 
-    defaults: Dict[str, str] = {
-        # Veri ile ilgili
-        "SYMBOL": "BTCUSDT",
-        "INTERVAL": "1m",
-        "HISTORY_LIMIT": "1000",
+    # Örnek: zorunlu değişken liste kontrolü (şimdilik sadece log amaçlı)
+    required_keys = [
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "SYMBOL",
+        "INTERVAL",
+    ]
 
-        # Label ve feature ile ilgili
-        "LABEL_HORIZON": "10",
+    missing = [k for k in required_keys if not env_vars.get(k)]
+    if missing:
+        # Burada direk print kullanıyoruz; logger import edip döngü yaratmayalım
+        print(f"[load_env] WARNING: Missing environment variables: {missing}")
 
-        # Model ile ilgili
-        "MODEL_DIR": "models",
-        "BATCH_MODEL_NAME": "batch_model",
-        "ONLINE_MODEL_NAME": "online_model",
-
-        # Sinyal eşiği
-        "BUY_THRESHOLD": "0.6",
-        "SELL_THRESHOLD": "0.4",
-
-        # Bot loop
-        "BOT_LOOP_INTERVAL": "60",
-
-        # Ortam
-        "ENVIRONMENT": "production",
-    }
-
-    env: Dict[str, str] = {}
-    for key, default_val in defaults.items():
-        env[key] = os.getenv(key, default_val)
-
-    return env
+    return env_vars

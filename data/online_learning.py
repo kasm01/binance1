@@ -184,3 +184,4 @@ class OnlineLearner:
 
         proba = self.model.predict_proba(X_live.values)
         return proba
+

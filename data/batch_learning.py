@@ -195,3 +195,4 @@ class BatchLearner:
         model = joblib.load(path)
         logger.info("[BATCH] Model loaded from %s", path)
         return model
+

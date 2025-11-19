@@ -139,3 +139,4 @@ class DataLoader:
             # burada exception fırlatmak yerine boş DF döndürmek daha
             # esnek olabilir. Tercihe göre raise de edebilirsin.
             raise
+

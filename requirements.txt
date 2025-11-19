@@ -45,3 +45,4 @@ pyod==1.1.0
 web3==6.0.0
 # infura, coinglass, thegraph gibi placeholder paketler kaldırıldı.
 # Gerekirse bunlar için HTTP client'ı kendimiz yazarız.
+

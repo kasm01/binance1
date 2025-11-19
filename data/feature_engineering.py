@@ -107,3 +107,4 @@ class FeatureEngineer:
         except Exception as e:
             system_logger.error("[FeatureEngineer] Feature engineering hatası: %s", e)
             raise DataProcessingException(f"Feature engineering failed: {e}") from e
+

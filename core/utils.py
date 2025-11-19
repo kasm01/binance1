@@ -21,12 +21,6 @@ def retry(
         @retry(max_attempts=5, delay=2, exceptions=(...))
         @retry(exceptions=(...), tries=3, delay=2, backoff=2)
         @retry  (parametresiz kullanım)
-
-    :param exceptions: Hangi exception'larda retry yapılacağı
-    :param tries: Toplam deneme sayısı
-    :param max_attempts: tries ile aynı anlamda, geriye dönük uyumluluk
-    :param delay: İlk bekleme süresi (saniye)
-    :param backoff: Her denemede delay *= backoff
     """
 
     if tries is None and max_attempts is None:
@@ -62,7 +56,6 @@ def retry(
 
         return wrapper
 
-    # @retry parametresiz kullanım için
     if _func is not None:
         return decorator_retry(_func)
 
