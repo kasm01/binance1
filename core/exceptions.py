@@ -1,80 +1,66 @@
-import logging
-import sys
+"""
+Custom exception classes for the Binance1-Pro bot.
+Tüm modüllerde buradaki isimler import ediliyor.
+"""
 
-
-class Binance1ProError(Exception):
-    """
-    Binance1-Pro botuna özel genel hata sınıfı.
-    """
+class EnvironmentConfigurationException(Exception):
+    """Raised when required environment variables or configuration are missing or invalid."""
     pass
 
 
-class DataProcessingException(Binance1ProError):
-    """
-    Veri yükleme, temizleme, feature engineering sırasında oluşan hatalar.
-    """
+class DataValidationException(Exception):
+    """Raised when raw or intermediate data fails validation checks."""
     pass
 
 
-class APIRequestException(Binance1ProError):
-    """
-    Harici API (Binance, CoinGlass, The Graph, Infura vb.) istek hataları.
-    """
+class FeatureEngineeringException(Exception):
+    """Raised when feature generation / transformation fails."""
     pass
 
 
-class WebSocketConnectionError(Binance1ProError):
-    """
-    WebSocket bağlantı sorunları için.
-    """
+class LabelGenerationException(Exception):
+    """Raised when target / label computation fails."""
     pass
 
 
-class TradingLogicException(Binance1ProError):
-    """
-    Strateji / trade yürütme sırasında oluşan mantık hataları için.
-    """
+class ModelTrainingException(Exception):
+    """Raised when batch or online model training fails."""
     pass
 
 
-class ConfigValidationException(Binance1ProError):
-    """
-    Eksik veya hatalı konfigürasyon / credential durumları için.
-    """
+class SignalGenerationException(Exception):
+    """Raised when signal generation / decision logic fails."""
     pass
 
 
-class RetryLimitExceeded(Binance1ProError):
-    """
-    Retry mekanizması belirlenen deneme sayısını aştığında fırlatılan hata.
-    """
+class OnlineLearningException(Exception):
+    """Raised when online learning / partial fit fails."""
     pass
 
 
-class GlobalExceptionHandler:
+class BatchLearningException(Exception):
+    """Raised when batch learning pipeline fails."""
+    pass
+
+
+class CacheException(Exception):
+    """Raised for cache/Redis related errors."""
+    pass
+
+
+class APIFetchException(Exception):
+    """Raised when fetching data from external APIs fails."""
+    pass
+
+
+class RedisConnectionException(Exception):
+    """Raised when Redis cannot be reached or misconfigured."""
+    pass
+
+
+class RetryLimitExceeded(Exception):
     """
-    Uygulama seviyesinde yakalanmayan tüm exception'ları loglamak için
-    global exception handler.
+    Raised by retry helpers when a callable keeps failing after max retries.
+    core.utils.retry bu class'a bağlı.
     """
-
-    @staticmethod
-    def handle_exception(exc_type, exc_value, exc_traceback):
-        # Ctrl+C (KeyboardInterrupt) için default davranışı bozmuyoruz
-        if issubclass(exc_type, KeyboardInterrupt):
-            sys.__excepthook__(exc_type, exc_value, exc_traceback)
-            return
-
-        logging.critical(
-            "💥 Uncaught exception",
-            exc_info=(exc_type, exc_value, exc_traceback),
-        )
-
-    @classmethod
-    def register(cls):
-        """
-        Global exception handler'ı aktif eder.
-        main.py içinde GlobalExceptionHandler.register() çağrılıyor.
-        """
-        sys.excepthook = cls.handle_exception
-        logging.getLogger(__name__).info("✅ Global exception handler registered.")
-
+    pass
