@@ -245,7 +245,6 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             LOGGER.warning("[SIGNAL] Empty dataframe, cannot generate signal.")
             return
 
-        # Feature / label ayrımı
         X, y, feature_cols = _split_features_labels(clean_df)
 
         # Sadece son bar için feature (shape: (1, n_features))
@@ -268,8 +267,7 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         # Feature kolon hizalaması
         online_learner.feature_columns = feature_cols
 
-        # OnlineLearner içinden scalar BUY olasılığı (class=1) al
-        # (predict_proba_live, online_learning.py içinde float döndürüyor olmalı)
+        # Tek bir scalar BUY olasılığı (class=1)
         p_buy = online_learner.predict_proba_live(X_live)
 
         LOGGER.info(
@@ -279,7 +277,6 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             SELL_THRESHOLD,
         )
 
-        # Basit karar mantığı
         if p_buy >= BUY_THRESHOLD:
             signal = "BUY"
         elif p_buy <= SELL_THRESHOLD:
@@ -289,15 +286,10 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 
         LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
 
-        # TODO:
-        # - RiskManager entegrasyonu
-        # - Binance emir açma/kapama
-        # - Telegram bildirimi
-        # buraya eklenecek.
-
     except Exception as e:
         LOGGER.error("💥 [SIGNAL] Error while generating signal: %s", e, exc_info=True)
         raise SignalGenerationException(f"Signal generation failed: {e}") from e
+
 
 
 # ---------------------------------------------------------
