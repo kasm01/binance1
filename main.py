@@ -75,10 +75,10 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     )
 
     try:
-        # 1) DataLoader oluştur
+        # 1) DataLoader'ı env değişkenleriyle başlat
         data_loader = DataLoader(env_vars)
 
-        # 2) Uygun load method'unu seç
+        # 2) Uygun load metodu seç (esnek lookup)
         candidate_methods = (
             "load_and_cache_klines",
             "load_and_cache_ohlcv",
@@ -100,27 +100,42 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
                 + ", ".join(candidate_methods)
             )
 
-        # ❗ ÖNEMLİ: symbol ve interval ARGÜMANLARINI DA GÖNDERİYORUZ
-        raw_df = load_method(symbol=symbol, interval=interval, limit=limit)
+        # 3) Metodun imzasına göre symbol/interval parametrelerini gönder
+        code_vars = load_method.__code__.co_varnames
+        kwargs: Dict[str, Any] = {}
+
+        # self zaten ilk parametre, onu atlıyoruz
+        if "symbol" in code_vars:
+            kwargs["symbol"] = symbol
+        if "interval" in code_vars:
+            kwargs["interval"] = interval
+        if "limit" in code_vars:
+            kwargs["limit"] = limit
+
+        # limit parametresi yoksa yine de positional argüman olarak geçebilir
+        if "limit" not in code_vars:
+            raw_df = load_method(**kwargs)
+        else:
+            raw_df = load_method(**kwargs)
 
         if raw_df is None or raw_df.empty:
             raise DataLoadingException("No data returned from DataLoader.")
 
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # 3) Anomali tespiti (varsa)
+        # 4) Anomali tespiti (varsa) - hata durumunda sadece uyarı ver, raw_df ile devam et
         try:
-            anomaly_detector = AnomalyDetector(env_vars=env_vars, logger=LOGGER)
+            # env_vars / logger göndermiyoruz; mevcut imza ile uyumlu olsun diye sade kullandık
+            anomaly_detector = AnomalyDetector()
             raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s",
-                e,
-                exc_info=True,
+                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
             )
 
-        # 4) Feature engineering
-        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
+        # 5) Feature engineering
+        # Burada da FeatureEngineer sadece df bekliyor, logger parametresini kaldırdık.
+        feature_engineer = FeatureEngineer(df=raw_df)
         features_df = feature_engineer.transform()
 
         LOGGER.info(
@@ -132,7 +147,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         return features_df
 
     except BinanceBotException:
-        # Bizim tanımladığımız custom exception'lardan biri ise direkt fırlat
+        # Bizim tanımladığımız custom exception ise direkt fırlat
         raise
     except Exception as e:
         LOGGER.error(
@@ -141,6 +156,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             exc_info=True,
         )
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
+
 
 
 # ---------------------------------------------------------
