@@ -4,6 +4,7 @@ import signal
 from contextlib import suppress
 from typing import Dict, Any, List, Tuple
 
+import numpy as np
 import pandas as pd
 from aiohttp import web
 
@@ -99,6 +100,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         code_vars = load_method.__code__.co_varnames
         kwargs: Dict[str, Any] = {}
 
+        # self zaten ilk parametre, onu atlıyoruz
         if "symbol" in code_vars:
             kwargs["symbol"] = symbol
         if "interval" in code_vars:
@@ -137,6 +139,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         return features_df
 
     except BinanceBotException:
+        # Bizim tanımladığımız custom exception ise direkt fırlat
         raise
     except Exception as e:
         LOGGER.error(
@@ -164,6 +167,7 @@ def _split_features_labels(
 
     label_col = "label"
 
+    # Feature kolonlarını: tüm sayısal kolonlar - label
     numeric_cols = clean_df.select_dtypes(
         include=["float64", "float32", "int64", "int32"]
     ).columns.tolist()
@@ -178,7 +182,9 @@ def _split_features_labels(
     return X, y, feature_cols
 
 
-def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
+def train_models_and_update_state(
+    clean_df: pd.DataFrame, env_vars: Dict[str, str]
+) -> None:
     """
     - BatchLearner ile batch model eğitir
     - OnlineLearner ile initial_fit + partial_update yapar
@@ -207,6 +213,7 @@ def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, st
             logger=LOGGER,
         )
         batch_model = batch_learner.fit()
+        # batch_model RAM'de, ayrıca models/batch_model.joblib olarak kaydedilmeli
 
         # --- Online Learner ---
         LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
@@ -257,6 +264,7 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 
         X, y, feature_cols = _split_features_labels(clean_df)
 
+        # Sadece son bar için feature (shape: (1, n_features))
         X_live = X.iloc[[-1]]
 
         model_dir = env_vars.get("MODEL_DIR", "models")
@@ -265,6 +273,7 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         BUY_THRESHOLD = _get_env_float(env_vars, "BUY_THRESHOLD", 0.6)
         SELL_THRESHOLD = _get_env_float(env_vars, "SELL_THRESHOLD", 0.4)
 
+        # OnlineLearner mevcut modeli diskten yükleyecek
         online_learner = OnlineLearner(
             model_dir=model_dir,
             base_model_name=online_model_name,
@@ -272,8 +281,10 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             logger=LOGGER,
         )
 
+        # Feature kolon hizalaması
         online_learner.feature_columns = feature_cols
 
+        # Tek bir scalar BUY olasılığı (class=1)
         p_buy = online_learner.predict_proba_live(X_live)
 
         LOGGER.info(
@@ -293,7 +304,11 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
 
     except Exception as e:
-        LOGGER.error("💥 [SIGNAL] Error while generating signal: %s", e, exc_info=True)
+        LOGGER.error(
+            "💥 [SIGNAL] Error while generating signal: %s",
+            e,
+            exc_info=True,
+        )
         raise SignalGenerationException(f"Signal generation failed: {e}") from e
 
 
@@ -302,12 +317,21 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 # ---------------------------------------------------------
 
 async def run_data_and_model_pipeline(env_vars: Dict[str, str]) -> None:
+    """
+    Tek bir cycle:
+      - Data pipeline
+      - Model training (batch + online)
+      - Signal generation
+    """
     clean_df = await run_data_pipeline(env_vars)
     train_models_and_update_state(clean_df, env_vars)
     generate_signal(clean_df, env_vars)
 
 
 async def bot_loop(env_vars: Dict[str, str]) -> None:
+    """
+    Arka planda sürekli çalışan ana bot loop'u.
+    """
     LOGGER.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
     interval_sec = _get_env_int(env_vars, "BOT_LOOP_INTERVAL", 60)
 
@@ -315,7 +339,11 @@ async def bot_loop(env_vars: Dict[str, str]) -> None:
         try:
             await run_data_and_model_pipeline(env_vars)
         except Exception as e:
-            LOGGER.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
+            LOGGER.error(
+                "💥 [BOT] Unexpected error in bot_loop: %s",
+                e,
+                exc_info=True,
+            )
         finally:
             await asyncio.sleep(interval_sec)
 
@@ -381,10 +409,14 @@ def main() -> None:
             e,
             exc_info=True,
         )
-        raise ConfigException(f"Failed to load environment variables: {e}") from e
+        # EnvironmentException yerine ConfigException kullanıyoruz
+        raise ConfigException(
+            f"Failed to load environment variables: {e}"
+        ) from e
 
     app = create_app(env_vars)
 
+    # Graceful shutdown için sinyal yakalama
     loop = asyncio.get_event_loop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
