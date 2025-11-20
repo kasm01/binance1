@@ -63,6 +63,13 @@ def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
 # ---------------------------------------------------------
 
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
+    """
+    Tek cycle için veri pipeline'ı:
+      - Binance'ten kline verisini yükler (cache kullanabilir)
+      - Gerekirse anomaly detection uygular
+      - Feature engineering yapar
+      - Features DataFrame'ini döner
+    """
     symbol = env_vars.get("SYMBOL", "BTCUSDT")
     interval = env_vars.get("INTERVAL", "1m")
     limit = _get_env_int(env_vars, "LIMIT", 1000)
@@ -75,33 +82,66 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     )
 
     try:
-        # ✅ YENİ: DataLoader artık sadece env_vars kabul ediyor
-        data_loader = DataLoader(env_vars=env_vars)
+        # --- 1) DataLoader instance oluştur ---
+        # Repo'daki DataLoader imzası ile uyumlu olacak şekilde,
+        # önce env_vars ile dene, TypeError olursa paramsız dene.
+        try:
+            data_loader = DataLoader(env_vars=env_vars)
+        except TypeError:
+            # Eski versiyon ise env_vars almıyor olabilir
+            data_loader = DataLoader()
 
-        # Eğer DataLoader içinde limit kullanılıyorsa, genelde bu şekilde:
-        raw_df = await data_loader.load_and_cache_klines(limit=limit)
+        # --- 2) Kline verisini yükle (esnek isim çözümü) ---
+        # Farklı DataLoader versiyonları için farklı method isimlerini destekle:
+        # - load_and_cache_klines
+        # - load_and_cache_ohlcv
+        # - load_klines
+        load_method = None
+        for name in ("load_and_cache_klines", "load_and_cache_ohlcv", "load_klines"):
+            if hasattr(data_loader, name):
+                load_method = getattr(data_loader, name)
+                LOGGER.info("[DATA] Using DataLoader.%s(...) method", name)
+                break
+
+        if load_method is None:
+            raise DataLoadingException(
+                "DataLoader has no load_and_cache_klines / load_and_cache_ohlcv / load_klines method"
+            )
+
+        # Metodun parametrelerine bakarak limit verelim/vermeden çağıralım
+        try:
+            arg_names = load_method.__code__.co_varnames
+        except AttributeError:
+            # Bazı wrapper'larda __code__ olmayabilir; en basit haliyle limit vererek deneriz
+            arg_names = ()
+
+        if "limit" in arg_names:
+            result = load_method(limit=limit)
+        else:
+            result = load_method()
+
+        # Metod async ise await et, sync ise direkt kullan
+        if asyncio.iscoroutine(result):
+            raw_df = await result
+        else:
+            raw_df = result
 
         if raw_df is None or raw_df.empty:
             raise DataLoadingException("No data returned from DataLoader.")
 
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # 3) Anomali tespiti (varsa)
+        # --- 3) Anomali tespiti (varsa) ---
         try:
-            # Buradaki imza da AnomalyDetector dosyan ile birebir olsun.
-            # Şimdilik en güvenlisi: sadece logger verelim.
-            anomaly_detector = AnomalyDetector(logger=LOGGER)
-            clean_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
+            anomaly_detector = AnomalyDetector(env_vars=env_vars, logger=LOGGER)
+            raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s",
-                e,
-                exc_info=True,
+                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
             )
-            clean_df = raw_df
 
-        # 4) Feature engineering
-        feature_engineer = FeatureEngineer(df=clean_df, logger=LOGGER)
+        # --- 4) Feature engineering ---
+        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
         features_df = feature_engineer.transform()
 
         LOGGER.info(
@@ -117,12 +157,9 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         raise
     except Exception as e:
         LOGGER.error(
-            "💥 [PIPELINE] Unexpected error in data pipeline: %s",
-            e,
-            exc_info=True,
+            "💥 [PIPELINE] Unexpected error in data pipeline: %s", e, exc_info=True
         )
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
-
 
 
 # ---------------------------------------------------------
