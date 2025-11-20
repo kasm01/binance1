@@ -83,19 +83,15 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
     try:
         # --- 1) DataLoader instance oluştur ---
-        # Repo'daki DataLoader imzası ile uyumlu olacak şekilde,
-        # önce env_vars ile dene, TypeError olursa paramsız dene.
         try:
+            # Yeni versiyon: env_vars alan DataLoader
             data_loader = DataLoader(env_vars=env_vars)
         except TypeError:
-            # Eski versiyon ise env_vars almıyor olabilir
+            # Eski versiyon: parametresiz DataLoader
             data_loader = DataLoader()
 
-        # --- 2) Kline verisini yükle (esnek isim çözümü) ---
-        # Farklı DataLoader versiyonları için farklı method isimlerini destekle:
-        # - load_and_cache_klines
-        # - load_and_cache_ohlcv
-        # - load_klines
+        # --- 2) Kline verisini yükle (esnek method ismi) ---
+        # DataLoader içinde olabilecek method isimlerini sırayla deniyoruz.
         load_method = None
         for name in ("load_and_cache_klines", "load_and_cache_ohlcv", "load_klines"):
             if hasattr(data_loader, name):
@@ -108,19 +104,19 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
                 "DataLoader has no load_and_cache_klines / load_and_cache_ohlcv / load_klines method"
             )
 
-        # Metodun parametrelerine bakarak limit verelim/vermeden çağıralım
+        # Method parametrelerini kontrol et
         try:
             arg_names = load_method.__code__.co_varnames
         except AttributeError:
-            # Bazı wrapper'larda __code__ olmayabilir; en basit haliyle limit vererek deneriz
             arg_names = ()
 
+        # limit parametresi varsa gönder, yoksa göndermeden çağır
         if "limit" in arg_names:
             result = load_method(limit=limit)
         else:
             result = load_method()
 
-        # Metod async ise await et, sync ise direkt kullan
+        # Method async ise await et, sync ise direkt kullan
         if asyncio.iscoroutine(result):
             raw_df = await result
         else:
@@ -137,7 +133,9 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
+                "[DATA] Anomaly detection failed, using raw data: %s",
+                e,
+                exc_info=True,
             )
 
         # --- 4) Feature engineering ---
@@ -157,7 +155,9 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         raise
     except Exception as e:
         LOGGER.error(
-            "💥 [PIPELINE] Unexpected error in data pipeline: %s", e, exc_info=True
+            "💥 [PIPELINE] Unexpected error in data pipeline: %s",
+            e,
+            exc_info=True,
         )
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
 
