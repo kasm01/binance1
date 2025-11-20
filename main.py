@@ -100,7 +100,6 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         code_vars = load_method.__code__.co_varnames
         kwargs: Dict[str, Any] = {}
 
-        # self zaten ilk parametre, onu atlıyoruz
         if "symbol" in code_vars:
             kwargs["symbol"] = symbol
         if "interval" in code_vars:
@@ -213,7 +212,6 @@ def train_models_and_update_state(
             logger=LOGGER,
         )
         batch_model = batch_learner.fit()
-        # batch_model RAM'de, ayrıca models/batch_model.joblib olarak kaydedilmeli
 
         # --- Online Learner ---
         LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
@@ -409,7 +407,6 @@ def main() -> None:
             e,
             exc_info=True,
         )
-        # EnvironmentException yerine ConfigException kullanıyoruz
         raise ConfigException(
             f"Failed to load environment variables: {e}"
         ) from e
