@@ -64,68 +64,99 @@ def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
 # ---------------------------------------------------------
 
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
+    """
+    Tek cycle'da çalışacak veri pipeline'ı:
+      - Binance'ten ham veriyi çek
+      - (Opsiyonel) Anomali tespiti
+      - Feature engineering
+      - Label (future_return, target) üretimi
+    """
     symbol = env_vars.get("SYMBOL", "BTCUSDT")
     interval = env_vars.get("INTERVAL", "1m")
     limit = _get_env_int(env_vars, "LIMIT", 1000)
+    label_horizon = _get_env_int(env_vars, "LABEL_HORIZON", 5)
 
     LOGGER.info(
         "[DATA] Starting data pipeline for %s (%s, limit=%d)",
-        symbol,
-        interval,
-        limit,
+        symbol, interval, limit
     )
 
     try:
-        # ⬇️ ESKİ HALİ (HATALI)
-        # data_loader = DataLoader(
-        #     symbol=symbol,
-        #     interval=interval,
-        #     limit=limit,
-        #     env_vars=env_vars,
-        #     logger=LOGGER,
-        # )
-
-        # ⬇️ YENİ HALİ (DOĞRUSU)
+        # --- 1) Data Load (Binance + cache vs.) ---
         data_loader = DataLoader(
-            env_vars=env_vars,
             logger=LOGGER,
+            env_vars=env_vars,   # ✅ ARTIK TÜM AYARLAR BURADAN OKUNUYOR
         )
-
-        raw_df = await data_loader.load_and_cache_klines(limit=limit)
-
-        if raw_df is None or raw_df.empty:
-            raise DataLoadingException("No data returned from DataLoader.")
-
+        raw_df = await data_loader.load()
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # 3) Anomali tespiti (varsa)
+        if raw_df is None or len(raw_df) == 0:
+            raise DataLoadingException("Raw dataframe is empty after data loading.")
+
+        # --- 2) Temel temizlik ---
+        raw_df = raw_df.sort_index()
+        raw_df = raw_df.dropna(how="any")
+
+        # --- 3) (Opsiyonel) Anomali Tespiti ---
         try:
-            anomaly_detector = AnomalyDetector(
-                env_vars=env_vars,
-                logger=LOGGER,
-            )
-            raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
+            anomaly_detector = AnomalyDetector(logger=LOGGER)
+            clean_df = anomaly_detector.filter_anomalies(raw_df)
+            LOGGER.info("[DATA] After anomaly filtering: %s", clean_df.shape)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s",
-                e,
-                exc_info=True,
+                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
             )
+            clean_df = raw_df
 
-        # 4) Feature engineering
-        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
+        if clean_df is None or len(clean_df) == 0:
+            raise DataProcessingException("Clean dataframe is empty after anomaly filtering.")
+
+        # --- 4) Feature Engineering ---
+        feature_engineer = FeatureEngineer(df=clean_df, logger=LOGGER)
         features_df = feature_engineer.transform()
 
+        if features_df is None or len(features_df) == 0:
+            raise FeatureEngineeringException("Features dataframe is empty after FE.")
+
+        # Özellik dataframe'ini logla
         LOGGER.info(
             "[FE] Features DF shape: %s, columns=%s",
             features_df.shape,
             list(features_df.columns),
         )
 
+        # --- 5) Label Generation (inline) ---
+        # future_return ve target değişkenlerini burada üretelim
+        # NOT: Hali hazırda repo'da LabelGenerator yoksa, future_return'i
+        # basit şekilde son kapanışa göre hesaplayacağız.
+        try:
+            # future_return: ileriye dönük getiri
+            horizon = label_horizon
+            features_df = features_df.copy()
+            features_df["future_close"] = features_df["close"].shift(-horizon)
+            features_df["future_return"] = (
+                features_df["future_close"] / features_df["close"] - 1.0
+            )
+
+            # Basit target: future_return > 0 ise 1, değilse 0
+            features_df["target"] = (features_df["future_return"] > 0).astype(int)
+
+            # Son horizon satırı, future_close/future_return üretilemediği için düşür
+            features_df = features_df.dropna(subset=["future_return", "target"])
+
+            LOGGER.info(
+                "[LABEL] future_return mean=%.4f, std=%.4f, positive ratio=%.3f",
+                features_df["future_return"].mean(),
+                features_df["future_return"].std(),
+                features_df["target"].mean(),
+            )
+        except Exception as e:
+            raise DataProcessingException(f"Inline label generation failed: {e}") from e
+
         return features_df
 
     except BinanceBotException:
-        # Bizim tanımladığımız custom exception'lardan biri ise direkt fırlat
+        # Zaten özel exception ise tekrar sarmadan fırlat
         raise
     except Exception as e:
         LOGGER.error("💥 [PIPELINE] Unexpected error in data pipeline: %s", e, exc_info=True)
