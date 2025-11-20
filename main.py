@@ -75,10 +75,10 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
     )
 
     try:
-        # DataLoader sadece env_vars ile çalışıyor
-        data_loader = DataLoader(env_vars=env_vars)
+        # 1) DataLoader oluştur
+        data_loader = DataLoader(env_vars)
 
-        # DataLoader içinde olabilecek method isimlerini tek tek dene
+        # 2) Uygun load method'unu seç
         candidate_methods = (
             "load_and_cache_klines",
             "load_and_cache_ohlcv",
@@ -96,16 +96,12 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
         if load_method is None:
             raise DataLoadingException(
-                "DataLoader has no suitable load method; "
-                "tried: load_and_cache_klines, load_and_cache_ohlcv, "
-                "load_klines, load_and_cache, load"
+                "DataLoader has no suitable load method; tried: "
+                + ", ".join(candidate_methods)
             )
 
-        # Method async mi sync mi, ona göre çağır
-        if inspect.iscoroutinefunction(load_method):
-            raw_df = await load_method(limit=limit)
-        else:
-            raw_df = load_method(limit=limit)
+        # ❗ ÖNEMLİ: Burada symbol ve interval'i de geçiriyoruz
+        raw_df = load_method(symbol=symbol, interval=interval, limit=limit)
 
         if raw_df is None or raw_df.empty:
             raise DataLoadingException("No data returned from DataLoader.")
@@ -114,21 +110,17 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
         # 3) Anomali tespiti (varsa)
         try:
-            anomaly_detector = AnomalyDetector(
-                env_vars=env_vars,
-                logger=LOGGER,
-            )
-            clean_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
+            anomaly_detector = AnomalyDetector(env_vars=env_vars, logger=LOGGER)
+            raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
                 "[DATA] Anomaly detection failed, using raw data: %s",
                 e,
                 exc_info=True,
             )
-            clean_df = raw_df
 
         # 4) Feature engineering
-        feature_engineer = FeatureEngineer(df=clean_df, logger=LOGGER)
+        feature_engineer = FeatureEngineer(df=raw_df, logger=LOGGER)
         features_df = feature_engineer.transform()
 
         LOGGER.info(
