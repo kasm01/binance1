@@ -100,7 +100,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
                 + ", ".join(candidate_methods)
             )
 
-        # ❗ ÖNEMLİ: Burada symbol ve interval'i de geçiriyoruz
+        # ❗ ÖNEMLİ: symbol ve interval ARGÜMANLARINI DA GÖNDERİYORUZ
         raw_df = load_method(symbol=symbol, interval=interval, limit=limit)
 
         if raw_df is None or raw_df.empty:
@@ -141,7 +141,6 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             exc_info=True,
         )
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
-
 
 
 # ---------------------------------------------------------
