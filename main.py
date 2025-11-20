@@ -1,12 +1,9 @@
 import asyncio
 import logging
-import os
 import signal
 from contextlib import suppress
 from typing import Dict, Any, List, Tuple
 
-import inspect
-import numpy as np
 import pandas as pd
 from aiohttp import web
 
@@ -22,10 +19,7 @@ from core.exceptions import (
     OnlineLearningException,
     PredictionException,
     SignalGenerationException,
-    PipelineException,
-    BinanceAPIException,
 )
-
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
@@ -57,6 +51,7 @@ def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
         return float(env_vars.get(key, str(default)))
     except Exception:
         return default
+
 
 # ---------------------------------------------------------
 # DATA PIPELINE
@@ -100,11 +95,10 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
                 + ", ".join(candidate_methods)
             )
 
-        # 3) Metodun imzasına göre symbol/interval parametrelerini gönder
+        # 3) Metodun imzasına göre symbol/interval/limit parametrelerini gönder
         code_vars = load_method.__code__.co_varnames
         kwargs: Dict[str, Any] = {}
 
-        # self zaten ilk parametre, onu atlıyoruz
         if "symbol" in code_vars:
             kwargs["symbol"] = symbol
         if "interval" in code_vars:
@@ -112,11 +106,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         if "limit" in code_vars:
             kwargs["limit"] = limit
 
-        # limit parametresi yoksa yine de positional argüman olarak geçebilir
-        if "limit" not in code_vars:
-            raw_df = load_method(**kwargs)
-        else:
-            raw_df = load_method(**kwargs)
+        raw_df = load_method(**kwargs)
 
         if raw_df is None or raw_df.empty:
             raise DataLoadingException("No data returned from DataLoader.")
@@ -125,16 +115,16 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
         # 4) Anomali tespiti (varsa) - hata durumunda sadece uyarı ver, raw_df ile devam et
         try:
-            # env_vars / logger göndermiyoruz; mevcut imza ile uyumlu olsun diye sade kullandık
             anomaly_detector = AnomalyDetector()
             raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
+                "[DATA] Anomaly detection failed, using raw data: %s",
+                e,
+                exc_info=True,
             )
 
         # 5) Feature engineering
-        # Burada da FeatureEngineer sadece df bekliyor, logger parametresini kaldırdık.
         feature_engineer = FeatureEngineer(df=raw_df)
         features_df = feature_engineer.transform()
 
@@ -147,7 +137,6 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         return features_df
 
     except BinanceBotException:
-        # Bizim tanımladığımız custom exception ise direkt fırlat
         raise
     except Exception as e:
         LOGGER.error(
@@ -158,12 +147,13 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
 
 
-
 # ---------------------------------------------------------
 # MODEL TRAINING (Batch + Online)
 # ---------------------------------------------------------
 
-def _split_features_labels(clean_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
+def _split_features_labels(
+    clean_df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
     """
     clean_df içinden feature kolonları ve label kolonunu ayırır.
     Assumption:
@@ -174,8 +164,9 @@ def _split_features_labels(clean_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Ser
 
     label_col = "label"
 
-    # Feature kolonlarını: tüm sayısal kolonlar - label
-    numeric_cols = clean_df.select_dtypes(include=["float64", "float32", "int64", "int32"]).columns.tolist()
+    numeric_cols = clean_df.select_dtypes(
+        include=["float64", "float32", "int64", "int32"]
+    ).columns.tolist()
     feature_cols = [c for c in numeric_cols if c not in [label_col]]
 
     if not feature_cols:
@@ -216,7 +207,6 @@ def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, st
             logger=LOGGER,
         )
         batch_model = batch_learner.fit()
-        # batch_model RAM'de, ayrıca models/batch_model.joblib olarak kaydedilmeli
 
         # --- Online Learner ---
         LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
@@ -242,7 +232,11 @@ def train_models_and_update_state(clean_df: pd.DataFrame, env_vars: Dict[str, st
         LOGGER.error("💥 [MODEL] Known model pipeline error: %s", e, exc_info=True)
         raise
     except Exception as e:
-        LOGGER.error("💥 [MODEL] Unexpected error in train_models_and_update_state: %s", e, exc_info=True)
+        LOGGER.error(
+            "💥 [MODEL] Unexpected error in train_models_and_update_state: %s",
+            e,
+            exc_info=True,
+        )
         raise ModelTrainingException(f"Unexpected training error: {e}") from e
 
 
@@ -263,7 +257,6 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
 
         X, y, feature_cols = _split_features_labels(clean_df)
 
-        # Sadece son bar için feature (shape: (1, n_features))
         X_live = X.iloc[[-1]]
 
         model_dir = env_vars.get("MODEL_DIR", "models")
@@ -272,7 +265,6 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         BUY_THRESHOLD = _get_env_float(env_vars, "BUY_THRESHOLD", 0.6)
         SELL_THRESHOLD = _get_env_float(env_vars, "SELL_THRESHOLD", 0.4)
 
-        # OnlineLearner mevcut modeli diskten yükleyecek
         online_learner = OnlineLearner(
             model_dir=model_dir,
             base_model_name=online_model_name,
@@ -280,10 +272,8 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
             logger=LOGGER,
         )
 
-        # Feature kolon hizalaması
         online_learner.feature_columns = feature_cols
 
-        # Tek bir scalar BUY olasılığı (class=1)
         p_buy = online_learner.predict_proba_live(X_live)
 
         LOGGER.info(
@@ -307,27 +297,17 @@ def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> None:
         raise SignalGenerationException(f"Signal generation failed: {e}") from e
 
 
-
 # ---------------------------------------------------------
 # BOT LOOP
 # ---------------------------------------------------------
 
 async def run_data_and_model_pipeline(env_vars: Dict[str, str]) -> None:
-    """
-    Tek bir cycle:
-      - Data pipeline
-      - Model training (batch + online)
-      - Signal generation
-    """
     clean_df = await run_data_pipeline(env_vars)
     train_models_and_update_state(clean_df, env_vars)
     generate_signal(clean_df, env_vars)
 
 
 async def bot_loop(env_vars: Dict[str, str]) -> None:
-    """
-    Arka planda sürekli çalışan ana bot loop'u.
-    """
     LOGGER.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
     interval_sec = _get_env_int(env_vars, "BOT_LOOP_INTERVAL", 60)
 
@@ -338,7 +318,6 @@ async def bot_loop(env_vars: Dict[str, str]) -> None:
             LOGGER.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
         finally:
             await asyncio.sleep(interval_sec)
-
 
 
 # ---------------------------------------------------------
@@ -397,12 +376,15 @@ def main() -> None:
     try:
         env_vars = load_environment_variables()
     except Exception as e:
-        LOGGER.error("💥 [MAIN] Failed to load environment variables: %s", e, exc_info=True)
-        raise EnvironmentException(f"Failed to load environment variables: {e}") from e
+        LOGGER.error(
+            "💥 [MAIN] Failed to load environment variables: %s",
+            e,
+            exc_info=True,
+        )
+        raise ConfigException(f"Failed to load environment variables: {e}") from e
 
     app = create_app(env_vars)
 
-    # Graceful shutdown için sinyal yakalama
     loop = asyncio.get_event_loop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -426,4 +408,3 @@ async def _shutdown(loop: asyncio.AbstractEventLoop, sig: signal.Signals) -> Non
 
 if __name__ == "__main__":
     main()
-
