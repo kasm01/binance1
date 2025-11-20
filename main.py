@@ -114,7 +114,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # 4) Feature engineering (önce feature'ları üretelim)
+        # 4) Feature engineering
         feature_engineer = FeatureEngineer(df=raw_df)
         features_df = feature_engineer.transform()
 
@@ -124,36 +124,51 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             list(features_df.columns),
         )
 
-        # 5) Anomali tespiti features_df üzerinden (opsiyonel)
+        # 5) Anomali tespiti: FEATURES ÜZERİNDE çalışsın
         try:
-            anomaly_detector = AnomalyDetector(features_df=features_df, logger=LOGGER)
+            anomaly_detector = AnomalyDetector(features_df)
             features_df = anomaly_detector.detect_and_handle_anomalies()
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed on features_df, using original features: %s",
+                "[DATA] Anomaly detection failed on features_df, using raw features: %s",
                 e,
                 exc_info=True,
             )
 
-        # 6) Basit label üretimi (next-bar direction)
+        # 6) Label üretimi (basit next-bar direction)
         try:
-            if "close" in features_df.columns:
-                next_close = features_df["close"].shift(-1)
-                features_df["label"] = (next_close > features_df["close"]).astype(int)
-                # Son satırda next_close NaN olacağı için atıyoruz
-                features_df = features_df.dropna(subset=["label"])
-                LOGGER.info(
-                    "[LABEL] Generated 'label' column. Final DF shape: %s",
-                    features_df.shape,
+            target_horizon = _get_env_int(env_vars, "LABEL_HORIZON", 1)
+
+            if "close" not in features_df.columns:
+                raise DataProcessingException(
+                    "Column 'close' required for label generation but not found."
                 )
-            else:
-                LOGGER.warning(
-                    "[LABEL] 'close' column not found in features_df; skipping label generation."
-                )
-        except Exception as e:
-            LOGGER.error(
-                "[LABEL] Error while generating label column: %s", e, exc_info=True
+
+            close = pd.to_numeric(features_df["close"], errors="coerce")
+            future_close = close.shift(-target_horizon)
+            returns = (future_close - close) / close
+
+            buy_thr = _get_env_float(env_vars, "LABEL_BUY_RET", 0.001)
+            sell_thr = _get_env_float(env_vars, "LABEL_SELL_RET", -0.001)
+
+            # 1 = BUY, 0 = SELL/HOLD (basit örnek)
+            label = np.where(
+                returns >= buy_thr,
+                1,
+                0,
             )
+
+            features_df["label"] = label
+            features_df = features_df.dropna(subset=["label"])
+            features_df["label"] = features_df["label"].astype(int)
+
+            LOGGER.info(
+                "[LABEL] Generated 'label' column. Final DF shape: %s",
+                features_df.shape,
+            )
+        except Exception as e:
+            LOGGER.error("[LABEL] Failed to generate label column: %s", e, exc_info=True)
+            raise DataProcessingException(f"Label generation failed: {e}") from e
 
         return features_df
 
