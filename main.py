@@ -114,18 +114,7 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
 
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # 4) Anomali tespiti (varsa) - hata durumunda sadece uyarı ver, raw_df ile devam et
-        try:
-            anomaly_detector = AnomalyDetector()
-            raw_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
-        except Exception as e:
-            LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s",
-                e,
-                exc_info=True,
-            )
-
-        # 5) Feature engineering
+        # 4) Feature engineering (önce feature'ları üretelim)
         feature_engineer = FeatureEngineer(df=raw_df)
         features_df = feature_engineer.transform()
 
@@ -134,6 +123,37 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             features_df.shape,
             list(features_df.columns),
         )
+
+        # 5) Anomali tespiti features_df üzerinden (opsiyonel)
+        try:
+            anomaly_detector = AnomalyDetector(features_df=features_df, logger=LOGGER)
+            features_df = anomaly_detector.detect_and_handle_anomalies()
+        except Exception as e:
+            LOGGER.warning(
+                "[DATA] Anomaly detection failed on features_df, using original features: %s",
+                e,
+                exc_info=True,
+            )
+
+        # 6) Basit label üretimi (next-bar direction)
+        try:
+            if "close" in features_df.columns:
+                next_close = features_df["close"].shift(-1)
+                features_df["label"] = (next_close > features_df["close"]).astype(int)
+                # Son satırda next_close NaN olacağı için atıyoruz
+                features_df = features_df.dropna(subset=["label"])
+                LOGGER.info(
+                    "[LABEL] Generated 'label' column. Final DF shape: %s",
+                    features_df.shape,
+                )
+            else:
+                LOGGER.warning(
+                    "[LABEL] 'close' column not found in features_df; skipping label generation."
+                )
+        except Exception as e:
+            LOGGER.error(
+                "[LABEL] Error while generating label column: %s", e, exc_info=True
+            )
 
         return features_df
 
