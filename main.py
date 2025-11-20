@@ -63,66 +63,46 @@ def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
 # ---------------------------------------------------------
 
 async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
-    """
-    Binance verisini yükleyen, temizleyen, anomali tespiti yapan,
-    feature engineering uygulayan ve dataframe döndüren ana pipeline.
-    """
-
     symbol = env_vars.get("SYMBOL", "BTCUSDT")
     interval = env_vars.get("INTERVAL", "1m")
     limit = _get_env_int(env_vars, "LIMIT", 1000)
 
     LOGGER.info(
         "[DATA] Starting data pipeline for %s (%s, limit=%d)",
-        symbol, interval, limit
+        symbol,
+        interval,
+        limit,
     )
 
     try:
-        # ---------------------------------------------------------
-        # 1) DATA LOADER — Doğru kullanım
-        # ---------------------------------------------------------
-        data_loader = DataLoader(
-            env_vars=env_vars,
-            logger=LOGGER,
-        )
+        # ✅ YENİ: DataLoader artık sadece env_vars kabul ediyor
+        data_loader = DataLoader(env_vars=env_vars)
 
-        raw_df = await data_loader.load()
+        # Eğer DataLoader içinde limit kullanılıyorsa, genelde bu şekilde:
+        raw_df = await data_loader.load_and_cache_klines(limit=limit)
 
         if raw_df is None or raw_df.empty:
             raise DataLoadingException("No data returned from DataLoader.")
 
         LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-        # ---------------------------------------------------------
-        # 2) Ham veriyi temizle
-        # ---------------------------------------------------------
-        raw_df = raw_df.sort_index()
-        raw_df = raw_df.dropna(how="any")
-
-        # ---------------------------------------------------------
-        # 3) (OPSİYONEL) ANOMALİ TESPİTİ
-        # ---------------------------------------------------------
+        # 3) Anomali tespiti (varsa)
         try:
+            # Buradaki imza da AnomalyDetector dosyan ile birebir olsun.
+            # Şimdilik en güvenlisi: sadece logger verelim.
             anomaly_detector = AnomalyDetector(logger=LOGGER)
-            clean_df = anomaly_detector.filter_anomalies(raw_df)
-            LOGGER.info("[DATA] After anomaly filtering: %s", clean_df.shape)
+            clean_df = anomaly_detector.detect_and_handle_anomalies(raw_df)
         except Exception as e:
             LOGGER.warning(
-                "[DATA] Anomaly detection failed, using raw data: %s", e, exc_info=True
+                "[DATA] Anomaly detection failed, using raw data: %s",
+                e,
+                exc_info=True,
             )
             clean_df = raw_df
 
-        if clean_df is None or clean_df.empty:
-            raise DataProcessingException("Clean dataframe is empty after anomaly filtering.")
-
-        # ---------------------------------------------------------
-        # 4) FEATURE ENGINEERING
-        # ---------------------------------------------------------
+        # 4) Feature engineering
         feature_engineer = FeatureEngineer(df=clean_df, logger=LOGGER)
         features_df = feature_engineer.transform()
-
-        if features_df is None or features_df.empty:
-            raise FeatureEngineeringException("Feature engineering produced empty dataframe.")
 
         LOGGER.info(
             "[FE] Features DF shape: %s, columns=%s",
@@ -130,17 +110,19 @@ async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
             list(features_df.columns),
         )
 
-        # ---------------------------------------------------------
-        # (GEÇİCİ) Sadece FE çıkışını döndürüyoruz
-        # Label generator kaldırıldığı için burada duruyor.
-        # ---------------------------------------------------------
         return features_df
 
     except BinanceBotException:
+        # Bizim tanımladığımız custom exception'lardan biri ise direkt fırlat
         raise
     except Exception as e:
-        LOGGER.error("💥 [PIPELINE] Unexpected error in data pipeline: %s", e, exc_info=True)
+        LOGGER.error(
+            "💥 [PIPELINE] Unexpected error in data pipeline: %s",
+            e,
+            exc_info=True,
+        )
         raise DataProcessingException(f"Data pipeline failed: {e}") from e
+
 
 
 # ---------------------------------------------------------
