@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -16,12 +16,12 @@ class TradeExecutor:
     Binance futures üzerinde emir açma / kapama işlemlerini yöneten sınıf.
 
     NOT:
-      - API key/secret artık config.credentials içindeki Credentials sınıfından geliyor.
+      - API key/secret config.credentials içindeki Credentials sınıfından geliyor.
       - Hata durumunda TradeExecutionException fırlatıyor.
       - retry decorator'u ile geçici Binance hatalarına yeniden deneme uygulanıyor.
     """
 
-    def __init__(self, env_vars: Dict[str, Any] | None = None):
+    def __init__(self, env_vars: Optional[Dict[str, Any]] = None):
         # API key/secret artık Credentials üzerinden
         api_key = Credentials.BINANCE_API_KEY
         api_secret = Credentials.BINANCE_SECRET_KEY
@@ -37,13 +37,21 @@ class TradeExecutor:
         # İleride ek ayarlar (timeout vb.) buraya konabilir
         logger.info("[TradeExecutor] Binance client initialized successfully")
 
-    @retry(exceptions=(BinanceAPIException, TradeExecutionException), tries=3, delay=2, backoff=2)
+    # -----------------------------------------------------
+    # MARKET ORDER OLUŞTUR
+    # -----------------------------------------------------
+    @retry(
+        exceptions=(BinanceAPIException, TradeExecutionException),
+        tries=3,
+        delay=2,
+        backoff=2,
+    )
     def create_market_order(
         self,
         symbol: str,
         side: str,
         quantity: float,
-        position_side: str | None = None,
+        position_side: Optional[str] = None,
         reduce_only: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -85,15 +93,27 @@ class TradeExecutor:
             logger.error(f"[TradeExecutor] Binance API error: {e}")
             raise TradeExecutionException(f"Binance API error: {e}") from e
         except Exception as e:
-            logger.exception(f"[TradeExecutor] Unknown error while creating order: {e}")
-            raise TradeExecutionException(f"Unknown trade execution error: {e}") from e
+            logger.exception(
+                f"[TradeExecutor] Unknown error while creating order: {e}"
+            )
+            raise TradeExecutionException(
+                f"Unknown trade execution error: {e}"
+            ) from e
 
-    @retry(exceptions=(BinanceAPIException, TradeExecutionException), tries=3, delay=2, backoff=2)
+    # -----------------------------------------------------
+    # POZİSYON KAPAT
+    # -----------------------------------------------------
+    @retry(
+        exceptions=(BinanceAPIException, TradeExecutionException),
+        tries=3,
+        delay=2,
+        backoff=2,
+    )
     def close_position(
         self,
         symbol: str,
         quantity: float,
-        position_side: str | None = None,
+        position_side: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Pozisyonu kapatmak için ters yönde market emri atar.
@@ -103,8 +123,8 @@ class TradeExecutor:
         :param position_side: 'LONG' veya 'SHORT'
         """
         try:
-            # Mevcut pozisyon bilgisini okuma gibi gelişmiş işlemler eklenebilir
-            side = "SELL"  # Basit örnek — gerçek senaryoda mevcut pozisyona göre belirlemelisin
+            # Basit örnek — gerçek senaryoda mevcut pozisyona göre belirlemelisin
+            side = "SELL"
 
             logger.info(
                 f"[TradeExecutor] Closing position | "
@@ -128,8 +148,54 @@ class TradeExecutor:
 
         except BinanceAPIException as e:
             logger.error(f"[TradeExecutor] Binance API error (close_position): {e}")
-            raise TradeExecutionException(f"Binance API error (close_position): {e}") from e
+            raise TradeExecutionException(
+                f"Binance API error (close_position): {e}"
+            ) from e
         except Exception as e:
-            logger.exception(f"[TradeExecutor] Unknown error while closing position: {e}")
-            raise TradeExecutionException(f"Unknown close position error: {e}") from e
+            logger.exception(
+                f"[TradeExecutor] Unknown error while closing position: {e}"
+            )
+            raise TradeExecutionException(
+                f"Unknown close position error: {e}"
+            ) from e
+
+
+# ---------------------------------------------------------
+# Basit Global Emir Fonksiyonu (fallback & multi-trade için)
+# ---------------------------------------------------------
+
+_executor_instance: Optional[TradeExecutor] = None
+
+
+def get_executor() -> TradeExecutor:
+    """
+    Tek bir TradeExecutor instance'ı üretip tekrar tekrar kullanmak için.
+    (fallback_trade ve MultiTradeEngine buradan faydalanıyor.)
+    """
+    global _executor_instance
+    if _executor_instance is None:
+        _executor_instance = TradeExecutor()
+    return _executor_instance
+
+
+def execute_trade(symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
+    """
+    MultiTradeEngine ve fallback_trade tarafından kullanılan basit emir fonksiyonu.
+
+    :param symbol: 'BTCUSDT' vb.
+    :param side: 'BUY' veya 'SELL'
+    :param qty: emir miktarı (float)
+    """
+    executor = get_executor()
+
+    try:
+        order = executor.create_market_order(
+            symbol=symbol,
+            side=side,
+            quantity=qty,
+        )
+        return order
+    except Exception as e:
+        logger.error(f"[execute_trade] Trade failed for {symbol} {side} {qty}: {e}")
+        return None
 
