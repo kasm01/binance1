@@ -5,133 +5,92 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-from core.exceptions import DataProcessingException
 
-logger = logging.getLogger(__name__)
+system_logger = logging.getLogger("system")
 
 
 class AnomalyDetector:
     """
-    Feature engineer edilmiş veride (features DataFrame) anomali tespiti yapar.
+    Feature seviyesinde basit anomali tespitçisi.
 
-    Kullanım:
-        detector = AnomalyDetector(features_df)
-        clean_df = detector.remove_anomalies()
+    main.py içinde şöyle kullanıyoruz:
+        anomaly_detector = AnomalyDetector(features_df=features_df)
+        features_df = anomaly_detector.detect_and_handle_anomalies()
+
+    Burada IsolationForest ile numerik kolonlara bakıp
+    anomali olan satırları filtreliyoruz.
     """
 
     def __init__(
         self,
         features_df: pd.DataFrame,
-        contamination: float = 0.01,
-        random_state: int = 42,
+        contamination: float = 0.02,
+        logger: Optional[logging.Logger] = None,
     ):
-        """
-        :param features_df: FeatureEngineer çıkışı olan DataFrame
-        :param contamination: Beklenen anomali oranı (0.01 = %1)
-        :param random_state: Reprodüksiyon için sabit seed
-        """
-        self.features_df = features_df.copy() if features_df is not None else pd.DataFrame()
+        self.features_df = features_df
         self.contamination = contamination
-        self.random_state = random_state
-        self._model: Optional[IsolationForest] = None
+        self.logger = logger or system_logger
 
-    def _select_feature_columns(self) -> pd.DataFrame:
+    def detect_and_handle_anomalies(self) -> pd.DataFrame:
         """
-        Model için sayısal feature kolonlarını seçer.
-        OHLC gibi kolonlar da dahil olabilir, ama temel amaç:
-        - float / int tipindeki kolonlar
+        - Sadece numerik kolonlara bakar
+        - IsolationForest ile anomali skoru çıkarır
+        - Anomali olanları (label = -1) atar, geri kalanı döner
         """
-        if self.features_df.empty:
-            return self.features_df
+        df = self.features_df
 
-        numeric_df = self.features_df.select_dtypes(include=["float64", "float32", "int64", "int32"])
-        if numeric_df.empty:
-            raise DataProcessingException("AnomalyDetector: sayısal feature kolonları bulunamadı.")
+        if df is None or df.empty:
+            self.logger.warning("[ANOM] Received empty features_df, skipping anomaly detection.")
+            return df
 
-        return numeric_df
+        # Numerik kolonları seç
+        num_df = df.select_dtypes(include=[np.number])
 
-    def fit(self):
-        """
-        IsolationForest modelini fit eder.
-        """
-        if self.features_df.empty:
-            logger.warning("[AnomalyDetector] Boş DataFrame, fit atlanıyor.")
-            return
+        if num_df.empty:
+            self.logger.warning("[ANOM] No numeric columns in features_df, skipping anomaly detection.")
+            return df
+
+        # Çok az satır varsa model anlamlı olmaz, direkt geç
+        if len(num_df) < 50:
+            self.logger.info(
+                "[ANOM] Only %d rows available (<50), skipping anomaly detection.",
+                len(num_df),
+            )
+            return df
 
         try:
-            X = self._select_feature_columns().values
+            self.logger.info(
+                "[ANOM] Running IsolationForest on %d samples, %d numeric features.",
+                num_df.shape[0],
+                num_df.shape[1],
+            )
 
-            self._model = IsolationForest(
+            iso = IsolationForest(
                 contamination=self.contamination,
-                random_state=self.random_state,
-                n_estimators=100,
+                random_state=42,
+                n_estimators=200,
                 n_jobs=-1,
             )
-            self._model.fit(X)
+            preds = iso.fit_predict(num_df)
 
-            logger.info("[AnomalyDetector] IsolationForest modeli başarıyla eğitildi.")
-        except Exception as e:
-            logger.exception(f"[AnomalyDetector] Model fit hatası: {e}")
-            raise DataProcessingException(f"AnomalyDetector fit failed: {e}") from e
+            # IsolationForest: 1 = normal, -1 = anomali
+            mask = preds == 1
+            kept = df.loc[mask].copy()
+            removed_count = int((~mask).sum())
 
-    def mark_anomalies(self) -> pd.DataFrame:
-        """
-        DataFrame'e 'is_anomaly' kolonu ekler.
-
-        Dönüş:
-            features_df + 'is_anomaly' (0 = normal, 1 = anomali)
-        """
-        if self.features_df.empty:
-            logger.warning("[AnomalyDetector] Boş DataFrame, anomaly flag eklenemedi.")
-            return self.features_df
-
-        if self._model is None:
-            self.fit()
-
-        try:
-            X = self._select_feature_columns().values
-
-            # IsolationForest: -1 = anomali, 1 = normal
-            preds = self._model.predict(X)
-            is_anomaly = (preds == -1).astype(int)
-
-            df_flagged = self.features_df.copy()
-            df_flagged["is_anomaly"] = is_anomaly
-
-            anomaly_rate = df_flagged["is_anomaly"].mean()
-            logger.info(
-                "[AnomalyDetector] Anomali oranı: %.4f (%.2f%%)",
-                anomaly_rate,
-                anomaly_rate * 100,
+            self.logger.info(
+                "[ANOM] Removed %d anomalous rows. Remaining: %d",
+                removed_count,
+                kept.shape[0],
             )
 
-            return df_flagged
+            return kept
+
         except Exception as e:
-            logger.exception(f"[AnomalyDetector] Anomali işaretleme hatası: {e}")
-            raise DataProcessingException(f"AnomalyDetector mark_anomalies failed: {e}") from e
-
-    def remove_anomalies(self) -> pd.DataFrame:
-        """
-        Anomalileri filtreleyip sadece normal kayıtları döner.
-
-        Dönüş:
-            Sadece is_anomaly == 0 olan satırları içeren DataFrame
-        """
-        try:
-            df_flagged = self.mark_anomalies()
-            if "is_anomaly" not in df_flagged.columns:
-                logger.warning("[AnomalyDetector] is_anomaly kolonu yok, veri aynen döndürülüyor.")
-                return df_flagged
-
-            clean_df = df_flagged[df_flagged["is_anomaly"] == 0].drop(columns=["is_anomaly"])
-
-            logger.info(
-                "[AnomalyDetector] Temizlenen satır sayısı: %d / %d",
-                len(df_flagged) - len(clean_df),
-                len(df_flagged),
+            self.logger.error(
+                "[ANOM] Error during anomaly detection, returning original features_df: %s",
+                e,
+                exc_info=True,
             )
-            return clean_df
-        except Exception as e:
-            logger.exception(f"[AnomalyDetector] remove_anomalies hatası: {e}")
-            raise DataProcessingException(f"AnomalyDetector remove_anomalies failed: {e}") from e
+            return df
 
