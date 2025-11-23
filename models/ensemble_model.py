@@ -22,6 +22,7 @@ class EnsembleModel:
         estimators: Optional[List[Tuple[str, ClassifierMixin]]] = None,
         voting: str = "soft",
     ) -> None:
+        # eski: def __init__(self, models):  <-- HATA KAYNAĞI
         self.estimators: List[Tuple[str, ClassifierMixin]] = estimators or []
         self.voting = voting
         self.ensemble: Optional[VotingClassifier] = None
@@ -48,14 +49,19 @@ class EnsembleModel:
 
     def predict(self, X):
         if not self.ensemble:
-            logger.warning("[EnsembleModel] No ensemble exists. predict() fallback triggered.")
+            logger.warning(
+                "[EnsembleModel] No ensemble exists. predict() fallback triggered."
+            )
+            # Basit fallback: hiçbir model yoksa 0 (SELL/HOLD) dön
             return 0
-
         return self.ensemble.predict(X)
 
     def predict_proba(self, X):
         if not self.ensemble:
-            logger.warning("[EnsembleModel] No ensemble exists. predict_proba() fallback.")
+            logger.warning(
+                "[EnsembleModel] No ensemble exists. predict_proba() fallback."
+            )
+            # [p_sell, p_buy] tarafsız dağılım
             return [[0.5, 0.5]]
 
         return self.ensemble.predict_proba(X)
