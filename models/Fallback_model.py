@@ -1,3 +1,4 @@
+# models/fallback_model.py
 import logging
 from typing import Optional
 
@@ -23,7 +24,7 @@ class FallbackModel:
         """
         self.default_proba = float(default_proba)
 
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+    def predict_proba(self, X: Optional[np.ndarray]) -> np.ndarray:
         """
         X boyutuna göre sabit bir olasılık matrisi döner.
         İki sınıflı problem için [p0, p1] şeklinde.
@@ -45,7 +46,7 @@ class FallbackModel:
             # Tamamen çakılırsa bile en azından 0.5/0.5 dön
             return np.tile(np.array([[0.5, 0.5]]), (1, 1))
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: Optional[np.ndarray]) -> np.ndarray:
         """
         Sınıf tahmini döner (0 veya 1).
         Basit kural:
@@ -56,3 +57,4 @@ class FallbackModel:
         # class 1 (buy) için olasılık
         p_buy = probs[:, 1]
         return (p_buy > 0.5).astype(int)
+

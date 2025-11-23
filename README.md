@@ -1,3 +1,6 @@
+cd ~/binance1
+nano main.py
+
 binance1-pro/
 │
 ├── README.md
