@@ -1,5 +1,8 @@
 """Custom exception classes for Binance1-Pro bot."""
 
+from typing import Optional
+
+
 class BinanceBotException(Exception):
     """Base exception for all Binance1-Pro bot related errors."""
 
@@ -69,7 +72,10 @@ class TelegramNotificationException(BinanceBotException):
 
 
 class TradeExecutionException(BinanceBotException):
-    """Raised when trade execution (creating/closing orders) fails."""
+    """
+    Raised when executing trades on the exchange (create/close orders) fails.
+    Used by trading.trade_executor.TradeExecutor.
+    """
 
 
 # ---- Bot Loop & Retry -----------------------------------------------------

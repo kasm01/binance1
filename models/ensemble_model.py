@@ -1,81 +1,62 @@
-# models/ensemble_model.py
 import logging
 from typing import List, Tuple, Optional
 
-import numpy as np
 from sklearn.ensemble import VotingClassifier
-from sklearn.base import BaseEstimator
-
-from .fallback_model import FallbackModel
+from sklearn.base import ClassifierMixin
 
 logger = logging.getLogger(__name__)
 
 
 class EnsembleModel:
     """
-    Birden fazla modeli soft voting ile birleştirir.
-    Estimator verilmezse FallbackModel devreye girer.
+    Esnek ensemble sarmalayıcı.
+
+    - estimators: [('rf', rf_model), ('lgbm', lgbm_model), ...] listesi
+    - voting='soft' varsayılan
+
+    Parametresiz çağrılabilir:
+        EnsembleModel()  -> estimators = []
+    Bu durumda fit/predict/predict_proba çağırırsan ValueError fırlatır (model yok).
     """
 
-    def __init__(self, estimators: Optional[List[Tuple[str, BaseEstimator]]] = None):
-        """
-        :param estimators: [('lgbm', lgbm_model), ('cat', cat_model), ...]
-        """
-        self.estimators = estimators or []
-        self.voting_clf: Optional[VotingClassifier] = None
-        self.fallback = FallbackModel(default_proba=0.5)
+    def __init__(
+        self,
+        estimators: Optional[List[Tuple[str, ClassifierMixin]]] = None,
+        voting: str = "soft",
+    ) -> None:
+        self.estimators: List[Tuple[str, ClassifierMixin]] = estimators or []
+        self.voting = voting
+        self.ensemble: Optional[VotingClassifier] = None
 
         if self.estimators:
-            self.voting_clf = VotingClassifier(
-                estimators=self.estimators,
-                voting="soft"
+            self._build_ensemble()
+
+    def _build_ensemble(self) -> None:
+        if not self.estimators:
+            raise ValueError("No base estimators provided to EnsembleModel.")
+        self.ensemble = VotingClassifier(estimators=self.estimators, voting=self.voting)
+        logger.info(
+            f"[EnsembleModel] Built VotingClassifier with {len(self.estimators)} estimators."
+        )
+
+    def fit(self, X, y) -> None:
+        if not self.estimators:
+            raise ValueError(
+                "[EnsembleModel] Cannot fit: no base estimators provided."
             )
+        if self.ensemble is None:
+            self._build_ensemble()
+        self.ensemble.fit(X, y)
 
-    def fit(self, X, y):
-        """
-        Gerçek estimator varsa VotingClassifier'ı eğitir.
-        Yoksa sadece fallback kullanılır (fit gerekmez).
-        """
-        if self.voting_clf is None:
-            logger.warning(
-                "[EnsembleModel] No estimators provided, using FallbackModel only."
+    def predict(self, X):
+        if self.ensemble is None:
+            raise ValueError("[EnsembleModel] Cannot predict: model not initialized.")
+        return self.ensemble.predict(X)
+
+    def predict_proba(self, X):
+        if self.ensemble is None:
+            raise ValueError(
+                "[EnsembleModel] Cannot predict_proba: model not initialized."
             )
-            return self
-
-        self.voting_clf.fit(X, y)
-        return self
-
-    def predict_proba(self, X) -> np.ndarray:
-        """
-        2 sınıflı proba matrisi döner: [p_sell, p_buy]
-        """
-        if self.voting_clf is None:
-            # Sadece fallback
-            return self.fallback.predict_proba(X)
-
-        try:
-            return self.voting_clf.predict_proba(X)
-        except Exception as e:
-            logger.error(
-                f"[EnsembleModel] Error in voting_clf.predict_proba: {e}, "
-                "falling back to FallbackModel.",
-                exc_info=True,
-            )
-            return self.fallback.predict_proba(X)
-
-    def predict(self, X) -> str:
-        """
-        Trade sinyali döndürür: 'BUY' veya 'SELL'
-        (İleride 'HOLD' eklemek istersen probaya göre ek kural yazabiliriz.)
-        """
-        probs = self.predict_proba(X)
-        # Tek satır özel durumu: X tek örnek ise
-        if probs.ndim == 1:
-            p_buy = probs[1]
-        else:
-            p_buy = probs[0, 1]
-
-        signal = "BUY" if p_buy >= 0.5 else "SELL"
-        logger.info(f"[EnsembleModel] p_buy={p_buy:.4f} -> signal={signal}")
-        return signal
+        return self.ensemble.predict_proba(X)
 
