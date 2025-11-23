@@ -1,5 +1,7 @@
+# trading/strategy_engine.py
+
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from models.ensemble_model import EnsembleModel
 
@@ -15,18 +17,32 @@ class StrategyEngine:
       - Hata durumunda 'HOLD' döner.
     """
 
-    def __init__(self, model: EnsembleModel | None = None) -> None:
+    def __init__(self, model: Optional[EnsembleModel] = None) -> None:
+        # Parametre gelmezse kendi içinde EnsembleModel oluşturur
         self.model = model or EnsembleModel()
 
     def generate_signal(self, features: Any) -> str:
         """
         :param features: Modelin beklediği feature vektörü / dataframe satırı
-        :return: 'BUY' / 'SELL' / 'HOLD' (model implementasyonuna göre)
+        :return: 'BUY' / 'SELL' / 'HOLD'
         """
         try:
-            signal = self.model.predict(features)
-            logger.info(f"[StrategyEngine] Generated signal from model: {signal}")
+            y_pred = self.model.predict(features)
+            # y_pred 0/1 ise buradan sinyal haritalama yapabiliriz
+            if hasattr(y_pred, "__len__"):
+                pred = int(y_pred[0])
+            else:
+                pred = int(y_pred)
+
+            signal = "BUY" if pred == 1 else "SELL"
+            logger.info(
+                f"[StrategyEngine] Generated signal from EnsembleModel: {signal}"
+            )
             return signal
         except Exception as e:
-            logger.error(f"[StrategyEngine] Error generating signal: {e}", exc_info=True)
+            logger.error(
+                f"[StrategyEngine] Error generating signal: {e}",
+                exc_info=True,
+            )
             return "HOLD"
+
