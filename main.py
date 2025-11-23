@@ -1,623 +1,454 @@
 # main.py
-import asyncio
-import os
-from typing import Any, Dict, Optional, Tuple
 
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import signal
+from typing import Any, Dict
+
+import numpy as np
 import pandas as pd
 from aiohttp import web
+from binance.client import Client as BinanceClient
 
-from config.load_env import load_environment_variables
-from config.settings import Settings
-
-from core.logger import system_logger, error_logger, trade_logger
-from core.exceptions import (
-    DataFetchException,
-    DataProcessingException,
-    FeatureEngineeringException,
-    LabelGenerationException,
-    ModelTrainingException,
-    OnlineLearningException,
-    PredictionException,
-    BotLoopException,
-)
-from core.notifier import Notifier
+from env.load_env import load_environment_variables
+from config.settings import Config
+from core.logger import setup_logger, system_logger
+from core.utils import retry  # varsa, yoksa kaldır
+from trading.risk_manager import RiskManager
+from trading.position_manager import PositionManager
+from trading.trade_executor import TradeExecutor
+from models.fallback_model import FallbackModel
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
 from data.online_learning import OnlineLearner
-from data.batch_learning import BatchLearner
 
-from models.ensemble_model import EnsembleModel
-from models.fallback_model import FallbackModel
-
-from trading.risk_manager import RiskManager
-from trading.capital_manager import CapitalManager
-from trading.position_manager import PositionManager
-from trading.trade_executor import TradeExecutor
-
-# ============================================================
-# Global / Config
-# ============================================================
-
-ENV_VARS: Dict[str, Any] = load_environment_variables()
-
-SYMBOL = ENV_VARS.get("SYMBOL", "BTCUSDT")
-INTERVAL = ENV_VARS.get("INTERVAL", "1m")
-KLINE_LIMIT = int(ENV_VARS.get("KLINE_LIMIT", 1000))
-
-# Trade / risk konfigürasyonu
-POLL_INTERVAL_SECONDS = int(ENV_VARS.get("POLL_INTERVAL_SECONDS", 60))
-NOTIONAL_CAPITAL = float(ENV_VARS.get("NOTIONAL_CAPITAL", 1000.0))
-RISK_PER_TRADE = float(ENV_VARS.get("RISK_PER_TRADE", 0.01))
-MAX_OPEN_POSITIONS_PER_SIDE = int(ENV_VARS.get("MAX_OPEN_POSITIONS_PER_SIDE", 1))
-
-BUY_THRESHOLD = float(ENV_VARS.get("BUY_THRESHOLD", 0.60))
-SELL_THRESHOLD = float(ENV_VARS.get("SELL_THRESHOLD", 0.40))
-
-# Global modeller
-ENSEMBLE_MODEL: Optional[EnsembleModel] = None
-FALLBACK_MODEL: FallbackModel = FallbackModel(default_proba=0.5)
-
-# Trading objeleri (tek instance)
-RISK_MANAGER = RiskManager(max_risk_per_trade=RISK_PER_TRADE)
-CAPITAL_MANAGER = CapitalManager(total_capital=NOTIONAL_CAPITAL)
-POSITION_MANAGER = PositionManager()
-TRADE_EXECUTOR: Optional[TradeExecutor] = None
-
-# Notifier (ileride Telegram bot bağlanabilir)
-NOTIFIER = Notifier(telegram_bot=None)
+from monitoring.performance_tracker import PerformanceTracker
+from monitoring.alert_system import AlertSystem
+from telegram.telegram_bot import TelegramBot
 
 
-# ============================================================
-# Data Pipeline
-# ============================================================
+# ────────────────────────────── health endpoint ──────────────────────────────
 
-def run_data_pipeline(
-    symbol: str,
-    interval: str,
-    limit: int,
-) -> pd.DataFrame:
-    """
-    1) Kline verisini yükler (Redis cache + Binance)
-    2) Feature engineering uygular
-    3) Anomali tespiti (IsolationForest)
-    4) Label kolonunu üretir
-    5) Model için hazır final dataframe döner
-    """
-    system_logger.info(
-        f"[DATA] Starting data pipeline for {symbol} ({interval}, limit={limit})"
-    )
+async def health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "binance1-pro"})
 
-    # ---------------------------
-    # 1) Kline verisi yükleme
-    # ---------------------------
-    try:
-        loader = DataLoader(env_vars=ENV_VARS)
-        system_logger.info("[DATA] Using DataLoader.load_and_cache_klines")
-        df_raw = loader.load_and_cache_klines(symbol=symbol, interval=interval, limit=limit)
-        system_logger.info(f"[DATA] Raw DF shape: {df_raw.shape}")
-    except Exception as e:
-        error_logger.exception(f"[DATA] Error while loading klines: {e}")
-        raise DataFetchException(f"Failed to load klines: {e}") from e
 
-    # ---------------------------
-    # 2) Feature engineering
-    # ---------------------------
-    try:
-        fe = FeatureEngineer(df_raw)
-        features_df = fe.build_features()
-        system_logger.info(
-            f"[FE] Features DF shape: {features_df.shape}, "
-            f"columns={list(features_df.columns)}"
-        )
-    except Exception as e:
-        error_logger.exception(f"[FE] Feature engineering error: {e}")
-        raise FeatureEngineeringException(f"Feature engineering failed: {e}") from e
+# ───────────────────── Binance client & trading obj init ─────────────────────
 
-    # ---------------------------
-    # 3) Anomali tespiti / filtresi
-    # ---------------------------
-    try:
-        anomaly_detector = AnomalyDetector(features_df=features_df)
-        system_logger.info(
-            f"[ANOM] Running IsolationForest on {features_df.shape[0]} samples, "
-            f"{features_df.select_dtypes('number').shape[1]} numeric features."
-        )
-        clean_features_df = anomaly_detector.detect_and_handle_anomalies()
-    except Exception as e:
+def create_binance_futures_client(env_vars: Dict[str, str]) -> BinanceClient:
+    api_key = env_vars.get("BINANCE_API_KEY") or os.getenv("BINANCE_API_KEY")
+    api_secret = env_vars.get("BINANCE_API_SECRET") or os.getenv("BINANCE_API_SECRET")
+
+    if not api_key or not api_secret:
         system_logger.warning(
-            f"[DATA] Anomaly detection failed, using original features_df: {e}"
-        )
-        clean_features_df = features_df
-
-    # ---------------------------
-    # 4) Label üretimi
-    # ---------------------------
-    try:
-        final_df = _generate_labels(clean_features_df)
-        system_logger.info(
-            f"[FE] Final Features DF shape (with label): {final_df.shape}, "
-            f"columns={list(final_df.columns)}"
-        )
-    except Exception as e:
-        error_logger.exception(f"[LABEL] Label generation error: {e}")
-        raise LabelGenerationException(f"Label generation failed: {e}") from e
-
-    return final_df
-
-
-def _generate_labels(df: pd.DataFrame, horizon_col: str = "return_5") -> pd.DataFrame:
-    """
-    Basit label üretimi:
-      - horizon_col > 0 => 1 (BUY)
-      - horizon_col <= 0 => 0 (SELL/HOLD)
-    """
-    if horizon_col not in df.columns:
-        raise LabelGenerationException(
-            f"Label horizon_col '{horizon_col}' not found in dataframe."
+            "[MAIN] BINANCE_API_KEY / BINANCE_API_SECRET not found in env. "
+            "Client will not be authorized!"
         )
 
-    df = df.copy()
-    df["label"] = (df[horizon_col] > 0).astype(int)
-    return df.dropna(subset=["label"])
+    client = BinanceClient(api_key, api_secret)
+    # Testnet kullanıyorsan burada URL override edebilirsin:
+    # client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
+    return client
 
 
-def _split_features_labels(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, list]:
+def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
     """
-    'label' kolonunu y'de, geri kalan numeric feature'ları X'te toplar.
+    Tüm core trading objelerini initialize eder.
+    main.py içinde bir kez çağrılır, bot_loop içinde kullanılır.
     """
-    if "label" not in df.columns:
-        raise ModelTrainingException("Column 'label' not found in dataframe.")
+    system_logger.info("[MAIN] Initializing trading objects...")
 
-    feature_cols = [
-        col for col in df.columns
-        if col not in ("label", "open_time", "close_time")
-    ]
+    # Binance client
+    client = create_binance_futures_client(env_vars)
 
-    X = df[feature_cols].copy()
-    y = df["label"].copy()
-
-    return X, y, feature_cols
-
-
-# ============================================================
-# Model Training (Batch + Online + Ensemble)
-# ============================================================
-
-def build_ensemble_from_batch(batch_model) -> EnsembleModel:
-    """
-    Batch model (ör: RandomForest) ile basit bir EnsembleModel kur.
-    İleride LGBM / CatBoost / LSTM de eklenebilir.
-    """
-    from sklearn.base import ClassifierMixin
-
-    if batch_model is None or not isinstance(batch_model, ClassifierMixin):
-        system_logger.warning(
-            "[ENSEMBLE] Given batch_model is not a valid sklearn classifier; "
-            "EnsembleModel will be empty."
-        )
-        return EnsembleModel(estimators=None)
-
-    estimators = [("rf", batch_model)]
-    ensemble = EnsembleModel(estimators=estimators)
-    system_logger.info("[ENSEMBLE] EnsembleModel built with RandomForest (rf).")
-    return ensemble
-
-
-def train_models_and_update_state(
-    clean_df: pd.DataFrame,
-) -> Tuple[OnlineLearner, list]:
-    """
-    1) BatchLearner ile batch model train
-    2) Batch modelden EnsembleModel oluştur (global ENSEMBLE_MODEL güncellenir)
-    3) OnlineLearner'i batch verisi ile initial_fit + kısa partial_update
-    """
-    global ENSEMBLE_MODEL
-
-    X, y, feature_cols = _split_features_labels(clean_df)
-
-    # ---------------------------
-    # 1) Batch training
-    # ---------------------------
-    batch_learner = BatchLearner(
-        model_dir="models",
-        base_model_name="batch_model",
+    # Data pipeline objeleri
+    data_loader = DataLoader(
+        client=client,
+        symbol=Config.BINANCE_SYMBOL,
+        interval=Config.BINANCE_INTERVAL,
+        use_cache=True,
     )
+    feature_engineer = FeatureEngineer()
+    anomaly_detector = AnomalyDetector()
 
-    system_logger.info(
-        f"[MODEL] Training batch model on {len(X)} samples, {X.shape[1]} features. "
-        f"Using {len(feature_cols)} feature columns."
-    )
-
-    batch_learner.train(X, y)
-    batch_model = getattr(batch_learner, "model", None)
-
-    if batch_model is not None:
-        ENSEMBLE_MODEL = build_ensemble_from_batch(batch_model)
-    else:
-        system_logger.warning(
-            "[MODEL] BatchLearner has no 'model' attribute; EnsembleModel will be empty."
-        )
-        ENSEMBLE_MODEL = EnsembleModel(estimators=None)
-
-    # ---------------------------
-    # 2) Online model init/update
-    # ---------------------------
+    # Online model + fallback
     online_learner = OnlineLearner(
         model_dir="models",
         base_model_name="online_model",
         n_classes=2,
     )
-    online_learner.feature_columns = feature_cols
-    system_logger.info(
-        f"[ONLINE] feature_columns set with {len(feature_cols)} columns."
+    fallback_model = FallbackModel(default_proba=0.5)
+
+    # Risk & pozisyon yönetimi
+    risk_manager = RiskManager(
+        max_risk_per_trade=Config.MAX_RISK_PER_TRADE,
+        max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
+        state_file=os.path.join("logs", "risk_state.json"),
+    )
+    position_manager = PositionManager(log_path=os.path.join("logs", "trades.log"))
+
+    # Trade executor
+    trade_executor = TradeExecutor(
+        client=client,
+        risk_manager=risk_manager,
+        position_manager=position_manager,
     )
 
-    online_learner.initial_fit(X, y)
-    system_logger.info("[ONLINE] initial_fit completed successfully.")
-    online_learner.save()
-    system_logger.info("[ONLINE] Online model saved to models/online_model.joblib")
+    # Monitoring & Telegram
+    performance_tracker = PerformanceTracker()
+    alert_system = AlertSystem()
+    telegram_bot = TelegramBot()  # istersen main dışında ayrı süreçte koşuturabilirsin.
 
-    # Son 100 örnek ile küçük partial_update
-    if len(X) > 100:
-        recent_X = X.tail(100)
-        recent_y = y.tail(100)
-    else:
-        recent_X = X
-        recent_y = y
+    objects = {
+        "client": client,
+        "data_loader": data_loader,
+        "feature_engineer": feature_engineer,
+        "anomaly_detector": anomaly_detector,
+        "online_learner": online_learner,
+        "fallback_model": fallback_model,
+        "risk_manager": risk_manager,
+        "position_manager": position_manager,
+        "trade_executor": trade_executor,
+        "performance_tracker": performance_tracker,
+        "alert_system": alert_system,
+        "telegram_bot": telegram_bot,
+    }
 
-    online_learner.partial_update(recent_X, recent_y)
-    system_logger.info("[ONLINE] partial_update completed successfully.")
-    online_learner.save()
-    system_logger.info("[ONLINE] Online model saved to models/online_model.joblib")
-
-    return online_learner, feature_cols
+    system_logger.info("[MAIN] Trading objects initialized successfully.")
+    return objects
 
 
-# ============================================================
-# Signal Generation (Online + Ensemble + Fallback)
-# ============================================================
+# ───────────────────────────── sinyal üretim katmanı ─────────────────────────────
 
-def generate_trading_signal(
-    X_last: pd.DataFrame,
-    feature_cols: list,
-    online_learner: Optional[OnlineLearner] = None,
-    ensemble_model: Optional[EnsembleModel] = None,
-    fallback_model: Optional[FallbackModel] = None,
-) -> Tuple[str, float, str]:
+def compute_p_buy(
+    online_learner: OnlineLearner,
+    fallback_model: FallbackModel,
+    X_live: pd.DataFrame,
+) -> float:
     """
-    Öncelik: online → ensemble → fallback
-
-    :return: (signal, p_buy, source)
+    Online modelden p_buy hesaplar, hata olursa fallback modeli kullanır.
     """
-    if fallback_model is None:
-        fallback_model = FALLBACK_MODEL
-
-    proba = None
-    source = "fallback"
-
-    # 1) ONLINE MODEL
     try:
-        if online_learner is not None:
-            X_input = X_last[feature_cols]
-            proba = online_learner.predict_proba(X_input)  # (1, 2) [p0, p1]
-            source = "online"
-    except Exception as e:
-        system_logger.warning(
-            f"[SIGNAL] Online model prediction failed: {e}. Will try ensemble.",
-            exc_info=True,
+        probs = online_learner.predict_proba(X_live)
+
+        # probs şekli değişken olabilir: scalar / 1D / 2D
+        if isinstance(probs, (list, np.ndarray)):
+            probs = np.array(probs)
+            if probs.ndim == 2:  # (n_samples, 2) gibi
+                p_buy = float(probs[-1, 1])
+            else:  # (n_samples,)
+                p_buy = float(probs[-1])
+        else:
+            p_buy = float(probs)
+
+        system_logger.info(
+            f"[SIGNAL] p_buy={p_buy:.4f} (source=ONLINE, "
+            f"BUY_THRESHOLD={Config.BUY_THRESHOLD:.2f}, "
+            f"SELL_THRESHOLD={Config.SELL_THRESHOLD:.2f})"
         )
-        proba = None
+        return p_buy
 
-    # 2) ENSEMBLE MODEL
-    if proba is None and ensemble_model is not None:
-        try:
-            X_input = X_last[feature_cols]
-            proba = ensemble_model.predict_proba(X_input)
-            source = "ensemble"
-        except Exception as e:
-            system_logger.warning(
-                f"[SIGNAL] EnsembleModel prediction failed: {e}. Falling back.",
-                exc_info=True,
-            )
-            proba = None
+    except Exception as e:
+        system_logger.exception(
+            f"[SIGNAL] Online model prediction failed, using fallback. Error: {e}"
+        )
+        probs = fallback_model.predict_proba(X_live.values)
+        if isinstance(probs, (list, np.ndarray)):
+            probs = np.array(probs)
+            if probs.ndim == 2:
+                p_buy = float(probs[-1, 1])
+            else:
+                p_buy = float(probs[-1])
+        else:
+            p_buy = float(probs)
 
-    # 3) FALLBACK MODEL
-    if proba is None:
-        X_input = X_last[feature_cols].values
-        proba = fallback_model.predict_proba(X_input)
-        source = "fallback"
+        system_logger.info(
+            f"[SIGNAL] p_buy={p_buy:.4f} (source=FALLBACK, "
+            f"BUY_THRESHOLD={Config.BUY_THRESHOLD:.2f}, "
+            f"SELL_THRESHOLD={Config.SELL_THRESHOLD:.2f})"
+        )
+        return p_buy
 
-    p_buy = float(proba[0, 1])
 
-    system_logger.info(
-        f"[SIGNAL] Source={source}, p_buy={p_buy:.4f} "
-        f"(BUY_THRESHOLD={BUY_THRESHOLD}, SELL_THRESHOLD={SELL_THRESHOLD})"
-    )
-
-    if p_buy >= BUY_THRESHOLD:
+def generate_trading_signal(p_buy: float) -> str:
+    """
+    Basit kural:
+      p_buy >= BUY_THRESHOLD  => BUY
+      p_buy <= SELL_THRESHOLD => SELL
+      aksi                     => HOLD
+    """
+    if p_buy >= Config.BUY_THRESHOLD:
         signal = "BUY"
-    elif p_buy <= SELL_THRESHOLD:
+    elif p_buy <= Config.SELL_THRESHOLD:
         signal = "SELL"
-        # short sinyal olarak yorumlayacağız
     else:
         signal = "HOLD"
 
     system_logger.info(f"[SIGNAL] Generated trading signal: {signal}")
-    return signal, p_buy, source
+    return signal
 
 
-# ============================================================
-# Trading Layer (LONG/SHORT + Position/Capital + TradeExecutor)
-# ============================================================
+# ───────────────────────────── LONG/SHORT yönetimi ─────────────────────────────
 
-def _get_latest_price_from_row(row: pd.Series) -> float:
-    # Varsayılan olarak 'close' sütununu kullan
-    return float(row.get("close", row.get("price", 0.0)))
-
-
-def _ensure_trade_executor() -> TradeExecutor:
-    global TRADE_EXECUTOR
-    if TRADE_EXECUTOR is None:
-        TRADE_EXECUTOR = TradeExecutor(env_vars=ENV_VARS)
-    return TRADE_EXECUTOR
-
-
-def _find_open_positions(symbol: str, side: str) -> Dict[str, Dict[str, Any]]:
-    """
-    Belirli symbol + side (LONG/SHORT) için açık pozisyonları döner.
-    """
-    open_pos = {}
-    for pos_id, pos in POSITION_MANAGER.get_open_positions().items():
-        if pos.get("symbol") == symbol and pos.get("side", "").upper() == side.upper():
-            open_pos[pos_id] = pos
-    return open_pos
-
-
-def execute_trading_logic(
+def manage_positions_for_signal(
+    trade_executor: TradeExecutor,
+    position_manager: PositionManager,
+    risk_manager: RiskManager,
+    symbol: str,
     signal: str,
-    X_last: pd.DataFrame,
+    current_price: float,
 ) -> None:
     """
-    Signal → LONG/SHORT pozisyon aç/kapat + loglama + TradeExecutor emirleri.
+    Gelen sinyale göre LONG/SHORT pozisyonlarını yönetir.
+
+    - BUY: SHORT varsa kapat, LONG yoksa aç
+    - SELL: LONG varsa kapat, SHORT yoksa aç
+    - HOLD: hiçbir şey yapma (istersen SL/TP yönetimi ekleyebilirsin)
     """
-    if X_last.empty:
-        system_logger.warning("[TRADE] X_last is empty; skipping trade logic.")
+
+    signal = signal.upper()
+    long_pos = position_manager.get_position(symbol, "LONG")
+    short_pos = position_manager.get_position(symbol, "SHORT")
+
+    # Günlük zarar limiti aşıldıysa: yeni trade açma, istersen tüm pozisyonları kapat
+    if risk_manager.trading_halted:
+        system_logger.warning(
+            "[MAIN] Trading halted for today by risk manager (MAX_DAILY_LOSS reached)."
+        )
+        # Burada istersen tüm pozisyonları anında kapat:
+        trade_executor.flatten_all_positions({symbol: current_price})
         return
-
-    row = X_last.iloc[0]
-    current_price = _get_latest_price_from_row(row)
-
-    if current_price <= 0:
-        system_logger.warning("[TRADE] Invalid current_price <= 0; skipping.")
-        return
-
-    executor = _ensure_trade_executor()
-
-    # Açık pozisyonları çek
-    open_longs = _find_open_positions(SYMBOL, "LONG")
-    open_shorts = _find_open_positions(SYMBOL, "SHORT")
-
-    trade_logger.info(
-        f"[POSITIONS] Before signal={signal} | "
-        f"LONG={len(open_longs)}, SHORT={len(open_shorts)}, "
-        f"all={POSITION_MANAGER.get_open_positions()}"
-    )
-
-    # Kullanılacak notional risk büyüklüğü
-    position_notional = NOTIONAL_CAPITAL * RISK_PER_TRADE
-    qty = position_notional / current_price  # BTC cinsinden miktar
-
-    # Miktarı biraz yuvarla (örneğin BTC için 0.001 hassasiyet)
-    qty = float(f"{qty:.3f}")
 
     if signal == "BUY":
-        # Önce açık SHORT pozisyonları kapat
-        for pos_id, pos in open_shorts.items():
-            try:
-                executor.close_position(
-                    symbol=SYMBOL,
-                    quantity=pos["qty"],
-                    position_side="SHORT",
-                )
-                pnl = POSITION_MANAGER.close_position(pos_id, exit_price=current_price)
-                CAPT_RETURN = position_notional + (pnl or 0.0)
-                CAPITAL_MANAGER.release(CAPT_RETURN)
-                trade_logger.info(
-                    f"[TRADE] Closed SHORT pos_id={pos_id}, pnl={pnl}, "
-                    f"price={current_price}"
-                )
-            except Exception as e:
-                error_logger.error(
-                    f"[TRADE] Error closing SHORT position {pos_id}: {e}",
-                    exc_info=True,
-                )
+        # Önce ters yönlü pozisyonu kapat (SHORT)
+        if short_pos:
+            trade_executor.close_position(
+                symbol=symbol, direction="SHORT", exit_price=current_price
+            )
 
-        # Eğer LONG pozisyon sayısı limiti aşmıyorsa yeni LONG aç
-        open_longs = _find_open_positions(SYMBOL, "LONG")
-        if len(open_longs) < MAX_OPEN_POSITIONS_PER_SIDE:
-            if RISK_MANAGER.check_risk(capital=NOTIONAL_CAPITAL, position_qty=position_notional):
-                try:
-                    order = executor.create_market_order(
-                        symbol=SYMBOL,
-                        side="BUY",
-                        quantity=qty,
-                        position_side="LONG",
-                        reduce_only=False,
-                    )
-                    pos_id = POSITION_MANAGER.open_position(
-                        symbol=SYMBOL,
-                        qty=qty,
-                        side="LONG",
-                        price=current_price,
-                    )
-                    CAPITAL_MANAGER.allocate(RISK_PER_TRADE)
-                    trade_logger.info(
-                        f"[TRADE] Opened LONG pos_id={pos_id}, "
-                        f"qty={qty}, price={current_price}, order={order}"
-                    )
-                except Exception as e:
-                    error_logger.error(
-                        f"[TRADE] Error opening LONG position: {e}",
-                        exc_info=True,
-                    )
-            else:
-                system_logger.warning(
-                    "[TRADE] RiskManager rejected LONG trade due to risk limit."
-                )
+        # LONG yoksa aç
+        if not long_pos:
+            trade_executor.open_position_from_signal(
+                symbol=symbol,
+                direction="LONG",
+                entry_price=current_price,
+                stop_loss_pct=Config.STOP_LOSS_PCT,
+                leverage=Config.DEFAULT_LEVERAGE,
+            )
 
     elif signal == "SELL":
-        # Önce açık LONG pozisyonları kapat
-        for pos_id, pos in open_longs.items():
-            try:
-                executor.close_position(
-                    symbol=SYMBOL,
-                    quantity=pos["qty"],
-                    position_side="LONG",
-                )
-                pnl = POSITION_MANAGER.close_position(pos_id, exit_price=current_price)
-                CAPT_RETURN = position_notional + (pnl or 0.0)
-                CAPITAL_MANAGER.release(CAPT_RETURN)
-                trade_logger.info(
-                    f"[TRADE] Closed LONG pos_id={pos_id}, pnl={pnl}, "
-                    f"price={current_price}"
-                )
-            except Exception as e:
-                error_logger.error(
-                    f"[TRADE] Error closing LONG position {pos_id}: {e}",
-                    exc_info=True,
-                )
+        # Önce ters yönlü pozisyonu kapat (LONG)
+        if long_pos:
+            trade_executor.close_position(
+                symbol=symbol, direction="LONG", exit_price=current_price
+            )
 
-        # Yeni SHORT aç (limit dahilinde)
-        open_shorts = _find_open_positions(SYMBOL, "SHORT")
-        if len(open_shorts) < MAX_OPEN_POSITIONS_PER_SIDE:
-            if RISK_MANAGER.check_risk(capital=NOTIONAL_CAPITAL, position_qty=position_notional):
-                try:
-                    order = executor.create_market_order(
-                        symbol=SYMBOL,
-                        side="SELL",
-                        quantity=qty,
-                        position_side="SHORT",
-                        reduce_only=False,
-                    )
-                    pos_id = POSITION_MANAGER.open_position(
-                        symbol=SYMBOL,
-                        qty=qty,
-                        side="SHORT",
-                        price=current_price,
-                    )
-                    CAPITAL_MANAGER.allocate(RISK_PER_TRADE)
-                    trade_logger.info(
-                        f"[TRADE] Opened SHORT pos_id={pos_id}, "
-                        f"qty={qty}, price={current_price}, order={order}"
-                    )
-                except Exception as e:
-                    error_logger.error(
-                        f"[TRADE] Error opening SHORT position: {e}",
-                        exc_info=True,
-                    )
-            else:
-                system_logger.warning(
-                    "[TRADE] RiskManager rejected SHORT trade due to risk limit."
-                )
+        # SHORT yoksa aç
+        if not short_pos:
+            trade_executor.open_position_from_signal(
+                symbol=symbol,
+                direction="SHORT",
+                entry_price=current_price,
+                stop_loss_pct=Config.STOP_LOSS_PCT,
+                leverage=Config.DEFAULT_LEVERAGE,
+            )
 
-    else:
-        # HOLD: Şimdilik açık pozisyonlara dokunma
-        trade_logger.info("[TRADE] HOLD signal – no position changes.")
-
-    # Son durum logu
-    trade_logger.info(
-        f"[POSITIONS] After signal={signal} | "
-        f"all={POSITION_MANAGER.get_open_positions()}"
-    )
+    else:  # HOLD
+        system_logger.info("[MAIN] HOLD signal -> no new position opened/closed.")
 
 
-# ============================================================
-# Async Bot Loop
-# ============================================================
+# ───────────────────────────── data + model pipeline ─────────────────────────────
 
-async def run_data_and_model_pipeline() -> None:
+def run_data_and_model_pipeline(
+    trading_objects: Dict[str, Any],
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> Dict[str, Any]:
     """
-    Her döngüde:
-      1) Data pipeline
-      2) Model training (batch + online + ensemble update)
-      3) Sinyal üretimi
-      4) Trading logic (LONG/SHORT + TradeExecutor)
+    1) Binance'ten kline verisini çek
+    2) Feature engineering
+    3) Anomali filtresi
+    4) Online model initial_fit / partial_update
+    5) Son bar için X_live, current_price, p_buy döndür
+
+    Bu fonksiyon synchronous, bot_loop içinde çağrılıyor.
     """
-    try:
-        clean_df = run_data_pipeline(
-            symbol=SYMBOL,
-            interval=INTERVAL,
-            limit=KLINE_LIMIT,
-        )
+    data_loader: DataLoader = trading_objects["data_loader"]
+    feature_engineer: FeatureEngineer = trading_objects["feature_engineer"]
+    anomaly_detector: AnomalyDetector = trading_objects["anomaly_detector"]
+    online_learner: OnlineLearner = trading_objects["online_learner"]
 
-        online_learner, feature_cols = train_models_and_update_state(clean_df)
-
-        # Son satırı al (en güncel bar)
-        X_last = clean_df.tail(1)
-
-        signal, p_buy, source = generate_trading_signal(
-            X_last=X_last,
-            feature_cols=feature_cols,
-            online_learner=online_learner,
-            ensemble_model=ENSEMBLE_MODEL,
-            fallback_model=FALLBACK_MODEL,
-        )
-
-        # Sinyali trading katmanına gönder
-        execute_trading_logic(signal=signal, X_last=X_last)
-
-    except BotLoopException as e:
-        error_logger.error(f"[BOT] BotLoopException in pipeline: {e}", exc_info=True)
-        NOTIFIER.notify_error(f"BotLoopException: {e}")
-    except Exception as e:
-        error_logger.error(f"[BOT] Unexpected error in pipeline: {e}", exc_info=True)
-        NOTIFIER.notify_error(f"Unexpected bot error: {e}")
-
-
-async def bot_loop() -> None:
-    """
-    Arka planda sonsuz döngü:
-      - data+model+trade pipeline
-      - POLL_INTERVAL_SECONDS kadar uyku
-    """
-    system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
-    while True:
-        await run_data_and_model_pipeline()
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
-
-
-# ============================================================
-# HTTP Server (aiohttp)
-# ============================================================
-
-async def handle_health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "symbol": SYMBOL})
-
-
-async def on_startup(app: web.Application) -> None:
     system_logger.info(
-        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{Settings.PORT} (ENV={Settings.ENVIRONMENT})"
+        f"[DATA] Starting data pipeline for {symbol} "
+        f"({interval}, limit={limit})"
     )
-    system_logger.info("🔁 [MAIN] Starting background bot_loop task...")
-    app["bot_task"] = asyncio.create_task(bot_loop())
+
+    # 1) Kline verisi
+    df_raw = data_loader.load_and_cache_klines(
+        symbol=symbol,
+        interval=interval,
+        limit=limit,
+    )
+    system_logger.info(f"[DATA] Raw DF shape: {df_raw.shape}")
+
+    if df_raw is None or df_raw.empty:
+        raise RuntimeError("Empty dataframe from DataLoader.load_and_cache_klines")
+
+    # 2) Feature engineering
+    df_features = feature_engineer.build_features(df_raw)
+    system_logger.info(
+        f"[FE] Features DF shape: {df_features.shape}, "
+        f"columns={list(df_features.columns)}"
+    )
+
+    # 3) Anomali filtresi
+    df_clean = anomaly_detector.filter_anomalies(df_features)
+    system_logger.info(
+        f"[ANOM] After anomaly filter: {df_clean.shape[0]} rows remain."
+    )
+
+    # Yeterli veri yoksa devam etme
+    if df_clean.shape[0] < 100:
+        raise RuntimeError("Not enough samples after anomaly filtering.")
+
+    # 'label' sütunu varsa ayır
+    if "label" in df_clean.columns:
+        feature_cols = [c for c in df_clean.columns if c not in ("open_time", "close_time", "label")]
+        X = df_clean[feature_cols]
+        y = df_clean["label"]
+    else:
+        feature_cols = [c for c in df_clean.columns if c not in ("open_time", "close_time")]
+        X = df_clean[feature_cols]
+        y = None
+
+    # 4) Online learner initial_fit / partial_update
+    if not online_learner.is_initialized:
+        if y is None:
+            raise RuntimeError("OnlineLearner initial_fit requires 'label' column.")
+        system_logger.info(
+            f"[ONLINE] initial_fit called with {X.shape[0]} samples, {X.shape[1]} features."
+        )
+        online_learner.initial_fit(X, y)
+    else:
+        # Son 100 bar ile partial update
+        if y is not None:
+            X_chunk = X.tail(100)
+            y_chunk = y.tail(100)
+            system_logger.info(
+                f"[ONLINE] partial_update called with {X_chunk.shape[0]} samples, "
+                f"{X_chunk.shape[1]} features."
+            )
+            online_learner.partial_update(X_chunk, y_chunk)
+
+    # 5) Son barı X_live olarak al
+    X_live = X.tail(1)
+    current_price = float(df_clean["close"].iloc[-1])
+
+    return {
+        "X_live": X_live,
+        "current_price": current_price,
+    }
 
 
-async def on_cleanup(app: web.Application) -> None:
-    task = app.get("bot_task")
-    if task:
-        system_logger.info("[MAIN] Cleanup: cancelling bot_loop task...")
-        task.cancel()
+# ───────────────────────────── bot_loop (async) ─────────────────────────────
+
+async def bot_loop(app: web.Application) -> None:
+    """
+    Ana trading döngüsü.
+    """
+    env_vars: Dict[str, str] = app["env_vars"]
+    trading_objects: Dict[str, Any] = init_trading_objects(env_vars)
+
+    symbol = Config.BINANCE_SYMBOL
+    interval = Config.BINANCE_INTERVAL
+    limit = Config.KLINES_LIMIT
+
+    online_learner: OnlineLearner = trading_objects["online_learner"]
+    fallback_model: FallbackModel = trading_objects["fallback_model"]
+    trade_executor: TradeExecutor = trading_objects["trade_executor"]
+    position_manager: PositionManager = trading_objects["position_manager"]
+    risk_manager: RiskManager = trading_objects["risk_manager"]
+
+    system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
+
+    while True:
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            pipeline_result = run_data_and_model_pipeline(
+                trading_objects=trading_objects,
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )
 
+            X_live = pipeline_result["X_live"]
+            current_price = pipeline_result["current_price"]
+
+            # Sinyal üret
+            p_buy = compute_p_buy(
+                online_learner=online_learner,
+                fallback_model=fallback_model,
+                X_live=X_live,
+            )
+            signal = generate_trading_signal(p_buy)
+
+            # Pozisyon yönetimi
+            manage_positions_for_signal(
+                trade_executor=trade_executor,
+                position_manager=position_manager,
+                risk_manager=risk_manager,
+                symbol=symbol,
+                signal=signal,
+                current_price=current_price,
+            )
+
+        except asyncio.CancelledError:
+            system_logger.info("[MAIN] bot_loop cancelled by asyncio (shutdown).")
+            break
+        except Exception as e:
+            system_logger.exception(f"[MAIN] Error in bot_loop iteration: {e}")
+
+        await asyncio.sleep(Config.MAIN_LOOP_SLEEP)
+
+
+# ───────────────────────────── aiohttp app setup ─────────────────────────────
 
 def create_app() -> web.Application:
+    # Env değişkenlerini yükle
+    env_vars = load_environment_variables()
+
+    # Logging setup
+    setup_logger()
+    system_logger.info(
+        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{os.getenv('PORT', '8080')} "
+        f"(ENV={env_vars.get('ENV', 'unknown')})"
+    )
+
     app = web.Application()
-    app.router.add_get("/health", handle_health)
+    app["env_vars"] = env_vars
+
+    # Health endpoints
+    app.router.add_get("/", health)
+    app.router.add_get("/healthz", health)
+
+    async def on_startup(app: web.Application):
+        system_logger.info("🔁 [MAIN] Starting background bot_loop task...")
+        app["bot_task"] = asyncio.create_task(bot_loop(app))
+
+    async def on_cleanup(app: web.Application):
+        system_logger.info("[MAIN] Cleanup: cancelling bot_loop task...")
+        bot_task = app.get("bot_task")
+        if bot_task:
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
 
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
@@ -626,8 +457,19 @@ def create_app() -> web.Application:
 
 
 def main() -> None:
-    port = int(os.environ.get("PORT", Settings.PORT))
     app = create_app()
+    port = int(os.getenv("PORT", "8080"))
+
+    # Cloud Run için signal handler zorunlu değil ama local debug’da iş görür
+    loop = asyncio.get_event_loop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, loop.stop)
+        except NotImplementedError:
+            # Windows vs.
+            pass
+
     web.run_app(app, host="0.0.0.0", port=port)
 
 

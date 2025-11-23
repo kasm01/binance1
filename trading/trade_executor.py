@@ -1,200 +1,260 @@
-import logging
-from typing import Dict, Any, Optional
+# trading/trade_executor.py
 
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from __future__ import annotations
 
-from config.credentials import Credentials
+from typing import Any, Dict, Optional, List
+
+from core.logger import system_logger
 from core.exceptions import TradeExecutionException
-from core.utils import retry
-
-logger = logging.getLogger(__name__)
+from config.settings import Config
+from trading.risk_manager import RiskManager
+from trading.position_manager import PositionManager
 
 
 class TradeExecutor:
     """
-    Binance futures üzerinde emir açma / kapama işlemlerini yöneten sınıf.
+    Binance futures emir katmanı.
 
-    NOT:
-      - API key/secret config.credentials içindeki Credentials sınıfından geliyor.
-      - Hata durumunda TradeExecutionException fırlatıyor.
-      - retry decorator'u ile geçici Binance hatalarına yeniden deneme uygulanıyor.
+    - RiskManager: max_risk_per_trade + max_daily_loss
+    - PositionManager: açık LONG / SHORT pozisyonları takip eder
+    - DRY-RUN / LIVE modu: Config.LIVE_TRADING_ENABLED ile kontrol
     """
 
-    def __init__(self, env_vars: Optional[Dict[str, Any]] = None):
-        # API key/secret artık Credentials üzerinden
-        api_key = Credentials.BINANCE_API_KEY
-        api_secret = Credentials.BINANCE_SECRET_KEY
-
-        if not api_key or not api_secret:
-            logger.error("[TradeExecutor] Binance API anahtarları eksik!")
-            raise TradeExecutionException("Binance API credentials are missing")
-
-        # Testnet kullanıyorsan:
-        # self.client = Client(api_key, api_secret, testnet=True)
-        self.client = Client(api_key, api_secret)
-
-        # İleride ek ayarlar (timeout vb.) buraya konabilir
-        logger.info("[TradeExecutor] Binance client initialized successfully")
-
-    # -----------------------------------------------------
-    # MARKET ORDER OLUŞTUR
-    # -----------------------------------------------------
-    @retry(
-        exceptions=(BinanceAPIException, TradeExecutionException),
-        tries=3,
-        delay=2,
-        backoff=2,
-    )
-    def create_market_order(
+    def __init__(
         self,
-        symbol: str,
-        side: str,
-        quantity: float,
-        position_side: Optional[str] = None,
-        reduce_only: bool = False,
-    ) -> Dict[str, Any]:
+        client: Any,
+        risk_manager: RiskManager,
+        position_manager: PositionManager,
+    ):
         """
-        Futures market emri oluşturur.
+        :param client: python-binance futures client (binance.client.Client)
+        :param risk_manager: RiskManager instance
+        :param position_manager: PositionManager instance
+        """
+        self.client = client
+        self.risk_manager = risk_manager
+        self.position_manager = position_manager
 
-        :param symbol: Örn: 'BTCUSDT'
-        :param side: 'BUY' veya 'SELL'
-        :param quantity: Emir miktarı
-        :param position_side: 'LONG', 'SHORT' (hedge mode kullanıyorsan)
-        :param reduce_only: Sadece pozisyon azaltma modu
+    # ────────────────────────── yardımcı: equity ──────────────────────────
+
+    def get_current_equity(self) -> float:
+        """
+        Binance futures hesabından USDT cinsinden özsermaye çeker.
         """
         try:
-            logger.info(
-                f"[TradeExecutor] Creating market order | "
-                f"symbol={symbol}, side={side}, qty={quantity}, "
-                f"position_side={position_side}, reduce_only={reduce_only}"
-            )
-
-            params: Dict[str, Any] = {
-                "symbol": symbol,
-                "side": side,
-                "type": "MARKET",
-                "quantity": quantity,
-            }
-
-            # Hedge mode vs. için positionSide
-            if position_side:
-                params["positionSide"] = position_side
-
-            if reduce_only:
-                params["reduceOnly"] = "true"
-
-            order = self.client.futures_create_order(**params)
-
-            logger.info(f"[TradeExecutor] Order created successfully: {order}")
-            return order
-
-        except BinanceAPIException as e:
-            logger.error(f"[TradeExecutor] Binance API error: {e}")
-            raise TradeExecutionException(f"Binance API error: {e}") from e
+            account = self.client.futures_account()
+            total_wallet_balance = float(account["totalWalletBalance"])
+            return total_wallet_balance
         except Exception as e:
-            logger.exception(
-                f"[TradeExecutor] Unknown error while creating order: {e}"
-            )
-            raise TradeExecutionException(
-                f"Unknown trade execution error: {e}"
-            ) from e
+            system_logger.exception(f"[TRADE] Failed to fetch account equity: {e}")
+            # Equity alınamazsa çok agresif olmamak için 0 döndür.
+            return 0.0
 
-    # -----------------------------------------------------
-    # POZİSYON KAPAT
-    # -----------------------------------------------------
-    @retry(
-        exceptions=(BinanceAPIException, TradeExecutionException),
-        tries=3,
-        delay=2,
-        backoff=2,
-    )
+    # ─────────────────────── pozisyon açma (sinyal) ───────────────────────
+
+    def open_position_from_signal(
+        self,
+        symbol: str,
+        direction: str,  # "LONG" veya "SHORT"
+        entry_price: float,
+        stop_loss_pct: float,
+        leverage: float,
+    ) -> Dict[str, Any]:
+        """
+        Sinyal geldikten sonra risk yönetimi ile birlikte pozisyon açar.
+
+        1) Günlük zarar limiti kontrolü
+        2) Pozisyon büyüklüğü hesabı (qty)
+        3) DRY-RUN veya gerçek emir
+        4) PositionManager'a kaydetme
+        """
+        direction = direction.upper()
+        if direction not in ("LONG", "SHORT"):
+            msg = f"Invalid direction: {direction}"
+            system_logger.error(f"[TRADE] {msg}")
+            return {"status": "failed", "reason": msg}
+
+        # 1) Günlük zarar limiti kontrolü
+        equity = self.get_current_equity()
+        allowed, reason = self.risk_manager.can_open_new_trade(equity)
+        if not allowed:
+            system_logger.warning(f"[TRADE] New trade blocked by risk manager: {reason}")
+            return {"status": "rejected", "reason": reason}
+
+        # 2) Pozisyon büyüklüğü hesabı
+        qty = self.risk_manager.compute_position_size(
+            symbol=symbol,
+            side=direction,
+            entry_price=entry_price,
+            equity=equity,
+            stop_loss_pct=stop_loss_pct,
+            leverage=leverage,
+        )
+        if qty <= 0:
+            msg = "Invalid position size (qty <= 0)"
+            system_logger.warning(f"[TRADE] {msg} for {symbol} {direction}")
+            return {"status": "rejected", "reason": msg}
+
+        # DRY-RUN (gerçek emir yok, sadece log + PositionManager)
+        if not Config.LIVE_TRADING_ENABLED:
+            system_logger.info(
+                f"[TRADE] DRY-RUN OPEN {symbol} {direction} "
+                f"qty={qty:.6f} price={entry_price:.2f} lev={leverage}"
+            )
+            position = self.position_manager.open_position(
+                symbol=symbol,
+                side=direction,
+                qty=qty,
+                entry_price=entry_price,
+                leverage=leverage,
+            )
+            return {"status": "dry_run", "position": position}
+
+        # 3) Gerçek Binance emri
+        try:
+            side_for_binance = "BUY" if direction == "LONG" else "SELL"
+
+            order = self.client.futures_create_order(
+                symbol=symbol,
+                side=side_for_binance,
+                type="MARKET",
+                quantity=qty,
+            )
+
+            # Fiyatı order'dan çek (fills veya avgPrice)
+            fills = order.get("fills") or []
+            if fills:
+                fill_price = float(fills[0]["price"])
+            else:
+                fill_price = float(order.get("avgPrice") or entry_price)
+
+            position = self.position_manager.open_position(
+                symbol=symbol,
+                side=direction,
+                qty=qty,
+                entry_price=fill_price,
+                leverage=leverage,
+            )
+
+            system_logger.info(
+                f"[TRADE] OPENED {symbol} {direction} "
+                f"qty={qty:.6f} price={fill_price:.2f} lev={leverage}"
+            )
+            return {"status": "success", "order": order, "position": position}
+
+        except Exception as e:
+            system_logger.exception(
+                f"[TRADE] Failed to open position {symbol} {direction}: {e}"
+            )
+            raise TradeExecutionException(str(e)) from e
+
+    # ─────────────────────── pozisyon kapama ───────────────────────
+
     def close_position(
         self,
         symbol: str,
-        quantity: float,
-        position_side: Optional[str] = None,
+        direction: str,  # pozisyon yönü: "LONG" veya "SHORT"
+        exit_price: float,
     ) -> Dict[str, Any]:
         """
-        Pozisyonu kapatmak için ters yönde market emri atar.
-
-        :param symbol: Örn: 'BTCUSDT'
-        :param quantity: Kapatılacak miktar
-        :param position_side: 'LONG' veya 'SHORT'
+        Mevcut LONG/SHORT pozisyonu kapatır ve realized PnL'i RiskManager'a işler.
         """
+        direction = direction.upper()
+        if direction not in ("LONG", "SHORT"):
+            msg = f"Invalid direction: {direction}"
+            system_logger.error(f"[TRADE] {msg}")
+            return {"status": "failed", "reason": msg}
+
+        position = self.position_manager.get_position(symbol, direction)
+        if not position:
+            system_logger.warning(
+                f"[TRADE] No open position to close: {symbol} {direction}"
+            )
+            return {"status": "not_found"}
+
+        qty = position.qty
+
+        # DRY-RUN
+        if not Config.LIVE_TRADING_ENABLED:
+            pnl = self.position_manager.close_position(
+                symbol=symbol, side=direction, exit_price=exit_price
+            )
+            self.risk_manager.register_closed_trade(pnl)
+            system_logger.info(
+                f"[TRADE] DRY-RUN CLOSE {symbol} {direction} "
+                f"qty={qty:.6f} price={exit_price:.2f} pnl={pnl:.2f}"
+            )
+            return {"status": "dry_run", "pnl": pnl}
+
+        # Gerçek Binance kapama emri
         try:
-            # Basit örnek — gerçek senaryoda mevcut pozisyona göre belirlemelisin
-            side = "SELL"
+            side_for_binance = "SELL" if direction == "LONG" else "BUY"
 
-            logger.info(
-                f"[TradeExecutor] Closing position | "
-                f"symbol={symbol}, qty={quantity}, position_side={position_side}"
+            close_order = self.client.futures_create_order(
+                symbol=symbol,
+                side=side_for_binance,
+                type="MARKET",
+                quantity=qty,
+                reduceOnly=True,  # sadece açık pozisyonu kapat
             )
 
-            params: Dict[str, Any] = {
-                "symbol": symbol,
-                "side": side,
-                "type": "MARKET",
-                "quantity": quantity,
-                "reduceOnly": "true",
-            }
+            fills = close_order.get("fills") or []
+            if fills:
+                fill_price = float(fills[0]["price"])
+            else:
+                fill_price = float(close_order.get("avgPrice") or exit_price)
 
-            if position_side:
-                params["positionSide"] = position_side
+            pnl = self.position_manager.close_position(
+                symbol=symbol, side=direction, exit_price=fill_price
+            )
+            self.risk_manager.register_closed_trade(pnl)
 
-            order = self.client.futures_create_order(**params)
-            logger.info(f"[TradeExecutor] Close position order created: {order}")
-            return order
+            system_logger.info(
+                f"[TRADE] CLOSED {symbol} {direction} "
+                f"qty={qty:.6f} price={fill_price:.2f} pnl={pnl:.2f}"
+            )
+            return {"status": "success", "pnl": pnl, "order": close_order}
 
-        except BinanceAPIException as e:
-            logger.error(f"[TradeExecutor] Binance API error (close_position): {e}")
-            raise TradeExecutionException(
-                f"Binance API error (close_position): {e}"
-            ) from e
         except Exception as e:
-            logger.exception(
-                f"[TradeExecutor] Unknown error while closing position: {e}"
+            system_logger.exception(
+                f"[TRADE] Failed to close position {symbol} {direction}: {e}"
             )
-            raise TradeExecutionException(
-                f"Unknown close position error: {e}"
-            ) from e
+            raise TradeExecutionException(str(e)) from e
 
+    # ─────────────────────── tüm pozisyonları kapat ───────────────────────
 
-# ---------------------------------------------------------
-# Basit Global Emir Fonksiyonu (fallback & multi-trade için)
-# ---------------------------------------------------------
+    def flatten_all_positions(self, current_prices: Dict[str, float]) -> None:
+        """
+        Günlük zarar limiti aşıldığında TÜM açık pozisyonları kapatmak için kullanılır.
 
-_executor_instance: Optional[TradeExecutor] = None
+        :param current_prices: {'BTCUSDT': 67000.0, ...}
+        """
+        open_positions: List[Any] = self.position_manager.list_open_positions()
+        if not open_positions:
+            system_logger.info("[TRADE] No open positions to flatten.")
+            return
 
-
-def get_executor() -> TradeExecutor:
-    """
-    Tek bir TradeExecutor instance'ı üretip tekrar tekrar kullanmak için.
-    (fallback_trade ve MultiTradeEngine buradan faydalanıyor.)
-    """
-    global _executor_instance
-    if _executor_instance is None:
-        _executor_instance = TradeExecutor()
-    return _executor_instance
-
-
-def execute_trade(symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
-    """
-    MultiTradeEngine ve fallback_trade tarafından kullanılan basit emir fonksiyonu.
-
-    :param symbol: 'BTCUSDT' vb.
-    :param side: 'BUY' veya 'SELL'
-    :param qty: emir miktarı (float)
-    """
-    executor = get_executor()
-
-    try:
-        order = executor.create_market_order(
-            symbol=symbol,
-            side=side,
-            quantity=qty,
+        system_logger.warning(
+            f"[TRADE] Flatten ALL positions due to daily loss limit. "
+            f"open_count={len(open_positions)}"
         )
-        return order
-    except Exception as e:
-        logger.error(f"[execute_trade] Trade failed for {symbol} {side} {qty}: {e}")
-        return None
+
+        for pos in open_positions:
+            price = current_prices.get(pos.symbol)
+            if price is None:
+                system_logger.warning(
+                    f"[TRADE] No price for {pos.symbol}, skipping flatten."
+                )
+                continue
+
+            # pos.side: "LONG" veya "SHORT"
+            try:
+                self.close_position(
+                    symbol=pos.symbol,
+                    direction=pos.side,
+                    exit_price=price,
+                )
+            except TradeExecutionException:
+                # Hata alınsa bile diğer pozisyonlara devam edilsin
+                continue
+
