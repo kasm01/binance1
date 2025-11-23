@@ -1,784 +1,634 @@
+# main.py
 import asyncio
-import signal
-from contextlib import suppress
-from typing import Dict, Any, List, Tuple
+import os
+from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 from aiohttp import web
 
 from config.load_env import load_environment_variables
+from config.settings import Settings
 
-from core.logger import setup_logger
+from core.logger import system_logger, error_logger, trade_logger
 from core.exceptions import (
-    BinanceBotException,
-    ConfigException,
-    DataLoadingException,
+    DataFetchException,
     DataProcessingException,
+    FeatureEngineeringException,
+    LabelGenerationException,
     ModelTrainingException,
     OnlineLearningException,
     PredictionException,
-    SignalGenerationException,
-    PipelineException,
-    LabelGenerationException,
+    BotLoopException,
 )
+from core.notifier import Notifier
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
-from data.batch_learning import BatchLearner
-from data.online_learning import OnlineLearner
 from data.anomaly_detection import AnomalyDetector
+from data.online_learning import OnlineLearner
+from data.batch_learning import BatchLearner
 
-from trading.strategy_engine import StrategyEngine
+from models.ensemble_model import EnsembleModel
+from models.fallback_model import FallbackModel
+
 from trading.risk_manager import RiskManager
 from trading.capital_manager import CapitalManager
 from trading.position_manager import PositionManager
 from trading.trade_executor import TradeExecutor
 
-# ---------------------------------------------------------
-# Global logger
-# ---------------------------------------------------------
+# ============================================================
+# Global / Config
+# ============================================================
 
-LOGGER = setup_logger("system")
+ENV_VARS: Dict[str, Any] = load_environment_variables()
 
-# ---------------------------------------------------------
-# Yardımcı fonksiyonlar
-# ---------------------------------------------------------
+SYMBOL = ENV_VARS.get("SYMBOL", "BTCUSDT")
+INTERVAL = ENV_VARS.get("INTERVAL", "1m")
+KLINE_LIMIT = int(ENV_VARS.get("KLINE_LIMIT", 1000))
+
+# Trade / risk konfigürasyonu
+POLL_INTERVAL_SECONDS = int(ENV_VARS.get("POLL_INTERVAL_SECONDS", 60))
+NOTIONAL_CAPITAL = float(ENV_VARS.get("NOTIONAL_CAPITAL", 1000.0))
+RISK_PER_TRADE = float(ENV_VARS.get("RISK_PER_TRADE", 0.01))
+MAX_OPEN_POSITIONS_PER_SIDE = int(ENV_VARS.get("MAX_OPEN_POSITIONS_PER_SIDE", 1))
+
+BUY_THRESHOLD = float(ENV_VARS.get("BUY_THRESHOLD", 0.60))
+SELL_THRESHOLD = float(ENV_VARS.get("SELL_THRESHOLD", 0.40))
+
+# Global modeller
+ENSEMBLE_MODEL: Optional[EnsembleModel] = None
+FALLBACK_MODEL: FallbackModel = FallbackModel(default_proba=0.5)
+
+# Trading objeleri (tek instance)
+RISK_MANAGER = RiskManager(max_risk_per_trade=RISK_PER_TRADE)
+CAPITAL_MANAGER = CapitalManager(total_capital=NOTIONAL_CAPITAL)
+POSITION_MANAGER = PositionManager()
+TRADE_EXECUTOR: Optional[TradeExecutor] = None
+
+# Notifier (ileride Telegram bot bağlanabilir)
+NOTIFIER = Notifier(telegram_bot=None)
 
 
-def _get_env_int(env_vars: Dict[str, str], key: str, default: int) -> int:
-    try:
-        return int(env_vars.get(key, str(default)))
-    except Exception:
-        return default
+# ============================================================
+# Data Pipeline
+# ============================================================
 
-
-def _get_env_float(env_vars: Dict[str, str], key: str, default: float) -> float:
-    try:
-        return float(env_vars.get(key, str(default)))
-    except Exception:
-        return default
-
-
-# ---------------------------------------------------------
-# DATA PIPELINE
-# ---------------------------------------------------------
-
-
-async def run_data_pipeline(env_vars: Dict[str, str]) -> pd.DataFrame:
+def run_data_pipeline(
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> pd.DataFrame:
     """
-    Tam veri pipeline:
-      1) Kline verisini DataLoader ile çek
-      2) FeatureEngineer ile feature üret
-      3) AnomalyDetector ile outlier temizliği
-      4) 'label' kolonunu üret ve son satırı düşür
+    1) Kline verisini yükler (Redis cache + Binance)
+    2) Feature engineering uygular
+    3) Anomali tespiti (IsolationForest)
+    4) Label kolonunu üretir
+    5) Model için hazır final dataframe döner
     """
-    symbol = env_vars.get("SYMBOL", "BTCUSDT")
-    interval = env_vars.get("INTERVAL", "1m")
-    limit = _get_env_int(env_vars, "LIMIT", 1000)
-
-    LOGGER.info(
-        "[DATA] Starting data pipeline for %s (%s, limit=%d)",
-        symbol,
-        interval,
-        limit,
+    system_logger.info(
+        f"[DATA] Starting data pipeline for {symbol} ({interval}, limit={limit})"
     )
 
+    # ---------------------------
+    # 1) Kline verisi yükleme
+    # ---------------------------
     try:
-        # 1) DataLoader
-        data_loader = DataLoader(env_vars)
-
-        candidate_methods = (
-            "load_and_cache_klines",
-            "load_and_cache_ohlcv",
-            "load_klines",
-            "load_and_cache",
-            "load",
-        )
-        load_method = None
-
-        for name in candidate_methods:
-            if hasattr(data_loader, name):
-                load_method = getattr(data_loader, name)
-                LOGGER.info("[DATA] Using DataLoader.%s", name)
-                break
-
-        if load_method is None:
-            raise DataLoadingException(
-                "DataLoader has no suitable load method; tried: "
-                + ", ".join(candidate_methods)
-            )
-
-        # 2) Data yükle
-        code_vars = load_method.__code__.co_varnames
-        kwargs: Dict[str, Any] = {}
-
-        if "symbol" in code_vars:
-            kwargs["symbol"] = symbol
-        if "interval" in code_vars:
-            kwargs["interval"] = interval
-        if "limit" in code_vars:
-            kwargs["limit"] = limit
-
-        raw_df = load_method(**kwargs)
-
-        if raw_df is None or raw_df.empty:
-            raise DataLoadingException("No data returned from DataLoader.")
-
-        LOGGER.info("[DATA] Raw DF shape: %s", raw_df.shape)
-
-        # 3) Feature engineering
-        fe = FeatureEngineer(df=raw_df)
-        features_df = fe.transform()
-
-        LOGGER.info(
-            "[FE] Features DF shape: %s, columns=%s",
-            features_df.shape,
-            list(features_df.columns),
-        )
-
-        # 4) Anomali tespiti (IsolationForest vs.)
-        try:
-            anomaly_detector = AnomalyDetector(features_df)
-            features_df = anomaly_detector.detect_and_handle_anomalies()
-        except Exception as e:
-            LOGGER.warning(
-                "[DATA] Anomaly detection failed, using original features_df: %r",
-                e,
-                exc_info=True,
-            )
-
-        # 5) Label üretimi
-        if "close" not in features_df.columns:
-            raise LabelGenerationException(
-                "Column 'close' not found in features_df for label generation."
-            )
-
-        df = features_df.copy()
-
-        # Basit label: Bir sonraki barın kapanışı şimdiki kapanıştan yüksekse => 1 (BUY), değilse 0 (SELL/HOLD)
-        df["future_close"] = df["close"].shift(-1)
-        df["future_return"] = (df["future_close"] - df["close"]) / df["close"]
-
-        df["label"] = (df["future_return"] > 0).astype(int)
-
-        # Son satırın future_close'u NaN olacağı için düşür
-        df = df.dropna(subset=["future_close"]).copy()
-        df = df.drop(columns=["future_close", "future_return"])
-
-        LOGGER.info(
-            "[FE] Final Features DF shape (with label): %s, columns=%s",
-            df.shape,
-            list(df.columns),
-        )
-
-        if df.empty:
-            raise DataProcessingException("Final features dataframe is empty after label generation.")
-
-        return df
-
-    except BinanceBotException:
-        # Zaten bizden atanmış custom exception, aynen yukarı fırlat
-        raise
+        loader = DataLoader(env_vars=ENV_VARS)
+        system_logger.info("[DATA] Using DataLoader.load_and_cache_klines")
+        df_raw = loader.load_and_cache_klines(symbol=symbol, interval=interval, limit=limit)
+        system_logger.info(f"[DATA] Raw DF shape: {df_raw.shape}")
     except Exception as e:
-        LOGGER.error(
-            "💥 [PIPELINE] Unexpected error in data pipeline: %s",
-            e,
-            exc_info=True,
+        error_logger.exception(f"[DATA] Error while loading klines: {e}")
+        raise DataFetchException(f"Failed to load klines: {e}") from e
+
+    # ---------------------------
+    # 2) Feature engineering
+    # ---------------------------
+    try:
+        fe = FeatureEngineer(df_raw)
+        features_df = fe.build_features()
+        system_logger.info(
+            f"[FE] Features DF shape: {features_df.shape}, "
+            f"columns={list(features_df.columns)}"
         )
-        raise DataProcessingException(f"Data pipeline failed: {e}") from e
+    except Exception as e:
+        error_logger.exception(f"[FE] Feature engineering error: {e}")
+        raise FeatureEngineeringException(f"Feature engineering failed: {e}") from e
+
+    # ---------------------------
+    # 3) Anomali tespiti / filtresi
+    # ---------------------------
+    try:
+        anomaly_detector = AnomalyDetector(features_df=features_df)
+        system_logger.info(
+            f"[ANOM] Running IsolationForest on {features_df.shape[0]} samples, "
+            f"{features_df.select_dtypes('number').shape[1]} numeric features."
+        )
+        clean_features_df = anomaly_detector.detect_and_handle_anomalies()
+    except Exception as e:
+        system_logger.warning(
+            f"[DATA] Anomaly detection failed, using original features_df: {e}"
+        )
+        clean_features_df = features_df
+
+    # ---------------------------
+    # 4) Label üretimi
+    # ---------------------------
+    try:
+        final_df = _generate_labels(clean_features_df)
+        system_logger.info(
+            f"[FE] Final Features DF shape (with label): {final_df.shape}, "
+            f"columns={list(final_df.columns)}"
+        )
+    except Exception as e:
+        error_logger.exception(f"[LABEL] Label generation error: {e}")
+        raise LabelGenerationException(f"Label generation failed: {e}") from e
+
+    return final_df
 
 
-# ---------------------------------------------------------
-# MODEL TRAINING (Batch + Online)
-# ---------------------------------------------------------
-
-
-def _split_features_labels(
-    clean_df: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
+def _generate_labels(df: pd.DataFrame, horizon_col: str = "return_5") -> pd.DataFrame:
     """
-    clean_df içinden feature kolonları ve label kolonunu ayırır.
-    Assumption:
-      - Label kolonu: 'label'
+    Basit label üretimi:
+      - horizon_col > 0 => 1 (BUY)
+      - horizon_col <= 0 => 0 (SELL/HOLD)
     """
-    if "label" not in clean_df.columns:
+    if horizon_col not in df.columns:
+        raise LabelGenerationException(
+            f"Label horizon_col '{horizon_col}' not found in dataframe."
+        )
+
+    df = df.copy()
+    df["label"] = (df[horizon_col] > 0).astype(int)
+    return df.dropna(subset=["label"])
+
+
+def _split_features_labels(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, list]:
+    """
+    'label' kolonunu y'de, geri kalan numeric feature'ları X'te toplar.
+    """
+    if "label" not in df.columns:
         raise ModelTrainingException("Column 'label' not found in dataframe.")
 
-    label_col = "label"
+    feature_cols = [
+        col for col in df.columns
+        if col not in ("label", "open_time", "close_time")
+    ]
 
-    numeric_cols = clean_df.select_dtypes(
-        include=["float64", "float32", "int64", "int32"]
-    ).columns.tolist()
-
-    feature_cols = [c for c in numeric_cols if c != label_col]
-
-    if not feature_cols:
-        raise ModelTrainingException("No feature columns found for training.")
-
-    X = clean_df[feature_cols].copy()
-    y = clean_df[label_col].copy()
+    X = df[feature_cols].copy()
+    y = df["label"].copy()
 
     return X, y, feature_cols
 
 
+# ============================================================
+# Model Training (Batch + Online + Ensemble)
+# ============================================================
+
+def build_ensemble_from_batch(batch_model) -> EnsembleModel:
+    """
+    Batch model (ör: RandomForest) ile basit bir EnsembleModel kur.
+    İleride LGBM / CatBoost / LSTM de eklenebilir.
+    """
+    from sklearn.base import ClassifierMixin
+
+    if batch_model is None or not isinstance(batch_model, ClassifierMixin):
+        system_logger.warning(
+            "[ENSEMBLE] Given batch_model is not a valid sklearn classifier; "
+            "EnsembleModel will be empty."
+        )
+        return EnsembleModel(estimators=None)
+
+    estimators = [("rf", batch_model)]
+    ensemble = EnsembleModel(estimators=estimators)
+    system_logger.info("[ENSEMBLE] EnsembleModel built with RandomForest (rf).")
+    return ensemble
+
+
 def train_models_and_update_state(
-    clean_df: pd.DataFrame, env_vars: Dict[str, str]
-) -> None:
+    clean_df: pd.DataFrame,
+) -> Tuple[OnlineLearner, list]:
     """
-    - BatchLearner ile batch model eğitir
-    - OnlineLearner ile initial_fit + partial_update yapar
+    1) BatchLearner ile batch model train
+    2) Batch modelden EnsembleModel oluştur (global ENSEMBLE_MODEL güncellenir)
+    3) OnlineLearner'i batch verisi ile initial_fit + kısa partial_update
     """
-    try:
-        X, y, feature_cols = _split_features_labels(clean_df)
-        n_samples, n_features = X.shape
+    global ENSEMBLE_MODEL
 
-        LOGGER.info(
-            "[MODEL] Training batch model on %d samples, %d features. Using %d feature columns.",
-            n_samples,
-            n_features,
-            len(feature_cols),
-        )
+    X, y, feature_cols = _split_features_labels(clean_df)
 
-        model_dir = env_vars.get("MODEL_DIR", "models")
-        batch_model_name = env_vars.get("BATCH_MODEL_NAME", "batch_model")
-        online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
-
-        # --- Batch Learner ---
-        batch_learner = BatchLearner(
-            X=X,
-            y=y,
-            model_dir=model_dir,
-            base_model_name=batch_model_name,
-            logger=LOGGER,
-        )
-        _ = batch_learner.fit()
-
-        # --- Online Learner ---
-        LOGGER.info("[ONLINE] Initializing OnlineLearner with batch data.")
-
-        online_learner = OnlineLearner(
-            model_dir=model_dir,
-            base_model_name=online_model_name,
-            n_classes=2,
-            logger=LOGGER,
-        )
-
-        # İlk eğitim (tüm batch)
-        online_learner.feature_columns = feature_cols
-        online_learner.initial_fit(X, y)
-
-        # Son N örnekle incremental update (örneğin son 100 bar)
-        tail_n = min(100, len(clean_df))
-        if tail_n > 0:
-            X_tail = X.iloc[-tail_n:]
-            y_tail = y.iloc[-tail_n:]
-            online_learner.partial_update(X_tail, y_tail)
-
-    except (DataProcessingException, ModelTrainingException, OnlineLearningException) as e:
-        LOGGER.error("💥 [MODEL] Known model pipeline error: %s", e, exc_info=True)
-        raise
-    except Exception as e:
-        LOGGER.error(
-            "💥 [MODEL] Unexpected error in train_models_and_update_state: %s",
-            e,
-            exc_info=True,
-        )
-        raise ModelTrainingException(f"Unexpected training error: {e}") from e
-
-
-# ---------------------------------------------------------
-# SIGNAL GENERATION
-# ---------------------------------------------------------
-
-
-def generate_signal(clean_df: pd.DataFrame, env_vars: Dict[str, str]) -> str:
-    """
-    - Son bar için feature'ları alır
-    - Online modelden BUY olasılığını (class=1) hesaplar
-    - BUY / SELL / HOLD kararı verip döner
-    """
-    try:
-        if len(clean_df) == 0:
-            LOGGER.warning("[SIGNAL] Empty dataframe, cannot generate signal.")
-            return "HOLD"
-
-        X, y, feature_cols = _split_features_labels(clean_df)
-
-        # Sadece son bar için feature
-        X_live = X.iloc[[-1]]
-
-        model_dir = env_vars.get("MODEL_DIR", "models")
-        online_model_name = env_vars.get("ONLINE_MODEL_NAME", "online_model")
-
-        buy_threshold = _get_env_float(env_vars, "BUY_THRESHOLD", 0.6)
-        sell_threshold = _get_env_float(env_vars, "SELL_THRESHOLD", 0.4)
-
-        online_learner = OnlineLearner(
-            model_dir=model_dir,
-            base_model_name=online_model_name,
-            n_classes=2,
-            logger=LOGGER,
-        )
-
-        online_learner.feature_columns = feature_cols
-
-        p_buy = online_learner.predict_proba_live(X_live)
-
-        LOGGER.info(
-            "[SIGNAL] p_buy=%.4f (BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f)",
-            p_buy,
-            buy_threshold,
-            sell_threshold,
-        )
-
-        if p_buy >= buy_threshold:
-            signal = "BUY"
-        elif p_buy <= sell_threshold:
-            signal = "SELL"
-        else:
-            signal = "HOLD"
-
-        LOGGER.info("[SIGNAL] Generated trading signal: %s", signal)
-        return signal
-
-    except Exception as e:
-        LOGGER.error(
-            "💥 [SIGNAL] Error while generating signal: %s",
-            e,
-            exc_info=True,
-        )
-        raise SignalGenerationException(f"Signal generation failed: {e}") from e
-
-
-# ---------------------------------------------------------
-# TRADING OBJE AYARLARI
-# ---------------------------------------------------------
-
-
-def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
-    """
-    Trading ile ilgili objeleri bir kere oluşturur:
-      - CapitalManager
-      - RiskManager
-      - PositionManager
-      - TradeExecutor
-      - StrategyEngine (model tabanlı strateji)
-    """
-    total_capital = float(env_vars.get("TOTAL_CAPITAL", 1000.0))
-    max_risk_per_trade = float(env_vars.get("MAX_RISK_PER_TRADE", 0.02))
-
-    capital_manager = CapitalManager(total_capital=total_capital)
-    risk_manager = RiskManager(max_risk_per_trade=max_risk_per_trade)
-    position_manager = PositionManager()
-    trade_executor = TradeExecutor()
-    strategy_engine = StrategyEngine()
-
-    LOGGER.info(
-        "[TRADING_INIT] total_capital=%.4f, max_risk_per_trade=%.4f",
-        total_capital,
-        max_risk_per_trade,
+    # ---------------------------
+    # 1) Batch training
+    # ---------------------------
+    batch_learner = BatchLearner(
+        model_dir="models",
+        base_model_name="batch_model",
     )
 
-    return {
-        "capital_manager": capital_manager,
-        "risk_manager": risk_manager,
-        "position_manager": position_manager,
-        "trade_executor": trade_executor,
-        "strategy_engine": strategy_engine,
-    }
+    system_logger.info(
+        f"[MODEL] Training batch model on {len(X)} samples, {X.shape[1]} features. "
+        f"Using {len(feature_cols)} feature columns."
+    )
+
+    batch_learner.train(X, y)
+    batch_model = getattr(batch_learner, "model", None)
+
+    if batch_model is not None:
+        ENSEMBLE_MODEL = build_ensemble_from_batch(batch_model)
+    else:
+        system_logger.warning(
+            "[MODEL] BatchLearner has no 'model' attribute; EnsembleModel will be empty."
+        )
+        ENSEMBLE_MODEL = EnsembleModel(estimators=None)
+
+    # ---------------------------
+    # 2) Online model init/update
+    # ---------------------------
+    online_learner = OnlineLearner(
+        model_dir="models",
+        base_model_name="online_model",
+        n_classes=2,
+    )
+    online_learner.feature_columns = feature_cols
+    system_logger.info(
+        f"[ONLINE] feature_columns set with {len(feature_cols)} columns."
+    )
+
+    online_learner.initial_fit(X, y)
+    system_logger.info("[ONLINE] initial_fit completed successfully.")
+    online_learner.save()
+    system_logger.info("[ONLINE] Online model saved to models/online_model.joblib")
+
+    # Son 100 örnek ile küçük partial_update
+    if len(X) > 100:
+        recent_X = X.tail(100)
+        recent_y = y.tail(100)
+    else:
+        recent_X = X
+        recent_y = y
+
+    online_learner.partial_update(recent_X, recent_y)
+    system_logger.info("[ONLINE] partial_update completed successfully.")
+    online_learner.save()
+    system_logger.info("[ONLINE] Online model saved to models/online_model.joblib")
+
+    return online_learner, feature_cols
 
 
-# ---------------------------------------------------------
-# TRADING: LONG / SHORT + POZİSYON YÖNETİMİ
-# ---------------------------------------------------------
+# ============================================================
+# Signal Generation (Online + Ensemble + Fallback)
+# ============================================================
+
+def generate_trading_signal(
+    X_last: pd.DataFrame,
+    feature_cols: list,
+    online_learner: Optional[OnlineLearner] = None,
+    ensemble_model: Optional[EnsembleModel] = None,
+    fallback_model: Optional[FallbackModel] = None,
+) -> Tuple[str, float, str]:
+    """
+    Öncelik: online → ensemble → fallback
+
+    :return: (signal, p_buy, source)
+    """
+    if fallback_model is None:
+        fallback_model = FALLBACK_MODEL
+
+    proba = None
+    source = "fallback"
+
+    # 1) ONLINE MODEL
+    try:
+        if online_learner is not None:
+            X_input = X_last[feature_cols]
+            proba = online_learner.predict_proba(X_input)  # (1, 2) [p0, p1]
+            source = "online"
+    except Exception as e:
+        system_logger.warning(
+            f"[SIGNAL] Online model prediction failed: {e}. Will try ensemble.",
+            exc_info=True,
+        )
+        proba = None
+
+    # 2) ENSEMBLE MODEL
+    if proba is None and ensemble_model is not None:
+        try:
+            X_input = X_last[feature_cols]
+            proba = ensemble_model.predict_proba(X_input)
+            source = "ensemble"
+        except Exception as e:
+            system_logger.warning(
+                f"[SIGNAL] EnsembleModel prediction failed: {e}. Falling back.",
+                exc_info=True,
+            )
+            proba = None
+
+    # 3) FALLBACK MODEL
+    if proba is None:
+        X_input = X_last[feature_cols].values
+        proba = fallback_model.predict_proba(X_input)
+        source = "fallback"
+
+    p_buy = float(proba[0, 1])
+
+    system_logger.info(
+        f"[SIGNAL] Source={source}, p_buy={p_buy:.4f} "
+        f"(BUY_THRESHOLD={BUY_THRESHOLD}, SELL_THRESHOLD={SELL_THRESHOLD})"
+    )
+
+    if p_buy >= BUY_THRESHOLD:
+        signal = "BUY"
+    elif p_buy <= SELL_THRESHOLD:
+        signal = "SELL"
+        # short sinyal olarak yorumlayacağız
+    else:
+        signal = "HOLD"
+
+    system_logger.info(f"[SIGNAL] Generated trading signal: {signal}")
+    return signal, p_buy, source
 
 
-def handle_trading(
-    model_signal: str,
-    latest_row: pd.Series,
-    env_vars: Dict[str, str],
-    trading_objects: Dict[str, Any],
+# ============================================================
+# Trading Layer (LONG/SHORT + Position/Capital + TradeExecutor)
+# ============================================================
+
+def _get_latest_price_from_row(row: pd.Series) -> float:
+    # Varsayılan olarak 'close' sütununu kullan
+    return float(row.get("close", row.get("price", 0.0)))
+
+
+def _ensure_trade_executor() -> TradeExecutor:
+    global TRADE_EXECUTOR
+    if TRADE_EXECUTOR is None:
+        TRADE_EXECUTOR = TradeExecutor(env_vars=ENV_VARS)
+    return TRADE_EXECUTOR
+
+
+def _find_open_positions(symbol: str, side: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Belirli symbol + side (LONG/SHORT) için açık pozisyonları döner.
+    """
+    open_pos = {}
+    for pos_id, pos in POSITION_MANAGER.get_open_positions().items():
+        if pos.get("symbol") == symbol and pos.get("side", "").upper() == side.upper():
+            open_pos[pos_id] = pos
+    return open_pos
+
+
+def execute_trading_logic(
+    signal: str,
+    X_last: pd.DataFrame,
 ) -> None:
     """
-    BUY/SELL/HOLD sinyaline göre LONG/SHORT pozisyon yönetimi.
-
-    Anlam haritası:
-      - BUY  -> LONG tarafına geç
-        * SHORT pozisyon varsa önce kapat, sonra LONG aç
-      - SELL -> SHORT tarafına geç
-        * LONG pozisyon varsa önce kapat, sonra SHORT aç
-      - HOLD -> hiçbir pozisyon değişikliği yapma
+    Signal → LONG/SHORT pozisyon aç/kapat + loglama + TradeExecutor emirleri.
     """
-    symbol = env_vars.get("SYMBOL", "BTCUSDT")
-    price = float(latest_row["close"])
-
-    capital_manager: CapitalManager = trading_objects["capital_manager"]
-    risk_manager: RiskManager = trading_objects["risk_manager"]
-    position_manager: PositionManager = trading_objects["position_manager"]
-    trade_executor: TradeExecutor = trading_objects["trade_executor"]
-
-    open_positions = position_manager.get_open_positions()
-
-    # Açık pozisyonların snapshot'ını logla
-    if open_positions:
-        LOGGER.info("[TRADE] Open positions snapshot: %s", open_positions)
-    else:
-        LOGGER.info("[TRADE] No open positions currently.")
-
-    # HOLD -> hiçbir şey yapma
-    if model_signal == "HOLD":
-        LOGGER.info("[TRADE] HOLD signal received, no action taken.")
+    if X_last.empty:
+        system_logger.warning("[TRADE] X_last is empty; skipping trade logic.")
         return
 
-    # Pozisyonları side'a göre ayır
-    long_positions = {
-        pid: pos for pid, pos in open_positions.items()
-        if str(pos.get("side", "LONG")).upper() == "LONG"
-    }
-    short_positions = {
-        pid: pos for pid, pos in open_positions.items()
-        if str(pos.get("side", "SHORT")).upper() == "SHORT"
-    }
+    row = X_last.iloc[0]
+    current_price = _get_latest_price_from_row(row)
 
-    # Yardımcı: belirli side'daki pozisyonları kapat
-    def close_side_positions(side: str, positions: Dict[str, Dict[str, Any]]) -> None:
-        for pos_id, pos in list(positions.items()):
-            qty = float(pos["qty"])
-            LOGGER.info(
-                "[TRADE] Closing %s position %s | symbol=%s, qty=%.6f",
-                side, pos_id, symbol, qty,
-            )
+    if current_price <= 0:
+        system_logger.warning("[TRADE] Invalid current_price <= 0; skipping.")
+        return
+
+    executor = _ensure_trade_executor()
+
+    # Açık pozisyonları çek
+    open_longs = _find_open_positions(SYMBOL, "LONG")
+    open_shorts = _find_open_positions(SYMBOL, "SHORT")
+
+    trade_logger.info(
+        f"[POSITIONS] Before signal={signal} | "
+        f"LONG={len(open_longs)}, SHORT={len(open_shorts)}, "
+        f"all={POSITION_MANAGER.get_open_positions()}"
+    )
+
+    # Kullanılacak notional risk büyüklüğü
+    position_notional = NOTIONAL_CAPITAL * RISK_PER_TRADE
+    qty = position_notional / current_price  # BTC cinsinden miktar
+
+    # Miktarı biraz yuvarla (örneğin BTC için 0.001 hassasiyet)
+    qty = float(f"{qty:.3f}")
+
+    if signal == "BUY":
+        # Önce açık SHORT pozisyonları kapat
+        for pos_id, pos in open_shorts.items():
             try:
-                _ = trade_executor.close_position(
-                    symbol=symbol,
-                    quantity=qty,
-                    position_side=side.upper(),
+                executor.close_position(
+                    symbol=SYMBOL,
+                    quantity=pos["qty"],
+                    position_side="SHORT",
+                )
+                pnl = POSITION_MANAGER.close_position(pos_id, exit_price=current_price)
+                CAPT_RETURN = position_notional + (pnl or 0.0)
+                CAPITAL_MANAGER.release(CAPT_RETURN)
+                trade_logger.info(
+                    f"[TRADE] Closed SHORT pos_id={pos_id}, pnl={pnl}, "
+                    f"price={current_price}"
                 )
             except Exception as e:
-                LOGGER.error(
-                    "[TRADE] Error while sending close order for %s: %s",
-                    pos_id,
-                    e,
+                error_logger.error(
+                    f"[TRADE] Error closing SHORT position {pos_id}: {e}",
                     exc_info=True,
                 )
 
-            # PnL hesapla ve sermayeyi serbest bırak
-            pnl = position_manager.close_position(pos_id, exit_price=price)
-            capital_to_release = qty * price
-            capital_manager.release(capital_to_release)
+        # Eğer LONG pozisyon sayısı limiti aşmıyorsa yeni LONG aç
+        open_longs = _find_open_positions(SYMBOL, "LONG")
+        if len(open_longs) < MAX_OPEN_POSITIONS_PER_SIDE:
+            if RISK_MANAGER.check_risk(capital=NOTIONAL_CAPITAL, position_qty=position_notional):
+                try:
+                    order = executor.create_market_order(
+                        symbol=SYMBOL,
+                        side="BUY",
+                        quantity=qty,
+                        position_side="LONG",
+                        reduce_only=False,
+                    )
+                    pos_id = POSITION_MANAGER.open_position(
+                        symbol=SYMBOL,
+                        qty=qty,
+                        side="LONG",
+                        price=current_price,
+                    )
+                    CAPITAL_MANAGER.allocate(RISK_PER_TRADE)
+                    trade_logger.info(
+                        f"[TRADE] Opened LONG pos_id={pos_id}, "
+                        f"qty={qty}, price={current_price}, order={order}"
+                    )
+                except Exception as e:
+                    error_logger.error(
+                        f"[TRADE] Error opening LONG position: {e}",
+                        exc_info=True,
+                    )
+            else:
+                system_logger.warning(
+                    "[TRADE] RiskManager rejected LONG trade due to risk limit."
+                )
 
-            LOGGER.info(
-                "[TRADE] %s position %s closed. PnL=%.4f, released_capital=%.4f",
-                side,
-                pos_id,
-                pnl if pnl is not None else 0.0,
-                capital_to_release,
-            )
+    elif signal == "SELL":
+        # Önce açık LONG pozisyonları kapat
+        for pos_id, pos in open_longs.items():
+            try:
+                executor.close_position(
+                    symbol=SYMBOL,
+                    quantity=pos["qty"],
+                    position_side="LONG",
+                )
+                pnl = POSITION_MANAGER.close_position(pos_id, exit_price=current_price)
+                CAPT_RETURN = position_notional + (pnl or 0.0)
+                CAPITAL_MANAGER.release(CAPT_RETURN)
+                trade_logger.info(
+                    f"[TRADE] Closed LONG pos_id={pos_id}, pnl={pnl}, "
+                    f"price={current_price}"
+                )
+            except Exception as e:
+                error_logger.error(
+                    f"[TRADE] Error closing LONG position {pos_id}: {e}",
+                    exc_info=True,
+                )
 
-    # BUY -> LONG'a geç (SHORT varsa kapat)
-    if model_signal == "BUY":
-        if long_positions:
-            LOGGER.info(
-                "[TRADE] BUY signal but LONG positions already open, skipping new LONG entry."
-            )
-            return
+        # Yeni SHORT aç (limit dahilinde)
+        open_shorts = _find_open_positions(SYMBOL, "SHORT")
+        if len(open_shorts) < MAX_OPEN_POSITIONS_PER_SIDE:
+            if RISK_MANAGER.check_risk(capital=NOTIONAL_CAPITAL, position_qty=position_notional):
+                try:
+                    order = executor.create_market_order(
+                        symbol=SYMBOL,
+                        side="SELL",
+                        quantity=qty,
+                        position_side="SHORT",
+                        reduce_only=False,
+                    )
+                    pos_id = POSITION_MANAGER.open_position(
+                        symbol=SYMBOL,
+                        qty=qty,
+                        side="SHORT",
+                        price=current_price,
+                    )
+                    CAPITAL_MANAGER.allocate(RISK_PER_TRADE)
+                    trade_logger.info(
+                        f"[TRADE] Opened SHORT pos_id={pos_id}, "
+                        f"qty={qty}, price={current_price}, order={order}"
+                    )
+                except Exception as e:
+                    error_logger.error(
+                        f"[TRADE] Error opening SHORT position: {e}",
+                        exc_info=True,
+                    )
+            else:
+                system_logger.warning(
+                    "[TRADE] RiskManager rejected SHORT trade due to risk limit."
+                )
 
-        if short_positions:
-            LOGGER.info(
-                "[TRADE] BUY signal -> closing existing SHORT positions before opening LONG."
-            )
-            close_side_positions("SHORT", short_positions)
+    else:
+        # HOLD: Şimdilik açık pozisyonlara dokunma
+        trade_logger.info("[TRADE] HOLD signal – no position changes.")
 
-        # Yeni LONG aç
-        risk_pct = float(
-            env_vars.get("RISK_PER_TRADE", env_vars.get("MAX_RISK_PER_TRADE", 0.01))
-        )
-        available_capital = capital_manager.available_capital
-        capital_to_use = capital_manager.allocate(risk_pct)
-
-        if capital_to_use <= 0:
-            LOGGER.warning("[TRADE] capital_to_use <= 0 for LONG, skipping trade.")
-            return
-
-        # Pozisyon nominal büyüklüğü: kullanılan sermaye
-        position_notional = capital_to_use
-
-        # Risk kontrolü (toplam sermayeye göre)
-        if not risk_manager.check_risk(
-            capital=capital_manager.total_capital,
-            position_qty=position_notional,
-        ):
-            LOGGER.warning(
-                "[TRADE] Risk limit exceeded for LONG, releasing capital and skipping trade."
-            )
-            capital_manager.release(capital_to_use)
-            return
-
-        qty = capital_to_use / price
-
-        LOGGER.info(
-            "[TRADE] Opening LONG position | symbol=%s, qty=%.6f, price=%.2f, notional=%.2f",
-            symbol,
-            qty,
-            price,
-            position_notional,
-        )
-
-        try:
-            order = trade_executor.create_market_order(
-                symbol=symbol,
-                side="BUY",
-                quantity=qty,
-                position_side="LONG",
-            )
-        except Exception as e:
-            LOGGER.error(
-                "[TRADE] Error while creating LONG order: %s", e, exc_info=True
-            )
-            capital_manager.release(capital_to_use)
-            return
-
-        if order:
-            pos_id = position_manager.open_position(
-                symbol=symbol,
-                qty=qty,
-                side="LONG",
-                price=price,
-            )
-            LOGGER.info(
-                "[TRADE] LONG position opened with id=%s (orderId=%s)",
-                pos_id,
-                order.get("orderId"),
-            )
-        else:
-            LOGGER.error("[TRADE] LONG order returned empty result, releasing capital.")
-            capital_manager.release(capital_to_use)
-
-        return
-
-    # SELL -> SHORT'a geç (LONG varsa kapat)
-    if model_signal == "SELL":
-        if short_positions:
-            LOGGER.info(
-                "[TRADE] SELL signal but SHORT positions already open, skipping new SHORT entry."
-            )
-            return
-
-        if long_positions:
-            LOGGER.info(
-                "[TRADE] SELL signal -> closing existing LONG positions before opening SHORT."
-            )
-            close_side_positions("LONG", long_positions)
-
-        # Yeni SHORT aç
-        risk_pct = float(
-            env_vars.get("RISK_PER_TRADE", env_vars.get("MAX_RISK_PER_TRADE", 0.01))
-        )
-        available_capital = capital_manager.available_capital
-        capital_to_use = capital_manager.allocate(risk_pct)
-
-        if capital_to_use <= 0:
-            LOGGER.warning("[TRADE] capital_to_use <= 0 for SHORT, skipping trade.")
-            return
-
-        position_notional = capital_to_use
-
-        if not risk_manager.check_risk(
-            capital=capital_manager.total_capital,
-            position_qty=position_notional,
-        ):
-            LOGGER.warning(
-                "[TRADE] Risk limit exceeded for SHORT, releasing capital and skipping trade."
-            )
-            capital_manager.release(capital_to_use)
-            return
-
-        qty = capital_to_use / price
-
-        LOGGER.info(
-            "[TRADE] Opening SHORT position | symbol=%s, qty=%.6f, price=%.2f, notional=%.2f",
-            symbol,
-            qty,
-            price,
-            position_notional,
-        )
-
-        try:
-            order = trade_executor.create_market_order(
-                symbol=symbol,
-                side="SELL",
-                quantity=qty,
-                position_side="SHORT",
-            )
-        except Exception as e:
-            LOGGER.error(
-                "[TRADE] Error while creating SHORT order: %s", e, exc_info=True
-            )
-            capital_manager.release(capital_to_use)
-            return
-
-        if order:
-            pos_id = position_manager.open_position(
-                symbol=symbol,
-                qty=qty,
-                side="SHORT",
-                price=price,
-            )
-            LOGGER.info(
-                "[TRADE] SHORT position opened with id=%s (orderId=%s)",
-                pos_id,
-                order.get("orderId"),
-            )
-        else:
-            LOGGER.error(
-                "[TRADE] SHORT order returned empty result, releasing capital."
-            )
-            capital_manager.release(capital_to_use)
-
-        return
-
-
-# ---------------------------------------------------------
-# BOT LOOP
-# ---------------------------------------------------------
-
-
-async def run_data_and_model_pipeline(
-    env_vars: Dict[str, str],
-    trading_objects: Dict[str, Any],
-) -> None:
-    """
-    Tek bir cycle:
-      - Data pipeline
-      - Model training (batch + online)
-      - Signal generation
-      - Sinyale göre LONG/SHORT/HOLD trade yönetimi
-    """
-    clean_df = await run_data_pipeline(env_vars)
-
-    # Model eğit
-    train_models_and_update_state(clean_df, env_vars)
-
-    # Sinyal üret (online model)
-    signal = generate_signal(clean_df, env_vars)
-
-    # En son satırı trading için kullan (fiyat vs.)
-    latest_row = clean_df.iloc[-1]
-
-    # Trading akışını çalıştır
-    handle_trading(
-        model_signal=signal,
-        latest_row=latest_row,
-        env_vars=env_vars,
-        trading_objects=trading_objects,
+    # Son durum logu
+    trade_logger.info(
+        f"[POSITIONS] After signal={signal} | "
+        f"all={POSITION_MANAGER.get_open_positions()}"
     )
 
 
-async def bot_loop(env_vars: Dict[str, str]) -> None:
-    """
-    Arka planda sürekli çalışan ana bot loop'u.
-    """
-    LOGGER.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
-    interval_sec = _get_env_int(env_vars, "BOT_LOOP_INTERVAL", 60)
+# ============================================================
+# Async Bot Loop
+# ============================================================
 
-    # Trading objelerini bir kere oluştur
-    trading_objects = init_trading_objects(env_vars)
+async def run_data_and_model_pipeline() -> None:
+    """
+    Her döngüde:
+      1) Data pipeline
+      2) Model training (batch + online + ensemble update)
+      3) Sinyal üretimi
+      4) Trading logic (LONG/SHORT + TradeExecutor)
+    """
+    try:
+        clean_df = run_data_pipeline(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            limit=KLINE_LIMIT,
+        )
 
+        online_learner, feature_cols = train_models_and_update_state(clean_df)
+
+        # Son satırı al (en güncel bar)
+        X_last = clean_df.tail(1)
+
+        signal, p_buy, source = generate_trading_signal(
+            X_last=X_last,
+            feature_cols=feature_cols,
+            online_learner=online_learner,
+            ensemble_model=ENSEMBLE_MODEL,
+            fallback_model=FALLBACK_MODEL,
+        )
+
+        # Sinyali trading katmanına gönder
+        execute_trading_logic(signal=signal, X_last=X_last)
+
+    except BotLoopException as e:
+        error_logger.error(f"[BOT] BotLoopException in pipeline: {e}", exc_info=True)
+        NOTIFIER.notify_error(f"BotLoopException: {e}")
+    except Exception as e:
+        error_logger.error(f"[BOT] Unexpected error in pipeline: {e}", exc_info=True)
+        NOTIFIER.notify_error(f"Unexpected bot error: {e}")
+
+
+async def bot_loop() -> None:
+    """
+    Arka planda sonsuz döngü:
+      - data+model+trade pipeline
+      - POLL_INTERVAL_SECONDS kadar uyku
+    """
+    system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
     while True:
-        try:
-            await run_data_and_model_pipeline(env_vars, trading_objects)
-        except Exception as e:
-            LOGGER.error("💥 [BOT] Unexpected error in bot_loop: %s", e, exc_info=True)
-        finally:
-            await asyncio.sleep(interval_sec)
+        await run_data_and_model_pipeline()
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
-# ---------------------------------------------------------
-# Aiohttp HTTP Server
-# ---------------------------------------------------------
+# ============================================================
+# HTTP Server (aiohttp)
+# ============================================================
 
-routes = web.RouteTableDef()
+async def handle_health(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "symbol": SYMBOL})
 
 
-@routes.get("/")
-async def root(request: web.Request) -> web.Response:
-    return web.json_response(
-        {
-            "status": "ok",
-            "message": "Binance1-Pro bot is running.",
-        }
+async def on_startup(app: web.Application) -> None:
+    system_logger.info(
+        f"🌐 [MAIN] Starting HTTP server on 0.0.0.0:{Settings.PORT} (ENV={Settings.ENVIRONMENT})"
     )
+    system_logger.info("🔁 [MAIN] Starting background bot_loop task...")
+    app["bot_task"] = asyncio.create_task(bot_loop())
 
 
-@routes.get("/health")
-async def health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "healthy"})
+async def on_cleanup(app: web.Application) -> None:
+    task = app.get("bot_task")
+    if task:
+        system_logger.info("[MAIN] Cleanup: cancelling bot_loop task...")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
-def create_app(env_vars: Dict[str, str]) -> web.Application:
+def create_app() -> web.Application:
     app = web.Application()
-    app["env_vars"] = env_vars
-    app.add_routes(routes)
-
-    async def on_startup(app: web.Application):
-        LOGGER.info(
-            "🌐 [MAIN] Starting HTTP server on 0.0.0.0:8080 (ENV=%s)",
-            env_vars.get("ENVIRONMENT", "unknown"),
-        )
-        LOGGER.info("🔁 [MAIN] Starting background bot_loop task...")
-        app["bot_task"] = asyncio.create_task(bot_loop(app["env_vars"]))
-
-    async def on_cleanup(app: web.Application):
-        LOGGER.info("[MAIN] Cleanup: cancelling bot_loop task...")
-        bot_task = app.get("bot_task")
-        if bot_task:
-            bot_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await bot_task
+    app.router.add_get("/health", handle_health)
 
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
+
     return app
 
 
-# ---------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------
-
-
 def main() -> None:
-    # Environment değişkenlerini yükle
-    try:
-        env_vars = load_environment_variables()
-    except Exception as e:
-        LOGGER.error(
-            "💥 [MAIN] Failed to load environment variables: %s", e, exc_info=True
-        )
-        raise ConfigException(f"Failed to load environment variables: {e}") from e
-
-    app = create_app(env_vars)
-
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(
-            sig,
-            lambda s=sig: asyncio.create_task(_shutdown(loop, s)),
-        )
-
-    web.run_app(app, host="0.0.0.0", port=8080)
-
-
-async def _shutdown(loop: asyncio.AbstractEventLoop, sig: signal.Signals) -> None:
-    LOGGER.info("[MAIN] Received exit signal %s, shutting down...", sig.name)
-    tasks = [
-        t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()
-    ]
-    for task in tasks:
-        task.cancel()
-    with suppress(asyncio.CancelledError):
-        await asyncio.gather(*tasks)
-    loop.stop()
+    port = int(os.environ.get("PORT", Settings.PORT))
+    app = create_app()
+    web.run_app(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
