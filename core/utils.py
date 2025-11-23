@@ -57,6 +57,7 @@ def retry(
         return wrapper
 
     if _func is not None:
+        # @retry parametresiz kullanım için
         return decorator_retry(_func)
 
     return decorator_retry

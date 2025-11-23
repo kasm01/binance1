@@ -1,4 +1,3 @@
-# core/notifier.py
 from typing import Optional
 
 from core.logger import system_logger, error_logger
@@ -10,7 +9,7 @@ class Notifier:
     Telegram entegrasyonu ileride buraya bağlanacak.
     """
 
-    def __init__(self, telegram_bot: Optional[object] = None):
+    def __init__(self, telegram_bot: Optional[object] = None) -> None:
         self.telegram_bot = telegram_bot
 
     def notify_system(self, message: str) -> None:

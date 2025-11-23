@@ -1,4 +1,6 @@
-"""Custom exception classes for Binance1-Pro bot."""
+"""
+Custom exception classes for Binance1-Pro bot.
+"""
 
 from typing import Optional
 
@@ -12,6 +14,10 @@ class BinanceBotException(Exception):
 
 class ConfigException(BinanceBotException):
     """Raised when configuration or environment variables are invalid or missing."""
+
+
+class EnvironmentException(ConfigException):
+    """Raised when environment variables cannot be loaded or are invalid."""
 
 
 # ---- Data Layer -----------------------------------------------------------

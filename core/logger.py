@@ -1,6 +1,4 @@
-# core/logger.py
 import logging
-import os
 import sys
 
 from config.settings import Settings
@@ -24,7 +22,7 @@ def setup_logger(name: str | None = None) -> logging.Logger:
         handler.setFormatter(fmt)
         logger.addHandler(handler)
 
-    # logging.basicConfig ile çakışmayı önlemek için propagate kapatılabilir
+    # Root logger'a propagate etmesin (double log'ları engeller)
     logger.propagate = False
     return logger
 
@@ -33,4 +31,3 @@ def setup_logger(name: str | None = None) -> logging.Logger:
 system_logger = setup_logger("system")
 error_logger = setup_logger("error")
 trade_logger = setup_logger("trade")
-
