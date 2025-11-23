@@ -36,4 +36,3 @@ class RiskManager:
             )
             return False
         return True
-

@@ -56,4 +56,3 @@ class PositionManager:
 
     def has_open_positions(self) -> bool:
         return len(self.active_positions) > 0
-

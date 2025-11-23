@@ -42,4 +42,3 @@ class CapitalManager:
             f"[CapitalManager] Released {amount:.4f}, "
             f"available_capital={self.available_capital:.4f}"
         )
-

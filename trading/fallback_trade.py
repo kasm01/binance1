@@ -31,4 +31,3 @@ def fallback_trade(
 
     logger.error(f"[fallback_trade] All retries failed for {symbol} {side}")
     return None
-

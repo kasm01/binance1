@@ -53,4 +53,3 @@ class MultiTradeEngine:
             results.append(order)
 
         return results
-

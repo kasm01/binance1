@@ -198,4 +198,3 @@ def execute_trade(symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]
     except Exception as e:
         logger.error(f"[execute_trade] Trade failed for {symbol} {side} {qty}: {e}")
         return None
-
