@@ -1,9 +1,4 @@
-"""
-Custom exception classes for Binance1-Pro bot.
-"""
-
-from typing import Optional
-
+"""Custom exception classes for Binance1-Pro bot."""
 
 class BinanceBotException(Exception):
     """Base exception for all Binance1-Pro bot related errors."""
@@ -14,10 +9,6 @@ class BinanceBotException(Exception):
 
 class ConfigException(BinanceBotException):
     """Raised when configuration or environment variables are invalid or missing."""
-
-
-class EnvironmentException(ConfigException):
-    """Raised when environment variables cannot be loaded or are invalid."""
 
 
 # ---- Data Layer -----------------------------------------------------------
@@ -77,6 +68,10 @@ class TelegramNotificationException(BinanceBotException):
     """Raised when sending Telegram notifications fails."""
 
 
+class TradeExecutionException(BinanceBotException):
+    """Raised when trade execution (creating/closing orders) fails."""
+
+
 # ---- Bot Loop & Retry -----------------------------------------------------
 
 
@@ -93,3 +88,4 @@ class RetryLimitExceeded(BinanceBotException):
 
 class PipelineException(BinanceBotException):
     """Raised for generic end-to-end pipeline failures."""
+
