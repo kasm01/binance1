@@ -46,3 +46,5 @@ web3==6.0.0
 # infura, coinglass, thegraph gibi placeholder paketler kaldırıldı.
 # Gerekirse bunlar için HTTP client'ı kendimiz yazarız.
 
+echo "websocket-client==1.8.0" >> requirements.txt
+
