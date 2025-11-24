@@ -2,3 +2,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Lokal virtual env
+.venv/
+venv/
+
+# Lokal gereksinim dosyası
+requirements-local.txt
+
+# Python cache klasörleri
+__pycache__/
+*/__pycache__/

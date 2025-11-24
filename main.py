@@ -29,7 +29,8 @@ from data.online_learning import OnlineLearner
 
 from monitoring.performance_tracker import PerformanceTracker
 from monitoring.alert_system import AlertSystem
-from telegram.telegram_bot import TelegramBot
+from tg_bot.telegram_bot import TelegramBot
+
 
 
 # ────────────────────────────── health endpoint ──────────────────────────────
