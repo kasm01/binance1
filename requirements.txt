@@ -19,14 +19,12 @@ keras==2.15.0
 websocket-client==1.8.0
 python-binance==1.0.16
 aiohttp==3.9.3
-# asyncio, Python ile birlikte geliyor; ekstra pakete gerek yok.
 
 # Redis & Caching
 redis==5.3.1
-# aioredis kaldırıldı; şu anda sync redis kullanıyoruz.
 
-# Telegram Integration
-python-telegram-bot==20.3
+# Telegram Integration  (v13 API ile uyumlu)
+python-telegram-bot==13.15
 
 # Testing
 pytest==8.2.0
@@ -43,6 +41,4 @@ pyod==1.1.0
 
 # Optional APIs & Helpers
 web3==6.0.0
-# infura, coinglass, thegraph gibi placeholder paketler kaldırıldı.
-# Gerekirse bunlar için HTTP client'ı kendimiz yazarız.
 

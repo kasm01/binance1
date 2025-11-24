@@ -13,33 +13,43 @@ import pandas as pd
 from aiohttp import web
 from binance.client import Client as BinanceClient
 
-from env.load_env import load_environment_variables
 from config.settings import Config
 from core.logger import setup_logger, system_logger
-from core.utils import retry  # varsa, yoksa kaldır
-from trading.risk_manager import RiskManager
-from trading.position_manager import PositionManager
-from trading.trade_executor import TradeExecutor
-from models.fallback_model import FallbackModel
+from core.notifier import Notifier
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
 from data.online_learning import OnlineLearner
 
+from models.fallback_model import FallbackModel
 from monitoring.performance_tracker import PerformanceTracker
 from monitoring.alert_system import AlertSystem
 from tg_bot.telegram_bot import TelegramBot
 
+from trading.risk_manager import RiskManager
+from trading.position_manager import PositionManager
+from trading.trade_executor import TradeExecutor
 
 
-# ────────────────────────────── health endpoint ──────────────────────────────
+# ────────────────────────────── Basit health endpoint ──────────────────────────────
 
 async def health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "service": "binance1-pro"})
 
 
-# ───────────────────── Binance client & trading obj init ─────────────────────
+# ───────────────────── Ortam değişkenlerini yükle (dict olarak) ────────────────────
+
+def load_environment_variables() -> Dict[str, str]:
+    """
+    Şimdilik sadece os.environ -> dict.
+
+    .env okunması zaten config.settings / credentials içinde load_dotenv() ile yapılıyor.
+    """
+    return dict(os.environ)
+
+
+# ───────────────────── Binance Futures client & trading obj init ───────────────────
 
 def create_binance_futures_client(env_vars: Dict[str, str]) -> BinanceClient:
     api_key = env_vars.get("BINANCE_API_KEY") or os.getenv("BINANCE_API_KEY")
@@ -48,11 +58,11 @@ def create_binance_futures_client(env_vars: Dict[str, str]) -> BinanceClient:
     if not api_key or not api_secret:
         system_logger.warning(
             "[MAIN] BINANCE_API_KEY / BINANCE_API_SECRET not found in env. "
-            "Client will not be authorized!"
+            "Futures client will be unauthenticated!"
         )
 
     client = BinanceClient(api_key, api_secret)
-    # Testnet kullanıyorsan burada URL override edebilirsin:
+    # Testnet kullanacaksan:
     # client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
     return client
 
@@ -60,28 +70,21 @@ def create_binance_futures_client(env_vars: Dict[str, str]) -> BinanceClient:
 def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
     """
     Tüm core trading objelerini initialize eder.
-    main.py içinde bir kez çağrılır, bot_loop içinde kullanılır.
     """
     system_logger.info("[MAIN] Initializing trading objects...")
 
-    # Binance client
+    # Binance futures client (sadece order / account için kullanıyoruz)
     client = create_binance_futures_client(env_vars)
 
-    # Data pipeline objeleri
-    data_loader = DataLoader(
-        client=client,
-        symbol=Config.BINANCE_SYMBOL,
-        interval=Config.BINANCE_INTERVAL,
-        use_cache=True,
-    )
-    feature_engineer = FeatureEngineer()
-    anomaly_detector = AnomalyDetector()
+    # Data pipeline objesi (public HTTP klines)
+    data_loader = DataLoader(env_vars)
 
     # Online model + fallback
     online_learner = OnlineLearner(
         model_dir="models",
         base_model_name="online_model",
         n_classes=2,
+        logger=system_logger,
     )
     fallback_model = FallbackModel(default_proba=0.5)
 
@@ -91,7 +94,7 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
         max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
         state_file=os.path.join("logs", "risk_state.json"),
     )
-    position_manager = PositionManager(log_path=os.path.join("logs", "trades.log"))
+    position_manager = PositionManager()
 
     # Trade executor
     trade_executor = TradeExecutor(
@@ -102,14 +105,13 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
 
     # Monitoring & Telegram
     performance_tracker = PerformanceTracker()
-    alert_system = AlertSystem()
-    telegram_bot = TelegramBot()  # istersen main dışında ayrı süreçte koşuturabilirsin.
+    telegram_bot = TelegramBot()  # TELEGRAM_BOT_TOKEN yoksa kendi kendine pasif kalıyor
+    notifier = Notifier(telegram_bot=telegram_bot)
+    alert_system = AlertSystem(notifier=notifier)
 
     objects = {
         "client": client,
         "data_loader": data_loader,
-        "feature_engineer": feature_engineer,
-        "anomaly_detector": anomaly_detector,
         "online_learner": online_learner,
         "fallback_model": fallback_model,
         "risk_manager": risk_manager,
@@ -137,15 +139,11 @@ def compute_p_buy(
     try:
         probs = online_learner.predict_proba(X_live)
 
-        # probs şekli değişken olabilir: scalar / 1D / 2D
-        if isinstance(probs, (list, np.ndarray)):
-            probs = np.array(probs)
-            if probs.ndim == 2:  # (n_samples, 2) gibi
-                p_buy = float(probs[-1, 1])
-            else:  # (n_samples,)
-                p_buy = float(probs[-1])
+        probs = np.asarray(probs)
+        if probs.ndim == 2 and probs.shape[1] == 2:
+            p_buy = float(probs[-1, 1])
         else:
-            p_buy = float(probs)
+            p_buy = float(probs[-1])
 
         system_logger.info(
             f"[SIGNAL] p_buy={p_buy:.4f} (source=ONLINE, "
@@ -159,14 +157,11 @@ def compute_p_buy(
             f"[SIGNAL] Online model prediction failed, using fallback. Error: {e}"
         )
         probs = fallback_model.predict_proba(X_live.values)
-        if isinstance(probs, (list, np.ndarray)):
-            probs = np.array(probs)
-            if probs.ndim == 2:
-                p_buy = float(probs[-1, 1])
-            else:
-                p_buy = float(probs[-1])
+        probs = np.asarray(probs)
+        if probs.ndim == 2 and probs.shape[1] == 2:
+            p_buy = float(probs[-1, 1])
         else:
-            p_buy = float(probs)
+            p_buy = float(probs[-1])
 
         system_logger.info(
             f"[SIGNAL] p_buy={p_buy:.4f} (source=FALLBACK, "
@@ -194,7 +189,7 @@ def generate_trading_signal(p_buy: float) -> str:
     return signal
 
 
-# ───────────────────────────── LONG/SHORT yönetimi ─────────────────────────────
+# ───────────────────────────── LONG / SHORT yönetimi ─────────────────────────────
 
 def manage_positions_for_signal(
     trade_executor: TradeExecutor,
@@ -209,19 +204,18 @@ def manage_positions_for_signal(
 
     - BUY: SHORT varsa kapat, LONG yoksa aç
     - SELL: LONG varsa kapat, SHORT yoksa aç
-    - HOLD: hiçbir şey yapma (istersen SL/TP yönetimi ekleyebilirsin)
+    - HOLD: hiçbir şey yapma
     """
 
     signal = signal.upper()
     long_pos = position_manager.get_position(symbol, "LONG")
     short_pos = position_manager.get_position(symbol, "SHORT")
 
-    # Günlük zarar limiti aşıldıysa: yeni trade açma, istersen tüm pozisyonları kapat
+    # Günlük zarar limiti aşıldıysa: yeni trade açma, tüm pozisyonları kapat
     if risk_manager.trading_halted:
         system_logger.warning(
             "[MAIN] Trading halted for today by risk manager (MAX_DAILY_LOSS reached)."
         )
-        # Burada istersen tüm pozisyonları anında kapat:
         trade_executor.flatten_all_positions({symbol: current_price})
         return
 
@@ -263,7 +257,7 @@ def manage_positions_for_signal(
         system_logger.info("[MAIN] HOLD signal -> no new position opened/closed.")
 
 
-# ───────────────────────────── data + model pipeline ─────────────────────────────
+# ─────────────────────── data + model pipeline (etiket üretimli) ───────────────────────
 
 def run_data_and_model_pipeline(
     trading_objects: Dict[str, Any],
@@ -274,15 +268,12 @@ def run_data_and_model_pipeline(
     """
     1) Binance'ten kline verisini çek
     2) Feature engineering
-    3) Anomali filtresi
-    4) Online model initial_fit / partial_update
-    5) Son bar için X_live, current_price, p_buy döndür
-
-    Bu fonksiyon synchronous, bot_loop içinde çağrılıyor.
+    3) Basit label üretimi (return_1'in bir bar sonrası işaretine göre)
+    4) Anomali filtresi
+    5) Online model initial_fit / partial_update
+    6) Son bar için X_live, current_price döndür
     """
     data_loader: DataLoader = trading_objects["data_loader"]
-    feature_engineer: FeatureEngineer = trading_objects["feature_engineer"]
-    anomaly_detector: AnomalyDetector = trading_objects["anomaly_detector"]
     online_learner: OnlineLearner = trading_objects["online_learner"]
 
     system_logger.info(
@@ -302,54 +293,58 @@ def run_data_and_model_pipeline(
         raise RuntimeError("Empty dataframe from DataLoader.load_and_cache_klines")
 
     # 2) Feature engineering
-    df_features = feature_engineer.build_features(df_raw)
+    fe = FeatureEngineer(df_raw)
+    df_features = fe.transform()
     system_logger.info(
         f"[FE] Features DF shape: {df_features.shape}, "
         f"columns={list(df_features.columns)}"
     )
 
-    # 3) Anomali filtresi
-    df_clean = anomaly_detector.filter_anomalies(df_features)
+    # 3) Basit label üretimi: bir sonraki barın return_1 > 0 ise 1, else 0
+    df_features["label"] = (df_features["return_1"].shift(-1) > 0).astype(int)
+    df_features = df_features.dropna().copy()
+
+    # 4) Anomali filtresi
+    anom_detector = AnomalyDetector(df_features, logger=system_logger)
+    df_clean = anom_detector.detect_and_handle_anomalies()
     system_logger.info(
         f"[ANOM] After anomaly filter: {df_clean.shape[0]} rows remain."
     )
 
-    # Yeterli veri yoksa devam etme
-    if df_clean.shape[0] < 100:
+    if df_clean.shape[0] < 200:
         raise RuntimeError("Not enough samples after anomaly filtering.")
 
-    # 'label' sütunu varsa ayır
-    if "label" in df_clean.columns:
-        feature_cols = [c for c in df_clean.columns if c not in ("open_time", "close_time", "label")]
-        X = df_clean[feature_cols]
-        y = df_clean["label"]
-    else:
-        feature_cols = [c for c in df_clean.columns if c not in ("open_time", "close_time")]
-        X = df_clean[feature_cols]
-        y = None
+    # Feature / target ayrımı
+    feature_cols = [c for c in df_clean.columns if c not in ("label",)]
+    X_all = df_clean[feature_cols]
+    y_all = df_clean["label"]
 
-    # 4) Online learner initial_fit / partial_update
-    if not online_learner.is_initialized:
-        if y is None:
-            raise RuntimeError("OnlineLearner initial_fit requires 'label' column.")
-        system_logger.info(
-            f"[ONLINE] initial_fit called with {X.shape[0]} samples, {X.shape[1]} features."
-        )
-        online_learner.initial_fit(X, y)
-    else:
-        # Son 100 bar ile partial update
-        if y is not None:
-            X_chunk = X.tail(100)
-            y_chunk = y.tail(100)
-            system_logger.info(
-                f"[ONLINE] partial_update called with {X_chunk.shape[0]} samples, "
-                f"{X_chunk.shape[1]} features."
-            )
-            online_learner.partial_update(X_chunk, y_chunk)
-
-    # 5) Son barı X_live olarak al
-    X_live = X.tail(1)
+    # Son satır -> canlı tahmin için
+    X_live = X_all.tail(1)
     current_price = float(df_clean["close"].iloc[-1])
+
+    # Eğitim verisi -> son satır hariç
+    X_train = X_all.iloc[:-1]
+    y_train = y_all.iloc[:-1]
+
+    # 5) Online learner initial_fit / partial_update
+    # Sınıf içinde flag yok, dinamik attribute kullanıyoruz
+    has_fitted = getattr(online_learner, "has_fitted_", False)
+
+    if not has_fitted:
+        system_logger.info(
+            f"[ONLINE] initial_fit with {X_train.shape[0]} samples, {X_train.shape[1]} features."
+        )
+        online_learner.initial_fit(X_train, y_train)
+        online_learner.has_fitted_ = True
+    else:
+        # Son 100 bar ile güncelle
+        X_chunk = X_train.tail(100)
+        y_chunk = y_train.tail(100)
+        system_logger.info(
+            f"[ONLINE] partial_update with {X_chunk.shape[0]} samples, {X_chunk.shape[1]} features."
+        )
+        online_learner.partial_update(X_chunk, y_chunk)
 
     return {
         "X_live": X_live,
@@ -398,7 +393,7 @@ async def bot_loop(app: web.Application) -> None:
             )
             signal = generate_trading_signal(p_buy)
 
-            # Pozisyon yönetimi
+            # Pozisyon yönetimi (Futures LONG/SHORT)
             manage_positions_for_signal(
                 trade_executor=trade_executor,
                 position_manager=position_manager,
@@ -461,9 +456,7 @@ def main() -> None:
     app = create_app()
     port = int(os.getenv("PORT", "8080"))
 
-    # Cloud Run için signal handler zorunlu değil ama local debug’da iş görür
     loop = asyncio.get_event_loop()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, loop.stop)
