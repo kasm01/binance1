@@ -1,31 +1,28 @@
-# tg_bot/telegram_bot.py
 from typing import Optional
 
 from telegram import Bot
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import Updater, CommandHandler
 
 from core.logger import system_logger, error_logger
 from config.credentials import Credentials
-from .commands import start_command, status_command, trades_command
+from tg_bot.commands import start_command, status_command, trades_command
 
 
 class TelegramBot:
     """
     Basit Telegram bot wrapper'ı.
-    - python-telegram-bot (v13 civarı) Updater/Dispatcher API'sini kullanır.
-    - Notifier ile uyumlu olacak şekilde send_message(message: str) metoduna sahiptir.
     """
 
     def __init__(self) -> None:
         # Credentials içinden token ve varsayılan chat_id çekiyoruz
-        self.token: Optional[str] = getattr(Credentials, "TELEGRAM_TOKEN", None)
+        self.token: Optional[str] = getattr(Credentials, "TELEGRAM_BOT_TOKEN", None)
         self.default_chat_id: Optional[str] = getattr(
             Credentials, "TELEGRAM_CHAT_ID", None
         )
 
         if not self.token:
             system_logger.warning(
-                "[TelegramBot] TELEGRAM_TOKEN bulunamadı. Telegram bot devre dışı."
+                "[TelegramBot] TELEGRAM_BOT_TOKEN bulunamadı. Telegram bot devre dışı."
             )
             self.bot = None
             self.updater = None
@@ -43,13 +40,7 @@ class TelegramBot:
 
         system_logger.info("[TelegramBot] Telegram bot başarıyla initialize edildi.")
 
-    # ------------------------------------------------------------------ #
-    # Komut kayıtları
-    # ------------------------------------------------------------------ #
     def register_commands(self) -> None:
-        """
-        /start, /status, /trades komutlarını dispatcher'a kayıt eder.
-        """
         if not self.dispatcher:
             return
 
@@ -59,17 +50,10 @@ class TelegramBot:
 
         system_logger.info("[TelegramBot] Telegram komutları dispatcher'a eklendi.")
 
-    # ------------------------------------------------------------------ #
-    # Polling başlatma (local kullanım için)
-    # Cloud Run içinde genelde kullanmayacağız.
-    # ------------------------------------------------------------------ #
     def start_polling(self) -> None:
-        """
-        Local ortamda botu çalıştırmak için (Cloud Run yerine kendi makinen).
-        """
         if not self.updater:
             system_logger.warning(
-                "[TelegramBot] Updater yok, muhtemelen TELEGRAM_TOKEN ayarlı değil."
+                "[TelegramBot] Updater yok, muhtemelen TELEGRAM_BOT_TOKEN ayarlı değil."
             )
             return
 
@@ -77,14 +61,7 @@ class TelegramBot:
         self.updater.start_polling()
         self.updater.idle()
 
-    # ------------------------------------------------------------------ #
-    # Notifier ile uyumlu mesaj gönderme
-    # ------------------------------------------------------------------ #
     def send_message(self, message: str) -> None:
-        """
-        Notifier tarafından çağrılacak basit mesaj gönderme fonksiyonu.
-        TELEGRAM_CHAT_ID tanımlı değilse log'a hata basar.
-        """
         if not self.bot:
             error_logger.error(
                 "[TelegramBot] send_message çağrıldı ama bot initialize edilmemiş."

@@ -26,6 +26,9 @@ from models.fallback_model import FallbackModel
 from monitoring.performance_tracker import PerformanceTracker
 from monitoring.alert_system import AlertSystem
 from tg_bot.telegram_bot import TelegramBot
+from env.load_env import load_environment_variables
+
+
 
 from trading.risk_manager import RiskManager
 from trading.position_manager import PositionManager

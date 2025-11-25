@@ -1,8 +1,16 @@
 import os
 from dotenv import load_dotenv
 
-def load_environment_variables(env_file=".env"):
-    load_dotenv(env_file)
+
+def load_environment_variables(env_file: str = ".env") -> dict:
+    """
+    .env dosyasını (lokalde) ya da Cloud Run ortam değişkenlerini okuyup
+    tek bir dict olarak döner.
+    """
+    # Lokal ortamdaysan .env'yi yükler, Cloud Run'da zaten env'den okur.
+    if os.path.exists(env_file):
+        load_dotenv(env_file)
+
     env_vars = {
         "BINANCE_API_KEY": os.getenv("BINANCE_API_KEY"),
         "BINANCE_API_SECRET": os.getenv("BINANCE_API_SECRET"),
@@ -16,5 +24,8 @@ def load_environment_variables(env_file=".env"):
         "REDIS_PASSWORD": os.getenv("REDIS_PASSWORD"),
         "TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
         "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID"),
+        "ENV": os.getenv("ENV", "production"),
     }
+
     return env_vars
+
