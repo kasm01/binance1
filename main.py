@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from aiohttp import web
 from binance.client import Client as BinanceClient
+from binance.exceptions import BinanceAPIException
+
 
 from config.settings import Config
 from core.logger import setup_logger, system_logger
@@ -73,18 +75,17 @@ def create_binance_futures_client(env_vars: Dict[str, str]) -> BinanceClient:
 def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
     """
     Tüm core trading objelerini initialize eder.
-    - Binance futures client
-    - Data pipeline
-    - Online learner + fallback model
-    - Risk & pozisyon yönetimi
-    - Trade executor
-    - Monitoring / Telegram / AlertSystem
+    Binance futures_account için self-check yapar ama HİÇBİR ZAMAN
+    exception fırlatıp servisin çökmesine izin vermez.
     """
     system_logger.info("[MAIN] Initializing trading objects...")
+
+    # Config log
     system_logger.info(
-        "[MAIN] Config -> SYMBOL=%s | INTERVAL=%s | KLINES_LIMIT=%s | "
-        "BUY_THRESHOLD=%.2f | SELL_THRESHOLD=%.2f | MAX_RISK_PER_TRADE=%.4f | "
-        "MAX_DAILY_LOSS_PCT=%.4f | STOP_LOSS_PCT=%.4f | LEVERAGE=%dx",
+        "[MAIN] Config -> SYMBOL=%s | INTERVAL=%s | KLINES_LIMIT=%d | "
+        "BUY_THRESHOLD=%.2f | SELL_THRESHOLD=%.2f | "
+        "MAX_RISK_PER_TRADE=%.4f | MAX_DAILY_LOSS_PCT=%.4f | "
+        "STOP_LOSS_PCT=%.4f | LEVERAGE=%dx",
         Config.BINANCE_SYMBOL,
         Config.BINANCE_INTERVAL,
         Config.KLINES_LIMIT,
@@ -96,24 +97,41 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
         Config.DEFAULT_LEVERAGE,
     )
 
-    # ───────────────── Binance Futures client ─────────────────
+    # Binance client
     client = create_binance_futures_client(env_vars)
 
-    # Küçük bir self-check: Cloud Run / lokal ortamda Binance bağlantısını logla
+    # --- SELF-CHECK: futures_account (ASLA raise etme!) ---
     try:
         account = client.futures_account()
         total_wallet_balance = account.get("totalWalletBalance")
         system_logger.info(
-            "[SELF-CHECK] Binance futures_account OK | totalWalletBalance=%s",
+            "[SELF-CHECK] Binance futures_account OK | "
+            "totalWalletBalance=%s",
             total_wallet_balance,
         )
+    except BinanceAPIException as e:
+        # Cloud Run IP'leri bazen HTML error sayfası döndüğü için burada yakalıyoruz
+        msg = str(e)
+        if "<!DOCTYPE html>" in msg:
+            system_logger.error(
+                "[SELF-CHECK] Binance futures_account HTML error page döndü. "
+                "Muhtemelen Cloud Run IP aralığına özel bir engel/koruma var. "
+                "Detay: %s",
+                msg[:500],
+            )
+        else:
+            system_logger.error(
+                "[SELF-CHECK] Binance futures_account BinanceAPIException: %s",
+                msg,
+            )
+        # ÖNEMLİ: burada asla raise etmiyoruz, client yine de kullanılabilir
     except Exception as e:
-        # Burada raise etmiyoruz; bot yine de çalışsın, sadece log’dan takip edelim
-        system_logger.error(
-            "[SELF-CHECK] Binance futures_account FAILED: %s", e, exc_info=True
+        system_logger.exception(
+            "[SELF-CHECK] Binance futures_account beklenmeyen hata: %s", e
         )
+        # Yine raise yok; sadece log.
 
-    # ───────────────── Data pipeline ─────────────────
+    # Data pipeline objesi (public HTTP klines)
     data_loader = DataLoader(env_vars)
 
     # Online model + fallback
@@ -125,7 +143,7 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
     )
     fallback_model = FallbackModel(default_proba=0.5)
 
-    # ───────────────── Risk & pozisyon yönetimi ─────────────────
+    # Risk & pozisyon yönetimi
     risk_manager = RiskManager(
         max_risk_per_trade=Config.MAX_RISK_PER_TRADE,
         max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
@@ -140,13 +158,9 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
         position_manager=position_manager,
     )
 
-    # ───────────────── Monitoring / Telegram / Alerts ─────────────────
+    # Monitoring & Telegram
     performance_tracker = PerformanceTracker()
-
-    # Telegram bot:
-    # - TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID yoksa TelegramBot kendi kendine pasif kalıyor.
-    telegram_bot = TelegramBot()
-
+    telegram_bot = TelegramBot()  # TOKEN yoksa kendi kendine pasif kalıyor
     notifier = Notifier(telegram_bot=telegram_bot)
     alert_system = AlertSystem(notifier=notifier)
 
@@ -165,6 +179,7 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
 
     system_logger.info("[MAIN] Trading objects initialized successfully.")
     return objects
+
 
 
 # ───────────────────────────── sinyal üretim katmanı ─────────────────────────────
