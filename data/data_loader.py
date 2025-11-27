@@ -21,11 +21,11 @@ class DataLoader:
         ext_df = data_loader.fetch_external_data()  # opsiyonel
     """
 
-    def __init__(self, env_vars: Dict[str, Any]):
-        self.env_vars = env_vars
-        self.api_keys = {
-            "binance": env_vars.get("BINANCE_API_KEY"),
-        }
+    def __init__(self, env_vars: Dict[str, Any] | None = None):
+    self.env_vars = env_vars or {}
+    self.api_keys = {
+        "binance": self.env_vars.get("BINANCE_API_KEY"),
+    }
 
         # İleride gerekirse kullanılabilecek base URL’ler
         self.binance_base_url = self.env_vars.get(

@@ -190,7 +190,8 @@ class OnlineLearner:
         Dönen değer float olur.
         """
         if self.model is None:
-            raise OnlineLearningException("Online model is not initialized.")
+            raise RuntimeError("Online model is not initialized.")
+
 
         import numpy as np
         import pandas as pd

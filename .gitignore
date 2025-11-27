@@ -1,15 +1,62 @@
+# -----------------------------------------
+# Python cache / bytecode
+# -----------------------------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*/__pycache__/
 
-# Lokal virtual env
+# -----------------------------------------
+# Virtual environments
+# -----------------------------------------
 .venv/
 venv/
+env/
 
-# Lokal gereksinim dosyası
-requirements-local.txt
+# -----------------------------------------
+# Environment variables (Kesinlikle gizli)
+# -----------------------------------------
+.env
+.env.*
+*.env
 
-# Python cache klasörleri
-__pycache__/
-*/__pycache__/
+# -----------------------------------------
+# Logs & runtime output
+# -----------------------------------------
+logs/
+*.log
+*.out
+*.err
+
+# -----------------------------------------
+# Model artifacts & training output
+# -----------------------------------------
+models/
+*/models/
+
+# -----------------------------------------
+# Local config / Machine-specific
+# -----------------------------------------
+.settings/
+.vscode/
+.idea/
+
+# -----------------------------------------
+# Deployment artifacts
+# -----------------------------------------
+*.pid
+*.db
+*.sqlite3
+
+# Docker & container cache
+docker-cache/
+.docker/
+.cache/
+
+# -----------------------------------------
+# OS files
+# -----------------------------------------
+.DS_Store
+Thumbs.db
+

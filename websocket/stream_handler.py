@@ -4,7 +4,6 @@ import json
 from typing import Any, Dict
 
 from core.logger import system_logger
-from trading.trade_executor import execute_trade
 
 
 def handle_message(msg: str) -> None:
@@ -42,27 +41,20 @@ def handle_message(msg: str) -> None:
             f"[WebSocket] Message received | symbol={symbol}, price={price}, qty={qty}"
         )
 
-        # Eğer mesajda özel bir "signal" alanı varsa VE miktar pozitifse trade dene
-        if signal and isinstance(signal, str) and qty > 0:
+        # Eğer mesajda özel bir "signal" alanı varsa, şimdilik sadece logla.
+        # Gerçek trade kararı ana bot loop tarafından verilecek.
+        if signal and isinstance(signal, str):
             side = signal.upper()
-            if side not in ("BUY", "SELL"):
+            if side not in ("BUY", "SELL", "HOLD"):
                 system_logger.warning(
-                    f"[WebSocket] Unknown signal value: {signal}. Skipping trade."
+                    f"[WebSocket] Unknown signal value: {signal}. Skipping trade action."
                 )
                 return
 
             system_logger.info(
-                f"[WebSocket] Executing trade from WS signal | {symbol} {side} qty={qty}"
+                f"[WebSocket] Received external signal from WS | symbol={symbol}, signal={side}, qty={qty}"
             )
-            order = execute_trade(symbol, side, qty)
-            if order:
-                system_logger.info(
-                    f"[WebSocket] Trade executed successfully from WS: {order}"
-                )
-            else:
-                system_logger.error(
-                    f"[WebSocket] Trade execution failed from WS for {symbol} {side} {qty}"
-                )
+
 
     except Exception as e:
         system_logger.error(f"[WebSocket] Error handling message: {e}", exc_info=True)

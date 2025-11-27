@@ -43,16 +43,6 @@ async def health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "service": "binance1-pro"})
 
 
-# ───────────────────── Ortam değişkenlerini yükle (dict olarak) ────────────────────
-
-def load_environment_variables() -> Dict[str, str]:
-    """
-    Şimdilik sadece os.environ -> dict.
-
-    .env okunması zaten config.settings / credentials içinde load_dotenv() ile yapılıyor.
-    """
-    return dict(os.environ)
-
 
 # ───────────────────── Binance Futures client & trading obj init ───────────────────
 
