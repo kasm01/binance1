@@ -1,23 +1,25 @@
 FROM python:3.11-slim
 
-# Gerekli sistem paketleri (opsiyonel ama faydalı)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
+# Çalışma dizini
 WORKDIR /app
 
-# Önce sadece requirements
+# Ortam değişkenleri
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV PORT=8080
+ENV PIP_ROOT_USER_ACTION=ignore
+
+# Sistem paketlerini hafif tut
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# Önce sadece requirements (layer cache için)
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 🔥 ÖNEMLİ: Projenin tamamını kopyala ki models/ da gelsin
+# Şimdi tüm proje içeriğini kopyala
 COPY . .
 
-# Cloud Run PORT
-ENV PORT=8080
-
-# Uygulama entrypoint
+# Ana proses
 CMD ["python", "main.py"]
-

@@ -1,41 +1,44 @@
-
-# main.py
-
 from __future__ import annotations
 
+import os
+import sys
+from typing import Any, Dict, Optional
+
+# ---------------------------------------------------------
+# PYTHON PATH AYARI: /app ve /app/models paket olarak görünsün
+# (Cloud Run'da da, lokalde de çalışsın)
+# ---------------------------------------------------------
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+MODELS_DIR = os.path.join(CURRENT_DIR, "models")
+if MODELS_DIR not in sys.path:
+    sys.path.insert(0, MODELS_DIR)
+
+# ---------------------------------------------------------
+# ŞİMDİ imports (models dahil) gelsin
+# ---------------------------------------------------------
 import asyncio
 import logging
-import os
-import signal
-from typing import Any, Dict
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
-from aiohttp import web
-from binance.client import Client as BinanceClient
-from binance.exceptions import BinanceAPIException
-
 
 from config.settings import Config
-from core.logger import setup_logger, system_logger
+from core.logger import system_logger, error_logger
 from core.notifier import Notifier
-
 from data.data_loader import DataLoader
-from data.feature_engineering import FeatureEngineer
+from data.feature_engineer import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
 from data.online_learning import OnlineLearner
-
 from models.fallback_model import FallbackModel
-from monitoring.performance_tracker import PerformanceTracker
-from monitoring.alert_system import AlertSystem
-from tg_bot.telegram_bot import TelegramBot
-from env.load_env import load_environment_variables
-
-
-
+from models.ensemble_model import EnsembleModel
 from trading.risk_manager import RiskManager
-from trading.position_manager import PositionManager
 from trading.trade_executor import TradeExecutor
+
+# ... buradan sonrası senin mevcut main.py kodun ...
 
 
 # ────────────────────────────── Basit health endpoint ──────────────────────────────

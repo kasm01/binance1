@@ -2,9 +2,9 @@
 import unittest
 import numpy as np
 
-from models.lstm_model import LSTMModel
-from models.lightgbm_model import LightGBMModel
-from models.ensemble_model import EnsembleModel
+from lstm_model import LSTMModel
+from lightgbm_model import LightGBMModel
+from ensemble_model import EnsembleModel
 
 
 class TestModels(unittest.TestCase):
