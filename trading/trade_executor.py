@@ -40,7 +40,18 @@ class TradeExecutor:
     def get_current_equity(self) -> float:
         """
         Binance futures hesabından USDT cinsinden özsermaye çeker.
+        DRY-RUN modunda ise .env içindeki PAPER_EQUITY_USDT kullanılır.
         """
+        # 💡 DRY-RUN: Kağıt üzerindeki equity'yi kullan
+        if not Config.LIVE_TRADING_ENABLED:
+            equity = Config.PAPER_EQUITY_USDT
+            system_logger.info(
+                f"[TRADE] DRY-RUN: using paper equity={equity:.2f} USDT "
+                f"instead of calling Binance futures_account()."
+            )
+            return equity
+
+        # LIVE mod: gerçekten Binance'ten çek
         try:
             account = self.client.futures_account()
             total_wallet_balance = float(account["totalWalletBalance"])

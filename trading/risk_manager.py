@@ -13,6 +13,7 @@ from core.logger import system_logger
 class DailyRiskState:
     """
     Günlük realized PnL ve trading halt durumunu tutar.
+
     trade_date: 'YYYY-MM-DD' (bugünün tarihi)
     realized_pnl: sadece KAPANAN pozisyonlardan gelen kar/zarar (USDT)
     trading_halted: günlük zarar limiti aşıldıysa True
@@ -27,6 +28,11 @@ class RiskManager:
     - max_risk_per_trade: özsermayedeki risk oranı (ör: 0.01 = %1)
     - max_daily_loss_pct: günlük max zarar (ör: 0.05 = %5)
     - state_file: günlük risk durumunu sakladığımız json
+
+    Not:
+      * Günlük zarar limiti, gün başındaki equity'ye göre hesaplanır.
+      * Eğer equity <= 0 ise, günlük zarar limiti ENFORCE edilmez
+        (max_daily_loss_abs None kalır, sadece log basılır).
     """
 
     def __init__(
@@ -47,7 +53,7 @@ class RiskManager:
     # ──────────────── internal helpers ────────────────
 
     def _today_str(self) -> str:
-        # Cloud Run için UTC tarih kullanmak genelde yeterli
+        # Cloud Run için de yeterli: UTC tarih
         return date.today().isoformat()
 
     def _load_state(self) -> DailyRiskState:
@@ -55,7 +61,9 @@ class RiskManager:
             if os.path.exists(self.state_file):
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                system_logger.info(f"[RISK] Loaded state from {self.state_file}: {data}")
+                system_logger.info(
+                    f"[RISK] Loaded state from {self.state_file}: {data}"
+                )
                 return DailyRiskState(**data)
         except Exception as e:
             system_logger.exception(f"[RISK] Failed to load state: {e}")
@@ -88,8 +96,22 @@ class RiskManager:
         """
         Günün başındaki özsermaye. Günlük zarar limitini bu değer üzerinden hesaplıyoruz.
         Bunu main loop'ta günde bir kez (veya instance restart olduğunda) çağır.
+
+        ÖNEMLİ:
+          - Eğer equity <= 0 ise, günlük zarar limiti ENFORCE edilmez.
+          - Böyle bir durumda _start_of_day_equity set edilmez ve
+            max_daily_loss_abs property’si None döner.
         """
         self._reset_if_new_day()
+
+        # ÖNEMLİ: Equity 0 veya negatifse günlük limit hesaplamayalım
+        if equity is None or equity <= 0:
+            system_logger.warning(
+                f"[RISK] Attempted to set start-of-day equity <= 0 (equity={equity}). "
+                f"Daily loss limit will NOT be enforced until a positive equity is seen."
+            )
+            return
+
         if self._start_of_day_equity is None:
             self._start_of_day_equity = float(equity)
             system_logger.info(f"[RISK] Start-of-day equity set to {equity:.2f} USDT")
@@ -113,7 +135,7 @@ class RiskManager:
 
     def can_open_new_trade(self, current_equity: float) -> Tuple[bool, str]:
         """
-        Yeni trade açılabilir mi? Günlük zarar limitine göre kontrol eder.
+        Yeni trade açılabilir mi? Günlük zarar limiti ve halt durumuna göre kontrol eder.
         Returns: (allowed: bool, reason: str)
         """
         self._reset_if_new_day()
@@ -122,7 +144,8 @@ class RiskManager:
             return False, "Trading halted for today (daily loss limit reached)."
 
         if self._start_of_day_equity is None:
-            # İlk trade öncesi equity set et
+            # İlk trade öncesi equity set et (equity <= 0 ise set_start_of_day_equity
+            # içinden sadece uyarı basıp geri dönecek)
             self.set_start_of_day_equity(current_equity)
 
         max_loss_abs = self.max_daily_loss_abs

@@ -1,3 +1,4 @@
+
 import logging
 import json
 from typing import Dict, Any, Optional, List
@@ -22,10 +23,10 @@ class DataLoader:
     """
 
     def __init__(self, env_vars: Dict[str, Any] | None = None):
-    self.env_vars = env_vars or {}
-    self.api_keys = {
-        "binance": self.env_vars.get("BINANCE_API_KEY"),
-    }
+        self.env_vars = env_vars or {}
+        self.api_keys = {
+            "binance": self.env_vars.get("BINANCE_API_KEY"),
+        }
 
         # İleride gerekirse kullanılabilecek base URL’ler
         self.binance_base_url = self.env_vars.get(
