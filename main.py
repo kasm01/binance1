@@ -1,3 +1,4 @@
+
 # main.py
 
 from __future__ import annotations
@@ -404,58 +405,76 @@ async def bot_loop(app: web.Application) -> None:
     """
     Ana trading döngüsü.
     """
-    env_vars: Dict[str, str] = app["env_vars"]
-    trading_objects: Dict[str, Any] = init_trading_objects(env_vars)
-
-    symbol = Config.BINANCE_SYMBOL
-    interval = Config.BINANCE_INTERVAL
-    limit = Config.KLINES_LIMIT
-
-    online_learner: OnlineLearner = trading_objects["online_learner"]
-    fallback_model: FallbackModel = trading_objects["fallback_model"]
-    trade_executor: TradeExecutor = trading_objects["trade_executor"]
-    position_manager: PositionManager = trading_objects["position_manager"]
-    risk_manager: RiskManager = trading_objects["risk_manager"]
-
-    system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop started.")
+    system_logger.info("🚀 [BOT] bot_loop started (entering function).")
 
     while True:
         try:
-            pipeline_result = run_data_and_model_pipeline(
-                trading_objects=trading_objects,
-                symbol=symbol,
-                interval=interval,
-                limit=limit,
-            )
+            env_vars: Dict[str, str] = app["env_vars"]
 
-            X_live = pipeline_result["X_live"]
-            current_price = pipeline_result["current_price"]
+            system_logger.info("[BOT] Calling init_trading_objects...")
+            trading_objects: Dict[str, Any] = init_trading_objects(env_vars)
+            system_logger.info("[BOT] init_trading_objects completed successfully.")
 
-            # Sinyal üret
-            p_buy = compute_p_buy(
-                online_learner=online_learner,
-                fallback_model=fallback_model,
-                X_live=X_live,
-            )
-            signal = generate_trading_signal(p_buy)
+            symbol = Config.BINANCE_SYMBOL
+            interval = Config.BINANCE_INTERVAL
+            limit = Config.KLINES_LIMIT
 
-            # Pozisyon yönetimi (Futures LONG/SHORT)
-            manage_positions_for_signal(
-                trade_executor=trade_executor,
-                position_manager=position_manager,
-                risk_manager=risk_manager,
-                symbol=symbol,
-                signal=signal,
-                current_price=current_price,
-            )
+            online_learner: OnlineLearner = trading_objects["online_learner"]
+            fallback_model: FallbackModel = trading_objects["fallback_model"]
+            trade_executor: TradeExecutor = trading_objects["trade_executor"]
+            position_manager: PositionManager = trading_objects["position_manager"]
+            risk_manager: RiskManager = trading_objects["risk_manager"]
+
+            system_logger.info("🚀 [BOT] Binance1-Pro core bot_loop iteration started.")
+
+            # Ana loop
+            while True:
+                try:
+                    pipeline_result = run_data_and_model_pipeline(
+                        trading_objects=trading_objects,
+                        symbol=symbol,
+                        interval=interval,
+                        limit=limit,
+                    )
+
+                    X_live = pipeline_result["X_live"]
+                    current_price = pipeline_result["current_price"]
+
+                    # Sinyal üret
+                    p_buy = compute_p_buy(
+                        online_learner=online_learner,
+                        fallback_model=fallback_model,
+                        X_live=X_live,
+                    )
+                    signal = generate_trading_signal(p_buy)
+
+                    # Pozisyon yönetimi (Futures LONG/SHORT)
+                    manage_positions_for_signal(
+                        trade_executor=trade_executor,
+                        position_manager=position_manager,
+                        risk_manager=risk_manager,
+                        symbol=symbol,
+                        signal=signal,
+                        current_price=current_price,
+                    )
+
+                except asyncio.CancelledError:
+                    system_logger.info("[MAIN] bot_loop cancelled by asyncio (shutdown).")
+                    raise
+                except Exception as e:
+                    system_logger.exception(f"[MAIN] Error in bot_loop iteration: {e}")
+
+                await asyncio.sleep(Config.MAIN_LOOP_SLEEP)
 
         except asyncio.CancelledError:
-            system_logger.info("[MAIN] bot_loop cancelled by asyncio (shutdown).")
+            # Uygulama kapanırken
+            system_logger.info("[BOT] bot_loop outer cancelled (shutdown).")
             break
         except Exception as e:
-            system_logger.exception(f"[MAIN] Error in bot_loop iteration: {e}")
-
-        await asyncio.sleep(Config.MAIN_LOOP_SLEEP)
+            # init_trading_objects veya üst seviye hatalar buraya düşecek
+            system_logger.exception(f"[BOT] Fatal error in bot_loop outer loop: {e}")
+            # Biraz bekleyip tekrar dene (örneğin yanlış env / geçici network vs.)
+            await asyncio.sleep(30)
 
 
 # ───────────────────────────── aiohttp app setup ─────────────────────────────
