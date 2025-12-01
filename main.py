@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+import json
 
 from config.settings import Config
 from core.logger import system_logger, error_logger
@@ -37,7 +38,7 @@ from models.fallback_model import FallbackModel
 from models.ensemble_model import EnsembleModel
 from trading.risk_manager import RiskManager
 from trading.trade_executor import TradeExecutor
-
+from pathlib import Path
 # ... buradan sonrası senin mevcut main.py kodun ...
 
 
@@ -129,21 +130,51 @@ def init_trading_objects(env_vars: Dict[str, str]) -> Dict[str, Any]:
     data_loader = DataLoader(env_vars)
 
     # Online model + fallback
-    online_learner = OnlineLearner(
-        model_dir="models",
-        base_model_name="online_model",
-        n_classes=2,
-        logger=system_logger,
-    )
-    fallback_model = FallbackModel(default_proba=0.5)
+    # Interval'i ortam değişkeninden al (yoksa 1m kullan)
+trade_interval = os.getenv("INTERVAL", "1m")
 
-    # Risk & pozisyon yönetimi
-    risk_manager = RiskManager(
-        max_risk_per_trade=Config.MAX_RISK_PER_TRADE,
-        max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
-        state_file=os.path.join("logs", "risk_state.json"),
+# Online model + fallback
+online_learner = OnlineLearner(
+    model_dir="models",
+    base_model_name="online_model",
+    interval=trade_interval,  # örn: "1m", "5m", "15m", "1h"
+    n_classes=2,
+)
+
+fallback_model = FallbackModel(default_proba=0.5)
+    # -------------------------------------------------------
+# Risk & pozisyon yönetimi
+# -------------------------------------------------------
+risk_manager = RiskManager(
+    state_file="logs/risk_state.json",
+    max_daily_loss=float(os.getenv("MAX_DAILY_LOSS", "-50")),
+    max_daily_trades=int(os.getenv("MAX_DAILY_TRADES", "50")),
+)
+
+# Model AUC'ye göre risk çarpanını ayarla (offline pretrain meta dosyasından)
+INTERVAL = os.environ.get("INTERVAL", "1m")
+meta_path = Path("models") / f"model_meta_{INTERVAL}.json"
+
+if meta_path.exists():
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            meta = json.load(f)
+        best_auc = float(meta.get("best_auc", 0.60))
+        risk_manager.update_model_confidence(best_auc)
+        logger.info(
+            f"[RISK] Model AUC={best_auc:.4f} okundu, "
+            f"model_confidence_factor={risk_manager.model_confidence_factor:.2f}"
+        )
+    except Exception as e:
+        logger.warning(f"[RISK] model_meta dosyası okunurken hata: {e!r}")
+else:
+    logger.warning(
+        f"[RISK] model_meta_{INTERVAL}.json bulunamadı, "
+        "model_confidence_factor=1.0 kullanılacak."
     )
-    position_manager = PositionManager()
+
+# Pozisyon yöneticisi (eski satır korunuyor)
+position_manager = PositionManager()
 
     # Trade executor
     trade_executor = TradeExecutor(
