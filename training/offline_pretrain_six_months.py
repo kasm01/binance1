@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import argparse
 import time
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from data.lstm_hybrid import train_lstm_hybrid
 
 import numpy as np
 import pandas as pd
@@ -412,98 +415,242 @@ def offline_train_for_interval(
     long_model: Optional[SGDClassifier] = None
     short_model: Optional[SGDClassifier] = None
 
-    # --------------------------------------------------
+    # -------------------------------------------------------------------------
     # Long / Short için ayrı training
-    # --------------------------------------------------
-    for side, (y_train, y_val) in {
-        "long": (y_long_train, y_long_val),
-        "short": (y_short_train, y_short_val),
-    }.items():
+    # -------------------------------------------------------------------------
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, roc_auc_score
+    import joblib
+    import numpy as np
+    import time
+    import os
+
+    # X ve y'leri hazırlama
+    X = clean_df[feature_cols].astype(float).values
+    y_long_arr = y_long.astype(int).values
+    y_short_arr = y_short.astype(int).values
+
+    # Aynı X split'ini hem long hem short için kullan
+    X_train, X_val, y_long_train, y_long_val, y_short_train, y_short_val = train_test_split(
+        X,
+        y_long_arr,
+        y_short_arr,
+        test_size=0.20,
+        shuffle=False,  # zaman serisi bozulmasın
+    )
+
+    n_train = len(X_train)
+    n_val = len(X_val)
+
+    print(
+        f"[OFFLINE][{interval}] X.shape={X.shape}, "
+        f"y_long pozitif oran={y_long_arr.mean():.3f}, "
+        f"y_short pozitif oran={y_short_arr.mean():.3f}"
+    )
+    print(
+        f"[OFFLINE][{interval}] Train={n_train}, Val={n_val} "
+        f"(long & short aynı X split'i kullanıyor)"
+    )
+
+    # MODE'a göre N_ROUNDS / N_ITER (üstte de ayarlıyor olabilirsin,
+    # burada tekrar etmek istemezsen bu kısmı silebilirsin)
+    if mode == "deep":
+        N_ROUNDS = 8
+        N_ITER = 600
+    elif mode == "full":
+        N_ROUNDS = 5
+        N_ITER = 400
+    else:  # shallow
+        N_ROUNDS = 3
+        N_ITER = 200
+
+    print(f"[OFFLINE][{interval}] N_ROUNDS={N_ROUNDS} | N_ITER={N_ITER}")
+
+    # Küçük helper: SGD hiperparam sampling (sende zaten varsa onu kullan)
+    rng = np.random.RandomState(42)
+
+    def sample_sgd_params(mode: str) -> dict:
+        losses = ["log_loss", "modified_huber"]
+        penalties = ["l2", "l1", "elasticnet"]
+
+        loss = rng.choice(losses)
+        penalty = rng.choice(penalties)
+
+        # mode'a göre biraz farklı aralıklar
+        if mode == "deep":
+            alpha = float(10 ** rng.uniform(-4, -1))  # 1e-4 .. 1e-1
+            max_iter = int(rng.randint(800, 2500))
+        elif mode == "full":
+            alpha = float(10 ** rng.uniform(-4.5, -1.5))
+            max_iter = int(rng.randint(600, 2000))
+        else:  # shallow
+            alpha = float(10 ** rng.uniform(-5, -2))
+            max_iter = int(rng.randint(400, 1500))
+
+        l1_ratio = float(rng.uniform(0.1, 0.9))
+        tol = float(10 ** rng.uniform(-4, -2))  # 1e-4 .. 1e-2
+
+        return {
+            "loss": loss,
+            "penalty": penalty,
+            "alpha": alpha,
+            "l1_ratio": l1_ratio,
+            "max_iter": max_iter,
+            "tol": tol,
+            "random_state": int(rng.randint(0, 1_000_000)),
+        }
+
+    # Tüm side'lar için global en iyi model
+    global_best_score = 0.5
+    best_side = "long"
+    best_params = {}
+    long_model_path: str = ""
+    short_model_path: str = ""
+    best_model_path: str = ""
+
+    t_interval_start = time.perf_counter()
+
+    for side in ["long", "short"]:
+        if side == "long":
+            y_train_side = y_long_train
+            y_val_side = y_long_val
+        else:
+            y_train_side = y_short_train
+            y_val_side = y_short_val
+
         print(f"[OFFLINE][{interval}][{side}] ---- ROUND'lar başlıyor ----")
 
-        side_best_score = 0.5
-        side_best_params: Dict = {}
-        side_best_model: Optional[SGDClassifier] = None
+        best_score_side = 0.5
+        best_model_side = None
+        best_params_side = None
 
+        # ROUND döngüsü
         for round_idx in range(1, N_ROUNDS + 1):
-            params = sample_sgd_params(rng, mode=mode)
-            clf = SGDClassifier(**params)
+            params = sample_sgd_params(mode=mode)
 
-            # partial_fit ile iteratif eğitim (roc-auc trendini takip için)
+            model = SGDClassifier(
+                loss="log_loss",
+                penalty="elasticnet",
+                alpha=0.001,
+                max_iter=1000,
+                tol=1e-3,
+                random_state=42,
+            )
+            # Paramları overwrite et
+            model.set_params(**params)
+
+            # İlk partial_fit için class listesi
             classes = np.array([0, 1], dtype=int)
-            last_score_for_round = 0.5
 
-            for iter_idx in range(1, N_ITER + 1):
-                clf.partial_fit(X_train, y_train, classes=classes)
+            # Train setini N_ITER kadar küçük batch'e böl
+            indices = np.arange(n_train)
+            rng.shuffle(indices)
+            batches = np.array_split(indices, N_ITER)
 
-                if iter_idx % 20 == 0 or iter_idx == N_ITER:
-                    metrics = evaluate_model(clf, X_val, y_val)
-                    score = metrics.get("roc_auc", metrics.get("accuracy", 0.0))
-                    last_score_for_round = score
+            eval_every = max(1, N_ITER // 10)  # her ~%10 adımda bir eval
+
+            for iter_idx, batch_idx in enumerate(batches, start=1):
+                if batch_idx.size == 0:
+                    continue
+
+                X_batch = X_train[batch_idx]
+                y_batch = y_train_side[batch_idx]
+
+                if iter_idx == 1:
+                    # İlk adımda sınıfları ver
+                    model.partial_fit(X_batch, y_batch, classes=classes)
+                else:
+                    model.partial_fit(X_batch, y_batch)
+
+                # Belirli aralıklarda validation skoru hesapla
+                if iter_idx % eval_every == 0 or iter_idx == N_ITER:
+                    y_val_pred = model.predict(X_val)
+                    acc = accuracy_score(y_val_side, y_val_pred)
+
+                    # proba / decision_function
+                    if hasattr(model, "predict_proba"):
+                        y_val_proba = model.predict_proba(X_val)[:, 1]
+                    else:
+                        y_val_proba = model.decision_function(X_val)
+                        # decision'ı 0-1 aralığına squash edelim
+                        y_val_proba = 1 / (1 + np.exp(-y_val_proba))
+
+                    try:
+                        auc = roc_auc_score(y_val_side, y_val_proba)
+                    except ValueError:
+                        # Tüm label'lar tek sınıf ise AUC hesaplanamıyor
+                        auc = 0.5
+
+                    score = auc  # ana metrik AUC
 
                     print(
                         f"[OFFLINE][{interval}][{side}] "
                         f"Round {round_idx}/{N_ROUNDS} | Iter {iter_idx}/{N_ITER} | "
-                        f"score={score:.4f} "
-                        f"(acc={metrics.get('accuracy', float('nan')):.4f}, "
-                        f"auc={metrics.get('roc_auc', float('nan')):.4f})"
+                        f"score={score:.4f} (acc={acc:.4f}, auc={auc:.4f})"
                     )
 
-            # Round sonu -> side bazlı en iyiyi güncelle
-            if last_score_for_round > side_best_score:
-                side_best_score = last_score_for_round
-                side_best_params = params
-                side_best_model = clf
+                    # side için en iyi model güncelle
+                    if score > best_score_side:
+                        best_score_side = score
+                        best_model_side = joblib.loads(joblib.dumps(model))  # derin kopya
+                        best_params_side = params
 
+            # ROUND bitti logu
             print(
                 f"[OFFLINE][{interval}][{side}] ROUND {round_idx} bitti. "
-                f"Şu anki side en iyi skor={side_best_score:.4f}"
+                f"Şu anki side en iyi skor={best_score_side:.4f}"
             )
 
-        # Side training tamam -> global objelere yaz
+        # Side için model path ve global en iyi side güncelle
+        if best_model_side is None:
+            # Fail-safe: hiç iyileşme olmadıysa son modeli kullan
+            best_model_side = model
+            best_params_side = params
+
+        side_model_path = os.path.join(model_dir, f"online_model_{interval}_{side}.joblib")
+        joblib.dump(best_model_side, side_model_path)
+
         if side == "long":
-            long_model = side_best_model
+            long_model_path = side_model_path
         else:
-            short_model = side_best_model
+            short_model_path = side_model_path
 
-        # Global en iyi yönü güncelle
-        if side_best_model is not None and side_best_score >= best_score:
-            best_score = side_best_score
+        print(
+            f"[OFFLINE][{interval}][{side}] Side training bitti. "
+            f"En iyi skor={best_score_side:.4f}, model={side_model_path}"
+        )
+
+        # Global en iyi side seçimi (AUC bazlı)
+        if best_score_side > global_best_score:
+            global_best_score = best_score_side
             best_side = side
-            best_params = side_best_params
-            best_model = side_best_model
+            best_params = best_params_side if best_params_side is not None else {}
 
-    # Eğer hiçbir model oluşmadıysa (herhangi bir sebeple) çık
-    if best_model is None or long_model is None or short_model is None:
-        print(f"[OFFLINE][{interval}] Uyarı: Hiç model oluşturulamadı, kaydetme atlanıyor.")
-        return
+    # Global en iyi side'ı ayrı best model olarak kaydet
+    if best_side == "long":
+        best_model_src = long_model_path
+    else:
+        best_model_src = short_model_path
+
+    best_model_path = os.path.join(model_dir, f"online_model_{interval}_best.joblib")
+    # Kopyala
+    best_model_obj = joblib.load(best_model_src)
+    joblib.dump(best_model_obj, best_model_path)
+
+    t_interval_end = time.perf_counter()
+    elapsed = t_interval_end - t_interval_start
 
     print(
         f"[OFFLINE][{interval}] TRAINING TAMAMLANDI. "
-        f"En iyi skor={best_score:.4f}, seçilen yön={best_side}, "
-        f"en iyi paramlar={best_params}"
+        f"En iyi skor={global_best_score:.4f}, seçilen yön={best_side}, en iyi paramlar={best_params}"
     )
-
-    # LSTM hibrit flag'i (şimdilik sadece log)
-    if use_lstm_hybrid:
-        print(
-            f"[OFFLINE][{interval}] use_lstm_hybrid=True - "
-            f"LSTM hibrit entegrasyonu için iskelet hazır, şu an sadece SGD modelleri kaydediliyor."
-        )
-
-    # Long & short & best modelleri ayrı kaydet
-    base_name = f"online_model_{interval}"
-    long_path = f"{model_dir}/{base_name}_long.joblib"
-    short_path = f"{model_dir}/{base_name}_short.joblib"
-    best_path = f"{model_dir}/{base_name}_best.joblib"
-
-    joblib.dump(long_model, long_path)
-    joblib.dump(short_model, short_path)
-    joblib.dump(best_model, best_path)
-
-    print(f"[OFFLINE][{interval}] Long model kaydedildi:   {long_path}")
-    print(f"[OFFLINE][{interval}] Short model kaydedildi:  {short_path}")
-    print(f"[OFFLINE][{interval}] Best  model kaydedildi:  {best_path}")
+    print(f"[OFFLINE][{interval}] Long model kaydedildi:   {long_model_path}")
+    print(f"[OFFLINE][{interval}] Short model kaydedildi:  {short_model_path}")
+    print(f"[OFFLINE][{interval}] Best  model kaydedildi:  {best_model_path}")
+    print(
+        f"[OFFLINE][{interval}] Interval training bitti. "
+        f"Süre: {elapsed:.1f} sn (~{elapsed/60:.1f} dk)"
+    )
 
 
 # -------------------------------------------------------------------------

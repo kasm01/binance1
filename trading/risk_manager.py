@@ -50,6 +50,10 @@ class RiskManager:
         # Gün başı equity (yüzdelik zarar limitini buna göre hesaplıyoruz)
         self._start_of_day_equity: Optional[float] = None
 
+        # 🔥 Model performansına göre risk çarpanı (AUC'den beslenecek)
+        # 1.0 = nötr, >1 agresif, <1 defansif
+        self.model_confidence_factor: float = 1.0
+
     # ──────────────── internal helpers ────────────────
 
     def _today_str(self) -> str:
@@ -168,6 +172,39 @@ class RiskManager:
 
         return True, "OK"
 
+    def update_model_confidence(self, auc: float) -> None:
+        """
+        Model performansına göre risk çarpanını ayarla.
+        Örnek strateji:
+        - AUC >= 0.70 -> 1.5x pozisyon (agresif)
+        - 0.65 <= AUC < 0.70 -> 1.2x
+        - 0.60 <= AUC < 0.65 -> 1.0x (nötr)
+        - AUC < 0.60 -> 0.7x (defansif)
+        """
+        try:
+            auc = float(auc)
+        except (TypeError, ValueError):
+            system_logger.warning(
+                f"[RISK] Invalid AUC value for model_confidence: {auc!r}. "
+                "Falling back to 1.0."
+            )
+            self.model_confidence_factor = 1.0
+            return
+
+        if auc >= 0.70:
+            self.model_confidence_factor = 1.5
+        elif auc >= 0.65:
+            self.model_confidence_factor = 1.2
+        elif auc >= 0.60:
+            self.model_confidence_factor = 1.0
+        else:
+            self.model_confidence_factor = 0.7
+
+        system_logger.info(
+            f"[RISK] update_model_confidence: auc={auc:.4f} -> "
+            f"model_confidence_factor={self.model_confidence_factor:.2f}"
+        )
+
     def compute_position_size(
         self,
         symbol: str,
@@ -183,6 +220,10 @@ class RiskManager:
         risk_amount = equity * max_risk_per_trade
         risk_per_unit = entry_price * stop_loss_pct * leverage
         qty = risk_amount / risk_per_unit
+
+        Burada qty daha sonra model_confidence_factor ile ölçeklenir:
+        - AUC yüksekse (factor > 1) -> daha büyük pozisyon
+        - AUC düşükse (factor < 1) -> daha küçük pozisyon
         """
         risk_amount = equity * self.max_risk_per_trade
         risk_per_unit = entry_price * stop_loss_pct * leverage
@@ -194,12 +235,16 @@ class RiskManager:
             )
             return 0.0
 
+        # Temel qty
         qty = risk_amount / risk_per_unit
+        # 🔥 Model güvenine göre ölçekle
+        qty = qty * self.model_confidence_factor
+
         system_logger.info(
             f"[RISK] Position size computed for {symbol} {side}: "
             f"equity={equity:.2f}, risk_amount={risk_amount:.2f}, "
             f"entry={entry_price:.2f}, sl_pct={stop_loss_pct:.4f}, lev={leverage}, "
-            f"qty={qty:.6f}"
+            f"model_conf_factor={self.model_confidence_factor:.2f}, qty={qty:.6f}"
         )
         return qty
 
@@ -226,5 +271,6 @@ class RiskManager:
             "realized_pnl": self._state.realized_pnl,
             "trading_halted": self._state.trading_halted,
             "max_daily_loss_abs": self.max_daily_loss_abs,
+            "model_confidence_factor": self.model_confidence_factor,
         }
 
