@@ -16,7 +16,7 @@ Bu sayede:
 """
 
 from .lightgbm_model import LightGBMModel
-from .ensemble_model import EnsembleModel
+#from .ensemble_model import EnsembleModel
 from .fallback_model import FallbackModel
 
 # CatBoost opsiyonel: catboost paketi yoksa RuntimeError fırlatıyoruz,

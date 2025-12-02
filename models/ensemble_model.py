@@ -8,7 +8,6 @@ import numpy as np
 # Modeller
 from models.lightgbm_model import LightGBMModel
 from models.catboost_model import CatBoostModel
-from models.lstm_model import LSTMModel
 from models.fallback_model import FallbackModel
 
 
@@ -50,10 +49,10 @@ class EnsembleModel:
             self.catboost_model = None
 
         # LSTM
-        try:
-            self.lstm_model = LSTMModel(os.path.join(self.model_dir, "lstm_model.keras"))
-        except Exception:
-            self.lstm_model = None
+       # try:
+        #    self.lstm_model = LSTMModel(os.path.join(self.model_dir, "lstm_model.keras"))
+        #except Exception:
+         #   self.lstm_model = None
 
     # ------------------------------------------------------------
     # ANA TAHMİN

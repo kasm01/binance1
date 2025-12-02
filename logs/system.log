@@ -1178,3 +1178,451 @@ ModuleNotFoundError: No module named '_loss'
 2025-11-29 11:43:18,295 | INFO | system | [SIGNAL] Generated trading signal: BUY
 2025-11-29 11:43:18,295 | WARNING | system | [MAIN] Trading halted for today by risk manager (MAX_DAILY_LOSS reached).
 2025-11-29 11:43:18,295 | INFO | system | [TRADE] No open positions to flatten.
+2025-12-02 17:08:06,701 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 17:08:06,735 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 17:08:06,980 | ERROR | system | [MAIN] Fatal error: TypeError("FeatureEngineer.__init__() got an unexpected keyword argument 'logger'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 372, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 346, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 78, in create_trading_objects
+    feature_engineer = FeatureEngineer(logger=system_logger)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: FeatureEngineer.__init__() got an unexpected keyword argument 'logger'
+2025-12-02 17:13:16,766 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 17:13:16,766 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 17:13:17,012 | ERROR | system | [MAIN] Fatal error: TypeError("FeatureEngineer.__init__() missing 1 required positional argument: 'df'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 372, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 346, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 78, in create_trading_objects
+    feature_engineer = FeatureEngineer()
+                       ^^^^^^^^^^^^^^^^^
+TypeError: FeatureEngineer.__init__() missing 1 required positional argument: 'df'
+2025-12-02 17:32:17,168 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 17:32:17,171 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 17:32:17,414 | ERROR | system | [MAIN] Fatal error: TypeError("AnomalyDetector.__init__() missing 1 required positional argument: 'features_df'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 372, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 346, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 79, in create_trading_objects
+    anomaly_detector = AnomalyDetector()
+                       ^^^^^^^^^^^^^^^^^
+TypeError: AnomalyDetector.__init__() missing 1 required positional argument: 'features_df'
+2025-12-02 17:39:16,668 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 17:39:16,669 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 17:39:16,922 | ERROR | system | [MAIN] Fatal error: TypeError("OnlineLearner.__init__() got an unexpected keyword argument 'logger'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 372, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 346, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 82, in create_trading_objects
+    online_learner = OnlineLearner(
+                     ^^^^^^^^^^^^^^
+TypeError: OnlineLearner.__init__() got an unexpected keyword argument 'logger'
+2025-12-02 17:45:31,144 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 17:45:31,144 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 17:45:31,400 | ERROR | system | [MAIN] Fatal error: TypeError("OnlineLearner.__init__() got an unexpected keyword argument 'logger'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 372, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 346, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 82, in create_trading_objects
+    online_learner = OnlineLearner(
+                     ^^^^^^^^^^^^^^
+TypeError: OnlineLearner.__init__() got an unexpected keyword argument 'logger'
+2025-12-02 18:11:16,977 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 18:11:17,025 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 18:11:17,338 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 18:11:17,339 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 18:11:17,340 | ERROR | system | [MAIN] Fatal error: TypeError("HybridModel.__init__() got an unexpected keyword argument 'interval'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 369, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 343, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 92, in create_trading_objects
+    hybrid_model = HybridModel(
+                   ^^^^^^^^^^^^
+TypeError: HybridModel.__init__() got an unexpected keyword argument 'interval'
+2025-12-02 18:37:06,298 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 18:37:06,299 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 18:37:06,555 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 18:37:06,555 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 18:37:06,556 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 18:37:06,556 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 18:37:06,557 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 18:37:06,557 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 18:37:06,558 | ERROR | system | [MAIN] Fatal error: TypeError("RiskManager.__init__() got an unexpected keyword argument 'max_daily_loss'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 369, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 343, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 100, in create_trading_objects
+    risk_manager = RiskManager(
+                   ^^^^^^^^^^^^
+TypeError: RiskManager.__init__() got an unexpected keyword argument 'max_daily_loss'
+2025-12-02 18:50:02,915 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 18:50:02,915 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 18:50:03,164 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 18:50:03,165 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 18:50:03,165 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 18:50:03,165 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 18:50:03,167 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 18:50:03,167 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 18:50:03,194 | INFO | system | [RISK] Loaded state from logs/risk_state.json: {'trade_date': '2025-11-25', 'realized_pnl': 0.0, 'trading_halted': True}
+2025-12-02 18:50:03,194 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-02 18:50:03,195 | ERROR | system | [MAIN] Fatal error: TypeError("TradeExecutor.__init__() got an unexpected keyword argument 'logger'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 375, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 349, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 139, in create_trading_objects
+    trade_executor = TradeExecutor(
+                     ^^^^^^^^^^^^^^
+TypeError: TradeExecutor.__init__() got an unexpected keyword argument 'logger'
+2025-12-02 18:55:45,447 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 18:55:45,448 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 18:55:45,693 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 18:55:45,694 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 18:55:45,694 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 18:55:45,694 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 18:55:45,696 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 18:55:45,696 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 18:55:45,696 | INFO | system | [RISK] Loaded state from logs/risk_state.json: {'trade_date': '2025-11-25', 'realized_pnl': 0.0, 'trading_halted': True}
+2025-12-02 18:55:45,697 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-02 18:55:45,697 | ERROR | system | [MAIN] Fatal error: TypeError("TradeExecutor.__init__() got an unexpected keyword argument 'config'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 374, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 348, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 139, in create_trading_objects
+    trade_executor = TradeExecutor(
+                     ^^^^^^^^^^^^^^
+TypeError: TradeExecutor.__init__() got an unexpected keyword argument 'config'
+2025-12-02 19:00:06,360 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 19:00:06,361 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 19:00:06,604 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 19:00:06,605 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 19:00:06,605 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 19:00:06,605 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 19:00:06,606 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 19:00:06,607 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 19:00:06,607 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-02 19:00:06,607 | ERROR | system | [MAIN] Fatal error: TypeError("TradeExecutor.__init__() got an unexpected keyword argument 'config'")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 374, in main
+    asyncio.run(async_main())
+  File "/usr/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 348, in async_main
+    trading_objects = create_trading_objects()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/main.py", line 139, in create_trading_objects
+    trade_executor = TradeExecutor(
+                     ^^^^^^^^^^^^^^
+TypeError: TradeExecutor.__init__() got an unexpected keyword argument 'config'
+2025-12-02 19:09:21,423 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 19:09:21,423 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 19:09:21,669 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 19:09:21,669 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 19:09:21,670 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 19:09:21,670 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 19:09:21,671 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 19:09:21,671 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 19:09:21,672 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-02 19:09:21,672 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:09:21,672 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'raw_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 220, in bot_loop
+    system_logger.info("[DATA] Raw DF shape: %s", raw_df.shape)
+                                                  ^^^^^^
+NameError: name 'raw_df' is not defined
+2025-12-02 19:09:52,716 | INFO | system | [MAIN] Shutdown signal received, cancelling bot_loop...
+2025-12-02 19:09:52,717 | INFO | system | [MAIN] Cleanup: cancelling bot_loop task...
+2025-12-02 19:16:28,839 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-02 19:16:28,839 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-02 19:16:29,079 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-02 19:16:29,079 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-02 19:16:29,079 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-02 19:16:29,080 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000
+2025-12-02 19:16:29,081 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-02 19:16:29,081 | INFO | system | [HYBRID] LSTM stub is active (no real LSTM model loaded yet). Hybrid score will be equal to SGD score for now.
+2025-12-02 19:16:29,081 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-02 19:16:29,082 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:16:29,082 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:17:29,144 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:17:29,144 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:18:29,205 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:18:29,206 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:19:29,268 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:19:29,268 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:20:29,329 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:20:29,330 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:21:29,387 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:21:29,388 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:22:29,419 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:22:29,420 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:23:29,481 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:23:29,481 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:24:29,542 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:24:29,543 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:25:29,554 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:25:29,555 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:26:29,616 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:26:29,616 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:27:29,677 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:27:29,677 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:28:29,739 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:28:29,739 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:29:29,801 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:29:29,801 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:30:29,862 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:30:29,863 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:31:29,924 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:31:29,925 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:32:29,963 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:32:29,964 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:33:30,025 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:33:30,026 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:34:30,087 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:34:30,087 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:35:30,149 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:35:30,149 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:36:30,210 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:36:30,211 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:37:30,272 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:37:30,273 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:38:30,334 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:38:30,335 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:39:30,347 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-02 19:39:30,348 | ERROR | system | [MAIN] Error in bot_loop: NameError("name 'features_df' is not defined")
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 224, in bot_loop
+    features_df.shape,
+    ^^^^^^^^^^^
+NameError: name 'features_df' is not defined
+2025-12-02 19:40:25,321 | INFO | system | [MAIN] Shutdown signal received, cancelling bot_loop...
+2025-12-02 19:40:25,322 | INFO | system | [MAIN] Cleanup: cancelling bot_loop task...

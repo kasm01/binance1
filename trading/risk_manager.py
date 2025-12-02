@@ -25,14 +25,18 @@ class DailyRiskState:
 
 class RiskManager:
     """
+    Risk yönetimi:
+
     - max_risk_per_trade: özsermayedeki risk oranı (ör: 0.01 = %1)
     - max_daily_loss_pct: günlük max zarar (ör: 0.05 = %5)
     - state_file: günlük risk durumunu sakladığımız json
 
-    Not:
+    Notlar:
       * Günlük zarar limiti, gün başındaki equity'ye göre hesaplanır.
       * Eğer equity <= 0 ise, günlük zarar limiti ENFORCE edilmez
         (max_daily_loss_abs None kalır, sadece log basılır).
+      * model_confidence_factor AUC’ye göre belirlenir ve
+        max_risk_per_trade / max_daily_loss_pct üzerinde çarpan olarak çalışır.
     """
 
     def __init__(
@@ -41,18 +45,23 @@ class RiskManager:
         max_daily_loss_pct: float = 0.05,
         state_file: str = "logs/risk_state.json",
     ):
+        # Etkin (factor uygulanmış) değerler
         self.max_risk_per_trade = float(max_risk_per_trade)
         self.max_daily_loss_pct = float(max_daily_loss_pct)
         self.state_file = state_file
 
-        # Bugüne ait state
+        # Base değerler (AUC ile çarpılmadan önceki hal)
+        self._base_max_risk_per_trade: float = float(max_risk_per_trade)
+        self._base_max_daily_loss_pct: float = float(max_daily_loss_pct)
+
+        # Model güven faktörü (AUC’den geliyor)
+        # 1.0 -> nötr, >1 -> agresif, <1 -> defansif
+        self.model_confidence_factor: float = 1.0
+
+        # Günlük state
         self._state: DailyRiskState = self._load_state()
         # Gün başı equity (yüzdelik zarar limitini buna göre hesaplıyoruz)
         self._start_of_day_equity: Optional[float] = None
-
-        # 🔥 Model performansına göre risk çarpanı (AUC'den beslenecek)
-        # 1.0 = nötr, >1 agresif, <1 defansif
-        self.model_confidence_factor: float = 1.0
 
     # ──────────────── internal helpers ────────────────
 
@@ -94,6 +103,52 @@ class RiskManager:
             self._start_of_day_equity = None
             self._save_state()
 
+    # ──────────────── model confidence (AUC tabanlı) ────────────────
+
+    def update_model_confidence(self, auc: float) -> None:
+        """
+        Model performansına göre risk çarpanını ayarla.
+
+        Örnek strateji:
+        - AUC >= 0.70       -> 1.5x pozisyon (agresif)
+        - 0.65 <= AUC < 0.70 -> 1.2x
+        - 0.60 <= AUC < 0.65 -> 1.0x (nötr)
+        - AUC < 0.60        -> 0.7x (defansif)
+        """
+        try:
+            auc = float(auc)
+        except Exception:
+            system_logger.warning(
+                f"[RISK] Invalid AUC value passed to update_model_confidence: {auc!r}. "
+                "Using default factor=1.0"
+            )
+            self.model_confidence_factor = 1.0
+        else:
+            if auc >= 0.70:
+                self.model_confidence_factor = 1.5
+            elif auc >= 0.65:
+                self.model_confidence_factor = 1.2
+            elif auc >= 0.60:
+                self.model_confidence_factor = 1.0
+            else:
+                self.model_confidence_factor = 0.7
+
+        # Etkin risk parametrelerini factor ile güncelle
+        self.max_risk_per_trade = self._base_max_risk_per_trade * self.model_confidence_factor
+        self.max_daily_loss_pct = self._base_max_daily_loss_pct * self.model_confidence_factor
+
+        system_logger.info(
+            "[RISK] update_model_confidence: auc=%.4f -> factor=%.2f, "
+            "base_max_risk_per_trade=%.4f, base_max_daily_loss_pct=%.4f, "
+            "effective_max_risk_per_trade=%.4f, effective_max_daily_loss_pct=%.4f",
+            auc,
+            self.model_confidence_factor,
+            self._base_max_risk_per_trade,
+            self._base_max_daily_loss_pct,
+            self.max_risk_per_trade,
+            self.max_daily_loss_pct,
+        )
+
     # ──────────────── public API ────────────────
 
     def set_start_of_day_equity(self, equity: float) -> None:
@@ -123,7 +178,8 @@ class RiskManager:
     @property
     def max_daily_loss_abs(self) -> Optional[float]:
         """
-        Günlük max zarar (USDT cinsinden). start_of_day_equity set edilmediyse None döner.
+        Günlük max zarar (USDT cinsinden).
+        start_of_day_equity set edilmediyse None döner.
         """
         if self._start_of_day_equity is None:
             return None
@@ -172,39 +228,6 @@ class RiskManager:
 
         return True, "OK"
 
-    def update_model_confidence(self, auc: float) -> None:
-        """
-        Model performansına göre risk çarpanını ayarla.
-        Örnek strateji:
-        - AUC >= 0.70 -> 1.5x pozisyon (agresif)
-        - 0.65 <= AUC < 0.70 -> 1.2x
-        - 0.60 <= AUC < 0.65 -> 1.0x (nötr)
-        - AUC < 0.60 -> 0.7x (defansif)
-        """
-        try:
-            auc = float(auc)
-        except (TypeError, ValueError):
-            system_logger.warning(
-                f"[RISK] Invalid AUC value for model_confidence: {auc!r}. "
-                "Falling back to 1.0."
-            )
-            self.model_confidence_factor = 1.0
-            return
-
-        if auc >= 0.70:
-            self.model_confidence_factor = 1.5
-        elif auc >= 0.65:
-            self.model_confidence_factor = 1.2
-        elif auc >= 0.60:
-            self.model_confidence_factor = 1.0
-        else:
-            self.model_confidence_factor = 0.7
-
-        system_logger.info(
-            f"[RISK] update_model_confidence: auc={auc:.4f} -> "
-            f"model_confidence_factor={self.model_confidence_factor:.2f}"
-        )
-
     def compute_position_size(
         self,
         symbol: str,
@@ -221,9 +244,8 @@ class RiskManager:
         risk_per_unit = entry_price * stop_loss_pct * leverage
         qty = risk_amount / risk_per_unit
 
-        Burada qty daha sonra model_confidence_factor ile ölçeklenir:
-        - AUC yüksekse (factor > 1) -> daha büyük pozisyon
-        - AUC düşükse (factor < 1) -> daha küçük pozisyon
+        Burada max_risk_per_trade zaten model_confidence_factor ile çarpılmış
+        (update_model_confidence çağrıldıysa).
         """
         risk_amount = equity * self.max_risk_per_trade
         risk_per_unit = entry_price * stop_loss_pct * leverage
@@ -235,16 +257,22 @@ class RiskManager:
             )
             return 0.0
 
-        # Temel qty
         qty = risk_amount / risk_per_unit
-        # 🔥 Model güvenine göre ölçekle
-        qty = qty * self.model_confidence_factor
 
         system_logger.info(
-            f"[RISK] Position size computed for {symbol} {side}: "
-            f"equity={equity:.2f}, risk_amount={risk_amount:.2f}, "
-            f"entry={entry_price:.2f}, sl_pct={stop_loss_pct:.4f}, lev={leverage}, "
-            f"model_conf_factor={self.model_confidence_factor:.2f}, qty={qty:.6f}"
+            "[RISK] Position size computed for %s %s: "
+            "equity=%.2f, risk_amount=%.2f, entry=%.2f, sl_pct=%.4f, lev=%.1f, "
+            "qty=%.6f, model_factor=%.2f, max_risk_per_trade=%.4f",
+            symbol,
+            side,
+            equity,
+            risk_amount,
+            entry_price,
+            stop_loss_pct,
+            leverage,
+            qty,
+            self.model_confidence_factor,
+            self.max_risk_per_trade,
         )
         return qty
 
@@ -271,6 +299,10 @@ class RiskManager:
             "realized_pnl": self._state.realized_pnl,
             "trading_halted": self._state.trading_halted,
             "max_daily_loss_abs": self.max_daily_loss_abs,
+            "max_risk_per_trade": self.max_risk_per_trade,
+            "max_daily_loss_pct": self.max_daily_loss_pct,
             "model_confidence_factor": self.model_confidence_factor,
+            "base_max_risk_per_trade": self._base_max_risk_per_trade,
+            "base_max_daily_loss_pct": self._base_max_daily_loss_pct,
         }
 

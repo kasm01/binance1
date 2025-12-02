@@ -1,96 +1,111 @@
-import logging
-from typing import Optional
+# data/anomaly_detection.py
+
+from typing import Optional, List
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-
-system_logger = logging.getLogger("system")
+from core.logger import system_logger
 
 
 class AnomalyDetector:
     """
-    Feature seviyesinde basit anomali tespitçisi.
+    Stateless anomaly detection wrapper.
 
-    main.py içinde şöyle kullanıyoruz:
-        anomaly_detector = AnomalyDetector(features_df=features_df)
-        features_df = anomaly_detector.detect_and_handle_anomalies()
+    Kullanım:
+        detector = AnomalyDetector()
+        clean_df = detector.filter_anomalies(features_df)
 
-    Burada IsolationForest ile numerik kolonlara bakıp
-    anomali olan satırları filtreliyoruz.
+    IsolationForest ile numeric feature'lar üzerinden aykırı gözlemleri filtreler.
     """
 
     def __init__(
         self,
-        features_df: pd.DataFrame,
+        logger=None,
         contamination: float = 0.02,
-        logger: Optional[logging.Logger] = None,
-    ):
-        self.features_df = features_df
-        self.contamination = contamination
+        n_estimators: int = 100,
+        random_state: int = 42,
+    ) -> None:
         self.logger = logger or system_logger
+        self.contamination = float(contamination)
+        self.n_estimators = int(n_estimators)
+        self.random_state = int(random_state)
 
-    def detect_and_handle_anomalies(self) -> pd.DataFrame:
-        """
-        - Sadece numerik kolonlara bakar
-        - IsolationForest ile anomali skoru çıkarır
-        - Anomali olanları (label = -1) atar, geri kalanı döner
-        """
-        df = self.features_df
-
-        if df is None or df.empty:
-            self.logger.warning("[ANOM] Received empty features_df, skipping anomaly detection.")
-            return df
-
-        # Numerik kolonları seç
-        num_df = df.select_dtypes(include=[np.number])
-
-        if num_df.empty:
-            self.logger.warning("[ANOM] No numeric columns in features_df, skipping anomaly detection.")
-            return df
-
-        # Çok az satır varsa model anlamlı olmaz, direkt geç
-        if len(num_df) < 50:
+    def _select_numeric_columns(self, df: pd.DataFrame) -> List[str]:
+        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+        if self.logger:
             self.logger.info(
-                "[ANOM] Only %d rows available (<50), skipping anomaly detection.",
-                len(num_df),
+                "[ANOM] Numeric columns for anomaly detection: %s",
+                numeric_cols,
             )
-            return df
+        return numeric_cols
 
-        try:
+    def filter_anomalies(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        IsolationForest ile aykırı değerleri çıkarır.
+
+        Girdi:
+            features_df: Feature engineered dataframe
+
+        Çıktı:
+            clean_df: Aykırı gözlemler çıkarılmış dataframe (index preserve edilmez, resetlenir)
+        """
+        if features_df is None or len(features_df) == 0:
+            if self.logger:
+                self.logger.warning("[ANOM] Empty features_df, skipping anomaly filter.")
+            return features_df
+
+        numeric_cols = self._select_numeric_columns(features_df)
+        if not numeric_cols:
+            if self.logger:
+                self.logger.warning(
+                    "[ANOM] No numeric columns found in features_df. "
+                    "Skipping anomaly filter."
+                )
+            return features_df
+
+        X = features_df[numeric_cols].values
+        n_samples, n_features = X.shape
+
+        if self.logger:
             self.logger.info(
                 "[ANOM] Running IsolationForest on %d samples, %d numeric features.",
-                num_df.shape[0],
-                num_df.shape[1],
+                n_samples,
+                n_features,
             )
 
-            iso = IsolationForest(
-                contamination=self.contamination,
-                random_state=42,
-                n_estimators=200,
-                n_jobs=-1,
-            )
-            preds = iso.fit_predict(num_df)
+        iso = IsolationForest(
+            contamination=self.contamination,
+            n_estimators=self.n_estimators,
+            random_state=self.random_state,
+            n_jobs=-1,
+        )
 
-            # IsolationForest: 1 = normal, -1 = anomali
-            mask = preds == 1
-            kept = df.loc[mask].copy()
-            removed_count = int((~mask).sum())
+        preds = iso.fit_predict(X)  # 1 = normal, -1 = anomaly
+        mask = preds == 1
 
+        removed_count = int((~mask).sum())
+        clean_df = features_df.loc[mask].copy()
+        clean_df.reset_index(drop=True, inplace=True)
+
+        if self.logger:
             self.logger.info(
                 "[ANOM] Removed %d anomalous rows. Remaining: %d",
                 removed_count,
-                kept.shape[0],
+                clean_df.shape[0],
+            )
+            self.logger.info(
+                "[ANOM] After anomaly filter: %d rows remain.",
+                clean_df.shape[0],
             )
 
-            return kept
+        return clean_df
 
-        except Exception as e:
-            self.logger.error(
-                "[ANOM] Error during anomaly detection, returning original features_df: %s",
-                e,
-                exc_info=True,
-            )
-            return df
+    # Geriye dönük uyumluluk için alias
+    def transform(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Eski API ile uyum için transform() -> filter_anomalies() alias'ı.
+        """
+        return self.filter_anomalies(features_df)
 
