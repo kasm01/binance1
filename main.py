@@ -24,10 +24,12 @@ from config.load_env import load_environment_variables
 from config.settings import Config
 
 from core.logger import setup_logger, system_logger
-
+SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
+INTERVAL = os.getenv("INTERVAL", "1m")
 from data.feature_engineer import FeatureEngineer
 from data.anomaly_detection import AnomalyDetector
 from data.online_learning import OnlineLearner
+from data.klines import fetch_klines
 
 from models.fallback_model import FallbackModel
 from models.hybrid_inference import HybridModel  # DİKKAT: models.__init__ değil, direkt modul!
@@ -212,31 +214,32 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
 
     while True:
         try:
-            system_logger.info(
-                f"[DATA] Starting data pipeline for {symbol} ({interval}, limit=500)"
-            )
+            system_logger.info("[DATA] Starting data pipeline for %s (%s, limit=500)", SYMBOL, INTERVAL)
 
-            # 1) Veri çek
+            # --- RAW DATA ---
+            raw_df = await fetch_klines(binance_client, SYMBOL, INTERVAL, limit=500)
+            system_logger.info("[DATA] Raw DF shape: %s", raw_df.shape)
 
-            # 2) Feature engineering
+            # --- FEATURE ENGINEERING ---
+            features_df = feature_engineer.transform(raw_df)
             system_logger.info(
                 "[FE] Features DF shape: %s, columns=%s",
                 features_df.shape,
                 list(features_df.columns),
             )
 
-            # 3) Anomali filtresi
+            # --- ANOMALY FILTER ---
             clean_df = anomaly_detector.filter_anomalies(features_df)
-            system_logger.info(
-                "[ANOM] After anomaly filter: %d rows remain.", len(clean_df)
-            )
+            system_logger.info("[ANOM] After anomaly filter: %s rows remain.", clean_df.shape)
 
-            if len(clean_df) < max(N_SEQ + 20, 120):
-                system_logger.warning(
-                    "[DATA] Not enough rows after anomaly filter, skipping this loop."
-                )
+            if clean_df.empty:
+                system_logger.warning("[ANOM] Clean DF empty. Skipping cycle.")
                 await asyncio.sleep(LOOP_SLEEP_SECONDS)
                 continue
+
+        except Exception as e:
+            system_logger.error("[MAIN] Error in bot_loop: %r", e)
+            continue
 
             # 4) Online öğrenme için mini-batch (örnek, son 120 satırdan 100 tanesi)
             try:
@@ -306,20 +309,29 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
             )
             system_logger.info("[SIGNAL] Generated trading signal: %s", signal)
 
-            # 7) Risk kontrolü (günlük zarar limiti vs.)
-            equity = trade_executor.get_equity()
-            allowed, reason = risk_manager.can_open_new_trade(current_equity=equity)
-            if not allowed:
-                system_logger.warning(
-                    "[MAIN] Trading halted for today by risk manager (%s).", reason
-                )
-                if position_manager.has_open_positions():
-                    current_price = float(clean_df["close"].iloc[-1])
-                    trade_executor.flatten_all_positions({symbol: current_price})
-                await asyncio.sleep(LOOP_SLEEP_SECONDS)
-                continue
 
-            # 8) Pozisyon yönetimi
+# 7) Risk kontrolü (günlük zarar limiti vs.)
+equity = trade_executor.get_equity()
+allowed, reason = risk_manager.can_open_new_trade(current_equity=equity)
+
+if not allowed:
+    # Eski agresif mesaj yerine daha soft bir uyarı:
+    system_logger.warning(
+        "[MAIN] RiskManager: Günlük risk limiti nedeniyle yeni trade açılmayacak (%s). Bot çalışmaya devam ediyor.", 
+        reason
+    )
+
+    # Açık pozisyon varsa güvenli şekilde kapat
+    if position_manager.has_open_positions():
+        current_price = float(clean_df["close"].iloc[-1])
+        trade_executor.flatten_all_positions({symbol: current_price})
+        system_logger.info("[MAIN] Açık pozisyonlar risk nedeniyle kapatıldı.")
+
+    # Botu durdurma, sadece bu iteration'da trade açma
+    await asyncio.sleep(LOOP_SLEEP_SECONDS)
+    continue
+
+# 8) Pozisyon yönetimi
             current_price = float(clean_df["close"].iloc[-1])
             manage_positions_for_signal(
                 symbol=symbol,
@@ -350,8 +362,8 @@ async def async_main() -> None:
     loop = asyncio.get_running_loop()
 
     def _cancel_tasks():
-        system_logger.info("[MAIN] Shutdown signal received, cancelling bot_loop...")
-        loop_task.cancel()
+#        system_logger.info("[MAIN] Shutdown signal received, cancelling bot_loop...")
+ #       loop_task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

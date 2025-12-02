@@ -16,7 +16,7 @@ class RiskManager:
     def __init__(
         self,
         state_file: str = "logs/risk_state.json",
-        max_daily_loss: float = -50.0,     # Örn: -50 USDT
+        max_daily_loss: float = -500.0,     # Örn: -50 USDT
         max_daily_trades: int = 50,        # Günlük limit
     ):
         self.state_file = state_file
