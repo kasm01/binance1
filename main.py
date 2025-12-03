@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import signal
@@ -10,14 +9,43 @@ from typing import Dict, Any
 import pandas as pd
 
 from config.load_env import load_environment_variables
-from config import config
-from core.logger import setup_logger
-from core.risk_manager import RiskManager
-from core.position_manager import PositionManager
-from core.trade_executor import TradeExecutor
+import config as app_config
 from data.online_learning import OnlineLearner
 from models.hybrid_inference import HybridModel
-from core.binance_client import create_binance_client  # senin projendeki isme göre ayarlı
+from core.logger import setup_logger
+from core.risk_manager import RiskManager
+# Binance client helper
+try:
+    from core.binance_client import create_binance_client  # Eğer projede varsa buradan al
+except ModuleNotFoundError:
+    # Fallback: doğrudan python-binance Client kullan
+    from binance.client import Client
+
+    def create_binance_client(cfg) -> Client:
+        """
+        Basit Binance client oluşturucu.
+        Ortam değişkenlerinden API key/secret okur,
+        config içinden USE_TESTNET vb. alabilir.
+        """
+        api_key = os.getenv("BINANCE_API_KEY", "")
+        api_secret = os.getenv("BINANCE_API_SECRET", "")
+
+        use_testnet = getattr(cfg, "USE_TESTNET", True)
+
+        client = Client(api_key, api_secret, testnet=use_testnet)
+        return client
+
+# PositionManager ve TradeExecutor bazı projelerde core altında değil, trading altında.
+# Önce core'dan import etmeyi dene, olmazsa trading'den al.
+try:
+    from core.position_manager import PositionManager  # varsa buradan
+except ModuleNotFoundError:
+    from trading.position_manager import PositionManager  # yoksa buradan
+
+try:
+    from core.trade_executor import TradeExecutor  # varsa buradan
+except ModuleNotFoundError:
+    from trading.trade_executor import TradeExecutor  # yoksa buradan
 
 # Global logger referansı (setup_logger() çağrıldıktan sonra dolacak)
 system_logger: logging.Logger | None = None
@@ -55,6 +83,8 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     # Volatilite benzeri
     df["vol_10"] = df["return_1"].rolling(window=10).std()
+    # Ek dummy feature (online model 22 feature bekliyor)
+    df["dummy_extra"] = 0.0
 
     # NaN temizle
     df = df.dropna()
@@ -135,8 +165,8 @@ def create_trading_objects() -> Dict[str, Any]:
     symbol_env = os.environ.get("SYMBOL")
     interval_env = os.environ.get("INTERVAL")
 
-    SYMBOL = symbol_env or getattr(config, "SYMBOL", "BTCUSDT")
-    INTERVAL = interval_env or getattr(config, "INTERVAL", "1m")
+    SYMBOL = symbol_env or getattr(app_config, "SYMBOL", "BTCUSDT")
+    INTERVAL = interval_env or getattr(app_config, "INTERVAL", "1m")
 
     # Training mode (sadece eğitim, gerçek trade yok)
     training_mode_env = os.environ.get("TRAINING_MODE", "").lower()
@@ -148,7 +178,7 @@ def create_trading_objects() -> Dict[str, Any]:
         system_logger.info("[MAIN] TRAINING_MODE=false -> Normal çalışma modu (trade logic aktif).")
 
     # Binance client
-    binance_client = create_binance_client(config)
+    binance_client = create_binance_client(app_config)
 
     # Online learner (SGD vb.)
     online_learner = OnlineLearner(
@@ -193,13 +223,29 @@ def create_trading_objects() -> Dict[str, Any]:
         )
 
     # Risk Manager
-    risk_manager = RiskManager(logger=system_logger)
+        # Risk Manager
+    try:
+        risk_manager = RiskManager(logger=system_logger)
+    except TypeError:
+        risk_manager = RiskManager()
+        if hasattr(risk_manager, "logger"):
+            risk_manager.logger = system_logger
+        elif hasattr(risk_manager, "set_logger"):
+            risk_manager.set_logger(system_logger)
     # AUC'tan gelen güven faktörünü risk manager'a ver
     if hasattr(risk_manager, "set_model_confidence_factor"):
         risk_manager.set_model_confidence_factor(model_confidence_factor)
 
     # Position Manager
-    position_manager = PositionManager(logger=system_logger)
+        # Position Manager
+    try:
+        position_manager = PositionManager(logger=system_logger)
+    except TypeError:
+        position_manager = PositionManager()
+        if hasattr(position_manager, "logger"):
+            position_manager.logger = system_logger
+        elif hasattr(position_manager, "set_logger"):
+            position_manager.set_logger(system_logger)
 
     # Trade Executor (config argümanı yok, sade imza)
     trade_executor = TradeExecutor(
