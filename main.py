@@ -177,6 +177,14 @@ def create_trading_objects() -> Dict[str, Any]:
     else:
         system_logger.info("[MAIN] TRAINING_MODE=false -> Normal çalışma modu (trade logic aktif).")
 
+    hybrid_mode_env = os.environ.get("HYBRID_MODE", "").lower()
+    HYBRID_MODE = hybrid_mode_env in ("1", "true", "yes", "y", "on")
+
+    if HYBRID_MODE:
+        system_logger.info("[MAIN] HYBRID_MODE=true -> LSTM+SGD hibrit skor kullanılacak (mümkünse).")
+    else:
+        system_logger.info("[MAIN] HYBRID_MODE=false -> Sadece SGD skoru kullanılacak.")
+
     # Binance client
     binance_client = create_binance_client(app_config)
 
@@ -258,6 +266,7 @@ def create_trading_objects() -> Dict[str, Any]:
         "SYMBOL": SYMBOL,
         "INTERVAL": INTERVAL,
         "TRAINING_MODE": TRAINING_MODE,
+        "HYBRID_MODE": HYBRID_MODE,
         "binance_client": binance_client,
         "online_learner": online_learner,
         "hybrid_model": hybrid_model,
@@ -276,6 +285,7 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
     SYMBOL = trading_objects["SYMBOL"]
     INTERVAL = trading_objects["INTERVAL"]
     TRAINING_MODE = trading_objects.get("TRAINING_MODE", False)
+    HYBRID_MODE = trading_objects.get("HYBRID_MODE", False)
     binance_client = trading_objects["binance_client"]
     online_learner = trading_objects["online_learner"]
     hybrid_model = trading_objects["hybrid_model"]
@@ -341,16 +351,25 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
 
             # 4) Hybrid model proba (LSTM + SGD)
             try:
-                raw_proba = hybrid_model.predict_proba(X_live)
-                # HybridModel çıktısını tek bir BUY olasılığına indirger
-                if isinstance(raw_proba, (list, tuple)):
-                    first = raw_proba[0]
-                    if isinstance(first, (list, tuple)):
-                        proba_hybrid = float(first[1] if len(first) > 1 else first[0])
-                    else:
-                        proba_hybrid = float(first)
+                # Sadece HYBRID_MODE=True VE hybrid_model.use_lstm_hybrid=True ise
+                # hibrit skor hesapla; aksi halde direkt SGD kullan.
+                if HYBRID_MODE and getattr(hybrid_model, "use_lstm_hybrid", False):
+                    # HybridModel: (p_hybrid_vec, debug_info) döner
+                    p_hybrid_vec, hybrid_debug = hybrid_model.predict_proba(X_live.values)
+                    proba_hybrid = float(p_hybrid_vec[0])
+
+                    system_logger.info(
+                        "[HYBRID] p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
+                        hybrid_debug.get("p_sgd_mean", 0.0),
+                        hybrid_debug.get("p_lstm_mean", 0.0),
+                        hybrid_debug.get("p_hybrid_mean", 0.0),
+                        hybrid_debug.get("best_auc", 0.0),
+                        hybrid_debug.get("best_side", "n/a"),
+                    )
                 else:
-                    proba_hybrid = float(raw_proba)
+                    # HYBRID_MODE=false veya LSTM hibrit devre dışı ise
+                    # hibrit skor = online SGD skoru
+                    proba_hybrid = proba_sgd
             except Exception as e:
                 logging.getLogger("error").exception(
                     "[HYBRID] predict_proba sırasında hata: %s", e
@@ -359,7 +378,7 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                 proba_hybrid = proba_sgd
 
             system_logger.info(
-                "[PRED] p_sgd=%.4f, p_hybrid=%.4f", proba_sgd, proba_hybrid
+                "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)", proba_sgd, proba_hybrid, HYBRID_MODE
             )
 
             # 5) Risk manager'dan model confidence factor al
