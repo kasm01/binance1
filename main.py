@@ -341,7 +341,16 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
 
             # 4) Hybrid model proba (LSTM + SGD)
             try:
-                proba_hybrid = hybrid_model.predict_proba(X_live)[0][1]
+                raw_proba = hybrid_model.predict_proba(X_live)
+                # HybridModel çıktısını tek bir BUY olasılığına indirger
+                if isinstance(raw_proba, (list, tuple)):
+                    first = raw_proba[0]
+                    if isinstance(first, (list, tuple)):
+                        proba_hybrid = float(first[1] if len(first) > 1 else first[0])
+                    else:
+                        proba_hybrid = float(first)
+                else:
+                    proba_hybrid = float(raw_proba)
             except Exception as e:
                 logging.getLogger("error").exception(
                     "[HYBRID] predict_proba sırasında hata: %s", e

@@ -1,2 +1,74 @@
 2025-10-22 12:20:01 | ERROR | BinanceAPIException: Insufficient funds
 2025-10-22 12:25:44 | WARNING | WebSocket disconnected, attempting reconnect...
+2025-12-03 11:08:14,086 | ERROR | error | [ONLINE] predict_proba sırasında hata: X has 21 features, but SGDClassifier is expecting 22 features as input.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 332, in bot_loop
+    proba_sgd = online_learner.predict_proba(X_live)[0][1]
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/data/online_learning.py", line 358, in predict_proba
+    proba = self.model.predict_proba(X_clean)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_stochastic_gradient.py", line 1288, in predict_proba
+    return self._predict_proba_lr(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 466, in _predict_proba_lr
+    prob = self.decision_function(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 432, in decision_function
+    X = self._validate_data(X, accept_sparse="csr", reset=False)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 625, in _validate_data
+    self._check_n_features(X, reset=reset)
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 414, in _check_n_features
+    raise ValueError(
+ValueError: X has 21 features, but SGDClassifier is expecting 22 features as input.
+2025-12-03 11:09:14,841 | ERROR | error | [ONLINE] predict_proba sırasında hata: X has 21 features, but SGDClassifier is expecting 22 features as input.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 332, in bot_loop
+    proba_sgd = online_learner.predict_proba(X_live)[0][1]
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/data/online_learning.py", line 358, in predict_proba
+    proba = self.model.predict_proba(X_clean)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_stochastic_gradient.py", line 1288, in predict_proba
+    return self._predict_proba_lr(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 466, in _predict_proba_lr
+    prob = self.decision_function(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 432, in decision_function
+    X = self._validate_data(X, accept_sparse="csr", reset=False)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 625, in _validate_data
+    self._check_n_features(X, reset=reset)
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 414, in _check_n_features
+    raise ValueError(
+ValueError: X has 21 features, but SGDClassifier is expecting 22 features as input.
+2025-12-03 11:12:23,906 | ERROR | error | [ONLINE] predict_proba sırasında hata: X has 21 features, but SGDClassifier is expecting 22 features as input.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 332, in bot_loop
+    proba_sgd = online_learner.predict_proba(X_live)[0][1]
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/data/online_learning.py", line 358, in predict_proba
+    proba = self.model.predict_proba(X_clean)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_stochastic_gradient.py", line 1288, in predict_proba
+    return self._predict_proba_lr(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 466, in _predict_proba_lr
+    prob = self.decision_function(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/linear_model/_base.py", line 432, in decision_function
+    X = self._validate_data(X, accept_sparse="csr", reset=False)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 625, in _validate_data
+    self._check_n_features(X, reset=reset)
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/sklearn/base.py", line 414, in _check_n_features
+    raise ValueError(
+ValueError: X has 21 features, but SGDClassifier is expecting 22 features as input.
+2025-12-03 11:14:55,018 | ERROR | error | [HYBRID] predict_proba sırasında hata: index 1 is out of bounds for axis 0 with size 1
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/main.py", line 344, in bot_loop
+    proba_hybrid = hybrid_model.predict_proba(X_live)[0][1]
+                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+IndexError: index 1 is out of bounds for axis 0 with size 1

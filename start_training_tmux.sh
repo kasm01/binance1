@@ -1,34 +1,40 @@
 #!/usr/bin/env bash
 
 SESSION_NAME="binance_training"
-PYTHON="/home/kasm920/binance1/venv/bin/python"
+PROJECT_DIR="$HOME/binance1"
+PYTHON="$PROJECT_DIR/venv/bin/python"
 
-cd "$(dirname "$0")"
+cd "$PROJECT_DIR" || { echo "Proje klasörü bulunamadı: $PROJECT_DIR"; exit 1; }
 
-# 1) Yeni session
-tmux new-session -d -s "$SESSION_NAME"
+# Session zaten varsa uyarıp çık
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  echo "Tmux session zaten var: $SESSION_NAME"
+  echo "Bağlanmak için: tmux attach -t $SESSION_NAME"
+  exit 0
+fi
 
-# 2) 1m eğitim
-tmux send-keys -t "$SESSION_NAME":0.0 "INTERVAL=1m TRAINING_MODE=true $PYTHON main.py" C-m
+# ───────── 1) Yeni session: 1m ─────────
+tmux new-session -d -s "$SESSION_NAME" -n "1m" \
+  "cd $PROJECT_DIR && INTERVAL=1m TRAINING_MODE=true $PYTHON main.py"
 
-# 3) 5m eğitim
-tmux split-window -v -t "$SESSION_NAME":0.0
-tmux send-keys -t "$SESSION_NAME":0.1 "INTERVAL=5m TRAINING_MODE=true $PYTHON main.py" C-m
+# ───────── 2) Aynı pencerede split ile 5m ─────────
+tmux split-window -v -t "$SESSION_NAME:0" \
+  "cd $PROJECT_DIR && INTERVAL=5m TRAINING_MODE=true $PYTHON main.py"
 
-# 4) 15m eğitim
-tmux split-window -v -t "$SESSION_NAME":0.1
-tmux send-keys -t "$SESSION_NAME":0.2 "INTERVAL=15m TRAINING_MODE=true $PYTHON main.py" C-m
+# ───────── 3) 15m için yeni yatay split ─────────
+tmux split-window -h -t "$SESSION_NAME:0.0" \
+  "cd $PROJECT_DIR && INTERVAL=15m TRAINING_MODE=true $PYTHON main.py"
 
-# 5) 1h eğitim
-tmux split-window -v -t "$SESSION_NAME":0.2
-tmux send-keys -t "$SESSION_NAME":0.3 "INTERVAL=1h TRAINING_MODE=true $PYTHON main.py" C-m
+# ───────── 4) 1h için diğer pane ─────────
+tmux split-window -h -t "$SESSION_NAME:0.1" \
+  "cd $PROJECT_DIR && INTERVAL=1h TRAINING_MODE=true $PYTHON main.py"
 
-# 6) hybrid eğitim
-tmux split-window -v -t "$SESSION_NAME":0.3
-tmux send-keys -t "$SESSION_NAME":0.4 "INTERVAL=hybrid TRAINING_MODE=true $PYTHON main.py" C-m
+# Layout'u düzenle (tiled)
+tmux select-layout -t "$SESSION_NAME:0" tiled
 
-# 7) Layout'u tiled yap
-tmux select-layout -t "$SESSION_NAME" tiled
+# ───────── 5) Hybrid için ayrı pencere ─────────
+tmux new-window -t "$SESSION_NAME:1" -n "hybrid" \
+  "cd $PROJECT_DIR && INTERVAL=1m TRAINING_MODE=true HYBRID_MODE=true $PYTHON main.py"
 
-# 8) Session'a bağlan
-tmux attach-session -t "$SESSION_NAME"
+echo "Tmux eğitim session'ı başlatıldı: $SESSION_NAME"
+echo "Bağlanmak için: tmux attach -t $SESSION_NAME"
