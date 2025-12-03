@@ -1360,3 +1360,712 @@
 2025-12-03 17:27:10,309 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
 2025-12-03 17:27:10,310 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
 2025-12-03 17:27:10,310 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:28:10,371 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:28:10,621 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:28:10,623 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:28:10,624 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:28:10,624 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:28:10,624 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:29:10,655 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:29:10,900 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:29:10,903 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:29:10,903 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:29:10,903 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:29:10,903 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:30:10,964 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:30:11,208 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:30:11,211 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:30:11,211 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:30:11,212 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:30:11,212 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:31:11,273 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:31:11,541 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:31:11,544 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:31:11,545 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:31:11,545 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:31:11,545 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:32:11,594 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:32:11,850 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:32:11,853 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:32:11,854 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:32:11,854 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:32:11,854 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:33:11,915 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:33:12,188 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:33:12,191 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:33:12,191 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:33:12,192 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:33:12,192 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:34:12,251 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:34:12,495 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:34:12,497 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:34:12,497 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:34:12,498 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:34:12,498 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:35:12,553 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:35:12,811 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:35:12,814 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:35:12,814 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:35:12,814 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:35:12,814 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:36:12,875 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:36:13,133 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:36:13,136 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:36:13,136 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:36:13,136 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:36:13,136 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:37:13,147 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:37:13,406 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:37:13,411 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:37:13,412 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:37:13,412 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:37:13,413 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:38:13,472 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:38:13,724 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:38:13,727 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:38:13,728 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:38:13,728 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:38:13,728 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:39:13,789 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:39:14,055 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:39:14,058 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:39:14,059 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:39:14,059 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:39:14,059 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:40:14,091 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:40:14,560 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:40:14,565 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:40:14,566 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:40:14,566 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:40:14,566 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:41:14,597 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:41:15,048 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:41:15,050 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:41:15,050 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:41:15,050 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:41:15,051 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:42:15,111 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:42:15,562 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:42:15,565 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:42:15,565 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:42:15,565 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:42:15,565 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:43:15,586 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:43:15,837 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:43:15,839 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:43:15,839 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:43:15,839 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:43:15,839 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:44:15,896 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:44:16,357 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:44:16,359 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:44:16,359 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:44:16,360 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:44:16,360 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:45:16,407 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:45:16,662 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:45:16,666 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:45:16,667 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:45:16,668 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:45:16,668 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:46:16,695 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:46:16,941 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:46:16,943 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:46:16,943 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:46:16,943 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:46:16,944 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:47:17,004 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:47:17,259 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:47:17,263 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:47:17,263 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:47:17,264 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:47:17,264 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:48:17,325 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:48:17,776 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:48:17,779 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:48:17,780 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:48:17,780 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:48:17,780 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:49:17,841 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:49:18,096 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:49:18,100 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:49:18,100 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:49:18,101 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:49:18,101 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:50:18,146 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:50:18,410 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:50:18,414 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:50:18,415 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:50:18,416 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:50:18,416 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:51:18,466 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:51:18,739 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:51:18,741 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:51:18,742 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:51:18,742 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:51:18,742 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:52:18,799 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:52:19,258 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:52:19,260 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:52:19,261 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:52:19,261 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:52:19,261 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:53:19,303 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:53:19,547 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:53:19,549 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:53:19,549 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:53:19,550 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:53:19,550 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:54:19,611 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:54:19,854 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:54:19,857 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:54:19,857 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:54:19,857 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:54:19,857 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:55:19,918 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:55:20,810 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:55:20,812 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:55:20,813 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:55:20,813 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:55:20,813 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:56:20,874 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:56:21,119 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:56:21,122 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:56:21,122 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:56:21,123 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:56:21,123 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:57:21,184 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:57:21,632 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:57:21,635 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:57:21,635 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:57:21,636 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:57:21,636 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:58:21,643 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:58:21,883 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:58:21,885 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:58:21,885 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:58:21,885 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:58:21,886 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 17:59:21,946 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 17:59:22,187 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 17:59:22,190 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 17:59:22,191 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 17:59:22,191 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 17:59:22,191 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:00:22,252 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:00:22,512 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:00:22,516 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:00:22,517 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:00:22,517 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:00:22,518 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:01:22,578 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:01:22,826 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:01:22,830 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:01:22,831 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:01:22,832 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:01:22,832 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:02:22,894 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:02:23,132 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:02:23,134 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:02:23,135 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:02:23,135 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:02:23,135 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:03:23,147 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:03:23,389 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:03:23,391 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:03:23,392 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:03:23,392 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:03:23,392 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:04:23,451 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:04:23,900 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:04:23,902 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:04:23,902 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:04:23,902 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:04:23,903 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:05:23,963 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:05:24,203 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:05:24,205 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:05:24,205 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:05:24,205 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:05:24,206 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:06:24,235 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:06:24,696 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:06:24,698 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:06:24,698 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:06:24,699 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:06:24,699 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:07:24,760 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:07:25,005 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:07:25,007 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:07:25,008 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:07:25,008 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:07:25,008 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:08:25,069 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:08:25,522 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:08:25,524 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:08:25,524 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:08:25,524 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:08:25,525 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:09:25,554 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:09:25,802 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:09:25,804 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:09:25,804 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:09:25,804 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:09:25,804 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:10:25,865 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:10:26,329 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:10:26,331 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:10:26,332 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:10:26,332 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:10:26,332 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:11:26,355 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:11:26,600 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:11:26,603 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:11:26,603 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:11:26,603 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:11:26,603 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:12:26,664 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:12:26,910 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:12:26,912 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:12:26,913 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:12:26,913 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:12:26,913 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:13:26,923 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:13:27,170 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:13:27,172 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:13:27,173 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:13:27,173 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:13:27,173 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:14:27,234 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:14:27,694 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:14:27,696 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:14:27,696 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:14:27,696 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:14:27,696 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:15:27,755 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:15:28,214 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:15:28,216 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:15:28,216 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:15:28,216 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:15:28,216 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:16:28,277 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:16:28,532 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:16:28,534 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:16:28,535 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:16:28,536 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:16:28,536 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:17:28,597 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:17:28,841 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:17:28,844 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:17:28,844 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:17:28,844 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:17:28,845 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:18:28,895 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:18:29,149 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:18:29,152 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:18:29,152 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:18:29,152 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:18:29,152 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:19:29,163 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:19:29,627 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:19:29,630 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:19:29,630 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:19:29,630 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:19:29,631 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:20:29,649 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:20:29,896 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:20:29,899 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:20:29,900 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:20:29,900 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:20:29,900 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:21:29,931 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:21:30,177 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:21:30,179 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:21:30,180 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:21:30,180 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:21:30,180 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:22:30,219 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:22:30,463 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:22:30,465 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:22:30,466 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:22:30,466 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:22:30,466 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:23:30,527 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:23:30,789 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:23:30,791 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:23:30,792 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:23:30,792 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:23:30,792 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:24:30,853 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:24:31,104 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:24:31,106 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:24:31,107 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:24:31,107 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:24:31,107 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:25:31,168 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:25:31,615 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:25:31,617 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:25:31,618 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:25:31,618 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:25:31,618 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:26:31,623 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:26:31,869 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:26:31,872 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:26:31,872 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:26:31,872 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:26:31,873 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:27:31,933 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:27:32,831 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:27:32,833 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:27:32,833 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:27:32,833 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:27:32,833 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:28:32,894 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:28:33,146 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:28:33,148 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:28:33,149 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:28:33,149 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:28:33,149 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:29:33,155 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:29:33,395 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:29:33,397 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:29:33,398 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:29:33,398 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:29:33,398 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:30:33,411 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:30:33,872 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:30:33,874 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:30:33,874 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:30:33,874 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:30:33,875 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:31:33,935 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:31:34,393 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:31:34,395 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:31:34,395 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:31:34,396 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:31:34,396 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:32:34,456 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:32:34,698 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:32:34,701 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:32:34,701 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:32:34,702 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:32:34,702 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:33:34,763 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:33:35,019 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:33:35,022 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:33:35,023 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:33:35,023 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:33:35,023 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:34:35,051 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:34:35,297 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:34:35,300 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:34:35,300 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:34:35,300 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:34:35,300 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:35:35,361 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:35:35,820 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:35:35,823 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:35:35,824 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:35:35,824 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:35:35,824 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:36:35,835 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:36:36,077 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:36:36,079 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:36:36,079 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:36:36,080 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:36:36,080 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:36:45,577 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-03 18:36:45,577 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-03 18:36:45,578 | INFO | system | [MAIN] TRAINING_MODE=true -> Sadece eğitim/log, gerçek trade YOK.
+2025-12-03 18:36:45,578 | INFO | system | [MAIN] HYBRID_MODE=true -> LSTM+SGD hibrit skor kullanılacak (mümkünse).
+2025-12-03 18:36:45,819 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-03 18:36:45,820 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-03 18:36:45,820 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-03 18:36:45,820 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000, best_side=best, use_lstm_hybrid=False
+2025-12-03 18:36:45,821 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-03 18:36:45,821 | INFO | system | [HYBRID] use_lstm_hybrid=False -> LSTM devre dışı, sadece SGD kullanılacak.
+2025-12-03 18:36:45,821 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-03 18:36:45,822 | INFO | system | [MAIN] Bot loop started for BTCUSDT (1m, TRAINING_MODE=True)
+2025-12-03 18:36:45,823 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:36:46,282 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:36:46,293 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:36:46,294 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:36:46,294 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:36:46,294 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:37:36,141 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:37:36,398 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:37:36,404 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:37:36,405 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:37:36,405 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:37:36,405 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:37:46,355 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:37:46,814 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:37:46,818 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:37:46,818 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:37:46,818 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:37:46,818 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:38:36,467 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:38:36,712 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:38:36,714 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:38:36,715 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:38:36,715 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:38:36,715 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:38:46,879 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:38:47,125 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:38:47,128 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:38:47,128 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:38:47,128 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:38:47,129 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:39:36,776 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:39:37,021 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:39:37,023 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:39:37,024 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:39:37,024 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:39:37,024 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:39:47,189 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:39:47,440 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:39:47,444 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:39:47,444 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:39:47,444 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:39:47,444 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:40:37,085 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:40:37,334 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:40:37,337 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:40:37,337 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:40:37,338 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:40:37,338 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:40:47,505 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:40:47,754 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:40:47,757 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:40:47,757 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:40:47,758 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:40:47,758 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:41:37,399 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:41:37,854 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:41:37,857 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:41:37,858 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:41:37,858 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:41:37,858 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:41:40,807 | INFO | system | [MAIN] Shutdown signal received, cancelling bot_loop...
+2025-12-03 18:41:40,808 | INFO | system | [MAIN] bot_loop cancelled.
+2025-12-03 18:42:13,480 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-03 18:42:13,480 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-03 18:42:13,480 | INFO | system | [MAIN] TRAINING_MODE=true -> Sadece eğitim/log, gerçek trade YOK.
+2025-12-03 18:42:13,481 | INFO | system | [MAIN] HYBRID_MODE=true -> LSTM+SGD hibrit skor kullanılacak (mümkünse).
+2025-12-03 18:42:13,728 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-03 18:42:13,730 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-03 18:42:13,730 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-03 18:42:13,730 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000, best_side=best, use_lstm_hybrid=False
+2025-12-03 18:42:13,732 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-03 18:42:13,732 | INFO | system | [HYBRID] use_lstm_hybrid=False -> LSTM devre dışı, sadece SGD kullanılacak.
+2025-12-03 18:42:13,732 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-03 18:42:13,733 | INFO | system | [MAIN] Bot loop started for BTCUSDT (1m, TRAINING_MODE=True)
+2025-12-03 18:42:13,733 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:42:14,204 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:42:14,208 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:42:14,209 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:42:14,209 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:42:14,209 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:42:37,869 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:42:38,125 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:42:38,128 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:42:38,128 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:42:38,128 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:42:38,128 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:43:14,241 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:43:14,480 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:43:14,483 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:43:14,483 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:43:14,483 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:43:14,483 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:43:38,189 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:43:38,432 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:43:38,434 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:43:38,434 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:43:38,434 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:43:38,435 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:44:14,539 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:44:14,793 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:44:14,796 | WARNING | system | [HYBRID] SGD predict_proba failed: ValueError('X has 16 features, but SGDClassifier is expecting 22 features as input.'). Falling back to uniform 0.5.
+2025-12-03 18:44:14,797 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000 (HYBRID_MODE=True)
+2025-12-03 18:44:14,797 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:44:14,797 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:44:38,490 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:44:38,943 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:44:38,945 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:44:38,945 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:44:38,945 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:44:38,945 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:45:10,409 | INFO | system | [MAIN] Shutdown signal received, cancelling bot_loop...
+2025-12-03 18:45:10,410 | INFO | system | [MAIN] bot_loop cancelled.
+2025-12-03 18:45:29,080 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2025-12-03 18:45:29,081 | WARNING | system | [BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.
+2025-12-03 18:45:29,081 | INFO | system | [MAIN] TRAINING_MODE=true -> Sadece eğitim/log, gerçek trade YOK.
+2025-12-03 18:45:29,081 | INFO | system | [MAIN] HYBRID_MODE=true -> LSTM+SGD hibrit skor kullanılacak (mümkünse).
+2025-12-03 18:45:29,322 | INFO | system | [ONLINE] Loaded existing online model from models/online_model_1m_best.joblib
+2025-12-03 18:45:29,323 | INFO | system | [ONLINE] OnlineLearner initialized with model_dir=models, base_model_name=online_model, interval=1m, n_classes=2
+2025-12-03 18:45:29,323 | WARNING | system | [HYBRID] Offline meta file not found: models/model_meta_1m.json (using default best_auc=0.60)
+2025-12-03 18:45:29,323 | INFO | system | [HYBRID] Loaded offline meta for 1m: best_auc=0.6000, best_side=best, use_lstm_hybrid=False
+2025-12-03 18:45:29,325 | INFO | system | [HYBRID] Loaded SGD model from models/online_model_1m_best.joblib
+2025-12-03 18:45:29,325 | INFO | system | [HYBRID] use_lstm_hybrid=False -> LSTM devre dışı, sadece SGD kullanılacak.
+2025-12-03 18:45:29,325 | WARNING | system | [RISK] model_meta_1m.json bulunamadı, model_confidence_factor=1.0 kullanılacak.
+2025-12-03 18:45:29,326 | INFO | system | [MAIN] Bot loop started for BTCUSDT (1m, TRAINING_MODE=True)
+2025-12-03 18:45:29,326 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:45:29,572 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:45:29,574 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.0000 (HYBRID_MODE=True)
+2025-12-03 18:45:29,574 | INFO | system | [SIGNAL] signal=short, model_conf_factor=1.000
+2025-12-03 18:45:29,574 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:45:38,987 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:45:39,239 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:45:39,241 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:45:39,241 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:45:39,242 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:45:39,242 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:46:29,635 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:46:29,904 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:46:29,907 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.0000 (HYBRID_MODE=True)
+2025-12-03 18:46:29,908 | INFO | system | [SIGNAL] signal=short, model_conf_factor=1.000
+2025-12-03 18:46:29,908 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:46:39,299 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:46:39,559 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:46:39,563 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:46:39,564 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:46:39,564 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:46:39,564 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:47:29,969 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:47:30,216 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:47:30,218 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.0000 (HYBRID_MODE=True)
+2025-12-03 18:47:30,218 | INFO | system | [SIGNAL] signal=short, model_conf_factor=1.000
+2025-12-03 18:47:30,219 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:47:39,595 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:47:40,481 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:47:40,483 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:47:40,484 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:47:40,484 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:47:40,484 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:48:30,279 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:48:30,944 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:48:30,970 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.0000 (HYBRID_MODE=True)
+2025-12-03 18:48:30,971 | INFO | system | [SIGNAL] signal=short, model_conf_factor=1.000
+2025-12-03 18:48:30,971 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:48:40,545 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:48:40,789 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:48:40,791 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:48:40,792 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:48:40,792 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:48:40,792 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:49:31,032 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:49:31,277 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:49:31,278 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.0000 (HYBRID_MODE=True)
+2025-12-03 18:49:31,279 | INFO | system | [SIGNAL] signal=short, model_conf_factor=1.000
+2025-12-03 18:49:31,279 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:49:40,853 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:49:41,096 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:49:41,101 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:49:41,101 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:49:41,102 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:49:41,102 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:49:54,106 | INFO | system | [MAIN] Shutdown signal received, cancelling bot_loop...
+2025-12-03 18:49:54,107 | INFO | system | [MAIN] bot_loop cancelled.
+2025-12-03 18:50:41,124 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:50:41,371 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:50:41,373 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:50:41,373 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:50:41,374 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:50:41,374 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:51:41,434 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:51:41,896 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:51:41,898 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:51:41,899 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:51:41,899 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:51:41,899 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:52:41,960 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:52:42,212 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:52:42,216 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:52:42,217 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:52:42,217 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:52:42,217 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:53:42,273 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:53:42,520 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:53:42,522 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:53:42,523 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:53:42,523 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:53:42,523 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:54:42,584 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:54:42,834 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:54:42,836 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:54:42,837 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:54:42,837 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:54:42,837 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:55:42,898 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:55:43,154 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:55:43,157 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:55:43,158 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:55:43,158 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:55:43,158 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:56:43,195 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:56:43,662 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:56:43,665 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:56:43,665 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:56:43,666 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:56:43,666 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:57:43,723 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:57:43,971 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:57:43,973 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:57:43,973 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:57:43,974 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:57:43,974 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:58:44,034 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:58:44,499 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:58:44,502 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:58:44,503 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:58:44,503 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:58:44,503 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 18:59:44,563 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 18:59:44,809 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 18:59:44,811 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 18:59:44,812 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 18:59:44,812 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 18:59:44,812 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:00:44,871 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:00:45,120 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:00:45,123 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:00:45,124 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:00:45,124 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:00:45,124 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:01:45,185 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:01:45,647 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:01:45,649 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:01:45,650 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:01:45,650 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:01:45,650 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:02:45,711 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:02:45,962 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:02:45,965 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:02:45,965 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:02:45,965 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:02:45,965 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:03:45,995 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:03:46,448 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:03:46,451 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:03:46,452 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:03:46,452 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:03:46,452 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:04:46,513 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:04:46,760 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:04:46,763 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:04:46,763 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:04:46,763 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:04:46,763 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:05:46,824 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:05:47,065 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:05:47,067 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:05:47,067 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:05:47,068 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:05:47,068 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
+2025-12-03 19:06:47,128 | INFO | system | [DATA] Starting data pipeline for BTCUSDT (1m, limit=500)
+2025-12-03 19:06:47,376 | INFO | system | [FE] Features DF shape: (481, 22), columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore', 'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5', 'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
+2025-12-03 19:06:47,378 | WARNING | system | [HYBRID] SGD predict_proba failed: TypeError("float() argument must be a string or a real number, not 'Timestamp'"). Falling back to uniform 0.5.
+2025-12-03 19:06:47,378 | INFO | system | [PRED] p_sgd=0.0000, p_hybrid=0.5000
+2025-12-03 19:06:47,378 | INFO | system | [SIGNAL] signal=hold, model_conf_factor=1.000
+2025-12-03 19:06:47,378 | INFO | system | [MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı.
