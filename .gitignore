@@ -60,3 +60,4 @@ docker-cache/
 .DS_Store
 Thumbs.db
 
+logs/*.log
