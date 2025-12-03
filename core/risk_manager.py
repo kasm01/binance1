@@ -96,6 +96,22 @@ class RiskManager:
         else:
             self.model_confidence_factor = 0.7
 
+    def set_model_confidence_factor(self, factor: float) -> None:
+        """
+        Offline AUC'a göre gelen güven katsayısını risk manager içine yazar.
+        Örn: 0.6 -> 1.0, 0.68 -> 1.5 gibi.
+        """
+        try:
+            self._model_confidence_factor = float(factor)
+        except Exception:
+            self._model_confidence_factor = 1.0
+
+    def get_model_confidence_factor(self) -> float:
+        """
+        Trade loop'ta kullanılan katsayı. Eğer hiç set edilmemişse 1.0 döner.
+        """
+        return getattr(self, "_model_confidence_factor", 1.0)
+
     # -------------------------------------------------------------
     # RISK CHECKS
     # -------------------------------------------------------------

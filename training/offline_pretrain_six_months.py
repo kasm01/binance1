@@ -23,18 +23,37 @@ import argparse
 import time
 import json
 from datetime import datetime, timedelta, timezone
+import numpy as np
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
+import os
+import config as app_config
 from data.lstm_hybrid import train_lstm_hybrid
 
-import numpy as np
+from sklearn.model_selection import train_test_split
 import pandas as pd
 import joblib
+import copy
 
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import IsolationForest
+from pathlib import Path
+import pandas as pd
+# ... diğer importlar ...
+
+OFFLINE_CACHE_DIR = Path("data/offline_cache")
+OFFLINE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _offline_cache_path(symbol: str, interval: str, months: int) -> Path:
+    """
+    Offline klines cache dosya yolu.
+    Örn: data/offline_cache/BTCUSDT_5m_6m.csv
+    """
+    fname = f"{symbol}_{interval}_{months}m.csv"
+    return OFFLINE_CACHE_DIR / fname
+
 
 # Binance public client (API key gerekmiyor, public endpoint)
 try:
@@ -47,7 +66,8 @@ try:
     from config.load_env import load_environment_variables  # type: ignore
 except Exception:  # pragma: no cover
     def load_environment_variables(*args, **kwargs):
-        print("[load_env] INFO: config.load_env.load_environment_variables bulunamadı, atlanıyor.")
+        print(
+            "[load_env] INFO: config.load_env.load_environment_variables bulunamadı, atlanıyor.")
 
 
 # -------------------------------------------------------------------------
@@ -59,38 +79,62 @@ def fetch_klines_offline(
     symbol: str,
     interval: str,
     months: int = 6,
+    use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> pd.DataFrame:
     """
-    Binance public API kullanarak son `months` aylık veriyi çeker.
-    Kimlik doğrulama gerektirmez (public endpoint).
+    Offline eğitim için 6 aylık (veya verilen months değeri kadar) klines verisini getirir.
 
-    Dönen DF kolonları:
-    [open_time, open, high, low, close, volume,
-     close_time, quote_asset_volume, number_of_trades,
-     taker_buy_base_asset_volume, taker_buy_quote_asset_volume, ignore]
+    - use_cache=True ise önce data/offline_cache klasöründen CSV arar.
+    - force_refresh=True ise cache'i yok sayar, Binance'ten yeniden çeker.
     """
-    if Client is None:
-        raise RuntimeError("python-binance bulunamadı. `pip install python-binance` gerekli.")
+    cache_path = _offline_cache_path(symbol, interval, months)
 
-    client = Client(api_key="", api_secret="")  # public-only
+    if use_cache and not force_refresh and cache_path.exists():
+        print(
+            f"[OFFLINE] Loading cached klines from {cache_path} "
+            f"(symbol={symbol}, interval={interval}, months={months})"
+        )
+        df = pd.read_csv(cache_path, parse_dates=["open_time", "close_time"])
+        print(f"[OFFLINE] cached_df.shape={df.shape}")
+        return df
 
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=30 * months)
+    # ---- CACHE YOKSA / FORCE REFRESH ----
+    from binance.client import Client
+    from config.load_env import load_environment_variables  # type: ignore
+
+    # Ortam değişkenlerini yükle (en azından BASE_URL vb. varsa)
+    load_environment_variables()
+
+    # Basit client (senin projende create_binance_client varsa onu da
+    # kullanabilirsin)
+    try:
+        from core.binance_client import create_binance_client  # type: ignore
+        client = create_binance_client(app_config)
+    except Exception:
+        api_key = ""
+        api_secret = ""
+        use_testnet = getattr(app_config, "USE_TESTNET", False)
+        client = Client(api_key, api_secret, testnet=use_testnet)
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=30 * months)
 
     print(
         f"[OFFLINE] fetch_klines_offline: symbol={symbol}, interval={interval}, "
-        f"start={start_dt}, end={end_dt}"
-    )
+        f"start={start}, end={end}, months={months}")
 
-    klines: List[List] = client.get_historical_klines(
-        symbol,
-        interval,
-        start_str=start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        end_str=end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+    klines = client.get_historical_klines(
+        symbol=symbol,
+        interval=interval,
+        start_str=int(start.timestamp() * 1000),
+        end_str=int(end.timestamp() * 1000),
     )
-
     if not klines:
-        raise RuntimeError(f"[OFFLINE] Hiç kline verisi çekilemedi. symbol={symbol}, interval={interval}")
+        raise RuntimeError(
+            f"[OFFLINE] get_historical_klines returned empty list "
+            f"for symbol={symbol}, interval={interval}"
+        )
 
     cols = [
         "open_time",
@@ -102,30 +146,32 @@ def fetch_klines_offline(
         "close_time",
         "quote_asset_volume",
         "number_of_trades",
-        "taker_buy_base_asset_volume",
-        "taker_buy_quote_asset_volume",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
         "ignore",
     ]
     df = pd.DataFrame(klines, columns=cols)
 
-    # Tip dönüşümleri
-    float_cols = ["open", "high", "low", "close", "volume",
-                  "quote_asset_volume", "taker_buy_base_asset_volume",
-                  "taker_buy_quote_asset_volume"]
-    int_cols = ["open_time", "close_time", "number_of_trades"]
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
-    for c in float_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in int_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
-
-    df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce")
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
 
     print(f"[OFFLINE][{interval}] raw_df.shape={df.shape}")
+
+    # CACHE'e yaz
+    if use_cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache_path, index=False)
+        print(f"[OFFLINE] cached klines saved to {cache_path}")
+
     return df
 
 
-def build_features_from_raw(raw_df: pd.DataFrame, interval: str) -> pd.DataFrame:
+def build_features_from_raw(
+        raw_df: pd.DataFrame,
+        interval: str) -> pd.DataFrame:
     """
     Runtime feature_engineering'e benzer bir set üretir.
 
@@ -205,7 +251,10 @@ def build_features_from_raw(raw_df: pd.DataFrame, interval: str) -> pd.DataFrame
     return df
 
 
-def apply_anomaly_filter(df: pd.DataFrame, interval: str, contamination: float = 0.02) -> pd.DataFrame:
+def apply_anomaly_filter(
+    df: pd.DataFrame,
+    interval: str,
+        contamination: float = 0.02) -> pd.DataFrame:
     """
     IsolationForest ile basit anomali filtresi.
     Hata olursa DF'i aynen döner (ve warn log yazar).
@@ -214,7 +263,8 @@ def apply_anomaly_filter(df: pd.DataFrame, interval: str, contamination: float =
         # Sayısal kolonları seç
         num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         if not num_cols:
-            print(f"[OFFLINE] Uyarı: AnomalyDetector için numeric kolon bulunamadı, filtre atlanıyor.")
+            print(
+                f"[OFFLINE] Uyarı: AnomalyDetector için numeric kolon bulunamadı, filtre atlanıyor.")
             return df
 
         iso = IsolationForest(
@@ -231,12 +281,12 @@ def apply_anomaly_filter(df: pd.DataFrame, interval: str, contamination: float =
     except Exception as e:
         print(
             f"[OFFLINE] Uyarı: AnomalyDetector uygun metod bulamadı veya hata verdi "
-            f"({e!r}), anomali filtresi uygulanmadan devam ediliyor."
-        )
+            f"({e!r}), anomali filtresi uygulanmadan devam ediliyor.")
         return df
 
 
-def evaluate_model(clf: SGDClassifier, X_val: pd.DataFrame, y_val: pd.Series) -> Dict[str, float]:
+def evaluate_model(clf: SGDClassifier, X_val: pd.DataFrame,
+                   y_val: pd.Series) -> Dict[str, float]:
     """Accuracy + ROC-AUC hesapla (ikisi de döner, log'a yazarız)."""
     y_pred = clf.predict(X_val)
     acc = accuracy_score(y_val, y_pred)
@@ -249,7 +299,8 @@ def evaluate_model(clf: SGDClassifier, X_val: pd.DataFrame, y_val: pd.Series) ->
             y_proba = clf.predict_proba(X_val)[:, 1]
         elif hasattr(clf, "decision_function"):
             y_scores = clf.decision_function(X_val)
-            # decision_function çıktısını 0-1 aralığına "sıkıştırma" (kabaca sigmoid)
+            # decision_function çıktısını 0-1 aralığına "sıkıştırma" (kabaca
+            # sigmoid)
             with np.errstate(over="ignore"):
                 y_proba = 1 / (1 + np.exp(-y_scores))
         else:
@@ -279,7 +330,8 @@ def sample_sgd_params(rng: np.random.Generator, mode: str) -> Dict:
 
     loss = rng.choice(["log_loss", "modified_huber"])
     penalty = rng.choice(["l1", "l2", "elasticnet"])
-    alpha = float(10 ** rng.uniform(np.log10(alpha_range[0]), np.log10(alpha_range[1])))
+    alpha = float(
+        10 ** rng.uniform(np.log10(alpha_range[0]), np.log10(alpha_range[1])))
     l1_ratio = float(rng.uniform(0.0, 1.0)) if penalty == "elasticnet" else 0.0
     max_iter = int(rng.integers(max_iter_range[0], max_iter_range[1] + 1))
     tol = float(10 ** rng.uniform(-4, -2))  # 1e-4 ile 1e-2 arası
@@ -302,11 +354,15 @@ def sample_sgd_params(rng: np.random.Generator, mode: str) -> Dict:
 
 
 def offline_train_for_interval(
+    symbol: str,
     interval: str,
-    mode: str = "shallow",
-    symbol: str = "BTCUSDT",
-    use_lstm_hybrid: bool = False,
+    mode: str,
     model_dir: str = "models",
+    n_rounds: int = 8,
+    n_iter: int = 600,
+    months: int = 6,
+    use_cache: bool = True,
+    force_refresh: bool = False,
 ) -> None:
     """
     Tek bir interval için offline pre-train:
@@ -337,7 +393,14 @@ def offline_train_for_interval(
 
     # 1) Veri çek
     try:
-        raw_df = fetch_klines_offline(symbol=symbol, interval=interval, months=6)
+        raw_df = fetch_klines_offline(
+            symbol=symbol,
+            interval=interval,
+            months=months,          # months argümanını birazdan CLI'dan alacağız
+            use_cache=use_cache,
+            force_refresh=force_refresh,
+        )
+
     except Exception as e:
         print(f"[OFFLINE][{interval}] Kline hatası: {e!r}")
         return
@@ -350,7 +413,8 @@ def offline_train_for_interval(
     try:
         features_df = build_features_from_raw(raw_df, interval=interval)
     except Exception as e:
-        print(f"[OFFLINE][{interval}] feature engineering sırasında hata: {e!r}")
+        print(
+            f"[OFFLINE][{interval}] feature engineering sırasında hata: {e!r}")
         return
 
     # 3) Anomali filtresi
@@ -359,16 +423,19 @@ def offline_train_for_interval(
     # 4) Target (y_long, y_short) oluşturma
     target_col = "return_5"
     if target_col not in clean_df.columns:
-        raise RuntimeError(f"[OFFLINE][{interval}] Hedef kolonu {target_col} bulunamadı.")
+        raise RuntimeError(
+            f"[OFFLINE][{interval}] Hedef kolonu {target_col} bulunamadı.")
 
     fwd_ret = clean_df[target_col].astype(float)
 
-    # Çok küçük hareketleri (ör. mutlak getiri < 0.1%) "gürültü" sayıp atıyoruz.
+    # Çok küçük hareketleri (ör. mutlak getiri < 0.1%) "gürültü" sayıp
+    # atıyoruz.
     thr = 0.001  # 0.1%
     mask = fwd_ret.abs() > thr
 
     if mask.sum() < 1000:
-        print(f"[OFFLINE][{interval}] Uyarı: threshold sonrası yeterli örnek kalmadı: {mask.sum()}")
+        print(
+            f"[OFFLINE][{interval}] Uyarı: threshold sonrası yeterli örnek kalmadı: {mask.sum()}")
 
     clean_df = clean_df.loc[mask].reset_index(drop=True)
     fwd_ret = fwd_ret.loc[mask].reset_index(drop=True)
@@ -418,12 +485,11 @@ def offline_train_for_interval(
     # -------------------------------------------------------------------------
     # Long / Short için ayrı training
     # -------------------------------------------------------------------------
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, roc_auc_score
     import joblib
-    import numpy as np
     import time
     import os
+    import config as app_config
 
     # X ve y'leri hazırlama
     X = clean_df[feature_cols].astype(float).values
@@ -586,13 +652,12 @@ def offline_train_for_interval(
                     print(
                         f"[OFFLINE][{interval}][{side}] "
                         f"Round {round_idx}/{N_ROUNDS} | Iter {iter_idx}/{N_ITER} | "
-                        f"score={score:.4f} (acc={acc:.4f}, auc={auc:.4f})"
-                    )
+                        f"score={score:.4f} (acc={acc:.4f}, auc={auc:.4f})")
 
                     # side için en iyi model güncelle
                     if score > best_score_side:
                         best_score_side = score
-                        best_model_side = joblib.loads(joblib.dumps(model))  # derin kopya
+                        best_model_side = copy.deepcopy(model)  # derin kopya
                         best_params_side = params
 
             # ROUND bitti logu
@@ -607,7 +672,8 @@ def offline_train_for_interval(
             best_model_side = model
             best_params_side = params
 
-        side_model_path = os.path.join(model_dir, f"online_model_{interval}_{side}.joblib")
+        side_model_path = os.path.join(
+            model_dir, f"online_model_{interval}_{side}.joblib")
         joblib.dump(best_model_side, side_model_path)
 
         if side == "long":
@@ -632,7 +698,8 @@ def offline_train_for_interval(
     else:
         best_model_src = short_model_path
 
-    best_model_path = os.path.join(model_dir, f"online_model_{interval}_best.joblib")
+    best_model_path = os.path.join(
+        model_dir, f"online_model_{interval}_best.joblib")
     # Kopyala
     best_model_obj = joblib.load(best_model_src)
     joblib.dump(best_model_obj, best_model_path)
@@ -658,71 +725,61 @@ def offline_train_for_interval(
 # -------------------------------------------------------------------------
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="BTCUSDT offline pre-train (6 ay x multi-interval, long/short ayrı)."
-    )
+def main():
+    print("[MAIN] offline_pretrain_six_months başlıyor.")
 
-    parser.add_argument(
-        "--mode",
-        choices=["shallow", "full", "deep"],
-        default="shallow",
-        help="Eğitim modu: shallow (hızlı), full (daha detaylı), deep (agresif).",
-    )
-
-    parser.add_argument(
-        "--intervals",
-        type=str,
-        default="5m",
-        help="Virgülle ayrılmış interval listesi, örn: '1m,5m,15m,1h'",
-    )
-
-    parser.add_argument(
-        "--use-lstm-hybrid",
-        action="store_true",
-        help="LSTM + SGD hibrit offline pretrain'i aktifleştir (şimdilik sadece SGD eğitimi, log'ta belirtilir).",
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="deep", help="Eğitim modu")
+    parser.add_argument("--interval", type=str, help="1m, 5m, 15m vs")
+    parser.add_argument("--months", type=int, default=6,
+                        help="Kaç aylık veri çekileceği (default: 6)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Cache kullanma, Binance'ten direkt çek")
+    parser.add_argument("--force-refresh-cache", action="store_true",
+                        help="Cache dosyasını yok sayıp yeniden çek")
     args = parser.parse_args()
+
+    # ---- ARGUMENTS ----
     mode = args.mode
-    intervals = [s.strip() for s in args.intervals.split(",") if s.strip()]
-    use_lstm_hybrid = bool(getattr(args, "use_lstm_hybrid", False))
+    interval_env = os.environ.get("INTERVAL")
+    months = args.months
+    use_cache = not args.no_cache
+    force_refresh = args.force_refresh_cache
 
-    project_root = None
-    try:
-        import os
+    # ---- INTERVAL SET ----
+    if interval_env:
+        intervals = [interval_env]
+        print(f"[MAIN] INTERVAL env bulundu → Sadece {intervals} eğitilecek.")
+    elif args.interval:
+        intervals = [args.interval]
+        print(f"[MAIN] Arg interval bulundu → {intervals}")
+    else:
+        intervals = ["1m", "5m"]
+        print(f"[MAIN] INTERVAL verilmedi → default {intervals}")
 
-        project_root = os.path.abspath(os.path.dirname(__file__) + "/..")
-    except Exception:
-        pass
+    # ---- MODEL DIR ----
+    model_dir = Path("models")
+    model_dir.mkdir(exist_ok=True)
 
     print(f"Offline pre-train başlıyor | mode={mode} | intervals={intervals}")
-    if project_root:
-        print(f"Çalışma klasörü: {project_root}")
-
-    start_ts = time.time()
 
     for interval in intervals:
-        print(f"\n========== INTERVAL: {interval} | MODE: {mode} ==========")
-        t0 = time.time()
+        print(f"\n========== INTERVAL: {interval} | MODE: {mode} ==========\n")
+
         offline_train_for_interval(
+            symbol="BTCUSDT",
             interval=interval,
             mode=mode,
-            symbol="BTCUSDT",
-            use_lstm_hybrid=use_lstm_hybrid,
-            model_dir="models",
-        )
-        t1 = time.time()
-        elapsed = t1 - t0
-        print(
-            f"[OFFLINE][{interval}] Interval training bitti. Süre: {elapsed:.1f} sn "
-            f"(~{elapsed/60:.1f} dk)"
+            model_dir=model_dir,
+            n_rounds=8,
+            n_iter=600,
+            months=months,
+            use_cache=use_cache,
+            force_refresh=force_refresh,
         )
 
-    total_elapsed = time.time() - start_ts
-    print(f"\nOffline pre-train tamamlandı. Toplam süre: {total_elapsed:.1f} sn (~{total_elapsed/60:.1f} dk)")
+    print("Offline pre-train tamamlandı.")
 
 
 if __name__ == "__main__":
     main()
-
