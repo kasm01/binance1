@@ -40,6 +40,28 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.ensemble import IsolationForest
 from pathlib import Path
 import pandas as pd
+def normalize_kline_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Binance kline kolon isimlerini normalize eder.
+    Hem 'taker_buy_base_asset_volume' hem 'taker_buy_base_volume' gibi
+    farklı isimlendirmeleri tolere etmek için kullanıyoruz.
+    """
+    # base volume
+    if "taker_buy_base_asset_volume" not in df.columns and "taker_buy_base_volume" in df.columns:
+        df["taker_buy_base_asset_volume"] = df["taker_buy_base_volume"]
+
+    if "taker_buy_base_volume" not in df.columns and "taker_buy_base_asset_volume" in df.columns:
+        df["taker_buy_base_volume"] = df["taker_buy_base_asset_volume"]
+
+    # quote volume
+    if "taker_buy_quote_asset_volume" not in df.columns and "taker_buy_quote_volume" in df.columns:
+        df["taker_buy_quote_asset_volume"] = df["taker_buy_quote_volume"]
+
+    if "taker_buy_quote_volume" not in df.columns and "taker_buy_quote_asset_volume" in df.columns:
+        df["taker_buy_quote_volume"] = df["taker_buy_quote_asset_volume"]
+
+    return df
+
 # ... diğer importlar ...
 
 OFFLINE_CACHE_DIR = Path("data/offline_cache")
@@ -186,6 +208,16 @@ def build_features_from_raw(
     """
     df = raw_df.copy()
 
+    # Offline cache backward-compatible kolon isim düzeltmesi
+    # cache'te: taker_buy_base_volume / taker_buy_quote_volume
+    # FE içinde: taker_buy_base_asset_volume / taker_buy_quote_asset_volume bekleniyor
+    if "taker_buy_base_asset_volume" not in df.columns and "taker_buy_base_volume" in df.columns:
+        df["taker_buy_base_asset_volume"] = df["taker_buy_base_volume"]
+
+    if "taker_buy_quote_asset_volume" not in df.columns and "taker_buy_quote_volume" in df.columns:
+        df["taker_buy_quote_asset_volume"] = df["taker_buy_quote_volume"]
+
+
     # Basit getiriler
     df["return_1"] = df["close"].pct_change(1)
     df["return_5"] = df["close"].pct_change(5)
@@ -215,8 +247,132 @@ def build_features_from_raw(
     # Hacim MA
     df["volume_ma_20"] = df["volume"].rolling(window=20).mean()
 
+    # Tüm kolonları normalize et (taker_buy_* isimleri farklıysa düzelt)
+    df = normalize_kline_columns(df)
+
     # NaN'li satırları at
+    # NaN'li satırlar ve kolon normalizasyonu
     df = df.dropna().reset_index(drop=True)
+
+    # Offline cache'ten gelen kolon isimlerini yeni FE ile uyumlu hale getir
+    if "taker_buy_base_asset_volume" not in df.columns:
+        if "taker_buy_base_volume" in df.columns:
+            df["taker_buy_base_asset_volume"] = df["taker_buy_base_volume"]
+        else:
+            df["taker_buy_base_asset_volume"] = 0.0
+
+    if "taker_buy_quote_asset_volume" not in df.columns:
+        if "taker_buy_quote_volume" in df.columns:
+            df["taker_buy_quote_asset_volume"] = df["taker_buy_quote_volume"]
+        else:
+            df["taker_buy_quote_asset_volume"] = 0.0
+
+    # NaN'li satırlardan sonra kolon isimlerini normalize et
+    rename_map = {}
+
+    # Binance kline dump'larında isim değişiklikleri için esnek karşılıklar:
+    if "taker_buy_base_asset_volume" not in df.columns:
+        for cand in ["taker_buy_base_asset_volume", "taker_buy_base_volume", "taker_buy_base_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_base_asset_volume"
+                break
+
+    if "taker_buy_quote_asset_volume" not in df.columns:
+        for cand in ["taker_buy_quote_asset_volume", "taker_buy_quote_volume", "taker_buy_quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_quote_asset_volume"
+                break
+
+    if "quote_asset_volume" not in df.columns:
+        for cand in ["quote_asset_volume", "quote_volume", "quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "quote_asset_volume"
+                break
+
+    if rename_map:
+        print(f"[OFFLINE][{interval}] INFO: Renaming columns: {rename_map}")
+        df = df.rename(columns=rename_map)
+
+    # NaN'li satırlardan sonra kolon isimlerini normalize et
+    rename_map = {}
+
+    # Binance kline dump'larında isim değişiklikleri için esnek karşılıklar:
+    if "taker_buy_base_asset_volume" not in df.columns:
+        for cand in ["taker_buy_base_asset_volume", "taker_buy_base_volume", "taker_buy_base_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_base_asset_volume"
+                break
+
+    if "taker_buy_quote_asset_volume" not in df.columns:
+        for cand in ["taker_buy_quote_asset_volume", "taker_buy_quote_volume", "taker_buy_quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_quote_asset_volume"
+                break
+
+    if "quote_asset_volume" not in df.columns:
+        for cand in ["quote_asset_volume", "quote_volume", "quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "quote_asset_volume"
+                break
+
+    if rename_map:
+        print(f"[OFFLINE][{interval}] INFO: Renaming columns: {rename_map}")
+        df = df.rename(columns=rename_map)
+
+
+    # Eğer kolon isimleri farklı geldiyse (cache / eski dump vs.) normalize et
+    rename_map = {}
+
+    if "taker_buy_base_asset_volume" not in df.columns:
+        for cand in ["taker_buy_base_asset_volume", "taker_buy_base_volume", "taker_buy_base_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_base_asset_volume"
+                break
+
+    if "taker_buy_quote_asset_volume" not in df.columns:
+        for cand in ["taker_buy_quote_asset_volume", "taker_buy_quote_volume", "taker_buy_quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "taker_buy_quote_asset_volume"
+                break
+
+    if "quote_asset_volume" not in df.columns:
+        for cand in ["quote_asset_volume", "quote_volume", "quote_vol"]:
+            if cand in df.columns:
+                rename_map[cand] = "quote_asset_volume"
+                break
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # Gerekli buy-volume kolonlarını garanti altına al
+    if "taker_buy_base_asset_volume" not in df.columns:
+        # Eski Binance isimleri vs.
+        for cand in ["taker_buy_base_asset_volume", "taker_buy_base_volume", "taker_buy_base_vol"]:
+            if cand in df.columns:
+                df["taker_buy_base_asset_volume"] = df[cand]
+                break
+        else:
+            # Hiçbiri yoksa 0 ile doldur (en kötü fallback)
+            df["taker_buy_base_asset_volume"] = 0.0
+
+    if "taker_buy_quote_asset_volume" not in df.columns:
+        for cand in ["taker_buy_quote_asset_volume", "taker_buy_quote_volume", "taker_buy_quote_vol"]:
+            if cand in df.columns:
+                df["taker_buy_quote_asset_volume"] = df[cand]
+                break
+        else:
+            df["taker_buy_quote_asset_volume"] = 0.0
+
+        # NaN'li satırları at
+    df = df.dropna().reset_index(drop=True)
+
+    # Eski offline cache kolonlarını yeni isimlere map et
+    # cache: taker_buy_base_volume / taker_buy_quote_volume
+    if "taker_buy_base_asset_volume" not in df.columns and "taker_buy_base_volume" in df.columns:
+        df["taker_buy_base_asset_volume"] = df["taker_buy_base_volume"]
+
+    if "taker_buy_quote_asset_volume" not in df.columns and "taker_buy_quote_volume" in df.columns:
+        df["taker_buy_quote_asset_volume"] = df["taker_buy_quote_volume"]
 
     expected_cols = [
         "open_time",
@@ -246,9 +402,15 @@ def build_features_from_raw(
         "volume_ma_20",
     ]
 
+    # Eksik kolon kontrolü – hata devam ederse hangi kolon yok net görürüz
+    missing = [c for c in expected_cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Beklenen kolonlar eksik: {missing} | mevcut kolonlar={list(df.columns)}")
+
     df = df[expected_cols]
     print(f"[OFFLINE][{interval}] features_df.shape={df.shape}")
     return df
+
 
 
 def apply_anomaly_filter(
@@ -719,6 +881,17 @@ def offline_train_for_interval(
         f"Süre: {elapsed:.1f} sn (~{elapsed/60:.1f} dk)"
     )
 
+    # ------------------------------------------------------------------
+    # Meta JSON kaydı (best_auc, best_side, use_lstm_hybrid)
+    # ------------------------------------------------------------------
+    meta_path = Path(model_dir) / f"model_meta_{interval}.json"
+    meta_data = {
+        "best_auc": float(best_score),
+        "best_side": best_side,
+        "use_lstm_hybrid": False,  # şimdilik sadece SGD hibrit; LSTM aktif olunca True yaparız
+    }
+    meta_path.write_text(json.dumps(meta_data, indent=2))
+    print(f"[OFFLINE][{interval}] Meta kaydedildi: {meta_path}")
 
 # -------------------------------------------------------------------------
 # CLI / main
