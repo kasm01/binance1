@@ -89,6 +89,16 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     # NaN temizle
     df = df.dropna()
 
+    # Hybrid / SGD: datetime kolonlarını numeric'e (ns -> int64) çevir
+    try:
+        for col in list(df.columns):
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                # pandas datetime64[ns] -> int64 (nanosecond)
+                df[col] = df[col].astype("int64")
+    except Exception:
+        # Her ihtimale karşı sessiz geç; hata olursa HYBRID fallback zaten devreye girer
+        pass
+
     return df.reset_index()
 
 
@@ -138,14 +148,18 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int = 500) -> 
 # ----------------------------------------------------------------------
 # Trading objelerini oluştur
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Trading objelerini oluştur
+# ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
 
     # Ortam değişkenleri
-    missing_vars = load_environment_variables()
+    env_vars, missing_vars = load_environment_variables()
     if missing_vars:
         logging.getLogger("system").warning(
-            "[load_env] WARNING: Missing environment variables: %s", missing_vars
+            "[load_env] WARNING: Missing environment variables: %s",
+            missing_vars,
         )
 
     # Logger
@@ -177,6 +191,7 @@ def create_trading_objects() -> Dict[str, Any]:
     else:
         system_logger.info("[MAIN] TRAINING_MODE=false -> Normal çalışma modu (trade logic aktif).")
 
+    # Hibrit mod flag (sadece karar verirken kullanıyoruz; modelin içinde ayrıca use_lstm_hybrid var)
     hybrid_mode_env = os.environ.get("HYBRID_MODE", "").lower()
     HYBRID_MODE = hybrid_mode_env in ("1", "true", "yes", "y", "on")
 
@@ -197,41 +212,68 @@ def create_trading_objects() -> Dict[str, Any]:
     )
 
     # Hibrit model (LSTM + SGD)
+    # DİKKAT: hybrid_inference.HybridModel imzası sadece (model_dir, interval, logger) alıyor.
     hybrid_model = HybridModel(
         model_dir="models",
         interval=INTERVAL,
-        alpha=0.6,  # p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
         logger=system_logger,
     )
 
+    # ------------------------------------------------------------------
     # Offline meta'dan AUC -> model_confidence_factor
-    meta_path = os.path.join("models", f"model_meta_{INTERVAL}.json")
+    # Önce OnlineLearner içinden almaya çalış, yoksa JSON dosyasına düş.
+    # ------------------------------------------------------------------
     model_confidence_factor = 1.0
+    best_auc = 0.6
+
+    meta_source = {}
     try:
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
-        best_auc = float(meta.get("best_auc", 0.6))
-        # Örnek skala: 0.5 -> 0.8, 0.6 -> 1.0, 0.7 -> 1.2
-        model_confidence_factor = max(0.5, min(1.5, (best_auc - 0.5) * 4 + 0.8))
-        system_logger.info(
-            "[RISK] Loaded offline meta from %s: best_auc=%.4f, model_confidence_factor=%.3f",
-            meta_path,
-            best_auc,
-            model_confidence_factor,
-        )
-    except FileNotFoundError:
-        system_logger.warning(
-            "[RISK] %s bulunamadı, model_confidence_factor=1.0 kullanılacak.",
-            os.path.basename(meta_path),
-        )
+        if hasattr(online_learner, "offline_meta"):
+            meta_source = getattr(online_learner, "offline_meta") or {}
+        elif hasattr(online_learner, "meta"):
+            meta_source = getattr(online_learner, "meta") or {}
+
+        if isinstance(meta_source, dict) and meta_source:
+            best_auc = float(meta_source.get("best_auc", best_auc))
+            model_confidence_factor = max(0.5, min(1.5, (best_auc - 0.5) * 4 + 0.8))
+            system_logger.info(
+                "[RISK] Using offline meta from OnlineLearner for interval=%s: best_auc=%.4f, model_confidence_factor=%.3f",
+                INTERVAL,
+                best_auc,
+                model_confidence_factor,
+            )
+        else:
+            meta_path = os.path.join("models", f"model_meta_{INTERVAL}.json")
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                best_auc = float(meta.get("best_auc", best_auc))
+                model_confidence_factor = max(0.5, min(1.5, (best_auc - 0.5) * 4 + 0.8))
+                system_logger.info(
+                    "[RISK] Loaded offline meta from %s: best_auc=%.4f, model_confidence_factor=%.3f",
+                    meta_path,
+                    best_auc,
+                    model_confidence_factor,
+                )
+            except FileNotFoundError:
+                system_logger.warning(
+                    "[RISK] model_meta_%s.json bulunamadı, model_confidence_factor=1.0 kullanılacak.",
+                    INTERVAL,
+                )
+            except Exception as e:
+                error_logger.exception(
+                    "[RISK] Offline meta okunurken hata: %s, model_confidence_factor=1.0 kullanılacak.",
+                    e,
+                )
     except Exception as e:
         error_logger.exception(
-            "[RISK] Offline meta okunurken hata: %s, model_confidence_factor=1.0 kullanılacak.",
+            "[RISK] Meta kaynağı okunurken hata: %s, model_confidence_factor=1.0 kullanılacak.",
             e,
         )
 
+    # ------------------------------------------------------------------
     # Risk Manager
-        # Risk Manager
+    # ------------------------------------------------------------------
     try:
         risk_manager = RiskManager(logger=system_logger)
     except TypeError:
@@ -240,12 +282,14 @@ def create_trading_objects() -> Dict[str, Any]:
             risk_manager.logger = system_logger
         elif hasattr(risk_manager, "set_logger"):
             risk_manager.set_logger(system_logger)
+
     # AUC'tan gelen güven faktörünü risk manager'a ver
     if hasattr(risk_manager, "set_model_confidence_factor"):
         risk_manager.set_model_confidence_factor(model_confidence_factor)
 
+    # ------------------------------------------------------------------
     # Position Manager
-        # Position Manager
+    # ------------------------------------------------------------------
     try:
         position_manager = PositionManager(logger=system_logger)
     except TypeError:
@@ -255,7 +299,9 @@ def create_trading_objects() -> Dict[str, Any]:
         elif hasattr(position_manager, "set_logger"):
             position_manager.set_logger(system_logger)
 
-    # Trade Executor (config argümanı yok, sade imza)
+    # ------------------------------------------------------------------
+    # Trade Executor
+    # ------------------------------------------------------------------
     trade_executor = TradeExecutor(
         client=binance_client,
         risk_manager=risk_manager,
@@ -355,7 +401,7 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                 # hibrit skor hesapla; aksi halde direkt SGD kullan.
                 if HYBRID_MODE and getattr(hybrid_model, "use_lstm_hybrid", False):
                     # HybridModel: (p_hybrid_vec, debug_info) döner
-                    p_hybrid_vec, hybrid_debug = hybrid_model.predict_proba(X_live.values)
+                    p_hybrid_vec, hybrid_debug = hybrid_model.predict_proba(X_live)
                     proba_hybrid = float(p_hybrid_vec[0])
 
                     system_logger.info(
@@ -408,13 +454,30 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                     # Fiyat için son close
                     last_price = float(raw_df["close"].iloc[-1])
 
+                    # Güvenli olması için p_sgd/p_hybrid/model_confidence_factor/best_auc/best_side değişkenlerini locals()'tan çek
+                    p_sgd_val = float(locals().get("p_sgd", 0.0))
+                    p_hybrid_val = float(locals().get("p_hybrid", 0.5))
+                    mcf_val = float(locals().get("model_confidence_factor", 1.0))
+                    best_auc_val = float(locals().get("best_auc", 0.0))
+                    best_side_val = locals().get("best_side", "hold")
+
                     await trade_executor.execute_decision(
-                        symbol=SYMBOL,
-                        interval=INTERVAL,
                         signal=signal,
+                        symbol=SYMBOL,
                         price=last_price,
-                        proba=proba_hybrid,
-                        model_confidence_factor=model_conf_factor,
+                        size=None,  # TODO: RiskManager içinden dinamik position size
+                        interval=INTERVAL,
+                        training_mode=TRAINING_MODE,
+                        hybrid_mode=HYBRID_MODE,
+                        probs={
+                            "p_sgd": p_sgd_val,
+                            "p_hybrid": p_hybrid_val,
+                        },
+                        extra={
+                            "model_confidence_factor": mcf_val,
+                            "best_auc": best_auc_val,
+                            "best_side": best_side_val,
+                        },
                     )
                 else:
                     system_logger.info(
