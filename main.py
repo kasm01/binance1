@@ -455,7 +455,7 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                     last_price = float(raw_df["close"].iloc[-1])
 
                     # Güvenli olması için p_sgd/p_hybrid/model_confidence_factor/best_auc/best_side değişkenlerini locals()'tan çek
-                    p_sgd_val = float(locals().get("p_sgd", 0.0))
+                    p_sgd_val = float(locals().get("p_sgd", 0.5))
                     p_hybrid_val = float(locals().get("p_hybrid", 0.5))
                     mcf_val = float(locals().get("model_confidence_factor", 1.0))
                     best_auc_val = float(locals().get("best_auc", 0.0))

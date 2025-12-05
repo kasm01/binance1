@@ -782,6 +782,49 @@ def offline_train_for_interval(
         f"Süre: {elapsed:.1f} sn (~{elapsed/60:.1f} dk)"
     )
 
+    # ==============================================================
+    #  LSTM HYBRID EĞİTİM (opsiyonel)
+    # ==============================================================
+    use_lstm_hybrid = False
+    lstm_meta = None
+
+    # Sadece HYBRID_MODE env=true ise LSTM dene
+    hybrid_env = os.environ.get("HYBRID_MODE", "false").lower()
+    if hybrid_env in ("1", "true", "yes", "on"):
+        print(f"[OFFLINE][{interval}] HYBRID_MODE=true -> LSTM hibrit eğitimi denenecek.")
+        try:
+            from data.lstm_hybrid import train_lstm_hybrid
+
+            lstm_meta = train_lstm_hybrid(
+                features_df=clean_df,
+                y_long=y_long,
+                y_short=y_short,
+                interval=interval,
+                model_dir=str(model_dir),
+            )
+            use_lstm_hybrid = True
+            print(f"[OFFLINE][{interval}] LSTM training OK: {lstm_meta}")
+        except Exception as e:
+            print(f"[OFFLINE][{interval}] LSTM training FAILED: {e!r}")
+            use_lstm_hybrid = False
+    else:
+        print(f"[OFFLINE][{interval}] HYBRID_MODE=false -> LSTM eğitimi atlanıyor.")
+
+    # ==============================================================
+    #  META DOSYASINI YAZ
+    # ==============================================================
+    meta_path = model_dir / f"model_meta_{interval}.json"
+    meta = {
+        "best_auc": float(best_score),
+        "best_side": best_side,
+        "use_lstm_hybrid": bool(use_lstm_hybrid),
+    }
+    if lstm_meta is not None:
+        meta.update(lstm_meta)
+
+    meta_path.write_text(json.dumps(meta, indent=2))
+    print(f"[OFFLINE][{interval}] Meta kaydedildi: {meta_path}")
+
     # ------------------------------------------------------------------
     # Meta JSON kaydı (best_auc, best_side, use_lstm_hybrid)
     # ------------------------------------------------------------------

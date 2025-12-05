@@ -1,174 +1,276 @@
-# data/lstm_hybrid.py
+from __future__ import annotations
 
-import os
-from typing import List, Tuple
+from pathlib import Path
+from typing import Dict, Tuple, Optional
 
 import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+import pandas as pd
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
+
+import joblib
+
+# TensorFlow / Keras
+import tensorflow as tf
+from tensorflow.keras import layers, models, callbacks
 
 
-class LSTMHybrid(nn.Module):
-    """
-    Basit bir LSTM tabanlı ikili sınıflandırıcı.
-    Girdi: (batch, seq_len, input_size)
-    Çıktı: p(y=1) (sigmoid)
-    """
-    def __init__(self, input_size: int, hidden_size: int = 32, num_layers: int = 1, dropout: float = 0.1):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-        )
-        self.fc = nn.Linear(hidden_size, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, T, F)
-        out, _ = self.lstm(x)          # out: (B, T, H)
-        last_hidden = out[:, -1, :]    # son time-step
-        logit = self.fc(last_hidden)   # (B, 1)
-        return logit.squeeze(-1)       # (B,)
-
-
-def _build_sequence_dataset(
-    clean_df,
-    feature_cols: List[str],
-    y_series,
-    seq_len: int,
+def _build_lstm_dataset(
+    X: np.ndarray,
+    y: np.ndarray,
+    seq_len: int = 32,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    clean_df + y_series'den (N, seq_len, F) ve (N,) label üretir.
-    Sadece y=0/1 kullandığımızı varsayıyoruz.
+    X: (N, F), y: (N,)
+    seq_len: kaç bar'lık pencere
+    Dönen:
+      X_seq: (N - seq_len + 1, seq_len, F)
+      y_seq: (N - seq_len + 1,)
     """
-    df = clean_df.reset_index(drop=True)
-    y = y_series.reset_index(drop=True).astype(int)
+    N, F = X.shape
+    if N <= seq_len:
+        raise ValueError(f"Too few samples for seq_len={seq_len}: N={N}")
 
-    X = df[feature_cols].astype(float).values
-    n_samples, n_features = X.shape
+    X_seq = []
+    y_seq = []
+    for i in range(seq_len, N):
+        X_seq.append(X[i - seq_len:i])
+        y_seq.append(y[i])
 
-    if n_samples <= seq_len + 10:
-        raise RuntimeError(f"LSTM için yeterli örnek yok: n_samples={n_samples}, seq_len={seq_len}")
+    return np.asarray(X_seq, dtype=np.float32), np.asarray(y_seq, dtype=np.float32)
 
-    seqs = []
-    labels = []
-    # seq_len-1 .. n_samples-1
-    for i in range(seq_len - 1, n_samples):
-        seq = X[i - seq_len + 1 : i + 1]
-        seqs.append(seq)
-        labels.append(y.iloc[i])
 
-    X_seqs = np.stack(seqs, axis=0).astype("float32")  # (N, T, F)
-    y_arr = np.array(labels, dtype="float32")          # (N,)
-    return X_seqs, y_arr
+def _build_lstm_model(input_shape: Tuple[int, int]) -> tf.keras.Model:
+    """
+    input_shape: (seq_len, n_features)
+    Basit ama güçlü bir LSTM binary classifier.
+    """
+    seq_len, n_features = input_shape
+
+    inputs = layers.Input(shape=(seq_len, n_features))
+    x = layers.LSTM(64, return_sequences=True)(inputs)
+    x = layers.Dropout(0.2)(x)
+    x = layers.LSTM(32)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(32, activation="relu")(x)
+    outputs = layers.Dense(1, activation="sigmoid")(x)
+
+    model = models.Model(inputs=inputs, outputs=outputs)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss="binary_crossentropy",
+        metrics=["AUC"],
+    )
+    return model
 
 
 def train_lstm_hybrid(
-    clean_df,
-    feature_cols: List[str],
-    y_series,
+    features_df: pd.DataFrame,
+    y_long: pd.Series,
+    y_short: pd.Series,
     interval: str,
-    side: str,
-    mode: str,
-    model_dir: str,
-    seq_len: int = 50,
-    batch_size: int | None = None,
-    device: str | None = None,
-) -> str:
+    model_dir: str = "models",
+    seq_len: int = 32,
+    test_size: float = 0.2,
+    random_state: int = 42,
+    max_epochs: int = 20,
+    batch_size: int = 64,
+) -> Dict[str, float]:
     """
-    Basit LSTM offline eğitimi.
-    - clean_df: anomaly filter sonrası veri (pandas DataFrame)
-    - feature_cols: LSTM'e girecek feature kolonları (numeric)
-    - y_series: 0/1 target (y_long veya y_short)
-    - interval: '1m', '5m', ...
-    - side: 'long' / 'short'
-    - mode: shallow / full / deep -> epoch sayısını buradan seçeceğiz
-    - model_dir: kaydetme klasörü
-    - seq_len: son kaç bar kullanılacak (varsayılan 50)
+    SGD ile aynı feature'lar üzerinden LSTM eğitir.
+    - features_df: clean_df (numerik kolonlar)
+    - y_long, y_short: 0/1 seriler
+    Kayıtlar:
+      models/lstm_{interval}_long.h5
+      models/lstm_{interval}_short.h5
+      models/lstm_{interval}_scaler.joblib
+    Dönen meta:
+      {
+        "lstm_long_auc": float,
+        "lstm_short_auc": float,
+        "seq_len": int
+      }
     """
-    os.makedirs(model_dir, exist_ok=True)
+    model_path_long = Path(model_dir) / f"lstm_{interval}_long.h5"
+    model_path_short = Path(model_dir) / f"lstm_{interval}_short.h5"
+    scaler_path = Path(model_dir) / f"lstm_{interval}_scaler.joblib"
 
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
 
-    # Mode'a göre epoch sayısı
-    if mode == "deep":
-        n_epochs = 5
-    elif mode == "full":
-        n_epochs = 4
-    else:
-        n_epochs = 3
+    # -------------------------
+    # 1) Feature'ları hazırlama
+    # -------------------------
+    # open_time / close_time / ignore gibi kolonları at
+    drop_cols = [c for c in ["open_time", "close_time", "ignore"] if c in features_df.columns]
+    X_df = features_df.drop(columns=drop_cols, errors="ignore")
 
-    if batch_size is None:
-        batch_size = 256
+    # sadece numerik
+    X_df = X_df.select_dtypes(include=["float", "int"])
 
-    print(
-        f"[LSTM][{interval}][{side}] Eğitim başlıyor | "
-        f"seq_len={seq_len}, epochs={n_epochs}, batch_size={batch_size}, device={device}"
+    X = X_df.values.astype(np.float32)
+
+    # scaler
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Kaydet
+    joblib.dump(scaler, scaler_path)
+
+    # -------------------------
+    # 2) Long LSTM
+    # -------------------------
+    y_long_arr = y_long.astype(int).values
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_scaled,
+        y_long_arr,
+        test_size=test_size,
+        shuffle=False,
     )
 
-    # Dataset hazırla
-    X_seqs, y_arr = _build_sequence_dataset(
-        clean_df=clean_df,
-        feature_cols=feature_cols,
-        y_series=y_series,
-        seq_len=seq_len,
+    X_train_seq, y_train_seq = _build_lstm_dataset(X_train, y_train, seq_len=seq_len)
+    X_val_seq, y_val_seq = _build_lstm_dataset(X_val, y_val, seq_len=seq_len)
+
+    model_long = _build_lstm_model((seq_len, X_train_seq.shape[-1]))
+
+    es = callbacks.EarlyStopping(
+        monitor="val_auc",
+        mode="max",
+        patience=3,
+        restore_best_weights=True,
+        verbose=1,
     )
 
-    # Basit global standardizasyon (feature bazlı)
-    # (N, T, F) -> (N*T, F) üzerinden mean/std
-    N, T, F = X_seqs.shape
-    flat = X_seqs.reshape(-1, F)
-    mean = flat.mean(axis=0, keepdims=True)
-    std = flat.std(axis=0, keepdims=True) + 1e-8
-    X_seqs = ((flat - mean) / std).reshape(N, T, F)
-
-    X_tensor = torch.from_numpy(X_seqs)
-    y_tensor = torch.from_numpy(y_arr)
-
-    dataset = TensorDataset(X_tensor, y_tensor)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-
-    model = LSTMHybrid(input_size=F, hidden_size=32, num_layers=1, dropout=0.1).to(device)
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    model.train()
-    for epoch in range(1, n_epochs + 1):
-        total_loss = 0.0
-        n_seen = 0
-        for xb, yb in loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
-
-            optimizer.zero_grad()
-            logits = model(xb)
-            loss = criterion(logits, yb)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            optimizer.step()
-
-            bs = yb.size(0)
-            total_loss += loss.item() * bs
-            n_seen += bs
-
-        avg_loss = total_loss / max(1, n_seen)
-        print(f"[LSTM][{interval}][{side}] Epoch {epoch}/{n_epochs} - loss={avg_loss:.4f}")
-
-    # Modeli kaydet
-    model_path = os.path.join(model_dir, f"lstm_{interval}_{side}.pt")
-    torch.save(
-        {
-            "state_dict": model.state_dict(),
-            "input_size": F,
-            "hidden_size": 32,
-            "seq_len": seq_len,
-            "feature_cols": feature_cols,
-        },
-        model_path,
+    model_long.fit(
+        X_train_seq,
+        y_train_seq,
+        validation_data=(X_val_seq, y_val_seq),
+        epochs=max_epochs,
+        batch_size=batch_size,
+        callbacks=[es],
+        verbose=0,
     )
-    print(f"[LSTM][{interval}][{side}] Model kaydedildi: {model_path}")
-    return model_path
+
+    y_val_proba_long = model_long.predict(X_val_seq, verbose=0).ravel()
+    try:
+        long_auc = float(roc_auc_score(y_val_seq, y_val_proba_long))
+    except ValueError:
+        long_auc = 0.5
+
+    model_long.save(model_path_long)
+
+    # -------------------------
+    # 3) Short LSTM
+    # -------------------------
+    y_short_arr = y_short.astype(int).values
+    X_train_s, X_val_s, y_train_s, y_val_s = train_test_split(
+        X_scaled,
+        y_short_arr,
+        test_size=test_size,
+        shuffle=False,
+    )
+
+    X_train_seq_s, y_train_seq_s = _build_lstm_dataset(X_train_s, y_train_s, seq_len=seq_len)
+    X_val_seq_s, y_val_seq_s = _build_lstm_dataset(X_val_s, y_val_s, seq_len=seq_len)
+
+    model_short = _build_lstm_model((seq_len, X_train_seq_s.shape[-1]))
+
+    model_short.fit(
+        X_train_seq_s,
+        y_train_seq_s,
+        validation_data=(X_val_seq_s, y_val_seq_s),
+        epochs=max_epochs,
+        batch_size=batch_size,
+        callbacks=[es],
+        verbose=0,
+    )
+
+    y_val_proba_short = model_short.predict(X_val_seq_s, verbose=0).ravel()
+    try:
+        short_auc = float(roc_auc_score(y_val_seq_s, y_val_proba_short))
+    except ValueError:
+        short_auc = 0.5
+
+    model_short.save(model_path_short)
+
+    return {
+        "lstm_long_auc": long_auc,
+        "lstm_short_auc": short_auc,
+        "seq_len": seq_len,
+    }
+
+
+def load_lstm_bundle(interval: str, model_dir: str = "models"):
+    """
+    HybridModel tarafından runtime'da kullanılmak üzere:
+    - scaler
+    - long lstm
+    - short lstm
+    döndürür.
+    """
+    model_path_long = Path(model_dir) / f"lstm_{interval}_long.h5"
+    model_path_short = Path(model_dir) / f"lstm_{interval}_short.h5"
+    scaler_path = Path(model_dir) / f"lstm_{interval}_scaler.joblib"
+
+    if not (model_path_long.exists() and model_path_short.exists() and scaler_path.exists()):
+        raise FileNotFoundError(f"LSTM bundle not found for interval={interval}")
+
+    scaler = joblib.load(scaler_path)
+    model_long = tf.keras.models.load_model(model_path_long)
+    model_short = tf.keras.models.load_model(model_path_short)
+
+    return scaler, model_long, model_short
+
+
+def load_lstm_for_inference(interval: str, model_dir=None, logger=None, **kwargs):
+    """
+    Online inference için LSTM scaler + modellerini yükler.
+    HybridModel bu fonksiyonu model_dir ve logger keyword arg'larıyla çağırdığı için
+    imza buna göre tanımlandı. logger şimdilik sadece opsiyonel log için tutuluyor.
+    """
+
+    """
+    Online inference için LSTM scaler + modellerini yükler.
+    HybridModel bu fonksiyonu model_dir keyword arg ile çağırdığı için
+    imza buna göre tanımlandı.
+    """
+    from pathlib import Path
+    import joblib
+    from keras.models import load_model
+
+    base_dir = Path(model_dir) if model_dir is not None else Path("models")
+
+    scaler_path = base_dir / f"lstm_{interval}_scaler.joblib"
+    long_path = base_dir / f"lstm_{interval}_long.h5"
+    short_path = base_dir / f"lstm_{interval}_short.h5"
+
+    if not scaler_path.exists():
+        raise FileNotFoundError(f"Scaler bulunamadı: {scaler_path}")
+    if not long_path.exists():
+        raise FileNotFoundError(f"Long LSTM modeli bulunamadı: {long_path}")
+    if not short_path.exists():
+        raise FileNotFoundError(f"Short LSTM modeli bulunamadı: {short_path}")
+
+    scaler = joblib.load(scaler_path)
+    model_long = load_model(long_path)
+    model_short = load_model(short_path)
+    return scaler, model_long, model_short
+
+
+    model_dir = Path("models")
+    scaler_path = model_dir / f"lstm_{interval}_scaler.joblib"
+    long_path = model_dir / f"lstm_{interval}_long.h5"
+    short_path = model_dir / f"lstm_{interval}_short.h5"
+
+    if not scaler_path.exists():
+        raise FileNotFoundError(f"Scaler bulunamadı: {scaler_path}")
+    if not long_path.exists():
+        raise FileNotFoundError(f"Long LSTM modeli bulunamadı: {long_path}")
+    if not short_path.exists():
+        raise FileNotFoundError(f"Short LSTM modeli bulunamadı: {short_path}")
+
+    scaler = joblib.load(scaler_path)
+    model_long = load_model(long_path)
+    model_short = load_model(short_path)
+    return scaler, model_long, model_short

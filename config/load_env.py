@@ -1,25 +1,25 @@
 import os
-from typing import Dict
+from typing import Dict, List, Tuple
 
 
-def load_environment_variables() -> Dict[str, str]:
+def load_environment_variables() -> Tuple[Dict[str, str], List[str]]:
     """
-    Ortam değişkenlerini sözlük olarak döndürür.
-    İleride istersen .env dosyası okuma, ekstra kontroller vs ekleyebiliriz.
+    Ortam değişkenlerini ve eksik olan zorunlu değişkenleri döndürür.
     """
-    env_vars = dict(os.environ)
+    env_vars: Dict[str, str] = dict(os.environ)
 
-    # Örnek: zorunlu değişken liste kontrolü (şimdilik sadece log amaçlı)
-    required_keys = [
+    required_keys: List[str] = [
         "BINANCE_API_KEY",
         "BINANCE_API_SECRET",
         "SYMBOL",
         "INTERVAL",
     ]
 
-    missing = [k for k in required_keys if not env_vars.get(k)]
+    missing: List[str] = [k for k in required_keys if not env_vars.get(k)]
+
+    # Sadece kısa bir uyarı (istersen bunu da kaldırabiliriz)
     if missing:
-        # Burada direk print kullanıyoruz; logger import edip döngü yaratmayalım
         print(f"[load_env] WARNING: Missing environment variables: {missing}")
 
-    return env_vars
+    return env_vars, missing
+
