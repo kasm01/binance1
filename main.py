@@ -4,321 +4,207 @@ import signal
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-from config.load_env import load_environment_variables
-import config as app_config
-from data.online_learning import OnlineLearner
-from models.hybrid_inference import HybridModel
+# ----------------------------------------------------------------------
+# Config & Core imports
+# ----------------------------------------------------------------------
+try:
+    # Yeni yapı
+    from config.load_env import load_environment_variables
+except ImportError:
+    # Eski yapı veya lokal kullanım için fallback
+    def load_environment_variables() -> Dict[str, str]:
+        return dict(os.environ)
+
 from core.logger import setup_logger
-from core.risk_manager import RiskManager
-# Binance client helper
-try:
-    from core.binance_client import create_binance_client  # Eğer projede varsa buradan al
-except ModuleNotFoundError:
-    # Fallback: doğrudan python-binance Client kullan
-    from binance.client import Client
+from core.risk_manager import RiskManager  # risk tarafında kullanmak istersen
+from models.hybrid_inference import HybridModel
 
-    def create_binance_client(cfg) -> Client:
-        """
-        Basit Binance client oluşturucu.
-        Ortam değişkenlerinden API key/secret okur,
-        config içinden USE_TESTNET vb. alabilir.
-        """
-        api_key = os.getenv("BINANCE_API_KEY", "")
-        api_secret = os.getenv("BINANCE_API_SECRET", "")
+# ----------------------------------------------------------------------
+# Global logger
+# ----------------------------------------------------------------------
+system_logger: Optional[logging.Logger] = None
 
-        use_testnet = getattr(cfg, "USE_TESTNET", True)
+# ----------------------------------------------------------------------
+# ENV / sabitler
+# ----------------------------------------------------------------------
+SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
+INTERVAL = os.getenv("INTERVAL", "5m")
 
-        client = Client(api_key, api_secret, testnet=use_testnet)
-        return client
+TRAINING_MODE = os.getenv("TRAINING_MODE", "false").lower() == "true"
+HYBRID_MODE = os.getenv("HYBRID_MODE", "true").lower() == "true"
 
-# PositionManager ve TradeExecutor bazı projelerde core altında değil, trading altında.
-# Önce core'dan import etmeyi dene, olmazsa trading'den al.
-try:
-    from core.position_manager import PositionManager  # varsa buradan
-except ModuleNotFoundError:
-    from trading.position_manager import PositionManager  # yoksa buradan
-
-try:
-    from core.trade_executor import TradeExecutor  # varsa buradan
-except ModuleNotFoundError:
-    from trading.trade_executor import TradeExecutor  # yoksa buradan
-
-# Global logger referansı (setup_logger() çağrıldıktan sonra dolacak)
-system_logger: logging.Logger | None = None
+# Decision threshold’ları (offline backtest sonucuna göre default)
+LONG_THRESHOLD = float(os.getenv("LONG_THRESHOLD", "0.50"))   # p ≥ 0.50 → long
+SHORT_THRESHOLD = float(os.getenv("SHORT_THRESHOLD", "0.30")) # p ≤ 0.30 → short
 
 # Loop bekleme süresi (saniye)
-LOOP_SLEEP_SECONDS = 60
+LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
+
+# DRY-RUN: API key yoksa gerçek emir yok, sadece log
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true" or not (
+    BINANCE_API_KEY and BINANCE_API_SECRET
+)
 
 
 # ----------------------------------------------------------------------
 # Basit feature engineering helper
+#  -> offline_eval_hybrid / offline_backtest_hybrid ile aynı schema
 # ----------------------------------------------------------------------
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Kendi içimizde minimal bir feature builder.
-    Dıştaki data/feature_engineering bağımlılığını kaldırmak için kullanıyoruz.
-    İstersen bunu daha sonra gerçek feature pipeline'ınla değiştirebilirsin.
+    Eğitimde kullanılan feature setine yakın, sabit bir şema üretir.
+    HybridModel._prepare_feature_matrix bu kolonları bekliyor:
+
+      ['open_time', 'open', 'high', 'low', 'close', 'volume',
+       'close_time', 'quote_asset_volume', 'number_of_trades',
+       'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore',
+       'hl_range', 'oc_change', 'return_1', 'return_3', 'return_5',
+       'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
     """
     df = raw_df.copy()
 
-    # Zamanı index yap
-    if "open_time" in df.columns:
-        df.set_index("open_time", inplace=True)
+    # Zaten offline_cache içinde bu kolonlar var:
+    # ['open_time', 'open', 'high', 'low', 'close', 'volume',
+    #  'close_time', 'quote_asset_volume', 'number_of_trades',
+    #  'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore']
 
-    # Basit fiyat özellikleri
+    # Price / volume feature'ları
     df["hl_range"] = df["high"] - df["low"]
     df["oc_change"] = df["close"] - df["open"]
-    df["return_1"] = df["close"].pct_change()
+
+    df["return_1"] = df["close"].pct_change(1)
     df["return_3"] = df["close"].pct_change(3)
     df["return_5"] = df["close"].pct_change(5)
 
-    # Basit hareketli ortalamalar
-    df["ma_5"] = df["close"].rolling(window=5).mean()
-    df["ma_10"] = df["close"].rolling(window=10).mean()
-    df["ma_20"] = df["close"].rolling(window=20).mean()
+    df["ma_5"] = df["close"].rolling(window=5, min_periods=1).mean()
+    df["ma_10"] = df["close"].rolling(window=10, min_periods=1).mean()
+    df["ma_20"] = df["close"].rolling(window=20, min_periods=1).mean()
 
-    # Volatilite benzeri
-    df["vol_10"] = df["return_1"].rolling(window=10).std()
-    # Ek dummy feature (online model 22 feature bekliyor)
+    df["vol_10"] = df["volume"].rolling(window=10, min_periods=1).std()
+
+    # Eğitime uyum için ekstra dummy kolon
     df["dummy_extra"] = 0.0
 
-    # NaN temizle
-    df = df.dropna()
-
-    # Hybrid / SGD: datetime kolonlarını numeric'e (ns -> int64) çevir
-    try:
-        for col in list(df.columns):
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
-                # pandas datetime64[ns] -> int64 (nanosecond)
-                df[col] = df[col].astype("int64")
-    except Exception:
-        # Her ihtimale karşı sessiz geç; hata olursa HYBRID fallback zaten devreye girer
-        pass
-
-    return df.reset_index()
-
-
-# ----------------------------------------------------------------------
-# Binance klines fetch helper (async)
-# ----------------------------------------------------------------------
-async def fetch_klines(client, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
-    """
-    Senkron python-binance client.get_klines çağrısını async hale getiren helper.
-    """
-    loop = asyncio.get_event_loop()
-
-    def _fetch():
-        return client.get_klines(symbol=symbol, interval=interval, limit=limit)
-
-    klines = await loop.run_in_executor(None, _fetch)
-
-    if not klines:
-        return pd.DataFrame()
-
-    cols = [
-        "open_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
-        "ignore",
-    ]
-    df = pd.DataFrame(klines, columns=cols)
-
-    # Zaman ve numerik cast
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = df[col].astype(float)
-
+    # NA temizliği
+    df = df.dropna().reset_index(drop=True)
     return df
 
 
 # ----------------------------------------------------------------------
-# Trading objelerini oluştur
+# Basit label helper (offline eval / log için)
 # ----------------------------------------------------------------------
+def build_labels(close: pd.Series, horizon: int = 1) -> pd.Series:
+    """
+    Eğitimde kullanılan label mantığı:
+
+        future_close = df["close"].shift(-horizon)
+        ret = future_close / df["close"] - 1.0
+        y = (ret > 0.0).astype(int)
+
+    Burada sadece *opsiyonel* olarak log / offline kıyas için kullanıyoruz.
+    """
+    future_close = close.shift(-horizon)
+    ret = future_close / close - 1.0
+    y = (ret > 0.0).astype(int)
+    return y
+
+
 # ----------------------------------------------------------------------
-# Trading objelerini oluştur
+# Data fetch helpers
+# ----------------------------------------------------------------------
+def load_offline_klines_from_cache(
+    symbol: str, interval: str, limit: int = 500
+) -> pd.DataFrame:
+    """
+    Offline cache'den veriyi okur (ör: data/offline_cache/BTCUSDT_5m_6m.csv)
+    Development / test için güvenli.
+    """
+    cache_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError(f"Offline cache bulunamadı: {cache_path}")
+
+    df = pd.read_csv(cache_path)
+    df = df.tail(limit).reset_index(drop=True)
+    return df
+
+
+async def fetch_raw_klines(symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
+    """
+    Şu anda *sadece offline cache* kullanıyoruz.
+
+    İLERİDE:
+        - Buraya kendi Binance client'ını (websocket veya REST) entegre edebilirsin.
+        - Örneğin data/klines.py içinde bir fetch_live_klines fonksiyonun varsa
+          onu çağıracak şekilde güncelleyebilirsin.
+    """
+    # TODO: Canlı veri için kendi client'ını entegre et
+    return load_offline_klines_from_cache(symbol, interval, limit)
+
+
+# ----------------------------------------------------------------------
+# Trading nesneleri
 # ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
 
-    # Ortam değişkenleri
-    env_vars, missing_vars = load_environment_variables()
-    if missing_vars:
-        logging.getLogger("system").warning(
-            "[load_env] WARNING: Missing environment variables: %s",
-            missing_vars,
-        )
+    # RiskManager (şu an aktif kullanmıyoruz ama ileride pozisyon sizing için)
+    risk_manager = RiskManager(logger=system_logger)
 
-    # Logger
-    setup_logger()
-    system_logger = logging.getLogger("system")
-    error_logger = logging.getLogger("error")
-
-    # DRY_RUN uyarısı
-    api_key = os.getenv("BINANCE_API_KEY", "")
-    api_secret = os.getenv("BINANCE_API_SECRET", "")
-    if not api_key or not api_secret:
-        system_logger.warning(
-            "[BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol."
-        )
-
-    # Symbol & interval
-    symbol_env = os.environ.get("SYMBOL")
-    interval_env = os.environ.get("INTERVAL")
-
-    SYMBOL = symbol_env or getattr(app_config, "SYMBOL", "BTCUSDT")
-    INTERVAL = interval_env or getattr(app_config, "INTERVAL", "1m")
-
-    # Training mode (sadece eğitim, gerçek trade yok)
-    training_mode_env = os.environ.get("TRAINING_MODE", "").lower()
-    TRAINING_MODE = training_mode_env in ("1", "true", "yes", "y", "on")
-
-    if TRAINING_MODE:
-        system_logger.info("[MAIN] TRAINING_MODE=true -> Sadece eğitim/log, gerçek trade YOK.")
-    else:
-        system_logger.info("[MAIN] TRAINING_MODE=false -> Normal çalışma modu (trade logic aktif).")
-
-    # Hibrit mod flag (sadece karar verirken kullanıyoruz; modelin içinde ayrıca use_lstm_hybrid var)
-    hybrid_mode_env = os.environ.get("HYBRID_MODE", "").lower()
-    HYBRID_MODE = hybrid_mode_env in ("1", "true", "yes", "y", "on")
-
-    if HYBRID_MODE:
-        system_logger.info("[MAIN] HYBRID_MODE=true -> LSTM+SGD hibrit skor kullanılacak (mümkünse).")
-    else:
-        system_logger.info("[MAIN] HYBRID_MODE=false -> Sadece SGD skoru kullanılacak.")
-
-    # Binance client
-    binance_client = create_binance_client(app_config)
-
-    # Online learner (SGD vb.)
-    online_learner = OnlineLearner(
-        model_dir="models",
-        base_model_name="online_model",
-        interval=INTERVAL,
-        n_classes=2,
-    )
-
-    # Hibrit model (LSTM + SGD)
-    # DİKKAT: hybrid_inference.HybridModel imzası sadece (model_dir, interval, logger) alıyor.
+    # HybridModel (tek timeframe: INTERVAL)
     hybrid_model = HybridModel(
         model_dir="models",
         interval=INTERVAL,
         logger=system_logger,
     )
 
-    # ------------------------------------------------------------------
-    # Offline meta'dan AUC -> model_confidence_factor
-    # Önce OnlineLearner içinden almaya çalış, yoksa JSON dosyasına düş.
-    # ------------------------------------------------------------------
-    model_confidence_factor = 1.0
-    best_auc = 0.6
+    # Meta’dan model güven katsayısı türet
+    best_auc = float(hybrid_model.meta.get("best_auc", 0.5))
+    best_side = hybrid_model.meta.get("best_side", "best")
 
-    meta_source = {}
-    try:
-        if hasattr(online_learner, "offline_meta"):
-            meta_source = getattr(online_learner, "offline_meta") or {}
-        elif hasattr(online_learner, "meta"):
-            meta_source = getattr(online_learner, "meta") or {}
+    # Çok agresif olmayan bir confidence factor:
+    # AUC 0.5 → 1.0, AUC 0.7 → ~1.4, AUC 0.8 → ~1.6 gibi
+    model_confidence_factor = 1.0 + max(0.0, best_auc - 0.5) * 2.0
 
-        if isinstance(meta_source, dict) and meta_source:
-            best_auc = float(meta_source.get("best_auc", best_auc))
-            model_confidence_factor = max(0.5, min(1.5, (best_auc - 0.5) * 4 + 0.8))
-            system_logger.info(
-                "[RISK] Using offline meta from OnlineLearner for interval=%s: best_auc=%.4f, model_confidence_factor=%.3f",
-                INTERVAL,
-                best_auc,
-                model_confidence_factor,
-            )
-        else:
-            meta_path = os.path.join("models", f"model_meta_{INTERVAL}.json")
-            try:
-                with open(meta_path, "r") as f:
-                    meta = json.load(f)
-                best_auc = float(meta.get("best_auc", best_auc))
-                model_confidence_factor = max(0.5, min(1.5, (best_auc - 0.5) * 4 + 0.8))
-                system_logger.info(
-                    "[RISK] Loaded offline meta from %s: best_auc=%.4f, model_confidence_factor=%.3f",
-                    meta_path,
-                    best_auc,
-                    model_confidence_factor,
-                )
-            except FileNotFoundError:
-                system_logger.warning(
-                    "[RISK] model_meta_%s.json bulunamadı, model_confidence_factor=1.0 kullanılacak.",
-                    INTERVAL,
-                )
-            except Exception as e:
-                error_logger.exception(
-                    "[RISK] Offline meta okunurken hata: %s, model_confidence_factor=1.0 kullanılacak.",
-                    e,
-                )
-    except Exception as e:
-        error_logger.exception(
-            "[RISK] Meta kaynağı okunurken hata: %s, model_confidence_factor=1.0 kullanılacak.",
-            e,
-        )
-
-    # ------------------------------------------------------------------
-    # Risk Manager
-    # ------------------------------------------------------------------
-    try:
-        risk_manager = RiskManager(logger=system_logger)
-    except TypeError:
-        risk_manager = RiskManager()
-        if hasattr(risk_manager, "logger"):
-            risk_manager.logger = system_logger
-        elif hasattr(risk_manager, "set_logger"):
-            risk_manager.set_logger(system_logger)
-
-    # AUC'tan gelen güven faktörünü risk manager'a ver
-    if hasattr(risk_manager, "set_model_confidence_factor"):
-        risk_manager.set_model_confidence_factor(model_confidence_factor)
-
-    # ------------------------------------------------------------------
-    # Position Manager
-    # ------------------------------------------------------------------
-    try:
-        position_manager = PositionManager(logger=system_logger)
-    except TypeError:
-        position_manager = PositionManager()
-        if hasattr(position_manager, "logger"):
-            position_manager.logger = system_logger
-        elif hasattr(position_manager, "set_logger"):
-            position_manager.set_logger(system_logger)
-
-    # ------------------------------------------------------------------
-    # Trade Executor
-    # ------------------------------------------------------------------
-    trade_executor = TradeExecutor(
-        client=binance_client,
-        risk_manager=risk_manager,
-        position_manager=position_manager,
+    system_logger.info(
+        "[RISK] Using offline meta for interval=%s: best_auc=%.4f, best_side=%s, "
+        "model_confidence_factor=%.3f",
+        INTERVAL,
+        best_auc,
+        best_side,
+        model_confidence_factor,
     )
 
+    # TradeExecutor'u burada *opsiyonel* bırakıyorum; eğer senin mevcut
+    # core.trade_executor.TradeExecutor imzan farklıysa sadece burayı
+    # kendi versiyonunla değiştirmen yeterli.
+    try:
+        from core.trade_executor import TradeExecutor  # type: ignore
+
+        trade_executor = TradeExecutor(
+            risk_manager=risk_manager,
+            logger=system_logger,
+            dry_run=DRY_RUN,
+        )
+    except Exception as e:
+        system_logger.warning(
+            "[MAIN] TradeExecutor init edilemedi (%s). Emir gönderimi devre dışı.", e
+        )
+        trade_executor = None
+
     return {
-        "SYMBOL": SYMBOL,
-        "INTERVAL": INTERVAL,
-        "TRAINING_MODE": TRAINING_MODE,
-        "HYBRID_MODE": HYBRID_MODE,
-        "binance_client": binance_client,
-        "online_learner": online_learner,
-        "hybrid_model": hybrid_model,
         "risk_manager": risk_manager,
-        "position_manager": position_manager,
+        "hybrid_model": hybrid_model,
         "trade_executor": trade_executor,
+        "model_confidence_factor": model_confidence_factor,
+        "best_auc": best_auc,
+        "best_side": best_side,
     }
 
 
@@ -326,24 +212,20 @@ def create_trading_objects() -> Dict[str, Any]:
 # Ana bot loop
 # ----------------------------------------------------------------------
 async def bot_loop(trading_objects: Dict[str, Any]) -> None:
-    system_logger = logging.getLogger("system")
+    global system_logger
 
-    SYMBOL = trading_objects["SYMBOL"]
-    INTERVAL = trading_objects["INTERVAL"]
-    TRAINING_MODE = trading_objects.get("TRAINING_MODE", False)
-    HYBRID_MODE = trading_objects.get("HYBRID_MODE", False)
-    binance_client = trading_objects["binance_client"]
-    online_learner = trading_objects["online_learner"]
-    hybrid_model = trading_objects["hybrid_model"]
-    risk_manager = trading_objects["risk_manager"]
-    position_manager = trading_objects["position_manager"]
+    hybrid_model: HybridModel = trading_objects["hybrid_model"]
     trade_executor = trading_objects["trade_executor"]
+    model_confidence_factor: float = trading_objects["model_confidence_factor"]
+    best_auc: float = trading_objects["best_auc"]
+    best_side: str = trading_objects["best_side"]
 
     system_logger.info(
-        "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s)",
+        "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s)",
         SYMBOL,
         INTERVAL,
         TRAINING_MODE,
+        HYBRID_MODE,
     )
 
     while True:
@@ -354,118 +236,130 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                 INTERVAL,
                 500,
             )
+            raw_df = await fetch_raw_klines(SYMBOL, INTERVAL, limit=500)
 
-            # 1) Klines çek
-            raw_df = await fetch_klines(
-                client=binance_client,
-                symbol=SYMBOL,
-                interval=INTERVAL,
-                limit=500,
-            )
-
-            if raw_df.empty:
-                system_logger.warning("[DATA] Empty klines received, skipping iteration.")
-                await asyncio.sleep(LOOP_SLEEP_SECONDS)
-                continue
-
-            # 2) Feature engineering
-            features_df = build_features(raw_df)
-
-            if features_df.empty:
-                system_logger.warning("[FE] Features DF empty, skipping iteration.")
-                await asyncio.sleep(LOOP_SLEEP_SECONDS)
-                continue
-
+            # Feature engineering
+            feat_df = build_features(raw_df)
             system_logger.info(
                 "[FE] Features DF shape: %s, columns=%s",
-                features_df.shape,
-                list(features_df.columns),
+                feat_df.shape,
+                list(feat_df.columns),
             )
 
-            # Son satırı tahmin için kullan
-            X_live = features_df.iloc[[-1]].copy()
+            # Hybrid model tahmini
+            p_arr, debug = hybrid_model.predict_proba(feat_df)
 
-            # 3) Online model (SGD) proba
-            try:
-                proba_sgd = online_learner.predict_proba(X_live)[0][1]
-            except Exception as e:
-                logging.getLogger("error").exception(
-                    "[ONLINE] predict_proba sırasında hata: %s", e
+            if p_arr is None or len(p_arr) == 0:
+                system_logger.warning(
+                    "[PRED] Empty probability array, skipping this iteration."
                 )
                 await asyncio.sleep(LOOP_SLEEP_SECONDS)
                 continue
 
-            # 4) Hybrid model proba (LSTM + SGD)
-            try:
-                # Sadece HYBRID_MODE=True VE hybrid_model.use_lstm_hybrid=True ise
-                # hibrit skor hesapla; aksi halde direkt SGD kullan.
-                if HYBRID_MODE and getattr(hybrid_model, "use_lstm_hybrid", False):
-                    # HybridModel: (p_hybrid_vec, debug_info) döner
-                    p_hybrid_vec, hybrid_debug = hybrid_model.predict_proba(X_live)
-                    proba_hybrid = float(p_hybrid_vec[0])
+            # Son barın skoru
+            p_hybrid = float(p_arr[-1])
 
-                    system_logger.info(
-                        "[HYBRID] p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
-                        hybrid_debug.get("p_sgd_mean", 0.0),
-                        hybrid_debug.get("p_lstm_mean", 0.0),
-                        hybrid_debug.get("p_hybrid_mean", 0.0),
-                        hybrid_debug.get("best_auc", 0.0),
-                        hybrid_debug.get("best_side", "n/a"),
-                    )
-                else:
-                    # HYBRID_MODE=false veya LSTM hibrit devre dışı ise
-                    # hibrit skor = online SGD skoru
-                    proba_hybrid = proba_sgd
-            except Exception as e:
-                logging.getLogger("error").exception(
-                    "[HYBRID] predict_proba sırasında hata: %s", e
-                )
-                # Hibrit hata verirse fallback olarak sgd kullan
-                proba_hybrid = proba_sgd
+            # debug içinden SGD ortalamasını çek
+            p_sgd_mean = float(debug.get("p_sgd_mean", 0.5))
+            p_lstm_mean = float(debug.get("p_lstm_mean", 0.5))
+            mode = debug.get("mode", "unknown")
 
+            # PRED log
             system_logger.info(
-                "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)", proba_sgd, proba_hybrid, HYBRID_MODE
+                "[HYBRID] mode=%s n_samples=%d n_features=%d "
+                "p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, "
+                "best_auc=%.4f, best_side=%s",
+                mode,
+                int(debug.get("n_samples", len(feat_df))),
+                int(debug.get("n_features", feat_df.shape[1])),
+                p_sgd_mean,
+                p_lstm_mean,
+                float(debug.get("p_hybrid_mean", p_hybrid)),
+                best_auc,
+                best_side,
             )
 
-            # 5) Risk manager'dan model confidence factor al
-            model_conf_factor = 1.0
-            if hasattr(risk_manager, "get_model_confidence_factor"):
-                model_conf_factor = risk_manager.get_model_confidence_factor()
+            system_logger.info(
+                "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)",
+                p_sgd_mean,
+                p_hybrid,
+                HYBRID_MODE,
+            )
 
-            # Basit sinyal örneği: p_hybrid > 0.55 long, < 0.45 short, arası hold
-            signal = "hold"
-            if proba_hybrid > 0.55:
+            # ------------------------------------------------------------------
+            # Threshold bazlı sinyal kararı
+            # ------------------------------------------------------------------
+            # HYBRID_MODE=True ise p_hybrid, değilse p_sgd_mean kullan
+            p_used = float(p_hybrid if HYBRID_MODE else p_sgd_mean)
+
+            if p_used >= LONG_THRESHOLD:
                 signal = "long"
-            elif proba_hybrid < 0.45:
+            elif p_used <= SHORT_THRESHOLD:
                 signal = "short"
+            else:
+                signal = "hold"
 
             system_logger.info(
-                "[SIGNAL] signal=%s, model_conf_factor=%.3f", signal, model_conf_factor
+                "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
+                "signal=%s, model_conf_factor=%.3f",
+                p_used,
+                LONG_THRESHOLD,
+                SHORT_THRESHOLD,
+                signal,
+                model_confidence_factor,
             )
 
-            # 6) TradeExecutor varsa, sinyali ona pasla
-            # TRAINING_MODE=true ise sadece log, trade yok.
+            # ------------------------------------------------------------------
+            # Opsiyonel: label ile kısa bir realtime kıyas (sadece log)
+            # ------------------------------------------------------------------
+            # Burada horizon=1 için future_close kullanarak ret ve y hesaplıyoruz.
+            # Canlı trade'i etkilemez, sadece loglama amaçlı.
+            try:
+                y_series = build_labels(raw_df["close"], horizon=1)
+                # Feature DF dropna yüzünden ufak kayma olabilir;
+                # son bar için geleceği bilmiyoruz, o yüzden -2 ile hizalayabiliriz.
+                if len(y_series) > 2:
+                    last_label = int(y_series.iloc[-2])
+                    system_logger.info(
+                        "[LABEL_CHECK] last_label(horizon=1)=%d (1=up,0=down)",
+                        last_label,
+                    )
+            except Exception as e:
+                system_logger.warning(
+                    "[LABEL_CHECK] label hesaplanırken hata: %s", e
+                )
+
+            # ------------------------------------------------------------------
+            # Trade execution
+            # ------------------------------------------------------------------
             if TRAINING_MODE:
                 system_logger.info(
-                    "[MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. Sinyal sadece loglandı."
+                    "[MAIN] TRAINING_MODE aktif, execute_decision çağrılmayacak. "
+                    "Sinyal sadece loglandı."
                 )
             else:
-                if hasattr(trade_executor, "execute_decision"):
-                    # Fiyat için son close
-                    last_price = float(raw_df["close"].iloc[-1])
+                last_price = float(raw_df["close"].iloc[-1])
 
-                    # Güvenli olması için p_sgd/p_hybrid/model_confidence_factor/best_auc/best_side değişkenlerini locals()'tan çek
-                    p_sgd_val = float(locals().get("p_sgd", 0.5))
-                    p_hybrid_val = float(locals().get("p_hybrid", 0.5))
-                    mcf_val = float(locals().get("model_confidence_factor", 1.0))
-                    best_auc_val = float(locals().get("best_auc", 0.0))
-                    best_side_val = locals().get("best_side", "hold")
+                if trade_executor is not None and hasattr(
+                    trade_executor, "execute_decision"
+                ):
+                    # Güvenlik için p_sgd/p_hybrid'i tekrar al
+                    p_sgd_val = float(p_sgd_mean)
+                    p_hybrid_val = float(p_hybrid)
 
+                    extra = {
+                        "model_confidence_factor": float(model_confidence_factor),
+                        "best_auc": float(best_auc),
+                        "best_side": best_side,
+                    }
+
+                    # TradeExecutor imzan senin projende farklıysa sadece bu çağrıyı
+                    # kendi versiyonuna uyarlaman yeterli.
                     await trade_executor.execute_decision(
                         signal=signal,
                         symbol=SYMBOL,
                         price=last_price,
-                        size=None,  # TODO: RiskManager içinden dinamik position size
+                        size=None,  # TODO: RiskManager ile dinamik position size
                         interval=INTERVAL,
                         training_mode=TRAINING_MODE,
                         hybrid_mode=HYBRID_MODE,
@@ -473,69 +367,86 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                             "p_sgd": p_sgd_val,
                             "p_hybrid": p_hybrid_val,
                         },
-                        extra={
-                            "model_confidence_factor": mcf_val,
-                            "best_auc": best_auc_val,
-                            "best_side": best_side_val,
-                        },
+                        extra=extra,
                     )
                 else:
                     system_logger.info(
-                        "[TRADE] TradeExecutor.execute_decision bulunamadı, trade atlanıyor."
+                        "[EXEC] TradeExecutor yok veya execute_decision tanımlı değil; "
+                        "sinyal sadece loglandı."
                     )
 
         except asyncio.CancelledError:
-            system_logger.info("[MAIN] bot_loop cancelled, shutting down...")
+            system_logger.info("[MAIN] Bot loop cancelled, shutting down gracefully.")
             break
         except Exception as e:
-            logging.getLogger("error").exception(
-                "[MAIN] Error in bot_loop: %s", e
-            )
+            if system_logger:
+                system_logger.exception("[MAIN] Error in bot_loop: %s", e)
+            else:
+                print(f"[MAIN] Error in bot_loop: {e}")
 
+        # Sonraki loop için bekleme
         await asyncio.sleep(LOOP_SLEEP_SECONDS)
 
 
 # ----------------------------------------------------------------------
-# main / async_main
+# Async main & entrypoint
 # ----------------------------------------------------------------------
 async def async_main() -> None:
-    trading_objects = create_trading_objects()
+    global system_logger
 
-    loop_task = asyncio.create_task(bot_loop(trading_objects))
+    # ENV yükle
+    load_environment_variables()
 
-    # Graceful shutdown
-    loop = asyncio.get_running_loop()
+    # Logger hazırla
+    system_logger = setup_logger()
+    system_logger.info("[LOGGER] Loggers initialized (system, error, trades).")
 
-    stop_event = asyncio.Event()
-
-    def _signal_handler():
-        logging.getLogger("system").info(
-            "[MAIN] Shutdown signal received, cancelling bot_loop..."
+    if not (BINANCE_API_KEY and BINANCE_API_SECRET):
+        system_logger.warning(
+            "[BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol."
         )
-        stop_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _signal_handler)
-        except NotImplementedError:
-            # Windows vb. ortamlar için
-            pass
+    system_logger.info(
+        "[MAIN] TRAINING_MODE=%s -> %s",
+        TRAINING_MODE,
+        "Offline/eğitim modu" if TRAINING_MODE else "Normal çalışma modu (trade logic aktif)",
+    )
+    system_logger.info(
+        "[MAIN] HYBRID_MODE=%s -> %s",
+        HYBRID_MODE,
+        "LSTM+SGD hibrit skor kullanılacak (mümkünse)."
+        if HYBRID_MODE
+        else "Sadece SGD/online skor kullanılacak.",
+    )
 
-    await stop_event.wait()
-    loop_task.cancel()
-    try:
-        await loop_task
-    except asyncio.CancelledError:
-        logging.getLogger("system").info("[MAIN] bot_loop cancelled.")
+    trading_objects = create_trading_objects()
+    await bot_loop(trading_objects)
 
 
 def main() -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Graceful shutdown için sinyal handler
+    stop_event = asyncio.Event()
+
+    def _signal_handler(sig_num, _frame):
+        if system_logger:
+            system_logger.info("[MAIN] Signal received (%s), shutting down...", sig_num)
+        loop.call_soon_threadsafe(stop_event.set)
+
     try:
-        asyncio.run(async_main())
-    except KeyboardInterrupt:
-        logging.getLogger("system").info("[MAIN] KeyboardInterrupt, exiting...")
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+    except Exception:
+        # Windows vs. uyumsuz ortamlar için
+        pass
+
+    try:
+        loop.run_until_complete(async_main())
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":
     main()
-
