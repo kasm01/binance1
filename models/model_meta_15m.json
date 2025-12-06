@@ -1,0 +1,5 @@
+{
+  "best_auc": 0.7238,
+  "best_side": "short",
+  "use_lstm_hybrid": false
+}

@@ -1,0 +1,8 @@
+{
+  "best_auc": 0.708,
+  "best_side": "long",
+  "use_lstm_hybrid": true,
+  "lstm_long_auc": 0.8972682119205299,
+  "lstm_short_auc": 0.8965538386068188,
+  "seq_len": 32
+}
