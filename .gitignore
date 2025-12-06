@@ -29,11 +29,26 @@ logs/
 *.out
 *.err
 
-# -----------------------------------------
-# Model artifacts & training output
-# -----------------------------------------
-models/
-*/models/
+# Model artifacts & training output (ignore only binary artifacts, keep .py code)
+models/*.joblib
+models/*.pkl
+models/*.h5
+models/*.hdf5
+models/*.sav
+models/*.npy
+models/*.npz
+models/*.pt
+models/*.pth
+
+*/models/*.joblib
+*/models/*.pkl
+*/models/*.h5
+*/models/*.hdf5
+*/models/*.sav
+*/models/*.npy
+*/models/*.npz
+*/models/*.pt
+*/models/*.pth
 
 # -----------------------------------------
 # Local config / Machine-specific
