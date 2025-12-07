@@ -22,7 +22,7 @@ except ImportError:
 
 from core.logger import setup_logger
 from core.risk_manager import RiskManager  # risk tarafında kullanmak istersen
-from models.hybrid_inference import HybridModel
+from models.hybrid_inference import HybridModel, HybridMultiTFModel
 
 # ----------------------------------------------------------------------
 # Global logger
@@ -38,9 +38,17 @@ INTERVAL = os.getenv("INTERVAL", "5m")
 TRAINING_MODE = os.getenv("TRAINING_MODE", "false").lower() == "true"
 HYBRID_MODE = os.getenv("HYBRID_MODE", "true").lower() == "true"
 
-# Decision threshold’ları (offline backtest sonucuna göre default)
-LONG_THRESHOLD = float(os.getenv("LONG_THRESHOLD", "0.50"))   # p ≥ 0.50 → long
-SHORT_THRESHOLD = float(os.getenv("SHORT_THRESHOLD", "0.30")) # p ≤ 0.30 → short
+# ------------------------------------------------------------
+# Threshold ve Multi-Timeframe ensemble ayarları
+# ------------------------------------------------------------
+LONG_THRESHOLD = float(os.getenv("LONG_THRESHOLD", "0.5"))
+SHORT_THRESHOLD = float(os.getenv("SHORT_THRESHOLD", "0.3"))
+
+# Multi-timeframe ensemble kullanılsın mı?
+USE_MTF_ENS = os.getenv("USE_MTF_ENS", "false").lower() == "true"
+
+# Ensemble’da kullanılacak interval listesi
+MTF_INTERVALS = ["1m", "5m", "15m", "1h"]
 
 # Loop bekleme süresi (saniye)
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
@@ -154,10 +162,14 @@ async def fetch_raw_klines(symbol: str, interval: str, limit: int = 500) -> pd.D
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
 
-    # RiskManager (şu an aktif kullanmıyoruz ama ileride pozisyon sizing için)
+    # ------------------------------------------------------------
+    # RiskManager
+    # ------------------------------------------------------------
     risk_manager = RiskManager(logger=system_logger)
 
-    # HybridModel (tek timeframe: INTERVAL)
+    # ------------------------------------------------------------
+    # Tek-timeframe HybridModel (INTERVAL için)
+    # ------------------------------------------------------------
     hybrid_model = HybridModel(
         model_dir="models",
         interval=INTERVAL,
@@ -168,7 +180,6 @@ def create_trading_objects() -> Dict[str, Any]:
     best_auc = float(hybrid_model.meta.get("best_auc", 0.5))
     best_side = hybrid_model.meta.get("best_side", "best")
 
-    # Çok agresif olmayan bir confidence factor:
     # AUC 0.5 → 1.0, AUC 0.7 → ~1.4, AUC 0.8 → ~1.6 gibi
     model_confidence_factor = 1.0 + max(0.0, best_auc - 0.5) * 2.0
 
@@ -181,9 +192,31 @@ def create_trading_objects() -> Dict[str, Any]:
         model_confidence_factor,
     )
 
-    # TradeExecutor'u burada *opsiyonel* bırakıyorum; eğer senin mevcut
-    # core.trade_executor.TradeExecutor imzan farklıysa sadece burayı
-    # kendi versiyonunla değiştirmen yeterli.
+    # ------------------------------------------------------------
+    # Multi-timeframe Hybrid ensemble (opsiyonel)
+    # ------------------------------------------------------------
+    mtf_model = None
+    if USE_MTF_ENS:
+        try:
+            mtf_model = HybridMultiTFModel(
+                model_dir="models",
+                intervals=MTF_INTERVALS,
+                logger=system_logger,
+            )
+            system_logger.info(
+                "[HYBRID-MTF] Multi-timeframe ensemble aktif. Intervals=%s",
+                ",".join(MTF_INTERVALS),
+            )
+        except Exception as e:
+            system_logger.warning(
+                "[HYBRID-MTF] Ensemble modeli init edilemedi: %s. Tek timeframe ile devam.",
+                e,
+            )
+            mtf_model = None
+
+    # ------------------------------------------------------------
+    # TradeExecutor
+    # ------------------------------------------------------------
     try:
         from core.trade_executor import TradeExecutor  # type: ignore
 
@@ -201,6 +234,7 @@ def create_trading_objects() -> Dict[str, Any]:
     return {
         "risk_manager": risk_manager,
         "hybrid_model": hybrid_model,
+        "mtf_model": mtf_model,
         "trade_executor": trade_executor,
         "model_confidence_factor": model_confidence_factor,
         "best_auc": best_auc,
@@ -264,50 +298,62 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
             p_lstm_mean = float(debug.get("p_lstm_mean", 0.5))
             mode = debug.get("mode", "unknown")
 
-            # PRED log
-            system_logger.info(
-                "[HYBRID] mode=%s n_samples=%d n_features=%d "
-                "p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, "
-                "best_auc=%.4f, best_side=%s",
-                mode,
-                int(debug.get("n_samples", len(feat_df))),
-                int(debug.get("n_features", feat_df.shape[1])),
-                p_sgd_mean,
-                p_lstm_mean,
-                float(debug.get("p_hybrid_mean", p_hybrid)),
-                best_auc,
-                best_side,
-            )
+# ------------------------------------------------------------
+# PRED LOG
+# ------------------------------------------------------------
+system_logger.info(
+    "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)",
+    p_sgd,
+    p_hybrid,
+    HYBRID_MODE,
+)
 
-            system_logger.info(
-                "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)",
-                p_sgd_mean,
-                p_hybrid,
-                HYBRID_MODE,
-            )
+# ------------------------------------------------------------
+# Multi-Timeframe ensemble kullanımı (varsa)
+# ------------------------------------------------------------
+# Varsayılan olarak tek interval hibrit skorunu kullanıyoruz
+p_used = float(p_hybrid if HYBRID_MODE else p_sgd)
+mtf_debug = None
 
-            # ------------------------------------------------------------------
-            # Threshold bazlı sinyal kararı
-            # ------------------------------------------------------------------
-            # HYBRID_MODE=True ise p_hybrid, değilse p_sgd_mean kullan
-            p_used = float(p_hybrid if HYBRID_MODE else p_sgd_mean)
+if USE_MTF_ENS and mtf_model is not None:
+    try:
+        # Şimdilik sadece mevcut interval'in feature DF'ini veriyoruz.
+        # İleride 1m/15m/1h için de feature pipeline ekleyip buraya koyacağız.
+        X_dict = {INTERVAL: features_df}
 
-            if p_used >= LONG_THRESHOLD:
-                signal = "long"
-            elif p_used <= SHORT_THRESHOLD:
-                signal = "short"
-            else:
-                signal = "hold"
+        ensemble_p, mtf_debug = mtf_model.predict_proba_multi(X_dict)
+        p_used = float(ensemble_p)
 
-            system_logger.info(
-                "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
-                "signal=%s, model_conf_factor=%.3f",
-                p_used,
-                LONG_THRESHOLD,
-                SHORT_THRESHOLD,
-                signal,
-                model_confidence_factor,
-            )
+        system_logger.info(
+            "[HYBRID-MTF] ensemble_p=%.4f (INTERVAL=%s, USE_MTF_ENS=%s)",
+            p_used,
+            INTERVAL,
+            USE_MTF_ENS,
+        )
+    except Exception as e:
+        system_logger.warning(
+            "[HYBRID-MTF] ensemble hesaplaması başarısız, single TF kullanılacak: %s",
+            e,
+        )
+
+# ------------------------------------------------------------
+# Threshold bazlı sinyal kararı
+# ------------------------------------------------------------
+if p_used >= LONG_THRESHOLD:
+    signal = "long"
+elif p_used <= SHORT_THRESHOLD:
+    signal = "short"
+else:
+    signal = "hold"
+
+system_logger.info(
+    "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, signal=%s, model_conf_factor=%.3f",
+    p_used,
+    LONG_THRESHOLD,
+    SHORT_THRESHOLD,
+    signal,
+    model_confidence_factor,
+)
 
             # ------------------------------------------------------------------
             # Opsiyonel: label ile kısa bir realtime kıyas (sadece log)
