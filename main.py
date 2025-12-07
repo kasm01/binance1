@@ -68,7 +68,7 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true" or not (
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     Eğitimde kullanılan feature setine yakın, sabit bir şema üretir.
-    HybridModel._prepare_feature_matrix bu kolonları bekliyor:
+    HybridModel._prepare_feature_matrix şu kolonları bekliyor:
 
       ['open_time', 'open', 'high', 'low', 'close', 'volume',
        'close_time', 'quote_asset_volume', 'number_of_trades',
@@ -78,7 +78,25 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = raw_df.copy()
 
-    # Price / volume feature'ları
+    # ------------------------------------------------------------
+    # 1) Zaman kolonlarını sayısala çevir (saniye cinsinden epoch)
+    #    Böylece toplam 22 kolonun hepsi numeric olur ve
+    #    LSTM/Scaler tarafıyla birebir uyuşur.
+    # ------------------------------------------------------------
+    for col in ["open_time", "close_time"]:
+        if col in df.columns:
+            try:
+                # Genelde Binance CSV'leri ms cinsinden epoch
+                dt = pd.to_datetime(df[col], unit="ms", errors="coerce")
+            except Exception:
+                # Her ihtimale karşı, unit belirtmeden de dene
+                dt = pd.to_datetime(df[col], errors="coerce")
+            # saniyeye indir (float)
+            df[col] = dt.view("int64") / 1e9
+
+    # ------------------------------------------------------------
+    # 2) Price / volume feature'ları
+    # ------------------------------------------------------------
     df["hl_range"] = df["high"] - df["low"]
     df["oc_change"] = df["close"] - df["open"]
 
@@ -95,8 +113,38 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     # Eğitime uyum için ekstra dummy kolon
     df["dummy_extra"] = 0.0
 
-    # NA temizliği
-    df = df.dropna().reset_index(drop=True)
+    # ------------------------------------------------------------
+    # 3) NA temizliği
+    # ------------------------------------------------------------
+    df = df.fillna(method="ffill").fillna(method="bfill").fillna(0.0)
+
+    # Kolonların sırasını da sabitleyelim (offline backtest ile birebir)
+    expected_cols = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_asset_volume",
+        "number_of_trades",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+        "ignore",
+        "hl_range",
+        "oc_change",
+        "return_1",
+        "return_3",
+        "return_5",
+        "ma_5",
+        "ma_10",
+        "ma_20",
+        "vol_10",
+        "dummy_extra",
+    ]
+    df = df[expected_cols].reset_index(drop=True)
+
     return df
 
 
@@ -160,7 +208,21 @@ def create_trading_objects() -> Dict[str, Any]:
     # ------------------------------------------------------------
     # RiskManager
     # ------------------------------------------------------------
-    risk_manager = RiskManager(logger=system_logger)
+    try:
+        # Eğer RiskManager logger parametresini kabul ediyorsa
+        risk_manager = RiskManager(logger=system_logger)
+    except TypeError:
+        # Eski imza: logger parametresi yok
+        risk_manager = RiskManager()
+    except Exception as e:
+        # Çok uç bir durumda risk manager hiç kurulamazsa
+        if system_logger:
+            system_logger.warning(
+                "[MAIN] RiskManager init edilemedi: %s. Basit dummy risk manager kullanılacak.", e
+            )
+        else:
+            print(f"[MAIN] RiskManager init edilemedi: {e}")
+        risk_manager = None
 
     # ------------------------------------------------------------
     # Tek-timeframe HybridModel (INTERVAL için)
@@ -178,14 +240,15 @@ def create_trading_objects() -> Dict[str, Any]:
     # AUC 0.5 → 1.0, AUC 0.7 → ~1.4, AUC 0.8 → ~1.6 gibi
     model_confidence_factor = 1.0 + max(0.0, best_auc - 0.5) * 2.0
 
-    system_logger.info(
-        "[RISK] Using offline meta for interval=%s: best_auc=%.4f, best_side=%s, "
-        "model_confidence_factor=%.3f",
-        INTERVAL,
-        best_auc,
-        best_side,
-        model_confidence_factor,
-    )
+    if system_logger:
+        system_logger.info(
+            "[RISK] Using offline meta for interval=%s: best_auc=%.4f, best_side=%s, "
+            "model_confidence_factor=%.3f",
+            INTERVAL,
+            best_auc,
+            best_side,
+            model_confidence_factor,
+        )
 
     # ------------------------------------------------------------
     # Multi-timeframe Hybrid ensemble (opsiyonel)
@@ -198,15 +261,17 @@ def create_trading_objects() -> Dict[str, Any]:
                 intervals=MTF_INTERVALS,
                 logger=system_logger,
             )
-            system_logger.info(
-                "[HYBRID-MTF] Multi-timeframe ensemble aktif. Intervals=%s",
-                ",".join(MTF_INTERVALS),
-            )
+            if system_logger:
+                system_logger.info(
+                    "[HYBRID-MTF] Multi-timeframe ensemble aktif. Intervals=%s",
+                    ",".join(MTF_INTERVALS),
+                )
         except Exception as e:
-            system_logger.warning(
-                "[HYBRID-MTF] Ensemble modeli init edilemedi: %s. Tek timeframe ile devam.",
-                e,
-            )
+            if system_logger:
+                system_logger.warning(
+                    "[HYBRID-MTF] Ensemble modeli init edilemedi: %s. Tek timeframe ile devam.",
+                    e,
+                )
             mtf_model = None
 
     # ------------------------------------------------------------
@@ -215,15 +280,27 @@ def create_trading_objects() -> Dict[str, Any]:
     try:
         from core.trade_executor import TradeExecutor  # type: ignore
 
-        trade_executor = TradeExecutor(
-            risk_manager=risk_manager,
-            logger=system_logger,
-            dry_run=DRY_RUN,
-        )
+        try:
+            # Yeni imza: logger parametresini destekliyorsa
+            trade_executor = TradeExecutor(
+                risk_manager=risk_manager,
+                logger=system_logger,
+                dry_run=DRY_RUN,
+            )
+        except TypeError:
+            # Eski imza: logger yok
+            trade_executor = TradeExecutor(
+                risk_manager=risk_manager,
+                dry_run=DRY_RUN,
+            )
+
     except Exception as e:
-        system_logger.warning(
-            "[MAIN] TradeExecutor init edilemedi (%s). Emir gönderimi devre dışı.", e
-        )
+        if system_logger:
+            system_logger.warning(
+                "[MAIN] TradeExecutor init edilemedi (%s). Emir gönderimi devre dışı.", e
+            )
+        else:
+            print(f"[MAIN] TradeExecutor init edilemedi: {e}")
         trade_executor = None
 
     return {
@@ -431,14 +508,27 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
 # Async main & entrypoint
 # ----------------------------------------------------------------------
 async def async_main() -> None:
+    """
+    Asenkron ana giriş noktası.
+    Burada:
+      - ENV yüklenir
+      - logger initialize edilir ve GLOBAL system_logger'a atanır
+      - trading objeleri oluşturulur
+      - bot_loop başlatılır
+    """
     global system_logger
 
     # ENV yükle
     load_environment_variables()
 
-    # Logger hazırla
-    system_logger = setup_logger()
-    system_logger.info("[LOGGER] Loggers initialized (system, error, trades).")
+    # Logger'ı kur ve global system_logger'ı ata
+    setup_logger()  # return değerini kullanmıyoruz
+    system_logger = logging.getLogger("system")
+
+    if system_logger is None:
+        # Çok uç bir durumda bile en azından stdout'a yazsın
+        print("[MAIN] system_logger init edilemedi!")
+        return
 
     if not (BINANCE_API_KEY and BINANCE_API_SECRET):
         system_logger.warning(
@@ -458,11 +548,18 @@ async def async_main() -> None:
         else "Sadece SGD/online skor kullanılacak.",
     )
 
+    # Trading objelerini oluştur
     trading_objects = create_trading_objects()
+
+    # Ana bot loop'u başlat
     await bot_loop(trading_objects)
 
 
 def main() -> None:
+    """
+    Sync entrypoint. Yeni event loop açar ve async_main'i çalıştırır.
+    Graceful shutdown için SIGINT / SIGTERM yakalar.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -489,3 +586,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
