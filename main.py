@@ -4,7 +4,7 @@ import signal
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,7 @@ except ImportError:
         return dict(os.environ)
 
 from core.logger import setup_logger
-from core.risk_manager import RiskManager  # risk tarafında kullanmak istersen
+from core.risk_manager import RiskManager
 from models.hybrid_inference import HybridModel, HybridMultiTFModel
 
 # ----------------------------------------------------------------------
@@ -77,11 +77,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
        'ma_5', 'ma_10', 'ma_20', 'vol_10', 'dummy_extra']
     """
     df = raw_df.copy()
-
-    # Zaten offline_cache içinde bu kolonlar var:
-    # ['open_time', 'open', 'high', 'low', 'close', 'volume',
-    #  'close_time', 'quote_asset_volume', 'number_of_trades',
-    #  'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore']
 
     # Price / volume feature'ları
     df["hl_range"] = df["high"] - df["low"]
@@ -249,6 +244,7 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
     global system_logger
 
     hybrid_model: HybridModel = trading_objects["hybrid_model"]
+    mtf_model: Optional[HybridMultiTFModel] = trading_objects.get("mtf_model")
     trade_executor = trading_objects["trade_executor"]
     model_confidence_factor: float = trading_objects["model_confidence_factor"]
     best_auc: float = trading_objects["best_auc"]
@@ -280,7 +276,9 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                 list(feat_df.columns),
             )
 
+            # ------------------------------------------------------------
             # Hybrid model tahmini
+            # ------------------------------------------------------------
             p_arr, debug = hybrid_model.predict_proba(feat_df)
 
             if p_arr is None or len(p_arr) == 0:
@@ -290,80 +288,79 @@ async def bot_loop(trading_objects: Dict[str, Any]) -> None:
                 await asyncio.sleep(LOOP_SLEEP_SECONDS)
                 continue
 
-            # Son barın skoru
+            # Son barın hibrit skoru
             p_hybrid = float(p_arr[-1])
 
-            # debug içinden SGD ortalamasını çek
+            # debug içinden ortalama SGD / LSTM skorlarını çek
             p_sgd_mean = float(debug.get("p_sgd_mean", 0.5))
             p_lstm_mean = float(debug.get("p_lstm_mean", 0.5))
             mode = debug.get("mode", "unknown")
 
-# ------------------------------------------------------------
-# PRED LOG
-# ------------------------------------------------------------
-system_logger.info(
-    "[PRED] p_sgd=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)",
-    p_sgd,
-    p_hybrid,
-    HYBRID_MODE,
-)
+            # ------------------------------------------------------------
+            # PRED LOG
+            # ------------------------------------------------------------
+            system_logger.info(
+                "[PRED] mode=%s | p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid=%.4f (HYBRID_MODE=%s)",
+                mode,
+                p_sgd_mean,
+                p_lstm_mean,
+                p_hybrid,
+                HYBRID_MODE,
+            )
 
-# ------------------------------------------------------------
-# Multi-Timeframe ensemble kullanımı (varsa)
-# ------------------------------------------------------------
-# Varsayılan olarak tek interval hibrit skorunu kullanıyoruz
-p_used = float(p_hybrid if HYBRID_MODE else p_sgd)
-mtf_debug = None
+            # ------------------------------------------------------------
+            # Multi-Timeframe ensemble kullanımı (varsa)
+            # ------------------------------------------------------------
+            # Varsayılan olarak tek interval hibrit skorunu kullanıyoruz
+            p_used = float(p_hybrid if HYBRID_MODE else p_sgd_mean)
+            mtf_debug: Optional[Dict[str, Any]] = None
 
-if USE_MTF_ENS and mtf_model is not None:
-    try:
-        # Şimdilik sadece mevcut interval'in feature DF'ini veriyoruz.
-        # İleride 1m/15m/1h için de feature pipeline ekleyip buraya koyacağız.
-        X_dict = {INTERVAL: features_df}
+            if USE_MTF_ENS and mtf_model is not None:
+                try:
+                    # Şimdilik sadece mevcut interval'in feature DF'ini veriyoruz.
+                    # İleride 1m/15m/1h için de feature pipeline ekleyip buraya koyacağız.
+                    X_dict = {INTERVAL: feat_df}
 
-        ensemble_p, mtf_debug = mtf_model.predict_proba_multi(X_dict)
-        p_used = float(ensemble_p)
+                    ensemble_p, mtf_debug = mtf_model.predict_proba_multi(X_dict)
+                    p_used = float(ensemble_p)
 
-        system_logger.info(
-            "[HYBRID-MTF] ensemble_p=%.4f (INTERVAL=%s, USE_MTF_ENS=%s)",
-            p_used,
-            INTERVAL,
-            USE_MTF_ENS,
-        )
-    except Exception as e:
-        system_logger.warning(
-            "[HYBRID-MTF] ensemble hesaplaması başarısız, single TF kullanılacak: %s",
-            e,
-        )
+                    system_logger.info(
+                        "[HYBRID-MTF] ensemble_p=%.4f (INTERVAL=%s, USE_MTF_ENS=%s, n_used=%d)",
+                        p_used,
+                        INTERVAL,
+                        USE_MTF_ENS,
+                        mtf_debug["ensemble"]["n_used"],
+                    )
+                except Exception as e:
+                    system_logger.warning(
+                        "[HYBRID-MTF] ensemble hesaplaması başarısız, single TF kullanılacak: %s",
+                        e,
+                    )
 
-# ------------------------------------------------------------
-# Threshold bazlı sinyal kararı
-# ------------------------------------------------------------
-if p_used >= LONG_THRESHOLD:
-    signal = "long"
-elif p_used <= SHORT_THRESHOLD:
-    signal = "short"
-else:
-    signal = "hold"
+            # ------------------------------------------------------------
+            # Threshold bazlı sinyal kararı
+            # ------------------------------------------------------------
+            if p_used >= LONG_THRESHOLD:
+                signal = "long"
+            elif p_used <= SHORT_THRESHOLD:
+                signal = "short"
+            else:
+                signal = "hold"
 
-system_logger.info(
-    "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, signal=%s, model_conf_factor=%.3f",
-    p_used,
-    LONG_THRESHOLD,
-    SHORT_THRESHOLD,
-    signal,
-    model_confidence_factor,
-)
+            system_logger.info(
+                "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, signal=%s, model_conf_factor=%.3f",
+                p_used,
+                LONG_THRESHOLD,
+                SHORT_THRESHOLD,
+                signal,
+                model_confidence_factor,
+            )
 
             # ------------------------------------------------------------------
             # Opsiyonel: label ile kısa bir realtime kıyas (sadece log)
             # ------------------------------------------------------------------
-            # Burada horizon=1 için future_close kullanarak ret ve y hesaplıyoruz.
-            # Canlı trade'i etkilemez, sadece loglama amaçlı.
             try:
                 y_series = build_labels(raw_df["close"], horizon=1)
-                # Feature DF dropna yüzünden ufak kayma olabilir;
-                # son bar için geleceği bilmiyoruz, o yüzden -2 ile hizalayabiliriz.
                 if len(y_series) > 2:
                     last_label = int(y_series.iloc[-2])
                     system_logger.info(
@@ -389,18 +386,13 @@ system_logger.info(
                 if trade_executor is not None and hasattr(
                     trade_executor, "execute_decision"
                 ):
-                    # Güvenlik için p_sgd/p_hybrid'i tekrar al
-                    p_sgd_val = float(p_sgd_mean)
-                    p_hybrid_val = float(p_hybrid)
-
                     extra = {
                         "model_confidence_factor": float(model_confidence_factor),
                         "best_auc": float(best_auc),
                         "best_side": best_side,
+                        "mtf_debug": mtf_debug,
                     }
 
-                    # TradeExecutor imzan senin projende farklıysa sadece bu çağrıyı
-                    # kendi versiyonuna uyarlaman yeterli.
                     await trade_executor.execute_decision(
                         signal=signal,
                         symbol=SYMBOL,
@@ -410,8 +402,9 @@ system_logger.info(
                         training_mode=TRAINING_MODE,
                         hybrid_mode=HYBRID_MODE,
                         probs={
-                            "p_sgd": p_sgd_val,
-                            "p_hybrid": p_hybrid_val,
+                            "p_used": p_used,
+                            "p_sgd_mean": p_sgd_mean,
+                            "p_lstm_mean": p_lstm_mean,
                         },
                         extra=extra,
                     )
@@ -421,6 +414,9 @@ system_logger.info(
                         "sinyal sadece loglandı."
                     )
 
+            # Sonraki loop için bekleme
+            await asyncio.sleep(LOOP_SLEEP_SECONDS)
+
         except asyncio.CancelledError:
             system_logger.info("[MAIN] Bot loop cancelled, shutting down gracefully.")
             break
@@ -429,9 +425,6 @@ system_logger.info(
                 system_logger.exception("[MAIN] Error in bot_loop: %s", e)
             else:
                 print(f"[MAIN] Error in bot_loop: {e}")
-
-        # Sonraki loop için bekleme
-        await asyncio.sleep(LOOP_SLEEP_SECONDS)
 
 
 # ----------------------------------------------------------------------
