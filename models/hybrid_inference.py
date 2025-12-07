@@ -296,14 +296,200 @@ class HybridModel:
         debug.update(lstm_debug)
 
         self._log(
-            logging.INFO,
-            "[HYBRID] p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
-            debug["p_sgd_mean"],
-            debug["p_lstm_mean"],
-            debug["p_hybrid_mean"],
-            debug["best_auc"],
-            debug["best_side"],
-        )
+    logging.INFO,
+    "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
+    mode,
+    X_arr.shape[0],
+    X_arr.shape[1],
+    debug["p_sgd_mean"],
+    debug["p_lstm_mean"],
+    debug["p_hybrid_mean"],
+    debug["best_auc"],
+    debug["best_side"],
+)
 
         return p_hybrid, debug
 
+class HybridMultiTFModel:
+    """
+    Multi-timeframe hibrit model sarmalayıcısı.
+
+    - Her interval için bir HybridModel yaratır (ör: ["1m", "5m", "15m", "1h"])
+    - Her interval için son barın hibrit skorunu alır
+    - Meta'daki best_auc'a göre ağırlıklandırarak tek bir ensemble skor üretir
+
+    Kullanım:
+        mtf = HybridMultiTFModel(
+            model_dir="models",
+            intervals=["1m", "5m", "15m", "1h"],
+            logger=system_logger,
+        )
+
+        # X_dict: her interval için feature DF'leri
+        ensemble_p, per_tf = mtf.predict_proba_multi({
+            "1m": feat_df_1m,
+            "5m": feat_df_5m,
+            "15m": feat_df_15m,
+            "1h": feat_df_1h,
+        })
+    """
+
+    def __init__(
+        self,
+        model_dir: str,
+        intervals: list[str],
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
+        self.model_dir = model_dir
+        self.intervals = intervals
+        self.logger = logger or logging.getLogger("system")
+
+        self.models: Dict[str, HybridModel] = {}
+        self._init_models()
+
+    def _log(self, level: int, msg: str, *args: Any) -> None:
+        if self.logger:
+            self.logger.log(level, msg, *args)
+        else:
+            print(msg % args if args else msg)
+
+    def _init_models(self) -> None:
+        for itv in self.intervals:
+            try:
+                self.models[itv] = HybridModel(
+                    model_dir=self.model_dir,
+                    interval=itv,
+                    logger=self.logger,
+                )
+                self._log(
+                    logging.INFO,
+                    "[HYBRID-MTF] Loaded HybridModel for interval=%s",
+                    itv,
+                )
+            except Exception as e:
+                self._log(
+                    logging.WARNING,
+                    "[HYBRID-MTF] Failed to init HybridModel for %s: %s",
+                    itv,
+                    e,
+                )
+
+    def _compute_weight_from_meta(self, meta: Dict[str, Any]) -> float:
+        """
+        Meta'daki best_auc'a göre ağırlık hesaplar.
+        - AUC <= 0.5 → 0 (bilgi yok sayılır)
+        - AUC >  0.5 → auc - 0.5 (max 0.5 civarı olur)
+        """
+        try:
+            auc = float(meta.get("best_auc", 0.5))
+        except Exception:
+            auc = 0.5
+        w = max(auc - 0.5, 0.0)
+        return w
+
+    def predict_proba_multi(
+        self,
+        X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]],
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        X_dict: {"1m": feat_df_1m, "5m": feat_df_5m, ...}
+
+        Dönüş:
+          - ensemble_p: tek bir float (0-1 arası hibrit skor)
+          - debug: {
+                "per_interval": {
+                    "5m": {
+                        "p_last": ...,
+                        "weight": ...,
+                        "dbg": {...},
+                    },
+                    ...
+                },
+                "ensemble": {
+                    "p": ...,
+                    "n_used": ...,
+                }
+            }
+        """
+        per_interval: Dict[str, Any] = {}
+        probs_list = []
+        weights_list = []
+
+        for itv, model in self.models.items():
+            X = X_dict.get(itv)
+            if X is None:
+                self._log(
+                    logging.INFO,
+                    "[HYBRID-MTF] No features provided for interval=%s, skipping.",
+                    itv,
+                )
+                continue
+
+            try:
+                p_arr, dbg = model.predict_proba(X)
+                if p_arr is None or len(p_arr) == 0:
+                    self._log(
+                        logging.WARNING,
+                        "[HYBRID-MTF] Empty proba array for interval=%s, skipping.",
+                        itv,
+                    )
+                    continue
+
+                p_last = float(p_arr[-1])
+                w = self._compute_weight_from_meta(model.meta)
+
+                # Eğer weight 0 ise, bu interval'i ensemble'a dahil etmiyoruz
+                if w <= 0.0:
+                    self._log(
+                        logging.INFO,
+                        "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.",
+                        itv,
+                    )
+                else:
+                    probs_list.append(p_last)
+                    weights_list.append(w)
+
+                per_interval[itv] = {
+                    "p_last": p_last,
+                    "weight": w,
+                    "debug": dbg,
+                    "best_auc_meta": float(model.meta.get("best_auc", 0.5)),
+                    "best_side_meta": model.meta.get("best_side", "best"),
+                }
+
+            except Exception as e:
+                self._log(
+                    logging.WARNING,
+                    "[HYBRID-MTF] predict_proba failed for interval=%s: %s",
+                    itv,
+                    e,
+                )
+
+        # Ensemble hesapla
+        if probs_list and weights_list and sum(weights_list) > 0:
+            probs_arr = np.asarray(probs_list, dtype=float)
+            weights_arr = np.asarray(weights_list, dtype=float)
+            ensemble_p = float((probs_arr * weights_arr).sum() / weights_arr.sum())
+        elif probs_list:
+            # ağırlıklar 0 ise basit ortalama
+            ensemble_p = float(np.mean(probs_list))
+        else:
+            # Hiç kullanılabilir sinyal yoksa 0.5
+            ensemble_p = 0.5
+
+        debug_out = {
+            "per_interval": per_interval,
+            "ensemble": {
+                "p": ensemble_p,
+                "n_used": len(probs_list),
+            },
+        }
+
+        self._log(
+            logging.INFO,
+            "[HYBRID-MTF] ensemble_p=%.4f, n_used=%d",
+            ensemble_p,
+            len(probs_list),
+        )
+
+        return ensemble_p, debug_out
