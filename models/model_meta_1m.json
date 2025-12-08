@@ -1,5 +1,36 @@
 {
-  "best_auc": 0.6929,
+  "interval": "1m",
+  "symbol": "BTCUSDT",
+  "feature_schema": [
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_asset_volume",
+    "number_of_trades",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+    "hl_range",
+    "oc_change",
+    "return_1",
+    "return_3",
+    "return_5",
+    "ma_5",
+    "ma_10",
+    "ma_20",
+    "vol_10",
+    "dummy_extra"
+  ],
+  "feature_source": "fixed_schema",
+  "n_samples": 50000,
+  "best_auc": 0.49900912892628313,
   "best_side": "short",
-  "use_lstm_hybrid": false
+  "use_lstm_hybrid": false,
+  "seq_len": 32,
+  "meta_version": 1,
+  "label_horizon": 1
 }

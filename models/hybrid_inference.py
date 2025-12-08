@@ -6,7 +6,21 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 from joblib import load
-from tensorflow.keras.models import load_model
+# ----------------------------------------------------------------------
+# TensorFlow / LSTM opsiyonel import
+# ----------------------------------------------------------------------
+try:
+    from tensorflow.keras.models import load_model  # type: ignore
+    TENSORFLOW_AVAILABLE = True
+except Exception:
+    # TensorFlow kütüphanesi veya .so kernel'leri yüklenemiyorsa
+    # LSTM tarafını tamamen devre dışı bırakıyoruz.
+    TENSORFLOW_AVAILABLE = False
+
+    def load_model(*_args, **_kwargs):
+        # HybridModel içinde çağrılırsa try/except ile yakalanacak
+        raise RuntimeError("TensorFlow is not available; LSTM disabled.")
+
 
 
 class HybridModel:
