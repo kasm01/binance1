@@ -5,8 +5,9 @@ from typing import Optional, Dict, Any
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
 
+logger = logging.getLogger("system")
 
-class TradeExecutor:
+class TradeExecutor: 
     """
     TradeExecutor:
       - RiskManager ile entegre
@@ -18,12 +19,13 @@ class TradeExecutor:
 
     def __init__(
         self,
+        client: Optional[Any],                 # <-- BURAYA EKLEDİK
         risk_manager: RiskManager,
         position_manager: Optional[PositionManager] = None,
         logger: Optional[logging.Logger] = None,
         dry_run: bool = True,
         # temel risk parametreleri
-        base_order_notional: float = 50.0,   # varsayılan pozisyon büyüklüğü (USDT)
+        base_order_notional: float = 50.0,     # varsayılan pozisyon büyüklüğü (USDT)
         max_position_notional: float = 500.0,
         max_leverage: float = 3.0,
         # SL/TP & trailing
@@ -36,9 +38,10 @@ class TradeExecutor:
         # whale risk kancası
         whale_risk_boost: float = 2.0,
     ) -> None:
+        self.client = client                  # <-- client referansı
         self.risk_manager = risk_manager
         self.position_manager = position_manager
-        self.logger = logger or logging.getLogger("TradeExecutor")
+        self.logger = logger or logging.getLogger("system")
         self.dry_run = bool(dry_run)
 
         self.base_order_notional = float(base_order_notional)

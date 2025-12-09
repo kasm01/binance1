@@ -16,6 +16,18 @@ from core.trade_executor import TradeExecutor
 from data.online_learning import OnlineLearner  # şimdilik sadece placeholder
 from models.hybrid_inference import HybridModel, HybridMultiTFModel
 from core.binance_client import create_binance_client
+from models.hybrid_inference import HybridModel, HybridMultiTFModel
+
+# Config değerlerini çek
+USE_TESTNET = getattr(config, "USE_TESTNET", False)
+
+BINANCE_API_KEY = getattr(config, "BINANCE_API_KEY", None)
+BINANCE_API_SECRET = getattr(config, "BINANCE_API_SECRET", None)
+
+REDIS_URL = getattr(config, "REDIS_URL", "redis://localhost:6379/0")
+REDIS_KEY_PREFIX = getattr(config, "REDIS_KEY_PREFIX", "bot:positions")
+
+SYMBOL = getattr(config, "SYMBOL", "BTCUSDT")
 
 
 # ----------------------------------------------------------------------
@@ -52,29 +64,69 @@ DRY_RUN: bool = get_bool_env("DRY_RUN", True)
 # ----------------------------------------------------------------------
 # Basit feature engineering
 # ----------------------------------------------------------------------
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Kline DF -> feature DF
-    offline_train_hybrid.py ile birebir uyumlu, böylece
-    offline/online tutarlılığı bozulmaz.
+    Hem Binance canlı verisi (ms epoch) hem de offline CSV (ISO datetime string)
+    ile çalışacak şekilde feature üretir.
     """
-    df = df.copy()
+    df = raw_df.copy()
 
-    # Zaman kolonlarını saniyeye çevir
+    # --------------------------------------------------
+    # 1) Zaman kolonlarını normalize et (open_time / close_time)
+    #    - Eğer kolon numeric ise: unit="ms" ile epoch'tan çevir
+    #    - Değilse: direkt to_datetime
+    #    Sonuçta: saniye bazlı epoch float (Unix time)
+    # --------------------------------------------------
     for col in ["open_time", "close_time"]:
-        if col in df.columns:
-            dt = pd.to_datetime(df[col], unit="ms", utc=True)
-            # FutureWarning için aynı patterni kullanıyoruz
-            df[col] = dt.view("int64") / 1e9  # saniye
+        if col not in df.columns:
+            continue
 
-    # Float’a cast
-    for c in ["open", "high", "low", "close", "volume"]:
+        # dtype numeric mi?
+        if pd.api.types.is_numeric_dtype(df[col]):
+            # Binance'ten gelen ms epoch
+            dt = pd.to_datetime(df[col], unit="ms", utc=True)
+        else:
+            # Offline CSV'de string timestamp ise
+            dt = pd.to_datetime(df[col], utc=True)
+
+        # nanosecond -> second
+        df[col] = dt.astype("int64") / 1e9
+
+    # --------------------------------------------------
+    # 2) Temel numeric cast
+    # --------------------------------------------------
+    float_cols = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_asset_volume",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ]
+    int_cols = [
+        "number_of_trades",
+    ]
+
+    for c in float_cols:
         if c in df.columns:
             df[c] = df[c].astype(float)
 
-    # Basit fiyat/vol feature'ları
+    for c in int_cols:
+        if c in df.columns:
+            df[c] = df[c].astype(float)  # model için float da iş görür
+
+    # ignore yoksa ekle
+    if "ignore" not in df.columns:
+        df["ignore"] = 0.0
+
+    # --------------------------------------------------
+    # 3) Teknik feature'lar
+    # --------------------------------------------------
     df["hl_range"] = df["high"] - df["low"]
     df["oc_change"] = df["close"] - df["open"]
+
     df["return_1"] = df["close"].pct_change(1)
     df["return_3"] = df["close"].pct_change(3)
     df["return_5"] = df["close"].pct_change(5)
@@ -83,13 +135,16 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ma_10"] = df["close"].rolling(10).mean()
     df["ma_20"] = df["close"].rolling(20).mean()
 
-    df["vol_10"] = df["volume"].rolling(10).mean()
+    df["vol_10"] = df["volume"].rolling(10).std()
 
-    # Placeholder / genişleme alanı
-    df["dummy_extra"] = 0.0
+    # Dummy ekstra feature (modelle uyum için)
+    if "dummy_extra" not in df.columns:
+        df["dummy_extra"] = 0.0
 
-    # NaN doldurma (offline_train_hybrid ile aynı pattern)
-    df = df.fillna(method="ffill").fillna(method="bfill").fillna(0.0)
+    # --------------------------------------------------
+    # 4) NaN temizliği
+    # --------------------------------------------------
+    df = df.ffill().bfill().fillna(0.0)
 
     return df
 
@@ -137,17 +192,71 @@ async def fetch_klines(
     symbol: str,
     interval: str,
     limit: int,
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger,
 ) -> pd.DataFrame:
     """
-    Binance'ten kline çeker ve DataFrame döner.
-    client: core.binance_client.create_binance_client ile oluşturulan client
+    Kline fetch helper.
+
+    - Eğer client None ise:
+        -> DRY_RUN / offline mod varsayılır
+        -> data/offline_cache/{symbol}_{interval}_6m.csv dosyasından okur
+    - Eğer client varsa:
+        -> Binance'ten async get_klines ile veri çeker
     """
-    klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    # Beklenen kolon sırası: [open_time, open, high, low, close, volume, close_time,
-    # quote_asset_volume, number_of_trades, taker_buy_base_volume,
-    # taker_buy_quote_volume, ignore]
-    cols = [
+
+    # ---------------------------------------------------------
+    # 1) OFFLINE / DRY_RUN MODU (client is None)
+    # ---------------------------------------------------------
+    if client is None:
+        csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
+        if not os.path.exists(csv_path):
+            logger.error(
+                "[DATA] client=None ve offline CSV bulunamadı: %s",
+                csv_path,
+            )
+            raise RuntimeError(
+                f"Offline kline dosyası yok: {csv_path}. "
+                "Lütfen BINANCE_API_KEY/BINANCE_API_SECRET set edin "
+                "veya offline cache oluşturun."
+            )
+
+        df = pd.read_csv(csv_path)
+
+        # Eğer limit'ten fazla satır varsa sadece son 'limit' satırı al
+        if len(df) > limit:
+            df = df.tail(limit).reset_index(drop=True)
+
+        logger.info(
+            "[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s",
+            csv_path,
+            df.shape,
+        )
+        return df
+
+    # ---------------------------------------------------------
+    # 2) ONLINE MOD (Binance Async Client ile)
+    # ---------------------------------------------------------
+    try:
+        klines = await client.get_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error("[DATA] Binance get_klines hatası: %s", e)
+        raise
+
+    # klines -> DataFrame'e çevir
+    # python-binance standard kline yapısı:
+    # [
+    #   [
+    #     open_time, open, high, low, close, volume,
+    #     close_time, quote_asset_volume, number_of_trades,
+    #     taker_buy_base_volume, taker_buy_quote_volume, ignore
+    #   ],
+    #   ...
+    # ]
+    columns = [
         "open_time",
         "open",
         "high",
@@ -161,14 +270,38 @@ async def fetch_klines(
         "taker_buy_quote_volume",
         "ignore",
     ]
-    df = pd.DataFrame(klines, columns=cols)
-    if logger:
-        logger.info(
-            "[DATA] Fetched klines: symbol=%s interval=%s shape=%s",
-            symbol,
-            interval,
-            df.shape,
-        )
+
+    df = pd.DataFrame(klines, columns=columns)
+
+    # Tip düzeltmeleri
+    float_cols = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_asset_volume",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ]
+    int_cols = [
+        "open_time",
+        "close_time",
+        "number_of_trades",
+    ]
+
+    for c in float_cols:
+        df[c] = df[c].astype(float)
+
+    for c in int_cols:
+        df[c] = df[c].astype(int)
+
+    logger.info(
+        "[DATA] ONLINE mod: Binance'ten kline çekildi. symbol=%s interval=%s shape=%s",
+        symbol,
+        interval,
+        df.shape,
+    )
     return df
 
 
@@ -177,90 +310,151 @@ async def fetch_klines(
 # ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
     """
-    Binance client, RiskManager, PositionManager, TradeExecutor,
-    HybridModel ve MTF modelini ayağa kaldırır.
+    Tüm trading bileşenlerini (client, risk, position, trade_executor, modeller, whale) oluşturur.
     """
-    global system_logger, BINANCE_API_KEY, BINANCE_API_SECRET
+    global system_logger
 
-    if system_logger is None:
-        raise RuntimeError("system_logger init edilmemiş!")
-
+    # -----------------------------
+    # Temel parametreler
+    # -----------------------------
     symbol = getattr(config, "SYMBOL", "BTCUSDT")
     interval = os.getenv("INTERVAL", "5m")
 
+    # DRY_RUN flag
+    DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+
+    # -----------------------------
     # Binance client
+    # -----------------------------
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
         api_secret=BINANCE_API_SECRET,
-        testnet=get_bool_env("BINANCE_TESTNET", False),
+        testnet=USE_TESTNET,
         logger=system_logger,
     )
 
+    # --------------------------------------------------
     # Risk Manager
-    risk_manager = RiskManager()
+    # --------------------------------------------------
 
+    daily_max_loss_usdt = float(os.getenv("DAILY_MAX_LOSS_USDT", "100"))
+    daily_max_loss_pct = float(os.getenv("DAILY_MAX_LOSS_PCT", "0.03"))
+    max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
+    max_open_trades = int(os.getenv("MAX_OPEN_TRADES", "3"))
+    equity_start_of_day = float(os.getenv("EQUITY_START_OF_DAY", "1000"))
+
+    risk_manager = RiskManager(
+        daily_max_loss_usdt=daily_max_loss_usdt,
+        daily_max_loss_pct=daily_max_loss_pct,
+        max_consecutive_losses=max_consecutive_losses,
+        max_open_trades=max_open_trades,
+        equity_start_of_day=equity_start_of_day,  # ✅ DOĞRU İSİM
+        logger=system_logger,                      # ✅ RiskManager logger alıyor
+    )
+    # -----------------------------
     # Position Manager (Redis + opsiyonel Postgres)
+    # -----------------------------
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
+
+    enable_pg = os.getenv("ENABLE_PG_POS_LOG", "0")
+    enable_pg_flag = enable_pg not in ("0", "false", "False", "FALSE", "")
+
+    pg_dsn = os.getenv("PG_DSN") if enable_pg_flag else None
+
     position_manager = PositionManager(
         redis_url=redis_url,
-        risk_manager=risk_manager,
+        redis_key_prefix=redis_key_prefix,
         logger=system_logger,
+        enable_pg=enable_pg_flag,
+        pg_dsn=pg_dsn,
     )
 
-    # Trade Executor (gerçek emir / dry-run + whale/risk aware)
+    # ---------------------------------------------------------
+    #  Model (HybridModel + opsiyonel MTF ensemble)
+    # ---------------------------------------------------------
+
+    # Tek timeframe hibrit model
+    hybrid_model = HybridModel(
+        interval=interval,
+        model_dir="models",
+    )
+
+    # Eğer sınıfta böyle bir attribute varsa, env’den gelen flag ile set et
+    try:
+        if hasattr(hybrid_model, "use_lstm_hybrid"):
+            hybrid_model.use_lstm_hybrid = HYBRID_MODE
+    except Exception:
+        # Sıkıntı olursa sessizce geç, en kötü sadece SGD kullanır
+        pass
+
+    # Multi-timeframe ensemble modeli (opsiyonel)
+    mtf_model = None
+    if USE_MTF_ENS:
+        mtf_intervals = ["1m", "5m", "15m", "1h"]
+        mtf_model = HybridMultiTFModel(
+            intervals=mtf_intervals,
+            model_dir="models",
+        )
+        try:
+            if hasattr(mtf_model, "use_lstm_hybrid"):
+                mtf_model.use_lstm_hybrid = HYBRID_MODE
+        except Exception:
+            pass
+
+
+    # -----------------------------
+    # Whale detector
+    # -----------------------------
+    try:
+        from core.whale_detector import WhaleDetector
+        whale_detector = WhaleDetector(symbol=symbol, logger=system_logger)
+    except Exception as e:
+        system_logger.warning("[WHALE] WhaleDetector init edilemedi: %s", e)
+        whale_detector = None
+
+    # -----------------------------
+    # Trade Executor – YENİ İMZAYA GÖRE
+    # -----------------------------
+    base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
+    max_position_notional = float(os.getenv("MAX_POSITION_NOTIONAL", "500"))
+    max_leverage = float(os.getenv("MAX_LEVERAGE", "3"))
+
+    sl_pct = float(os.getenv("SL_PCT", "0.01"))
+    tp_pct = float(os.getenv("TP_PCT", "0.02"))
+    trailing_pct = float(os.getenv("TRAILING_PCT", "0.01"))
+
+    use_atr_sltp = os.getenv("USE_ATR_SLTP", "true").lower() == "true"
+    atr_sl_mult = float(os.getenv("ATR_SL_MULT", "1.5"))
+    atr_tp_mult = float(os.getenv("ATR_TP_MULT", "3.0"))
+
+    whale_risk_boost = float(os.getenv("WHALE_RISK_BOOST", "2.0"))
+
     trade_executor = TradeExecutor(
-        client=client,
+        client=client,                    # <-- sadece BURADA client
         risk_manager=risk_manager,
         position_manager=position_manager,
-        symbol=symbol,
-        dry_run=DRY_RUN,
         logger=system_logger,
+        dry_run=DRY_RUN,
+        base_order_notional=base_order_notional,
+        max_position_notional=max_position_notional,
+        max_leverage=max_leverage,
+        sl_pct=sl_pct,
+        tp_pct=tp_pct,
+        trailing_pct=trailing_pct,
+        use_atr_sltp=use_atr_sltp,
+        atr_sl_mult=atr_sl_mult,
+        atr_tp_mult=atr_tp_mult,
+        whale_risk_boost=whale_risk_boost,
     )
 
-    # Online learner (şimdilik sadece placeholder, istersen sonra bağlarız)
-    online_learner = None
-    try:
-        online_learner = OnlineLearner(
-            symbol=symbol,
-            interval=interval,
-            logger=system_logger,
-        )
-    except Exception as e:
-        system_logger.warning(
-            "[ONLINE_LEARNER] Init başarısız, devre dışı bırakılıyor: %s", e
-        )
-        online_learner = None
-
-    # Ana HybridModel (interval = INTERVAL, örn: 5m)
-    hybrid_model = HybridModel(interval=interval, logger=system_logger)
-
-    # Multi-timeframe ensemble modeli (1m,5m,15m,1h)
-    mtf_model: Optional[HybridMultiTFModel] = None
-    if USE_MTF_ENS:
-        try:
-            mtf_model = HybridMultiTFModel(
-                intervals=["1m", "5m", "15m", "1h"],
-                logger=system_logger,
-            )
-            system_logger.info(
-                "[HYBRID-MTF] Multi-timeframe ensemble aktif. Intervals=%s",
-                ",".join(["1m", "5m", "15m", "1h"]),
-            )
-        except Exception as e:
-            system_logger.warning(
-                "[HYBRID-MTF] Init başarısız, ensemble devre dışı: %s", e
-            )
-            mtf_model = None
-
-    # Whale detector şimdilik yok, ileride eklenecek
-    whale_detector = None
-
     return {
+        "symbol": symbol,
+        "interval": interval,
         "client": client,
         "risk_manager": risk_manager,
         "position_manager": position_manager,
         "trade_executor": trade_executor,
-        "online_learner": online_learner,
         "hybrid_model": hybrid_model,
         "mtf_model": mtf_model,
         "whale_detector": whale_detector,

@@ -324,6 +324,71 @@ class HybridModel:
 
         return p_hybrid, debug
 
+    def predict_proba_single(self, X):
+        """
+        Online tarafta kullanılan convenience wrapper.
+
+        - X bir DataFrame veya numpy array olabilir.
+        - Sadece SON bar için yukarı (class=1) olasılığını döner.
+        - Çıkış: shape (1,) numpy array.
+        - Ayrıca self.last_debug içine p_sgd_mean vs. yazar.
+        """
+        import numpy as np  # lokal import, dosyanın üstünü bozmaz
+
+        # DataFrame ise son satırı al
+        if hasattr(X, "tail") and hasattr(X, "values"):
+            X_last = X.tail(1).values
+        else:
+            arr = np.asarray(X, dtype=float)
+            if arr.ndim == 2:
+                X_last = arr[-1:, :]
+            else:
+                X_last = arr.reshape(1, -1)
+
+        # Altta hangi isimle tutuluyorsa onu bul (sgd_model / model)
+        clf = getattr(self, "sgd_model", None)
+        if clf is None:
+            clf = getattr(self, "model", None)
+
+        if clf is None:
+            raise RuntimeError(
+                "HybridModel altında ne 'sgd_model' ne de 'model' bulundu; "
+                "SGD joblib doğru yüklenmemiş olabilir."
+            )
+
+        # sklearn predict_proba -> (n_samples, 2) [p0, p1]
+        proba = clf.predict_proba(X_last)
+        proba = np.asarray(proba)
+
+        if proba.ndim == 2 and proba.shape[1] >= 2:
+            p1 = proba[:, 1]
+        else:
+            # Her ihtimale karşı, tek sütun dönerse direkt kullan
+            p1 = proba.ravel()
+
+        # debug alanını güncelle
+        best_auc = float(getattr(self, "meta", {}).get("best_auc", 0.5))
+        best_side = getattr(self, "meta", {}).get("best_side", "long")
+
+        if not hasattr(self, "last_debug") or self.last_debug is None:
+            self.last_debug = {}
+
+        self.last_debug.update(
+            {
+                "mode": "sgd_only",
+                "p_sgd_mean": float(p1.mean()),
+                "p_lstm_mean": float(self.last_debug.get("p_lstm_mean", 0.5)),
+                "p_hybrid_mean": float(p1.mean()),
+                "best_auc": best_auc,
+                "best_side": best_side,
+                "use_lstm_hybrid": False,
+                "lstm_used": False,
+            }
+        )
+
+        # Sadece son bar için (zaten tek satır) array döndür
+        return p1
+
 class HybridMultiTFModel:
     """
     Multi-timeframe hibrit model sarmalayıcısı.

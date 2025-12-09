@@ -1,78 +1,66 @@
-import os
+# core/binance_client.py
+
 import logging
-from typing import Optional
+import os
+from typing import Optional, Any
+
+logger = logging.getLogger("system")
+
+HAS_BINANCE = False
+BINANCE_IMPORT_ERROR: Optional[Exception] = None
 
 try:
-    # python-binance v1
-    from binance.um_futures import UMFutures
-except ImportError:
-    UMFutures = None  # python-binance yoksa graceful hata vereceğiz
+    # python-binance paketi bu isimle import edilir
+    from binance.client import Client  # type: ignore
+    from binance.enums import *  # type: ignore
+    HAS_BINANCE = True
+except Exception as e:  # ImportError dahil her şey
+    HAS_BINANCE = False
+    BINANCE_IMPORT_ERROR = e
 
 
 def create_binance_client(
-    api_key: Optional[str] = None,
-    api_secret: Optional[str] = None,
-    testnet: Optional[bool] = None,
+    api_key: Optional[str],
+    api_secret: Optional[str],
+    testnet: bool = False,
     logger: Optional[logging.Logger] = None,
-    dry_run: Optional[bool] = None,
-    **kwargs,
-):
+    dry_run: bool = True,
+) -> Optional[Any]:
     """
-    Projedeki main.py'den gelen çağrılarla uyumlu, esnek Binance futures client builder.
-
-    Parametreler:
-      - api_key / api_secret: verilmezse ENV'den okunur
-      - testnet: verilmezse BINANCE_TESTNET env'ine bakar (true/false)
-      - dry_run: verilmezse DRY_RUN env'ine bakar
+    Binance REST client'ını oluşturur.
+    - python-binance yoksa:
+        * DRY_RUN=True ise: client=None ile devam eder (sadece log).
+        * DRY_RUN=False ise: RuntimeError fırlatır.
     """
-
     log = logger or logging.getLogger("system")
 
-    # python-binance yoksa anlamlı bir hata ver
-    if UMFutures is None:
-        log.error(
-            "[BINANCE_CLIENT] python-binance yüklü değil. "
-            "Lütfen `pip install python-binance` komutunu çalıştır."
-        )
-        raise RuntimeError("python-binance package not installed")
+    if not HAS_BINANCE:
+        msg = f"python-binance import edilemedi: {repr(BINANCE_IMPORT_ERROR)}"
+        log.error("[BINANCE_CLIENT] %s", msg)
 
-    # ENV fallback'leri
-    if api_key is None:
-        api_key = os.getenv("BINANCE_API_KEY", "")
-    if api_secret is None:
-        api_secret = os.getenv("BINANCE_API_SECRET", "")
-    if testnet is None:
-        testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
-    if dry_run is None:
-        dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+        if dry_run or not api_key or not api_secret:
+            log.warning(
+                "[BINANCE_CLIENT] DRY_RUN veya API key yok; python-binance olmadan "
+                "client=None ile devam edilecek."
+            )
+            return None
+
+        # Gerçek trade modunda bu paketin kurulu olması şart
+        raise RuntimeError("python-binance package not installed or failed to import")
 
     if not api_key or not api_secret:
+        # Key yoksa gerçek client kurmayalım
         log.warning(
-            "[BINANCE_CLIENT] API key/secret boş görünüyor. DRY_RUN=%s, gerçek emir gönderimi kapalı olmalı.",
+            "[BINANCE_CLIENT] API key/secret boş. DRY_RUN=%s, client=None ile devam.",
             dry_run,
         )
+        return None
 
-    # Base URL seçimi
-    if testnet:
-        base_url = "https://testnet.binancefuture.com"
-    else:
-        base_url = "https://fapi.binance.com"
-
-    client = UMFutures(
-        key=api_key,
-        secret=api_secret,
-        base_url=base_url,
-    )
-
+    # Buraya geldiysek python-binance var ve key/secret var
+    client = Client(api_key, api_secret, testnet=testnet)
     log.info(
-        "[BINANCE_CLIENT] UMFutures client oluşturuldu | testnet=%s | base_url=%s | dry_run=%s",
+        "[BINANCE_CLIENT] Binance Client oluşturuldu (testnet=%s, dry_run=%s)",
         testnet,
-        base_url,
         dry_run,
     )
-
-    # İleride istersen client içine dry_run flag'i ekleyebilirsin
-    # ama şimdilik sadece loglarda tutuyoruz.
-    client._dry_run = dry_run  # type: ignore[attr-defined]
-
     return client
