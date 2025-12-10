@@ -226,11 +226,13 @@ class TradeExecutor:
                 side=side,
                 qty=qty,
                 notional=notional,
-                entry_price=entry_price,
-                exit_price=price,
-                realized_pnl=realized_pnl,
+                price=price,
                 interval=interval,
-                meta={"reason": reason},
+                realized_pnl=realized_pnl,
+                meta={
+                    "reason": reason,
+                    "entry_price": entry_price,
+                },
             )
         except Exception as e:
             self.logger.warning("[RISK] on_position_close hata: %s", e)
@@ -332,15 +334,20 @@ class TradeExecutor:
         notional *= model_conf
 
         # Whale bilgisi (varsayılan: yok)
-        whale_info = extra.get("whale") or {}
+        # main.py içinde extra["whale_meta"] şöyle dolduruluyor:
+        # {
+        #   "direction": "long" / "short" / "none",
+        #   "score": float,
+        #   ...
+        # }
+        # Eski kodla geri uyumluluk için extra["whale"] da fallback olarak okunuyor.
+        whale_info = extra.get("whale_meta") or extra.get("whale") or {}
         whale_score = float(whale_info.get("score", 0.0) or 0.0)
-        whale_direction = whale_info.get("direction")  # "buy" / "sell"
+        whale_direction = whale_info.get("direction")  # "long" / "short" / "none"
 
         # Eğer whale_score yüksekse ve sinyal ile aynı yöndeyse notional'ı boost et
-        if whale_score > 0 and whale_direction:
-            if (signal == "long" and whale_direction == "buy") or (
-                signal == "short" and whale_direction == "sell"
-            ):
+        if whale_score > 0 and whale_direction in ("long", "short"):
+            if signal == whale_direction:
                 notional *= (1.0 + self.whale_risk_boost * whale_score)
 
         # max_position_notional sınırı
@@ -350,6 +357,17 @@ class TradeExecutor:
         # En azından min 10 USDT gibi bir taban (çok küçük olmasın)
         if notional < 10.0:
             notional = 10.0
+
+        self.logger.info(
+            "[EXEC] _compute_notional | symbol=%s signal=%s base=%.2f model_conf=%.2f whale_score=%.3f whale_dir=%s final=%.2f",
+            symbol,
+            signal,
+            self.base_order_notional,
+            model_conf,
+            whale_score,
+            whale_direction,
+            notional,
+        )
 
         return notional
 

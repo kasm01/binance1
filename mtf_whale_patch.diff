@@ -1,0 +1,123 @@
+diff --git a/main.py b/main.py
+index 1111111..2222222 100644
+--- a/main.py
++++ b/main.py
+@@ -247,14 +247,14 @@ def create_trading_objects() -> Dict[str, Any]:
+-    # -----------------------------
+-    # Whale detector
+-    # -----------------------------
+-    try:
+-        from core.whale_detector import WhaleDetector
+-        # Yeni WhaleDetector API'sinde symbol/logger yok, basit init
+-        whale_detector = WhaleDetector()
+-        system_logger.info("[WHALE] WhaleDetector başarıyla init edildi.")
+-    except Exception as e:
+-        system_logger.warning("[WHALE] WhaleDetector init edilemedi: %s", e)
+-        whale_detector = None
++    # -----------------------------
++    # Whale detector (MTF destekli)
++    # -----------------------------
++    try:
++        from core.whale_detector import MultiTimeframeWhaleDetector
++        whale_detector = MultiTimeframeWhaleDetector()
++        system_logger.info("[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi.")
++    except Exception as e:
++        system_logger.warning("[WHALE] WhaleDetector init edilemedi: %s", e)
++        whale_detector = None
+ 
+@@ -378,22 +378,74 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
+-            # ------------------------------
+-            # 4) Whale Durumu
+-            # ------------------------------
+-            whale_meta = None
+-            if whale_detector is not None:
+-                try:
+-                    # data/whale_detector.py içindeki from_klines(df) kullanılıyor
+-                    whale_signal = whale_detector.from_klines(raw_df)
+-
+-                    whale_meta = {
+-                        "direction": whale_signal.direction,
+-                        "score": whale_signal.score,
+-                        "reason": whale_signal.reason,
+-                        "meta": whale_signal.meta,
+-                    }
+-                except Exception as e:
+-                    system_logger.warning("[WHALE] from_klines hata: %s", e)
+-                    whale_meta = None
++            # ------------------------------
++            # 4) Whale Durumu (MTF destekli)
++            # ------------------------------
++            whale_meta = None
++            if whale_detector is not None:
++                try:
++                    # 4.1 Ana timeframe (mevcut interval) için klasik whale sinyali
++                    primary_signal = whale_detector.from_klines(raw_df)
++
++                    whale_meta = {
++                        "direction": primary_signal.direction,
++                        "score": primary_signal.score,
++                        "reason": primary_signal.reason,
++                        "meta": primary_signal.meta,
++                    }
++
++                    # 4.2 Eğer MTF analiz desteği varsa, ek timeframe'leri de tara
++                    mtf_block: Dict[str, Any] = {}
++                    agg_best_tf = None
++                    agg_best_signal = None
++
++                    # MultiTimeframeWhaleDetector.analyze_multiple_timeframes varsa kullanılır
++                    if hasattr(whale_detector, "analyze_multiple_timeframes"):
++                        mtf_raw: Dict[str, pd.DataFrame] = {}
++                        mtf_tfs = ["1m", "5m", "15m", "1h"]
++
++                        for tf in mtf_tfs:
++                            try:
++                                if tf == interval:
++                                    # mevcut loop'taki raw_df'i yeniden kullan
++                                    mtf_raw[tf] = raw_df
++                                else:
++                                    raw_tf = await fetch_klines(
++                                        client=client,
++                                        symbol=symbol,
++                                        interval=tf,
++                                        limit=data_limit,
++                                        logger=system_logger,
++                                    )
++                                    mtf_raw[tf] = raw_tf
++                            except Exception as e_fetch:
++                                system_logger.warning(
++                                    "[WHALE] MTF kline fetch hata (tf=%s): %s",
++                                    tf,
++                                    e_fetch,
++                                )
++
++                        if mtf_raw:
++                            mtf_signals = whale_detector.analyze_multiple_timeframes(mtf_raw)
++                            for tf, sig in mtf_signals.items():
++                                mtf_block[tf] = {
++                                    "direction": sig.direction,
++                                    "score": sig.score,
++                                    "reason": sig.reason,
++                                    "meta": sig.meta,
++                                }
++                                # en yüksek skorlu timeframe'i seç
++                                if agg_best_signal is None or sig.score > agg_best_signal.score:
++                                    agg_best_signal = sig
++                                    agg_best_tf = tf
++
++                    # MTF sinyallerini whale_meta içine yaz
++                    if mtf_block:
++                        whale_meta["mtf"] = mtf_block
++
++                        # Toplamda en anlamlı timeframe'i root'a yansıt
++                        if (
++                            agg_best_signal is not None
++                            and agg_best_signal.score >= whale_meta["score"]
++                        ):
++                            whale_meta["direction"] = agg_best_signal.direction
++                            whale_meta["score"] = agg_best_signal.score
++                            whale_meta["agg_best_tf"] = agg_best_tf
++
++                except Exception as e:
++                    system_logger.warning("[WHALE] whale analiz hata: %s", e)
++                    whale_meta = None

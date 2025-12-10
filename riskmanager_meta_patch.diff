@@ -1,0 +1,71 @@
+diff --git a/core/risk_manager.py b/core/risk_manager.py
+index 1111111..2222222 100644
+--- a/core/risk_manager.py
++++ b/core/risk_manager.py
+@@ -28,6 +28,21 @@ class RiskManager:
+     open_trades: int = 0
+
++    # --- New extended stats ---
++    total_trades: int = 0
++    total_wins: int = 0
++    total_losses: int = 0
++
++    last_open_meta: Dict[str, Any] = field(default_factory=dict)
++    last_close_meta: Dict[str, Any] = field(default_factory=dict)
++    last_realized_pnl: float = 0.0
++    last_side: Optional[str] = None
++
+     def __post_init__(self) -> None:
+         self.daily_max_loss_usdt = float(self.daily_max_loss_usdt)
+         self.daily_max_loss_pct = float(self.daily_max_loss_pct)
+@@ -147,6 +162,22 @@ class RiskManager:
+                 meta,
+             )
+ 
++        # Update extended stats
++        self.total_trades += 1
++        self.last_open_meta = {
++            "symbol": symbol,
++            "side": side,
++            "qty": qty,
++            "notional": notional,
++            "price": price,
++            "interval": interval,
++            "opened_at": datetime.utcnow().isoformat(),
++            "meta": meta,
++        }
++        self.last_side = side
++
+@@ -194,6 +225,32 @@ class RiskManager:
+                 meta,
+             )
+ 
++        # Extended stats after close
++        self.last_realized_pnl = float(realized_pnl)
++        self.last_close_meta = {
++            "symbol": symbol,
++            "side": side,
++            "qty": qty,
++            "notional": notional,
++            "entry_price": entry_price,
++            "exit_price": price,
++            "pnl": realized_pnl,
++            "interval": interval,
++            "closed_at": datetime.utcnow().isoformat(),
++            "meta": meta,
++        }
++
++        # Win / loss tracking
++        self.total_trades += 1
++        if realized_pnl > 0:
++            self.total_wins += 1
++        else:
++            self.total_losses += 1
++
++        # Store last direction
++        self.last_side = side
++
+         if self.logger:
+             self.logger.info(
+                 "[RISK] on_position_close | symbol=%s side=%s qty=%.6f notional=%.2f "
+

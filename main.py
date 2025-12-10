@@ -17,9 +17,11 @@ from data.online_learning import OnlineLearner  # şimdilik sadece placeholder
 from models.hybrid_inference import HybridModel, HybridMultiTFModel
 from core.binance_client import create_binance_client
 from models.hybrid_inference import HybridModel, HybridMultiTFModel
+from config.settings import Settings
+from tg_bot.telegram_bot import TelegramBot
 
 # Config değerlerini çek
-USE_TESTNET = getattr(config, "USE_TESTNET", False)
+USE_TESTNET = getattr(Settings, "USE_TESTNET", True)
 
 BINANCE_API_KEY = getattr(config, "BINANCE_API_KEY", None)
 BINANCE_API_SECRET = getattr(config, "BINANCE_API_SECRET", None)
@@ -27,7 +29,7 @@ BINANCE_API_SECRET = getattr(config, "BINANCE_API_SECRET", None)
 REDIS_URL = getattr(config, "REDIS_URL", "redis://localhost:6379/0")
 REDIS_KEY_PREFIX = getattr(config, "REDIS_KEY_PREFIX", "bot:positions")
 
-SYMBOL = getattr(config, "SYMBOL", "BTCUSDT")
+SYMBOL = getattr(Settings, "SYMBOL", "BTCUSDT")
 
 
 # ----------------------------------------------------------------------
@@ -348,9 +350,29 @@ def create_trading_objects() -> Dict[str, Any]:
         daily_max_loss_pct=daily_max_loss_pct,
         max_consecutive_losses=max_consecutive_losses,
         max_open_trades=max_open_trades,
-        equity_start_of_day=equity_start_of_day,  # ✅ DOĞRU İSİM
-        logger=system_logger,                      # ✅ RiskManager logger alıyor
+        equity_start_of_day=equity_start_of_day,
+        logger=system_logger,
     )
+
+    # --------------------------------------------------
+    # Telegram Bot + RiskManager entegrasyonu
+    # --------------------------------------------------
+    tg_bot = None
+    try:
+        tg_bot = TelegramBot()
+        # Bot token yoksa TelegramBot içinde bot/dispatcher None olacak
+        if tg_bot.dispatcher:
+            tg_bot.set_risk_manager(risk_manager)
+            system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif).")
+        else:
+            system_logger.warning(
+                "[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız)."
+            )
+    except Exception as e:
+        system_logger.warning("[MAIN] TelegramBot init/set_risk_manager hata: %s", e)
+        tg_bot = None
+
+
     # -----------------------------
     # Position Manager (Redis + opsiyonel Postgres)
     # -----------------------------
@@ -516,6 +538,20 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 list(feat_df.columns),
             )
 
+            # ------------------------------------------------------------
+            # Backward-compat: eski kolon adlarını yeni kolonlardan üret
+            # ------------------------------------------------------------
+            alias_map = {
+                "taker_buy_base_volume": "taker_buy_base_asset_volume",
+                "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
+            }
+            for old_col, new_col in alias_map.items():
+                if old_col not in feat_df.columns and new_col in feat_df.columns:
+                    feat_df[old_col] = feat_df[new_col]
+
+            # ------------------------------------------------------------
+            # Feature kolonları – hem eski hem yeni isimlerle uyumlu
+            # ------------------------------------------------------------
             feature_cols = [
                 "open_time",
                 "open",
@@ -526,8 +562,11 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 "close_time",
                 "quote_asset_volume",
                 "number_of_trades",
+
+                # Eski isim
                 "taker_buy_base_volume",
                 "taker_buy_quote_volume",
+
                 "ignore",
                 "hl_range",
                 "oc_change",
@@ -540,7 +579,20 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 "vol_10",
                 "dummy_extra",
             ]
-            X_live = feat_df[feature_cols].tail(500)
+
+            # ------------------------------------------------------------
+            # Güvenli seçim – sadece mevcut kolonları al
+            # ------------------------------------------------------------
+            feature_cols_existing = [
+                c for c in feature_cols if c in feat_df.columns
+            ]
+            missing = [c for c in feature_cols if c not in feat_df.columns]
+
+            if missing:
+                system_logger.warning("[FE] Eksik feature kolonları: %s", missing)
+
+            X_live = feat_df[feature_cols_existing].tail(500)
+
 
             # --------------------------------
             # 2) Hybrid / MTF Prediction

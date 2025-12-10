@@ -36,8 +36,8 @@ class FeatureEngineer:
             "close",
             "volume",
             "quote_asset_volume",
-            "taker_buy_base_asset_volume",
-            "taker_buy_quote_asset_volume",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
         ]
 
         for col in numeric_cols:
@@ -79,9 +79,9 @@ class FeatureEngineer:
             df["volatility_30"] = df["return_1"].rolling(window=30).std()
 
             # 4) Hacim oranları
-            if "volume" in df.columns and "taker_buy_base_asset_volume" in df.columns:
+            if "volume" in df.columns and "taker_buy_base_volume" in df.columns:
                 df["buy_ratio"] = (
-                    df["taker_buy_base_asset_volume"] / df["volume"]
+                    df["taker_buy_base_volume"] / df["volume"]
                 )
 
             # 5) Basit hareketli ortalamalar (örnek)

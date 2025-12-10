@@ -1,5 +1,3 @@
-# core/risk_manager.py
-
 from __future__ import annotations
 
 import logging
@@ -16,8 +14,10 @@ class RiskManager:
       - Max consecutive loss
       - Max open trades
       - Pozisyon açma/kapama olaylarından beslenen basit state
+      - Son trade metalarını ve basit istatistikleri tutar
     """
 
+    # Konfigürasyon parametreleri
     daily_max_loss_usdt: float = 100.0
     daily_max_loss_pct: float = 0.03
     max_consecutive_losses: int = 5
@@ -28,13 +28,21 @@ class RiskManager:
         default_factory=lambda: logging.getLogger("RiskManager")
     )
 
-    # runtime state
+    # Günlük / runtime state
     current_day: date = field(
         default_factory=lambda: datetime.now(timezone.utc).date()
     )
     daily_realized_pnl: float = 0.0
     consecutive_losses: int = 0
     open_trades: int = 0
+
+    # ---- Eklenen meta alanlar (son trade ve istatistikler) ----
+    last_open_trade: Optional[Dict[str, Any]] = None
+    last_close_trade: Optional[Dict[str, Any]] = None
+    last_realized_pnl: float = 0.0
+    total_trades: int = 0        # kapanmış (realized) trade sayısı
+    total_wins: int = 0
+    total_losses: int = 0
 
     def __post_init__(self) -> None:
         self.daily_max_loss_usdt = float(self.daily_max_loss_usdt)
@@ -192,6 +200,18 @@ class RiskManager:
         self._maybe_reset_day()
         self.open_trades += 1
 
+        ts = datetime.now(timezone.utc).isoformat()
+        self.last_open_trade = {
+            "timestamp": ts,
+            "symbol": symbol,
+            "side": side,
+            "qty": float(qty),
+            "notional": float(notional),
+            "price": float(price),
+            "interval": interval,
+            "meta": meta or {},
+        }
+
         if self.logger:
             self.logger.info(
                 "[RISK] on_position_open | symbol=%s side=%s qty=%.6f notional=%.2f "
@@ -222,22 +242,55 @@ class RiskManager:
     ) -> None:
         """
         realized_pnl: USDT cinsinden, pozisyonun toplam kar/zararı
+        price      : kapatma fiyatı (exit)
+        meta       : TradeExecutor._close_position içinden gelir
+                     örn: {"reason": "...", "entry_price": ...}
         """
         self._maybe_reset_day()
 
+        # Açık pozisyon sayısını azalt
         self.open_trades = max(0, self.open_trades - 1)
-        self.daily_realized_pnl += float(realized_pnl)
 
+        # Günlük PnL ve son PnL
+        self.daily_realized_pnl += float(realized_pnl)
+        self.last_realized_pnl = float(realized_pnl)
+
+        # Toplam trade sayaçları
+        self.total_trades += 1
+        if realized_pnl > 0:
+            self.total_wins += 1
+        elif realized_pnl < 0:
+            self.total_losses += 1
+
+        # Consecutive losses
         if realized_pnl < 0:
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
 
+        # Son close metası
+        ts = datetime.now(timezone.utc).isoformat()
+        m = meta or {}
+        self.last_close_trade = {
+            "timestamp": ts,
+            "symbol": symbol,
+            "side": side,
+            "qty": float(qty),
+            "notional": float(notional),
+            "exit_price": float(price),
+            "entry_price": float(m.get("entry_price", 0.0)),
+            "interval": interval,
+            "realized_pnl": float(realized_pnl),
+            "reason": m.get("reason"),
+            "meta": m,
+        }
+
         if self.logger:
             self.logger.info(
                 "[RISK] on_position_close | symbol=%s side=%s qty=%.6f notional=%.2f "
                 "price=%.2f interval=%s realized_pnl=%.2f "
-                "daily_realized_pnl=%.2f consecutive_losses=%d open_trades=%d meta=%s",
+                "daily_realized_pnl=%.2f consecutive_losses=%d open_trades=%d "
+                "total_trades=%d wins=%d losses=%d meta=%s",
                 symbol,
                 side,
                 qty,
@@ -248,5 +301,8 @@ class RiskManager:
                 self.daily_realized_pnl,
                 self.consecutive_losses,
                 self.open_trades,
+                self.total_trades,
+                self.total_wins,
+                self.total_losses,
                 meta,
             )

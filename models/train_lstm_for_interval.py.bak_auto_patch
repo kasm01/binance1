@@ -155,17 +155,6 @@ def train_for_interval(interval="5m", symbol="BTCUSDT"):
 
     # 2) main.py ile aynı feature engineering
     feat_df = build_features(raw_df)
-    # ------------------------------------------------------------
-    # Backward-compat: eski kolon adlarını yeni kolonlardan üret
-    # ------------------------------------------------------------
-    alias_map = {
-        "taker_buy_base_volume": "taker_buy_base_asset_volume",
-        "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
-    }
-    for old_col, new_col in alias_map.items():
-        if old_col not in feat_df.columns and new_col in feat_df.columns:
-            feat_df[old_col] = feat_df[new_col]
-
 
     # 3) LSTM için kullanılacak kolonları seç
     feat_df = ensure_features(feat_df)

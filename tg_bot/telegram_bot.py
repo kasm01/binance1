@@ -1,16 +1,20 @@
+# tg_bot/telegram_bot.py
+
 from typing import Optional
 
 from telegram import Bot
-from telegram.ext import Updater, CommandHandler
+from telegram.ext import Updater
 
 from core.logger import system_logger, error_logger
+from core.risk_manager import RiskManager
 from config.credentials import Credentials
-from tg_bot.commands import start_command, status_command, trades_command
+from tg_bot.commands import register_handlers
 
 
 class TelegramBot:
     """
     Basit Telegram bot wrapper'ı.
+    - /start, /status, /trades, /risk gibi komutlar tg_bot.commands.register_handlers ile eklenir.
     """
 
     def __init__(self) -> None:
@@ -32,24 +36,39 @@ class TelegramBot:
         # Bot instance
         self.bot: Bot = Bot(token=self.token)
 
-        # Updater/Dispatcher komutlar için (local kullanım için ideal)
+        # Updater/Dispatcher komutlar için (python-telegram-bot v13)
         self.updater: Updater = Updater(token=self.token, use_context=True)
         self.dispatcher = self.updater.dispatcher
 
-        self.register_commands()
+        # Tüm komutları (start/status/trades/risk) kaydet
+        register_handlers(self.dispatcher)
 
         system_logger.info("[TelegramBot] Telegram bot başarıyla initialize edildi.")
 
-    def register_commands(self) -> None:
+    # ------------------------------------------------------------------
+    # RiskManager enjeksiyonu (/risk komutu için)
+    # ------------------------------------------------------------------
+    def set_risk_manager(self, risk_manager: RiskManager) -> None:
+        """
+        main.py içinde RiskManager instance'ını Telegram bot'a takmak için:
+            tg_bot = TelegramBot()
+            tg_bot.set_risk_manager(risk_manager)
+        Böylece /risk komutu context.bot_data['risk_manager'] üzerinden erişebilir.
+        """
         if not self.dispatcher:
+            system_logger.warning(
+                "[TelegramBot] set_risk_manager çağrıldı ama dispatcher yok."
+            )
             return
 
-        self.dispatcher.add_handler(CommandHandler("start", start_command))
-        self.dispatcher.add_handler(CommandHandler("status", status_command))
-        self.dispatcher.add_handler(CommandHandler("trades", trades_command))
+        self.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
+        system_logger.info(
+            "[TelegramBot] RiskManager instance dispatcher.bot_data['risk_manager'] içine set edildi."
+        )
 
-        system_logger.info("[TelegramBot] Telegram komutları dispatcher'a eklendi.")
-
+    # ------------------------------------------------------------------
+    # Polling başlatma
+    # ------------------------------------------------------------------
     def start_polling(self) -> None:
         if not self.updater:
             system_logger.warning(
@@ -61,6 +80,9 @@ class TelegramBot:
         self.updater.start_polling()
         self.updater.idle()
 
+    # ------------------------------------------------------------------
+    # Basit mesaj gönderme helper'ı
+    # ------------------------------------------------------------------
     def send_message(self, message: str) -> None:
         if not self.bot:
             error_logger.error(
@@ -79,4 +101,3 @@ class TelegramBot:
             system_logger.info("[TelegramBot] Mesaj gönderildi.")
         except Exception as e:
             error_logger.error(f"[TelegramBot] Mesaj gönderilemedi: {e}")
-
