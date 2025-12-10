@@ -57,9 +57,22 @@ class HybridModel:
         }
         self.use_lstm_hybrid: bool = False
 
+        # main.py içinde kullandığımız debug için
+        self.last_debug: Dict[str, Any] = {}
+
         # load from disk
         self._load_sgd_model()
         self._load_meta()
+
+        # ⬇️ ENV HYBRID_MODE ile meta'yı override et
+        env_flag = os.getenv("HYBRID_MODE")
+        if env_flag is not None:
+            v = env_flag.strip().lower()
+            if v in ("1", "true", "yes", "y", "on"):
+                self.use_lstm_hybrid = True
+            elif v in ("0", "false", "no", "n", "off"):
+                self.use_lstm_hybrid = False
+
         self._load_lstm_models()
 
     # ------------------------------------------------------------------
@@ -309,18 +322,23 @@ class HybridModel:
         )
         debug.update(lstm_debug)
 
+        # main.py logger'ı için son debug state'ini sakla
+        self.last_debug = debug
+
         self._log(
-    logging.INFO,
-    "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
-    mode,
-    X_arr.shape[0],
-    X_arr.shape[1],
-    debug["p_sgd_mean"],
-    debug["p_lstm_mean"],
-    debug["p_hybrid_mean"],
-    debug["best_auc"],
-    debug["best_side"],
-)
+            logging.INFO,
+            "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
+            mode,
+            X_arr.shape[0],
+            X_arr.shape[1],
+            debug["p_sgd_mean"],
+            debug["p_lstm_mean"],
+            debug["p_hybrid_mean"],
+            debug["best_auc"],
+            debug["best_side"],
+        )
+
+        return p_hybrid, debug
 
         return p_hybrid, debug
 
@@ -328,66 +346,37 @@ class HybridModel:
         """
         Online tarafta kullanılan convenience wrapper.
 
-        - X bir DataFrame veya numpy array olabilir.
-        - Sadece SON bar için yukarı (class=1) olasılığını döner.
+        - X bir DataFrame, numpy array veya list olabilir.
+        - Bütün seriyi hibrit pipeline'dan geçirir (SGD + LSTM),
+          sadece SON bar için yukarı (class=1) olasılığını döner.
         - Çıkış: shape (1,) numpy array.
-        - Ayrıca self.last_debug içine p_sgd_mean vs. yazar.
+        - Ayrıca self.last_debug içine p_sgd_mean, p_lstm_mean, p_hybrid_mean vs. yazar.
         """
-        import numpy as np  # lokal import, dosyanın üstünü bozmaz
+        import numpy as np  # lokal import
 
-        # DataFrame ise son satırı al
+        # DataFrame ise olduğu gibi bırak (tüm history ile LSTM/SGD çalışsın)
         if hasattr(X, "tail") and hasattr(X, "values"):
-            X_last = X.tail(1).values
+            X_input = X
         else:
+            # Diğer tipler için (list, ndarray vs.) güvenli 2D array'e çevir
             arr = np.asarray(X, dtype=float)
-            if arr.ndim == 2:
-                X_last = arr[-1:, :]
-            else:
-                X_last = arr.reshape(1, -1)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            X_input = arr
 
-        # Altta hangi isimle tutuluyorsa onu bul (sgd_model / model)
-        clf = getattr(self, "sgd_model", None)
-        if clf is None:
-            clf = getattr(self, "model", None)
+        # Hibrit tahmin (SGD + optional LSTM)
+        p_arr, dbg = self.predict_proba(X_input)
 
-        if clf is None:
-            raise RuntimeError(
-                "HybridModel altında ne 'sgd_model' ne de 'model' bulundu; "
-                "SGD joblib doğru yüklenmemiş olabilir."
-            )
+        # Debug state'i sakla (main.py buradan okuyor)
+        self.last_debug = dbg
 
-        # sklearn predict_proba -> (n_samples, 2) [p0, p1]
-        proba = clf.predict_proba(X_last)
-        proba = np.asarray(proba)
+        # Hiç çıktı yoksa güvenli fallback
+        if p_arr is None or len(p_arr) == 0:
+            return np.array([0.5], dtype=float)
 
-        if proba.ndim == 2 and proba.shape[1] >= 2:
-            p1 = proba[:, 1]
-        else:
-            # Her ihtimale karşı, tek sütun dönerse direkt kullan
-            p1 = proba.ravel()
-
-        # debug alanını güncelle
-        best_auc = float(getattr(self, "meta", {}).get("best_auc", 0.5))
-        best_side = getattr(self, "meta", {}).get("best_side", "long")
-
-        if not hasattr(self, "last_debug") or self.last_debug is None:
-            self.last_debug = {}
-
-        self.last_debug.update(
-            {
-                "mode": "sgd_only",
-                "p_sgd_mean": float(p1.mean()),
-                "p_lstm_mean": float(self.last_debug.get("p_lstm_mean", 0.5)),
-                "p_hybrid_mean": float(p1.mean()),
-                "best_auc": best_auc,
-                "best_side": best_side,
-                "use_lstm_hybrid": False,
-                "lstm_used": False,
-            }
-        )
-
-        # Sadece son bar için (zaten tek satır) array döndür
-        return p1
+        # Sadece SON bar için olasılık
+        last_p = float(p_arr[-1])
+        return np.array([last_p], dtype=float)
 
 class HybridMultiTFModel:
     """
