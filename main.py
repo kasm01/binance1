@@ -408,7 +408,9 @@ def create_trading_objects() -> Dict[str, Any]:
     # -----------------------------
     try:
         from core.whale_detector import WhaleDetector
-        whale_detector = WhaleDetector(symbol=symbol, logger=system_logger)
+        # Yeni WhaleDetector API'sinde symbol/logger yok, basit init
+        whale_detector = WhaleDetector()
+        system_logger.info("[WHALE] WhaleDetector başarıyla init edildi.")
     except Exception as e:
         system_logger.warning("[WHALE] WhaleDetector init edilemedi: %s", e)
         whale_detector = None
@@ -598,7 +600,21 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             # ------------------------------
             # 4) Whale Durumu
             # ------------------------------
-            whale_meta = whale_detector.get_last_state() if whale_detector else None
+            whale_meta = None
+            if whale_detector is not None:
+                try:
+                    # data/whale_detector.py içindeki from_klines(df) kullanılıyor
+                    whale_signal = whale_detector.from_klines(raw_df)
+
+                    whale_meta = {
+                        "direction": whale_signal.direction,
+                        "score": whale_signal.score,
+                        "reason": whale_signal.reason,
+                        "meta": whale_signal.meta,
+                    }
+                except Exception as e:
+                    system_logger.warning("[WHALE] from_klines hata: %s", e)
+                    whale_meta = None
 
             # ------------------------------
             # 5) Extra meta paket
@@ -655,9 +671,13 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     )
                     signal = "hold"
 
+            whale_dir = whale_meta["direction"] if isinstance(whale_meta, dict) else None
+            whale_score = whale_meta["score"] if isinstance(whale_meta, dict) else None
+
             system_logger.info(
                 "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
-                "signal=%s, model_conf_factor=%.3f, p_1h=%s, p_15m=%s",
+                "signal=%s, model_conf_factor=%.3f, p_1h=%s, p_15m=%s, "
+                "whale_dir=%s, whale_score=%s",
                 p_used,
                 long_thr,
                 short_thr,
@@ -665,6 +685,8 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 model_conf_factor,
                 f"{p_1h:.4f}" if p_1h is not None else "None",
                 f"{p_15m:.4f}" if p_15m is not None else "None",
+                whale_dir if whale_dir is not None else "None",
+                f"{whale_score:.3f}" if isinstance(whale_score, (int, float)) else "None",
             )
 
             # ------------------------------
