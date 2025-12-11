@@ -2,12 +2,14 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+from config import config
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
 
 logger = logging.getLogger("system")
 
-class TradeExecutor: 
+
+class TradeExecutor:
     """
     TradeExecutor:
       - RiskManager ile entegre
@@ -59,6 +61,14 @@ class TradeExecutor:
 
         # Eğer PositionManager yoksa en basit fallback olarak in-memory dict
         self._local_positions: Dict[str, Dict[str, Any]] = {}
+
+        self.logger.info(
+            "[EXEC] TradeExecutor init | dry_run=%s base_order_notional=%.2f "
+            "max_position_notional=%.2f",
+            self.dry_run,
+            self.base_order_notional,
+            self.max_position_notional,
+        )
 
     # ------------------------------------------------------------------
     #  Low-level position access (PositionManager varsa onu kullan)
@@ -321,51 +331,86 @@ class TradeExecutor:
         extra: Dict[str, Any],
     ) -> float:
         """
-        Basit notional hesaplama:
+        Agresif notional hesaplama:
           - base_order_notional
-          - whale / model_conf vs. ile çarpılabilir
-          - max_position_notional'a clamp edilir
+          - model_confidence_factor
+          - whale_meta (yön + skor)
+          - AGGRESSIVE_MODE / MAX_RISK_MULTIPLIER (config)
+          - max_position_notional clamp
         """
 
-        notional = self.base_order_notional
+        # Config’ten okunabilir agresiflik parametreleri
+        aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
+        max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
+        whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.6))
+        whale_veto_thr = float(getattr(config, "WHALE_VETO_THR", 0.6))
 
-        # Model güven faktörü
+        base = float(self.base_order_notional)
+
+        # Model güven faktörü (main.py'de effective_conf olarak set ediliyor)
         model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
-        notional *= model_conf
 
-        # Whale bilgisi (varsayılan: yok)
-        # main.py içinde extra["whale_meta"] şöyle dolduruluyor:
-        # {
-        #   "direction": "long" / "short" / "none",
-        #   "score": float,
-        #   ...
-        # }
-        # Eski kodla geri uyumluluk için extra["whale"] da fallback olarak okunuyor.
+        # Whale bilgisi (whale_meta öncelikli, sonra eski whale key'i)
         whale_info = extra.get("whale_meta") or extra.get("whale") or {}
-        whale_score = float(whale_info.get("score", 0.0) or 0.0)
-        whale_direction = whale_info.get("direction")  # "long" / "short" / "none"
+        whale_score_raw = whale_info.get("score", 0.0)
+        try:
+            whale_score = float(whale_score_raw or 0.0)
+        except Exception:
+            whale_score = 0.0
+        whale_direction = whale_info.get("direction")
 
-        # Eğer whale_score yüksekse ve sinyal ile aynı yöndeyse notional'ı boost et
-        if whale_score > 0 and whale_direction in ("long", "short"):
-            if signal == whale_direction:
-                notional *= (1.0 + self.whale_risk_boost * whale_score)
+        # Başlangıç agresiflik faktörü
+        aggr_factor = 1.0
+
+        if aggressive_mode:
+            # 1) Whale etkisi
+            if whale_score > 0 and whale_direction in ("long", "short"):
+                if whale_direction == signal:
+                    # Aynı yönde güçlü whale -> boost
+                    if whale_score >= whale_boost_thr:
+                        # self.whale_risk_boost burada çarpan olarak kullanılıyor
+                        aggr_factor += self.whale_risk_boost * max(
+                            0.0, whale_score - whale_boost_thr
+                        )
+                else:
+                    # Ters yönde whale -> agresiflik azalt
+                    if whale_score >= whale_veto_thr:
+                        # güçlü ters whale -> neredeyse kapat
+                        aggr_factor -= 0.8 * whale_score
+                    else:
+                        aggr_factor -= 0.4 * whale_score
+
+            # 2) Model confidence ile skala
+            # model_conf [0,1]; 0.5 -> ~0.75, 1.0 -> 1.0
+            mc = max(0.0, min(model_conf, 1.0))
+            aggr_factor *= (0.5 + 0.5 * mc)
+
+        # Negatif veya çok küçük olmasın
+        aggr_factor = max(0.0, aggr_factor)
+
+        # Hard risk multiplier cap
+        aggr_factor = min(aggr_factor, max_risk_mult)
+
+        notional = base * aggr_factor
 
         # max_position_notional sınırı
         if notional > self.max_position_notional:
             notional = self.max_position_notional
 
-        # En azından min 10 USDT gibi bir taban (çok küçük olmasın)
+        # Minimum bir taban (çok saçma küçük olmasın)
         if notional < 10.0:
             notional = 10.0
 
         self.logger.info(
-            "[EXEC] _compute_notional | symbol=%s signal=%s base=%.2f model_conf=%.2f whale_score=%.3f whale_dir=%s final=%.2f",
+            "[EXEC] _compute_notional | symbol=%s signal=%s base=%.2f model_conf=%.2f "
+            "whale_score=%.3f whale_dir=%s aggr_factor=%.3f final=%.2f",
             symbol,
             signal,
             self.base_order_notional,
             model_conf,
             whale_score,
             whale_direction,
+            aggr_factor,
             notional,
         )
 
@@ -588,4 +633,3 @@ class TradeExecutor:
             )
         except Exception as e:
             self.logger.warning("[RISK] on_position_open (flip) hata: %s", e)
-
