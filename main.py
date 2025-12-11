@@ -19,6 +19,7 @@ from config.settings import Settings
 from tg_bot.telegram_bot import TelegramBot
 from data.whale_detector import MultiTimeframeWhaleDetector
 from data.anomaly_detection import AnomalyDetector
+from core.hybrid_mtf import MultiTimeframeHybridEnsemble
 
 
 # ----------------------------------------------------------------------
@@ -573,6 +574,8 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                             logger=system_logger,
                         )
                         feat_df_itv = build_features(raw_df_itv)
+
+                        # Backward-compat alias map
                         for old_col, new_col in alias_map.items():
                             if old_col not in feat_df_itv.columns and new_col in feat_df_itv.columns:
                                 feat_df_itv[old_col] = feat_df_itv[new_col]
@@ -595,21 +598,35 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             if USE_MTF_ENS and mtf_model is not None:
                 try:
                     X_dict: Dict[str, pd.DataFrame] = {}
+
                     for itv, df_itv in mtf_feats.items():
                         cols_itv = [c for c in feature_cols if c in df_itv.columns]
+                        if not cols_itv:
+                            if system_logger:
+                                system_logger.warning(
+                                    "[MTF] Interval=%s için kullanılabilir feature yok, skip ediliyor.",
+                                    itv,
+                                )
+                            continue
+
                         X_dict[itv] = df_itv[cols_itv].tail(500)
 
-                    p_ens, mtf_debug = mtf_model.predict_proba_multi(X_dict)
-                    p_used = float(p_ens)
+                    if X_dict:
+                        p_ens, mtf_debug = mtf_model.predict_proba_multi(X_dict)
+                        p_used = float(p_ens)
 
-                    per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}
-                    p_1m = per_int.get("1m", {}).get("p_last")
-                    p_5m = per_int.get("5m", {}).get("p_last")
-                    p_15m = per_int.get("15m", {}).get("p_last")
-                    p_1h = per_int.get("1h", {}).get("p_last")
+                        per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}
+                        p_1m = per_int.get("1m", {}).get("p_last")
+                        p_5m = per_int.get("5m", {}).get("p_last")
+                        p_15m = per_int.get("15m", {}).get("p_last")
+                        p_1h = per_int.get("1h", {}).get("p_last")
+
                 except Exception as e:
                     if system_logger:
-                        system_logger.warning("[MTF] Ensemble hesaplanırken hata: %s", e)
+                        system_logger.warning(
+                            "[MTF] Ensemble hesaplanırken hata: %s",
+                            e,
+                        )
                     p_used = p_single
                     mtf_debug = None
 
@@ -711,7 +728,27 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             else:
                 signal = "hold"
 
-            # Trend filtresi (1h / 15m)
+            # ------------------------------
+            # 6) Çoklu TF trend filtresi + log
+            # ------------------------------
+            # p_1m, p_5m, p_15m, p_1h'yi mtf_debug'tan güvenli çek
+            p_1m = p_5m = p_15m = p_1h = None
+            if mtf_debug and isinstance(mtf_debug, dict) and "per_interval" in mtf_debug:
+                per_int = mtf_debug.get("per_interval") or {}
+
+                def get_p(itv: str) -> Optional[float]:
+                    try:
+                        v = per_int.get(itv, {}).get("p_last")
+                        return float(v) if v is not None else None
+                    except Exception:
+                        return None
+
+                p_1m = get_p("1m")
+                p_5m = get_p("5m")
+                p_15m = get_p("15m")
+                p_1h = get_p("1h")
+
+            # --- Trend filtresi (1h/15m hard veto) ---
             if p_1h is not None and p_15m is not None:
                 if signal == "long" and not (p_1h > 0.6 and p_15m > 0.5):
                     if system_logger:
@@ -732,24 +769,50 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                         )
                     signal = "hold"
 
-            whale_dir = whale_meta.get("direction")
-            whale_score = whale_meta.get("score")
+            # --- 1m mikro filtre (hafif fren) ---
+            # Örnek mantık:
+            #  - 5m/ensemble LONG derken 1m çok sert bearish ise (p_1m < 0.30),
+            #    model_conf_factor'ü biraz düşür (pozisyon küçülsün).
+            micro_conf_scale = 1.0
+            if signal == "long" and isinstance(p_1m, float) and p_1m < 0.30:
+                micro_conf_scale = 0.7  # %30 küçült
+            elif signal == "short" and isinstance(p_1m, float) and p_1m > 0.70:
+                micro_conf_scale = 0.7
 
+            # Model confidence factor'u mikro filtre ile birleştir
+            effective_model_conf = float(model_conf_factor) * micro_conf_scale
+
+            # Whale meta güvenli çek
+            whale_dir = None
+            whale_score = None
+            if isinstance(whale_meta, dict):
+                whale_dir = whale_meta.get("direction")
+                whale_score = whale_meta.get("score")
+
+            # Genişletilmiş SIGNAL log'u
             if system_logger:
                 system_logger.info(
                     "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
-                    "signal=%s, model_conf_factor=%.3f, p_1h=%s, p_15m=%s, "
+                    "signal=%s, model_conf_factor=%.3f, effective_conf=%.3f, "
+                    "p_1m=%s, p_5m=%s, p_15m=%s, p_1h=%s, "
                     "whale_dir=%s, whale_score=%s",
                     p_used,
                     long_thr,
                     short_thr,
                     signal,
-                    model_conf_factor,
-                    f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
+                    float(model_conf_factor),
+                    effective_model_conf,
+                    f"{p_1m:.4f}" if isinstance(p_1m, float) else "None",
+                    f"{p_5m:.4f}" if isinstance(p_5m, float) else "None",
                     f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
+                    f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
                     whale_dir if whale_dir is not None else "None",
                     f"{whale_score:.3f}" if isinstance(whale_score, (int, float)) else "None",
                 )
+
+            # extra paketinde sadece model_confidence_factor'ü güncelle
+            if isinstance(extra, dict):
+                extra["model_confidence_factor"] = effective_model_conf
 
             # Label diagnostic
             last_label = build_labels(feat_df).iloc[-1]
