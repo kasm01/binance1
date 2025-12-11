@@ -367,8 +367,7 @@ def create_trading_objects() -> Dict[str, Any]:
         # Bot token yoksa TelegramBot içinde bot/dispatcher None olacak
         if tg_bot.dispatcher:
             tg_bot.set_risk_manager(risk_manager)
-            if system_logger:
-                system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif).")
+            system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif).")
         else:
             system_logger.warning(
                 "[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız)."
@@ -400,11 +399,11 @@ def create_trading_objects() -> Dict[str, Any]:
 # ------------------------------
 # HYBRID MODEL (mevcut interval)
 # ------------------------------
-# hybrid_model = HybridModel(
-#     model_dir="models",
-#     interval=interval,
-#     logger=system_logger,
-# )
+hybrid_model = HybridModel(
+    model_dir="models",
+    interval=interval,
+    logger=system_logger,
+)
 
 # ------------------------------
 # MTF hybrid ensemble (1m,5m,15m,1h)
@@ -416,23 +415,18 @@ if USE_MTF_ENS:
         intervals=MTF_INTERVALS,
         logger=system_logger,
     )
-    if system_logger:
-        system_logger.info(
+    system_logger.info(
         "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
         MTF_INTERVALS,
     )
 
     # ------------------------------
-        # ------------------------------
     # Whale detector (MTF versiyon)
     # ------------------------------
     whale_detector = MultiTimeframeWhaleDetector()
-    if system_logger:
-        if system_logger:
+    system_logger.info("[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi.")
 
-            system_logger.info("[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi.")
-
-# -----------------------------
+    # -----------------------------
     # Trade Executor – YENİ İMZAYA GÖRE
     # -----------------------------
     base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
@@ -449,10 +443,6 @@ if USE_MTF_ENS:
 
     whale_risk_boost = float(os.getenv("WHALE_RISK_BOOST", "2.0"))
 
-    try:
-        client
-    except NameError:
-        client = None
     trade_executor = TradeExecutor(
         client=client,                    # <-- sadece BURADA client
         risk_manager=risk_manager,
@@ -470,6 +460,18 @@ if USE_MTF_ENS:
         atr_tp_mult=atr_tp_mult,
         whale_risk_boost=whale_risk_boost,
     )
+
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "client": client,
+        "risk_manager": risk_manager,
+        "position_manager": position_manager,
+        "trade_executor": trade_executor,
+        "hybrid_model": hybrid_model,
+        "mtf_model": mtf_model,
+        "whale_detector": whale_detector,
+    }
 
 
 # ----------------------------------------------------------------------
@@ -496,8 +498,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
     data_limit = 500
 
     global system_logger
-    if system_logger:
-        system_logger.info(
+    system_logger.info(
         "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
         symbol,
         interval,
@@ -520,8 +521,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             )
 
             feat_df = build_features(raw_df)
-            if system_logger:
-                system_logger.info(
+            system_logger.info(
                 "[FE] Features DF shape: %s, columns=%s",
                 feat_df.shape,
                 list(feat_df.columns),
@@ -748,8 +748,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 p_live, mtf_debug = mtf_model.predict_proba_multi(mtf_feat_dict)
                 p_single = hybrid_model.predict_proba_single(X_live)[0]
 
-                if system_logger:
-                    system_logger.info(
+                system_logger.info(
                     "[HYBRID-MTF] ensemble_p=%.4f (USE_MTF_ENS=True) | single_tf_p=%.4f",
                     p_live,
                     p_single,
@@ -765,8 +764,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             best_auc = getattr(risk_manager, "best_auc", 0.5)
             best_side = getattr(risk_manager, "best_side", "long")
 
-            if system_logger:
-                system_logger.info(
+            system_logger.info(
                 "[HYBRID] mode=sgd_only n_samples=%d n_features=%d "
                 "p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, "
                 "best_auc=%.4f, best_side=%s",
@@ -845,16 +843,14 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 
             if p_1h is not None and p_15m is not None:
                 if signal == "long" and not (p_1h > 0.6 and p_15m > 0.5):
-                    if system_logger:
-                        system_logger.info(
+                    system_logger.info(
                         "[TREND_FILTER] 1h/15m filtre nedeniyle LONG sinyali HOLD'a çekildi (p_1h=%.4f, p_15m=%.4f).",
                         p_1h,
                         p_15m,
                     )
                     signal = "hold"
                 elif signal == "short" and not (p_1h < 0.4 and p_15m < 0.5):
-                    if system_logger:
-                        system_logger.info(
+                    system_logger.info(
                         "[TREND_FILTER] 1h/15m filtre nedeniyle SHORT sinyali HOLD'a çekildi (p_1h=%.4f, p_15m=%.4f).",
                         p_1h,
                         p_15m,
@@ -864,8 +860,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             whale_dir = whale_meta["direction"] if isinstance(whale_meta, dict) else None
             whale_score = whale_meta["score"] if isinstance(whale_meta, dict) else None
 
-            if system_logger:
-                system_logger.info(
+            system_logger.info(
                 "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
                 "signal=%s, model_conf_factor=%.3f, p_1h=%s, p_15m=%s, "
                 "whale_dir=%s, whale_score=%s",
@@ -884,8 +879,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             # 7) Label check (diagnostic)
             # ------------------------------
             last_label = build_labels(feat_df).iloc[-1]
-            if system_logger:
-                system_logger.info(
+            system_logger.info(
                 "[LABEL_CHECK] last_label(horizon=1)=%s (1=up,0=down)",
                 last_label,
             )
@@ -956,14 +950,12 @@ async def async_main() -> None:
             "[BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol."
         )
 
-    if system_logger:
-        system_logger.info(
+    system_logger.info(
         "[MAIN] TRAINING_MODE=%s -> %s",
         TRAINING_MODE,
         "Offline/eğitim modu" if TRAINING_MODE else "Normal çalışma modu (trade logic aktif)",
     )
-    if system_logger:
-        system_logger.info(
+    system_logger.info(
         "[MAIN] HYBRID_MODE=%s -> %s",
         HYBRID_MODE,
         "LSTM+SGD hibrit skor kullanılacak (mümkünse)."
