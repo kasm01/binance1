@@ -506,13 +506,24 @@ class HybridMultiTFModel:
                 p_last = float(p_arr[-1])
                 w = self._compute_weight_from_meta(model.meta)
 
-                # Eğer weight 0 ise, bu interval'i ensemble'a dahil etmiyoruz
+                # Eğer weight 0 ise, normalde bu interval'i dışlıyoruz.
+                # Ancak 1m için istisna: düşük bir weight ile yine de dahil ediyoruz.
                 if w <= 0.0:
-                    self._log(
-                        logging.INFO,
-                        "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.",
-                        itv,
-                    )
+                    if itv == "1m":
+                        w = 0.30  # düşük güvenle de olsa katkı versin
+                        self._log(
+                            logging.INFO,
+                            "[HYBRID-MTF] Interval=%s düşük AUC ile düşük weight=%.2f kullanılıyor (skip edilmedi).",
+                            itv,
+                            w,
+                        )
+                    else:
+                        self._log(
+                            logging.INFO,
+                            "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.",
+                            itv,
+                        )
+                        continue
                 else:
                     probs_list.append(p_last)
                     weights_list.append(w)
