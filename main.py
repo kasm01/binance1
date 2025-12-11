@@ -14,7 +14,7 @@ from core.position_manager import PositionManager
 from core.trade_executor import TradeExecutor
 from data.online_learning import OnlineLearner  # şimdilik sadece placeholder
 from core.binance_client import create_binance_client
-from models.hybrid_inference import HybridModel, HybridMultiTFModel
+from models.hybrid_inference import HybridModel
 from config.settings import Settings
 from tg_bot.telegram_bot import TelegramBot
 from data.whale_detector import MultiTimeframeWhaleDetector
@@ -347,27 +347,45 @@ def create_trading_objects() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # MTF hybrid ensemble
-    mtf_model = None
+    # MTF hybrid ensemble (interval başına HybridModel seti)
+    mtf_ensemble = None
     if USE_MTF_ENS:
         try:
-            mtf_model = HybridMultiTFModel(
-                model_dir="models",
-                intervals=MTF_INTERVALS,
-                logger=system_logger,
-            )
-            if hasattr(mtf_model, "use_lstm_hybrid"):
-                mtf_model.use_lstm_hybrid = HYBRID_MODE
-            if system_logger:
-                system_logger.info(
-                    "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
-                    MTF_INTERVALS,
-                )
+            mtf_models: Dict[str, HybridModel] = {}
+            for itv in MTF_INTERVALS:
+                try:
+                    hm = HybridModel(
+                        model_dir="models",
+                        interval=itv,
+                        logger=system_logger,
+                    )
+                    if hasattr(hm, "use_lstm_hybrid"):
+                        hm.use_lstm_hybrid = HYBRID_MODE
+                    mtf_models[itv] = hm
+                    if system_logger:
+                        system_logger.info(
+                            "[HYBRID-MTF] HybridModel yüklendi | interval=%s", itv
+                        )
+                except Exception as e:
+                    if system_logger:
+                        system_logger.warning(
+                            "[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s",
+                            itv,
+                            e,
+                        )
+
+            if mtf_models:
+                mtf_ensemble = MultiTimeframeHybridEnsemble(models_by_interval=mtf_models)
+                if system_logger:
+                    system_logger.info(
+                        "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
+                        list(mtf_models.keys()),
+                    )
         except Exception as e:
-            mtf_model = None
+            mtf_ensemble = None
             if system_logger:
                 system_logger.warning(
-                    "[MAIN] HybridMultiTFModel init hata, MTF ensemble devre dışı: %s",
+                    "[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s",
                     e,
                 )
 
@@ -428,7 +446,8 @@ def create_trading_objects() -> Dict[str, Any]:
         "position_manager": position_manager,
         "trade_executor": trade_executor,
         "hybrid_model": hybrid_model,
-        "mtf_model": mtf_model,
+        "mtf_ensemble": mtf_ensemble,   # yeni
+        "mtf_model": mtf_ensemble,      # geriye dönük uyumluluk için
         "whale_detector": whale_detector,
         "tg_bot": tg_bot,
     }
@@ -451,7 +470,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
     trade_executor = objs["trade_executor"]
     whale_detector = objs.get("whale_detector")
     hybrid_model = objs["hybrid_model"]
-    mtf_model = objs.get("mtf_model")
+    mtf_ensemble = objs.get("mtf_ensemble")  # yeni
 
     symbol = objs.get("symbol", getattr(config, "SYMBOL", SYMBOL))
     interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
@@ -467,19 +486,14 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             USE_MTF_ENS,
         )
 
-    if system_logger:
-        system_logger.info(
-            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
-            symbol,
-            interval,
-            TRAINING_MODE,
-            HYBRID_MODE,
-            USE_MTF_ENS,
-        )
-
     # --- AnomalyDetector: her loop’ta kullanılacak tek instance ---
     anomaly_detector = AnomalyDetector(logger=system_logger)
 
+    # Backward-compat alias map (asset_volume -> volume)
+    alias_map = {
+        "taker_buy_base_volume": "taker_buy_base_asset_volume",
+        "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
+    }
 
     # ------------------------------ LOOP ------------------------------
     while True:
@@ -501,11 +515,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     list(feat_df.columns),
                 )
 
-            # Backward-compat alias map (asset_volume -> volume)
-            alias_map = {
-                "taker_buy_base_volume": "taker_buy_base_asset_volume",
-                "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
-            }
+            # Backward-compat aliasları ana DF için uygula
             for old_col, new_col in alias_map.items():
                 if old_col not in feat_df.columns and new_col in feat_df.columns:
                     feat_df[old_col] = feat_df[new_col]
@@ -563,7 +573,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
-            if USE_MTF_ENS and mtf_model is not None:
+            if USE_MTF_ENS and mtf_ensemble is not None:
                 for itv in ["1m", "15m", "1h"]:
                     try:
                         raw_df_itv = await fetch_klines(
@@ -592,12 +602,12 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 
             # 4) MTF ensemble skoru
             p_used = p_single
-            mtf_debug = None
+            mtf_debug: Optional[Dict[str, Any]] = None
             p_1m = p_5m = p_15m = p_1h = None
 
-            if USE_MTF_ENS and mtf_model is not None:
+            if USE_MTF_ENS and mtf_ensemble is not None:
                 try:
-                    X_dict: Dict[str, pd.DataFrame] = {}
+                    X_by_interval: Dict[str, pd.DataFrame] = {}
 
                     for itv, df_itv in mtf_feats.items():
                         cols_itv = [c for c in feature_cols if c in df_itv.columns]
@@ -609,10 +619,10 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                                 )
                             continue
 
-                        X_dict[itv] = df_itv[cols_itv].tail(500)
+                        X_by_interval[itv] = df_itv[cols_itv].tail(500)
 
-                    if X_dict:
-                        p_ens, mtf_debug = mtf_model.predict_proba_multi(X_dict)
+                    if X_by_interval:
+                        p_ens, mtf_debug = mtf_ensemble.predict_mtf(X_by_interval)
                         p_used = float(p_ens)
 
                         per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}
@@ -629,6 +639,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                         )
                     p_used = p_single
                     mtf_debug = None
+                    p_1m = p_5m = p_15m = p_1h = None
 
             # 5) MTF Whale sinyali -> whale_meta
             whale_meta: Dict[str, Any] = {
@@ -685,7 +696,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
             atr_value = compute_atr_from_klines(raw_df, period=atr_period)
 
-            # 7) Extra meta paket
+            # 7) Extra meta paket – probs + extra
             probs = {
                 "p_used": p_used,
                 "p_single": p_single,
@@ -693,7 +704,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 "p_lstm_mean": float(debug_single.get("p_lstm_mean", 0.5)),
             }
 
-            extra = {
+            extra: Dict[str, Any] = {
                 "model_confidence_factor": model_conf_factor,
                 "best_auc": best_auc,
                 "best_side": best_side,
@@ -729,24 +740,9 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 signal = "hold"
 
             # ------------------------------
-            # 6) Çoklu TF trend filtresi + log
+            # 9) Çoklu TF trend filtresi + mikro filtre
             # ------------------------------
-            # p_1m, p_5m, p_15m, p_1h'yi mtf_debug'tan güvenli çek
-            p_1m = p_5m = p_15m = p_1h = None
-            if mtf_debug and isinstance(mtf_debug, dict) and "per_interval" in mtf_debug:
-                per_int = mtf_debug.get("per_interval") or {}
-
-                def get_p(itv: str) -> Optional[float]:
-                    try:
-                        v = per_int.get(itv, {}).get("p_last")
-                        return float(v) if v is not None else None
-                    except Exception:
-                        return None
-
-                p_1m = get_p("1m")
-                p_5m = get_p("5m")
-                p_15m = get_p("15m")
-                p_1h = get_p("1h")
+            # p_1m, p_5m, p_15m, p_1h zaten yukarıda set edildi (MTF varsa)
 
             # --- Trend filtresi (1h/15m hard veto) ---
             if p_1h is not None and p_15m is not None:
@@ -770,9 +766,6 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     signal = "hold"
 
             # --- 1m mikro filtre (hafif fren) ---
-            # Örnek mantık:
-            #  - 5m/ensemble LONG derken 1m çok sert bearish ise (p_1m < 0.30),
-            #    model_conf_factor'ü biraz düşür (pozisyon küçülsün).
             micro_conf_scale = 1.0
             if signal == "long" and isinstance(p_1m, float) and p_1m < 0.30:
                 micro_conf_scale = 0.7  # %30 küçült
@@ -811,8 +804,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                 )
 
             # extra paketinde sadece model_confidence_factor'ü güncelle
-            if isinstance(extra, dict):
-                extra["model_confidence_factor"] = effective_model_conf
+            extra["model_confidence_factor"] = effective_model_conf
 
             # Label diagnostic
             last_label = build_labels(feat_df).iloc[-1]
@@ -822,7 +814,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     last_label,
                 )
 
-            # 9) Kararı TradeExecutor'a gönder
+            # 10) Kararı TradeExecutor'a gönder
             last_price = float(raw_df["close"].iloc[-1])
 
             await trade_executor.execute_decision(
