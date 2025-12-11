@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
+import argparse  # <-- argümanlar için
 
 # main.py içindeki config ile uyumlu olsun
 from config import config
@@ -232,10 +233,34 @@ def save_meta_and_backtest(
 
 
 def main() -> None:
-    # Sembol ve interval
-    symbol = os.getenv("SYMBOL", getattr(config, "SYMBOL", "BTCUSDT"))
-    interval = os.getenv("INTERVAL", "5m")
-    horizon = int(os.getenv("WHALE_HORIZON", "3"))
+    # CLI argümanları
+    parser = argparse.ArgumentParser(description="Whale detector training script")
+    parser.add_argument("--symbol", type=str, default=None, help="Sembol (varsayılan: config.SYMBOL veya BTCUSDT)")
+    parser.add_argument("--interval", type=str, default=None, help="Interval (örn: 1m,5m,15m,1h)")
+    parser.add_argument("--horizon", type=int, default=None, help="Kaç bar sonrası getiriyi ölçelim (default: 3)")
+    args = parser.parse_args()
+
+    # Sembol ve interval – öncelik sırası:
+    # 1) CLI argümanı
+    # 2) ENV
+    # 3) config / default
+    symbol = (
+        args.symbol
+        or os.getenv("SYMBOL")
+        or getattr(config, "SYMBOL", "BTCUSDT")
+    )
+
+    interval = (
+        args.interval
+        or os.getenv("INTERVAL")
+        or "5m"
+    )
+
+    horizon = (
+        args.horizon
+        if args.horizon is not None
+        else int(os.getenv("WHALE_HORIZON", "3"))
+    )
 
     logger.info(
         "[START] Whale training | symbol=%s interval=%s horizon=%d",

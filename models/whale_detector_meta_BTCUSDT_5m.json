@@ -1,0 +1,13 @@
+{
+  "symbol": "BTCUSDT",
+  "interval": "5m",
+  "horizon": 3,
+  "best_params": {
+    "window": 50,
+    "volume_zscore_thr": 1.5
+  },
+  "n_signals": 1778,
+  "win_rate": 0.4966254218222722,
+  "avg_return": 6.909037295772382e-05,
+  "created_at": "2025-12-11T18:11:51.112758"
+}

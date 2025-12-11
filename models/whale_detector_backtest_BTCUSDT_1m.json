@@ -1,0 +1,92 @@
+{
+  "symbol": "BTCUSDT",
+  "interval": "1m",
+  "horizon": 3,
+  "grid_results": [
+    {
+      "window": 20,
+      "volume_zscore_thr": 1.5,
+      "n_signals": 1848,
+      "win_rate": 0.4945887445887446,
+      "avg_return": -2.8275931521571443e-05
+    },
+    {
+      "window": 20,
+      "volume_zscore_thr": 2.0,
+      "n_signals": 1262,
+      "win_rate": 0.5071315372424723,
+      "avg_return": 3.669170635729352e-05
+    },
+    {
+      "window": 20,
+      "volume_zscore_thr": 2.5,
+      "n_signals": 817,
+      "win_rate": 0.5030599755201959,
+      "avg_return": -1.4878080687973125e-06
+    },
+    {
+      "window": 20,
+      "volume_zscore_thr": 3.0,
+      "n_signals": 505,
+      "win_rate": 0.500990099009901,
+      "avg_return": 1.1363799218596022e-05
+    },
+    {
+      "window": 50,
+      "volume_zscore_thr": 1.5,
+      "n_signals": 1632,
+      "win_rate": 0.49264705882352944,
+      "avg_return": -1.3328479773783426e-05
+    },
+    {
+      "window": 50,
+      "volume_zscore_thr": 2.0,
+      "n_signals": 1109,
+      "win_rate": 0.4878268710550045,
+      "avg_return": -8.635163857447147e-06
+    },
+    {
+      "window": 50,
+      "volume_zscore_thr": 2.5,
+      "n_signals": 784,
+      "win_rate": 0.4897959183673469,
+      "avg_return": -2.5388786570599806e-05
+    },
+    {
+      "window": 50,
+      "volume_zscore_thr": 3.0,
+      "n_signals": 558,
+      "win_rate": 0.4982078853046595,
+      "avg_return": -4.1173616589618156e-05
+    },
+    {
+      "window": 100,
+      "volume_zscore_thr": 1.5,
+      "n_signals": 1460,
+      "win_rate": 0.4917808219178082,
+      "avg_return": -2.2651598853474283e-05
+    },
+    {
+      "window": 100,
+      "volume_zscore_thr": 2.0,
+      "n_signals": 1032,
+      "win_rate": 0.4874031007751938,
+      "avg_return": -3.431761908565334e-05
+    },
+    {
+      "window": 100,
+      "volume_zscore_thr": 2.5,
+      "n_signals": 726,
+      "win_rate": 0.48760330578512395,
+      "avg_return": -2.05369182038004e-05
+    },
+    {
+      "window": 100,
+      "volume_zscore_thr": 3.0,
+      "n_signals": 516,
+      "win_rate": 0.48255813953488375,
+      "avg_return": 7.624885805024725e-07
+    }
+  ],
+  "created_at": "2025-12-11T18:11:49.887191"
+}

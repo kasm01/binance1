@@ -1,0 +1,344 @@
+#!/usr/bin/env python
+import os
+import json
+import logging
+from pathlib import Path
+from typing import Tuple, List
+
+import numpy as np
+import pandas as pd
+import joblib
+
+from sklearn.preprocessing import StandardScaler
+
+import tensorflow as tf
+from tensorflow.keras import layers, models, callbacks
+
+# Projedeki config + feature/label fonksiyonlarını kullan
+from config import config
+from main import build_features, build_labels
+
+logger = logging.getLogger("lstm_train")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+
+def load_offline_klines(symbol: str, interval: str, limit: int = 20000) -> pd.DataFrame:
+    """
+    Offline cache'ten klines yükler:
+      data/offline_cache/{symbol}_{interval}_6m.csv
+    """
+    path = Path("data/offline_cache") / f"{symbol}_{interval}_6m.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Offline cache yok: {path}")
+
+    df = pd.read_csv(path)
+    if len(df) > limit:
+        df = df.tail(limit).reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
+
+    logger.info(
+        "[DATA] Loaded offline klines: symbol=%s interval=%s shape=%s path=%s",
+        symbol,
+        interval,
+        df.shape,
+        str(path),
+    )
+    return df
+
+
+def load_meta_feature_cols(interval: str) -> List[str]:
+    """
+    models/model_meta_<interval>.json içinden SGD'nin kullandığı feature kolonlarını çeker.
+    Böylece LSTM, SGD ile aynı feature düzenini kullanır.
+    """
+    meta_path = Path("models") / f"model_meta_{interval}.json"
+    if not meta_path.exists():
+        logger.warning(
+            "[META] meta dosyası yok: %s, fallback default feature list kullanılacak.",
+            meta_path,
+        )
+        # Default feature list – main.py'deki ile uyumlu
+        return [
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
+            "ignore",
+            "hl_range",
+            "oc_change",
+            "return_1",
+            "return_3",
+            "return_5",
+            "ma_5",
+            "ma_10",
+            "ma_20",
+            "vol_10",
+            "dummy_extra",
+        ]
+
+    meta = json.loads(meta_path.read_text())
+    feats = meta.get("feature_cols")
+    if not feats:
+        logger.warning(
+            "[META] feature_cols meta içinde yok, fallback default feature list kullanılacak."
+        )
+        return [
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
+            "ignore",
+            "hl_range",
+            "oc_change",
+            "return_1",
+            "return_3",
+            "return_5",
+            "ma_5",
+            "ma_10",
+            "ma_20",
+            "vol_10",
+            "dummy_extra",
+        ]
+
+    logger.info("[META] feature_cols loaded from %s", meta_path)
+    return feats
+
+
+def make_lstm_dataset(
+    X: np.ndarray,
+    y: np.ndarray,
+    window: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    LSTM için (window, n_features) sekansları üretir.
+    X: (N, n_features)
+    y: (N,)
+    """
+    xs = []
+    ys = []
+    for i in range(window, len(X)):
+        xs.append(X[i - window : i])
+        ys.append(y[i])
+    X_seq = np.asarray(xs, dtype=np.float32)
+    y_seq = np.asarray(ys, dtype=np.float32)
+    return X_seq, y_seq
+
+
+def prepare_data(
+    symbol: str,
+    interval: str,
+    horizon: int = 1,
+    window: int = 50,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    - Offline kline yükler
+    - build_features ile feature'ları üretir
+    - model_meta_<interval>.json'dan feature list alır
+    - build_labels ile binary hedef üretir
+    - StandardScaler ile scale
+    - LSTM için sekans dataset üretir
+    """
+    df_raw = load_offline_klines(symbol, interval, limit=20000)
+
+    # Feature engineering (main.py ile aynı)
+    feat_df = build_features(df_raw)
+
+    # Backward-compat alias map
+    alias_map = {
+        "taker_buy_base_volume": "taker_buy_base_asset_volume",
+        "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
+    }
+    for old_col, new_col in alias_map.items():
+        if old_col not in feat_df.columns and new_col in feat_df.columns:
+            feat_df[old_col] = feat_df[new_col]
+
+    # Model meta'dan feature kolonları
+    feature_cols = load_meta_feature_cols(interval)
+    feature_cols_existing = [c for c in feature_cols if c in feat_df.columns]
+    missing = [c for c in feature_cols if c not in feat_df.columns]
+    if missing:
+        logger.warning("[FE] Eksik feature kolonları: %s", missing)
+
+    X_df = feat_df[feature_cols_existing].copy()
+
+    # Label (horizon bar sonra close > current close ? 1 : 0)
+    labels = build_labels(feat_df, horizon=horizon)
+
+    # Son horizon bar label NaN olacağından kes
+    X_df = X_df.iloc[:-horizon].reset_index(drop=True)
+    y = labels.iloc[:-horizon].astype(float).to_numpy()
+
+    X = X_df.to_numpy(dtype=np.float32)
+
+    logger.info(
+        "[DATA] After feature+label alignment: X shape=%s, y shape=%s",
+        X.shape,
+        y.shape,
+    )
+
+    # Scale
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # LSTM sekansları
+    X_seq, y_seq = make_lstm_dataset(X_scaled, y, window)
+
+    logger.info(
+        "[DATA] LSTM seq dataset: X_seq shape=%s, y_seq shape=%s (window=%d)",
+        X_seq.shape,
+        y_seq.shape,
+        window,
+    )
+
+    return X_seq, y_seq, scaler
+
+
+def build_lstm_model(window: int, n_features: int) -> tf.keras.Model:
+    """
+    Basit ama güçlü bir LSTM mimarisi (binary classification).
+    """
+    model = models.Sequential(
+        [
+            layers.Input(shape=(window, n_features)),
+            layers.LSTM(64, return_sequences=True),
+            layers.Dropout(0.2),
+            layers.LSTM(32),
+            layers.Dropout(0.2),
+            layers.Dense(32, activation="relu"),
+            layers.Dense(1, activation="sigmoid"),
+        ]
+    )
+
+    opt = tf.keras.optimizers.Adam(learning_rate=1e-3)
+    model.compile(
+        optimizer=opt,
+        loss="binary_crossentropy",
+        metrics=[
+            "accuracy",
+            tf.keras.metrics.AUC(name="auc"),
+        ],
+    )
+
+    return model
+
+
+def main() -> None:
+    # Sembol / interval / horizon
+    symbol = os.getenv("SYMBOL", getattr(config, "SYMBOL", "BTCUSDT"))
+    interval = os.getenv("INTERVAL", "5m")
+    horizon = int(os.getenv("LSTM_HORIZON", "1"))
+
+    # HybridModel tarafında default kullanılan window ile uyumlu olsun (tipik 50)
+    window_size = int(os.getenv("LSTM_WINDOW", "50"))
+
+    logger.info(
+        "[START] LSTM training | symbol=%s interval=%s horizon=%d window=%d",
+        symbol,
+        interval,
+        horizon,
+        window_size,
+    )
+
+    # Data hazırla
+    X_seq, y_seq, scaler = prepare_data(
+        symbol=symbol,
+        interval=interval,
+        horizon=horizon,
+        window=window_size,
+    )
+
+    n_samples = X_seq.shape[0]
+    train_size = int(n_samples * 0.8)
+    X_train, X_val = X_seq[:train_size], X_seq[train_size:]
+    y_train, y_val = y_seq[:train_size], y_seq[train_size:]
+
+    logger.info(
+        "[SPLIT] train_size=%d, val_size=%d",
+        X_train.shape[0],
+        X_val.shape[0],
+    )
+
+    # Modeli kur
+    model = build_lstm_model(window=window_size, n_features=X_seq.shape[2])
+
+    # Callback'ler
+    models_dir = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    model_path = models_dir / f"lstm_long_{interval}.h5"
+    ckpt_path = models_dir / f"lstm_long_{interval}_best_tmp.h5"
+
+    cbs = [
+        callbacks.EarlyStopping(
+            monitor="val_auc",
+            mode="max",
+            patience=5,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+        callbacks.ModelCheckpoint(
+            str(ckpt_path),
+            monitor="val_auc",
+            mode="max",
+            save_best_only=True,
+            save_weights_only=False,
+            verbose=1,
+        ),
+        callbacks.ReduceLROnPlateau(
+            monitor="val_auc",
+            mode="max",
+            factor=0.5,
+            patience=3,
+            verbose=1,
+        ),
+    ]
+
+    # Eğit
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_val, y_val),
+        epochs=20,
+        batch_size=64,
+        callbacks=cbs,
+        verbose=1,
+    )
+
+    # En iyi modeli kaydet
+    if ckpt_path.exists():
+        logger.info("[SAVE] Best checkpoint'ten modeli yüklüyorum: %s", ckpt_path)
+        best_model = tf.keras.models.load_model(str(ckpt_path))
+        best_model.save(model_path)
+        ckpt_path.unlink(missing_ok=True)
+    else:
+        logger.info("[SAVE] Checkpoint bulunamadı, son modeli kaydediyorum: %s", model_path)
+        model.save(model_path)
+
+    # Scaler'ı kaydet (HybridModel joblib.load ile bekliyor)
+    scaler_path = models_dir / f"lstm_scaler_{interval}.pkl"
+    joblib.dump(scaler, scaler_path)
+    logger.info("[SAVE] Scaler kaydedildi: %s", scaler_path)
+
+    logger.info("[DONE] LSTM training tamamlandı | interval=%s", interval)
+
+
+if __name__ == "__main__":
+    main()
