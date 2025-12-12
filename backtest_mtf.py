@@ -5,6 +5,9 @@ from typing import Dict, Any, Optional
 
 import pandas as pd
 
+from datetime import datetime
+from pathlib import Path
+
 from config.load_env import load_environment_variables
 from core.logger import setup_logger
 from core.risk_manager import RiskManager
@@ -14,7 +17,7 @@ from core.hybrid_mtf import MultiTimeframeHybridEnsemble
 from data.whale_detector import MultiTimeframeWhaleDetector
 from data.anomaly_detection import AnomalyDetector
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -23,7 +26,7 @@ class BacktestStats:
     equity: float = 1000.0
     peak_equity: float = 1000.0
     max_drawdown: float = 0.0
-    n_trades: int = 0          # kapanan trade sayısı
+    n_trades: int = 0          # kapanan trade sayısı (pnl_delta != 0 olduğunda artar)
     n_wins: int = 0
     n_losses: int = 0
 
@@ -107,6 +110,22 @@ def load_offline_klines(
             df.shape,
         )
     return df
+
+
+def _safe_bar_time_iso(raw_df: pd.DataFrame, idx: int) -> str:
+    """
+    open_time ms epoch ise iso string üretir; değilse stringe çevirir.
+    """
+    try:
+        if "open_time" not in raw_df.columns:
+            return str(idx)
+        ot = raw_df["open_time"].iloc[idx]
+        if isinstance(ot, (int, float)) and pd.notna(ot):
+            # Binance open_time genelde ms
+            return datetime.utcfromtimestamp(float(ot) / 1000.0).isoformat()
+        return str(ot)
+    except Exception:
+        return str(idx)
 
 
 # ----------------------------------------------------------------------
@@ -266,6 +285,31 @@ async def run_backtest() -> None:
         whale_risk_boost=whale_risk_boost,
     )
 
+    # --------------------------------------------------------------
+    # CSV export: kapanan işlemleri yakala + equity curve satırları
+    # --------------------------------------------------------------
+    closed_trades: list[Dict[str, Any]] = []
+    equity_rows: list[Dict[str, Any]] = []
+
+    if hasattr(trade_executor, "_close_position"):
+        try:
+            _orig_close_position = trade_executor._close_position  # type: ignore[attr-defined]
+
+            def _close_position_capture(symbol: str, price: float, reason: str, interval: str):
+                closed = _orig_close_position(symbol=symbol, price=price, reason=reason, interval=interval)
+                if isinstance(closed, dict):
+                    closed["bt_symbol"] = symbol
+                    closed["bt_interval"] = interval
+                    closed_trades.append(closed)
+                return closed
+
+            trade_executor._close_position = _close_position_capture  # type: ignore[method-assign]
+            system_logger.info("[BT] TradeExecutor._close_position patch OK (trades.csv aktif).")
+        except Exception as e:
+            system_logger.warning("[BT] TradeExecutor patch başarısız (trades.csv eksik olabilir): %s", e)
+    else:
+        system_logger.warning("[BT] TradeExecutor içinde _close_position yok. trades.csv yakalama pasif.")
+
     # --- Backtest istatistiklerini başlat ---
     start_eq = equity_start_of_day
     bt_stats = BacktestStats(
@@ -350,7 +394,6 @@ async def run_backtest() -> None:
                     i,
                 )
                 continue
-
 
             # ----------------------------------------------------------
             # 3.2) Single-TF (main interval) hibrit skor
@@ -487,7 +530,7 @@ async def run_backtest() -> None:
             )
 
             # ----------------------------------------------------------
-            # 3.7) Sinyal üretimi (main.py ile aynı mantık)
+            # 3.7) Sinyal üretimi
             # ----------------------------------------------------------
             if p_used >= long_thr:
                 signal = "long"
@@ -500,16 +543,14 @@ async def run_backtest() -> None:
             if p_1h is not None and p_15m is not None:
                 if signal == "long" and not (p_1h > 0.6 and p_15m > 0.5):
                     system_logger.info(
-                        "[BT-TREND_FILTER] LONG -> HOLD "
-                        "(p_1h=%.4f, p_15m=%.4f)",
+                        "[BT-TREND_FILTER] LONG -> HOLD (p_1h=%.4f, p_15m=%.4f)",
                         p_1h,
                         p_15m,
                     )
                     signal = "hold"
                 elif signal == "short" and not (p_1h < 0.4 and p_15m < 0.5):
                     system_logger.info(
-                        "[BT-TREND_FILTER] SHORT -> HOLD "
-                        "(p_1h=%.4f, p_15m=%.4f)",
+                        "[BT-TREND_FILTER] SHORT -> HOLD (p_1h=%.4f, p_15m=%.4f)",
                         p_1h,
                         p_15m,
                     )
@@ -557,10 +598,8 @@ async def run_backtest() -> None:
             )
 
             # ----------------------------------------------------------
-            # 3.8) TradeExecutor ile simülasyon (DRY_RUN backtest)
-            #      + PnL delta → BacktestStats
+            # 3.8) TradeExecutor ile simülasyon + PnL delta → BacktestStats
             # ----------------------------------------------------------
-            # TradeExecutor çağrısından ÖNCE mevcut realized PnL
             prev_pnl = 0.0
             try:
                 prev_pnl = float(getattr(risk_manager, "daily_realized_pnl", 0.0) or 0.0)
@@ -575,15 +614,13 @@ async def run_backtest() -> None:
                 price=last_price,
                 size=None,
                 interval=main_interval,
-                training_mode=False,      # backtest'te trade logic aktif
+                training_mode=False,
                 hybrid_mode=HYBRID_MODE,
                 probs=probs,
                 extra=extra,
             )
-
             n_exec_calls += 1
 
-            # TradeExecutor SONRASI: realized PnL değişimini ölç
             try:
                 new_pnl = float(getattr(risk_manager, "daily_realized_pnl", prev_pnl) or prev_pnl)
             except Exception:
@@ -604,6 +641,35 @@ async def run_backtest() -> None:
                     bt_stats.n_losses,
                 )
 
+            # ----------------------------------------------------------
+            # 3.9) Equity curve satırı (her bar)
+            # ----------------------------------------------------------
+            bar_time = _safe_bar_time_iso(raw_by_interval[main_interval], i)
+
+            equity_rows.append(
+                {
+                    "bar": i,
+                    "time": bar_time,
+                    "symbol": symbol,
+                    "interval": main_interval,
+                    "price": last_price,
+                    "signal": signal,
+                    "p_used": float(p_used),
+                    "p_single": float(p_single),
+                    "p_1m": p_1m,
+                    "p_5m": p_5m,
+                    "p_15m": p_15m,
+                    "p_1h": p_1h,
+                    "whale_dir": whale_dir,
+                    "whale_score": whale_score,
+                    "atr": float(atr_value),
+                    "equity": float(bt_stats.equity),
+                    "peak_equity": float(bt_stats.peak_equity),
+                    "max_drawdown_pct": float(bt_stats.max_drawdown) * 100.0,
+                    "pnl_total": float(bt_stats.equity - bt_stats.starting_equity),
+                }
+            )
+
         except Exception as e:
             system_logger.exception("[BT-LOOP-ERROR] bar=%d hata=%s", i, e)
 
@@ -620,7 +686,6 @@ async def run_backtest() -> None:
         n_exec_calls,
     )
 
-    # RiskManager'da summary / metrics varsa log'la
     if hasattr(risk_manager, "get_summary"):
         try:
             summary = risk_manager.get_summary()
@@ -628,7 +693,6 @@ async def run_backtest() -> None:
         except Exception as e:
             system_logger.warning("[BT-RISK-SUMMARY] okunamadı: %s", e)
 
-    # BacktestStats özeti
     bt_summary = bt_stats.summary_dict()
     system_logger.info(
         "[BT-RESULT] starting_equity=%.2f ending_equity=%.2f pnl=%.2f (%.2f%%) "
@@ -643,6 +707,35 @@ async def run_backtest() -> None:
         bt_summary["winrate"],
         bt_summary["max_drawdown_pct"],
     )
+
+    # ------------------------------------------------------------------
+    # CSV export
+    # ------------------------------------------------------------------
+    out_dir = Path(os.getenv("BT_OUT_DIR", "outputs"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    run_tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    equity_path = out_dir / f"equity_curve_{symbol}_{main_interval}_{run_tag}.csv"
+    trades_path = out_dir / f"trades_{symbol}_{main_interval}_{run_tag}.csv"
+    summary_path = out_dir / f"summary_{symbol}_{main_interval}_{run_tag}.csv"
+
+    try:
+        pd.DataFrame(equity_rows).to_csv(equity_path, index=False)
+        system_logger.info("[BT-CSV] equity_curve yazıldı: %s (rows=%d)", str(equity_path), len(equity_rows))
+    except Exception as e:
+        system_logger.warning("[BT-CSV] equity_curve yazılamadı: %s", e)
+
+    try:
+        pd.DataFrame(closed_trades).to_csv(trades_path, index=False)
+        system_logger.info("[BT-CSV] trades yazıldı: %s (trades=%d)", str(trades_path), len(closed_trades))
+    except Exception as e:
+        system_logger.warning("[BT-CSV] trades yazılamadı: %s", e)
+
+    try:
+        pd.DataFrame([bt_summary]).to_csv(summary_path, index=False)
+        system_logger.info("[BT-CSV] summary yazıldı: %s", str(summary_path))
+    except Exception as e:
+        system_logger.warning("[BT-CSV] summary yazılamadı: %s", e)
 
 
 # ----------------------------------------------------------------------
