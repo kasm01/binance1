@@ -16,13 +16,14 @@ from data.anomaly_detection import AnomalyDetector
 
 from dataclasses import dataclass, field
 
+
 @dataclass
 class BacktestStats:
     starting_equity: float = 1000.0
     equity: float = 1000.0
     peak_equity: float = 1000.0
     max_drawdown: float = 0.0
-    n_trades: int = 0
+    n_trades: int = 0          # kapanan trade sayısı
     n_wins: int = 0
     n_losses: int = 0
 
@@ -62,6 +63,7 @@ class BacktestStats:
             "winrate": winrate,
             "max_drawdown_pct": self.max_drawdown * 100.0,
         }
+
 
 # main.py içindeki helper'ları aynen kullanıyoruz
 from main import build_features, compute_atr_from_klines, build_labels
@@ -161,7 +163,7 @@ async def run_backtest() -> None:
             if old_col not in feat_df.columns and new_col in feat_df.columns:
                 feat_df[old_col] = feat_df[new_col]
 
-        # Anomali filtresi (şimdilik global uyguluyoruz; ileride sadece geçmişe göre iyileştiririz)
+        # Anomali filtresi
         feat_df = anomaly_detector.filter_anomalies(feat_df)
 
         raw_by_interval[itv] = raw_df.reset_index(drop=True)
@@ -264,6 +266,18 @@ async def run_backtest() -> None:
         whale_risk_boost=whale_risk_boost,
     )
 
+    # --- Backtest istatistiklerini başlat ---
+    start_eq = equity_start_of_day
+    bt_stats = BacktestStats(
+        starting_equity=start_eq,
+        equity=start_eq,
+        peak_equity=start_eq,
+    )
+    system_logger.info(
+        "[BT] Stats init | starting_equity=%.2f",
+        bt_stats.starting_equity,
+    )
+
     # Feature kolon listesi (main.py ile aynı)
     feature_cols = [
         "open_time",
@@ -304,7 +318,7 @@ async def run_backtest() -> None:
     long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
     short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
 
-    n_trades = 0
+    n_exec_calls = 0  # execute_decision çağrı sayısı
 
     for i in range(warmup, min_len - 1):
         try:
@@ -336,6 +350,7 @@ async def run_backtest() -> None:
                     i,
                 )
                 continue
+
 
             # ----------------------------------------------------------
             # 3.2) Single-TF (main interval) hibrit skor
@@ -543,7 +558,15 @@ async def run_backtest() -> None:
 
             # ----------------------------------------------------------
             # 3.8) TradeExecutor ile simülasyon (DRY_RUN backtest)
+            #      + PnL delta → BacktestStats
             # ----------------------------------------------------------
+            # TradeExecutor çağrısından ÖNCE mevcut realized PnL
+            prev_pnl = 0.0
+            try:
+                prev_pnl = float(getattr(risk_manager, "daily_realized_pnl", 0.0) or 0.0)
+            except Exception:
+                prev_pnl = 0.0
+
             last_price = float(raw_by_interval[main_interval]["close"].iloc[i])
 
             await trade_executor.execute_decision(
@@ -558,16 +581,44 @@ async def run_backtest() -> None:
                 extra=extra,
             )
 
-            n_trades += 1
+            n_exec_calls += 1
+
+            # TradeExecutor SONRASI: realized PnL değişimini ölç
+            try:
+                new_pnl = float(getattr(risk_manager, "daily_realized_pnl", prev_pnl) or prev_pnl)
+            except Exception:
+                new_pnl = prev_pnl
+
+            pnl_delta = new_pnl - prev_pnl
+            if pnl_delta != 0.0:
+                bt_stats.on_pnl_delta(pnl_delta)
+                system_logger.info(
+                    "[BT-PNL] bar=%d pnl_delta=%.4f equity=%.2f max_dd=%.2f%% "
+                    "closed_trades=%d wins=%d losses=%d",
+                    i,
+                    pnl_delta,
+                    bt_stats.equity,
+                    bt_stats.max_drawdown * 100.0,
+                    bt_stats.n_trades,
+                    bt_stats.n_wins,
+                    bt_stats.n_losses,
+                )
 
         except Exception as e:
             system_logger.exception("[BT-LOOP-ERROR] bar=%d hata=%s", i, e)
 
     # ------------------------------------------------------------------
-    # Backtest özeti (RiskManager içinde varsa summary fonk. kullan)
+    # Backtest özeti
     # ------------------------------------------------------------------
-    system_logger.info("[BT] Backtest tamamlandı. Toplam bar=%d, işlenen bar=%d", min_len, min_len - warmup)
-    system_logger.info("[BT] Toplam trade denemesi (execute_decision çağrısı)=%d", n_trades)
+    system_logger.info(
+        "[BT] Backtest tamamlandı. Toplam bar=%d, işlenen bar=%d",
+        min_len,
+        min_len - warmup,
+    )
+    system_logger.info(
+        "[BT] Toplam execute_decision çağrısı=%d (trade denemesi)",
+        n_exec_calls,
+    )
 
     # RiskManager'da summary / metrics varsa log'la
     if hasattr(risk_manager, "get_summary"):
@@ -576,6 +627,22 @@ async def run_backtest() -> None:
             system_logger.info("[BT-RISK-SUMMARY] %s", summary)
         except Exception as e:
             system_logger.warning("[BT-RISK-SUMMARY] okunamadı: %s", e)
+
+    # BacktestStats özeti
+    bt_summary = bt_stats.summary_dict()
+    system_logger.info(
+        "[BT-RESULT] starting_equity=%.2f ending_equity=%.2f pnl=%.2f (%.2f%%) "
+        "n_trades=%d wins=%d losses=%d winrate=%.2f%% max_dd=%.2f%%",
+        bt_summary["starting_equity"],
+        bt_summary["ending_equity"],
+        bt_summary["pnl"],
+        bt_summary["pnl_pct"],
+        bt_summary["n_trades"],
+        bt_summary["n_wins"],
+        bt_summary["n_losses"],
+        bt_summary["winrate"],
+        bt_summary["max_drawdown_pct"],
+    )
 
 
 # ----------------------------------------------------------------------
