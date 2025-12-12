@@ -1,0 +1,2 @@
+starting_equity,ending_equity,pnl,pnl_pct,n_trades,n_wins,n_losses,winrate,max_drawdown_pct
+1000.0,998.9890265700578,-1.0109734299421689,-0.1010973429942169,25,11,14,44.0,0.16151057320504075
