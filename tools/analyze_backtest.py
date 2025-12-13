@@ -1,34 +1,24 @@
 import argparse
 from pathlib import Path
 import re
-from typing import Optional
-
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
 def _pick_latest(outputs_dir: Path, prefix: str, symbol: str, interval: str) -> Path:
-    patt = re.compile(
-        rf"^{re.escape(prefix)}_{re.escape(symbol)}_{re.escape(interval)}_(\d{{8}}_\d{{6}})\.csv$"
-    )
+    patt = re.compile(rf"^{re.escape(prefix)}_{re.escape(symbol)}_{re.escape(interval)}_(\d{{8}}_\d{{6}})\.csv$")
     candidates = []
     for p in outputs_dir.glob(f"{prefix}_{symbol}_{interval}_*.csv"):
         m = patt.match(p.name)
         if m:
             candidates.append((m.group(1), p))
-
     if not candidates:
-        raise FileNotFoundError(
-            f"{outputs_dir} içinde {prefix}_{symbol}_{interval}_*.csv bulunamadı.\n"
-            f"Beklenen örnek: {prefix}_{symbol}_{interval}_YYYYMMDD_HHMMSS.csv\n"
-            f"Çözüm: Önce backtest_mtf.py çalıştırılıp outputs/ altına CSV yazıldığından emin ol."
-        )
-
+        raise FileNotFoundError(f"{outputs_dir} içinde {prefix}_{symbol}_{interval}_*.csv bulunamadı")
     candidates.sort(key=lambda x: x[0])
     return candidates[-1][1]
 
 
-def _detect_side_col(trades_df: pd.DataFrame) -> Optional[str]:
+def _detect_side_col(trades_df: pd.DataFrame):
     for c in ["side", "position_side", "entry_side", "direction", "pos_side"]:
         if c in trades_df.columns:
             return c
@@ -44,78 +34,30 @@ def _normalize_side(v) -> str:
     return "unknown"
 
 
-def _detect_pnl_col(trades_df: pd.DataFrame) -> Optional[str]:
-    for c in ["pnl", "realized_pnl", "pnl_usdt", "profit"]:
-        if c in trades_df.columns:
-            return c
-    return None
+def _normalize_whale_dir(v) -> str:
+    s = str(v).lower().strip()
+    if s in ("buy", "long", "up"):
+        return "buy"
+    if s in ("sell", "short", "down"):
+        return "sell"
+    return "none"
 
 
-def _try_merge_whale(eq: pd.DataFrame, tr: pd.DataFrame) -> pd.DataFrame:
-    """
-    trades içine whale_score/whale_dir eklemeye çalışır.
-    1) bar üzerinden merge (en temiz)
-    2) zaman üzerinden merge (trade timestamp/open_time ile eq time/open_time)
-    """
-    if tr.empty:
-        return tr
-
-    if ("whale_score" in tr.columns) and ("whale_dir" in tr.columns):
-        return tr
-
-    # 1) bar üzerinden merge
-    if ("bar" in tr.columns) and ("bar" in eq.columns) and ("whale_score" in eq.columns):
-        cols = ["bar", "whale_score"]
-        if "whale_dir" in eq.columns:
-            cols.append("whale_dir")
-        return tr.merge(eq[cols], on="bar", how="left")
-
-    # 2) zaman üzerinden merge (best-effort)
-    # trades tarafında olası timestamp alanları:
-    tr_time_col = None
-    for c in ["timestamp", "open_time", "time", "openTime"]:
-        if c in tr.columns:
-            tr_time_col = c
-            break
-
-    # equity tarafında olası zaman alanları:
-    eq_time_col = None
-    for c in ["time", "open_time", "timestamp"]:
-        if c in eq.columns:
-            eq_time_col = c
-            break
-
-    if (tr_time_col is None) or (eq_time_col is None) or ("whale_score" not in eq.columns):
-        return tr
-
-    tr2 = tr.copy()
-    eq2 = eq.copy()
-
-    # open_time ms epoch olabilir → numeric ise aynı türde eşitlemeye çalış
-    def _to_numeric_ms(s: pd.Series) -> pd.Series:
-        x = pd.to_numeric(s, errors="coerce")
-        return x
-
-    tr_num = _to_numeric_ms(tr2[tr_time_col])
-    eq_num = _to_numeric_ms(eq2[eq_time_col])
-
-    if tr_num.notna().any() and eq_num.notna().any():
-        tr2["_t"] = tr_num.astype("Int64")
-        eq2["_t"] = eq_num.astype("Int64")
-        cols = ["_t", "whale_score"]
-        if "whale_dir" in eq2.columns:
-            cols.append("whale_dir")
-        merged = tr2.merge(eq2[cols], on="_t", how="left").drop(columns=["_t"], errors="ignore")
-        return merged
-
-    # ISO string merge denemesi
-    tr2["_t"] = tr2[tr_time_col].astype(str)
-    eq2["_t"] = eq2[eq_time_col].astype(str)
-    cols = ["_t", "whale_score"]
-    if "whale_dir" in eq2.columns:
-        cols.append("whale_dir")
-    merged = tr2.merge(eq2[cols], on="_t", how="left").drop(columns=["_t"], errors="ignore")
-    return merged
+def _grp_stats(df: pd.DataFrame) -> pd.Series:
+    n = len(df)
+    wins = int((df["pnl"] > 0).sum()) if n else 0
+    losses = int((df["pnl"] < 0).sum()) if n else 0
+    winrate = (wins / n * 100.0) if n else 0.0
+    return pd.Series({
+        "n_trades": float(n),
+        "wins": float(wins),
+        "losses": float(losses),
+        "winrate_pct": float(winrate),
+        "pnl_sum": float(df["pnl"].sum()) if n else 0.0,
+        "pnl_mean": float(df["pnl"].mean()) if n else 0.0,
+        "pnl_median": float(df["pnl"].median()) if n else 0.0,
+        "avg_whale_score": float(df["whale_score"].mean()) if ("whale_score" in df.columns and n) else 0.0,
+    })
 
 
 def main():
@@ -127,6 +69,7 @@ def main():
     ap.add_argument("--trades", default="", help="trades csv yolu (boşsa latest seçer)")
     ap.add_argument("--summary", default="", help="summary csv yolu (boşsa latest seçer)")
     ap.add_argument("--plots-dir", default="outputs/plots")
+    ap.add_argument("--whale-thr", type=float, default=0.50, help="whale_score strong eşiği")
     args = ap.parse_args()
 
     out_dir = Path(args.outputs)
@@ -149,7 +92,7 @@ def main():
     # 1) Equity curve çizimi
     # ---------------------------
     if "equity" not in eq.columns:
-        raise ValueError("equity_curve csv içinde 'equity' kolonu yok. backtest_mtf.py equity_rows alanını kontrol et.")
+        raise ValueError("equity_curve csv içinde 'equity' kolonu yok.")
 
     x = eq["bar"] if "bar" in eq.columns else range(len(eq))
 
@@ -162,14 +105,11 @@ def main():
     plt.savefig(p1, dpi=150, bbox_inches="tight")
     plt.close()
 
-    # Drawdown grafiği (varsa)
     dd_col = None
     for c in ["max_drawdown_pct", "drawdown_pct", "dd_pct"]:
         if c in eq.columns:
             dd_col = c
             break
-
-    p2 = None
     if dd_col:
         plt.figure()
         plt.plot(x, eq[dd_col])
@@ -181,92 +121,103 @@ def main():
         plt.close()
 
     print(f"[PLOT] saved: {p1}")
-    if p2 is not None:
+    if dd_col:
         print(f"[PLOT] saved: {p2}")
+
+    # ---------------------------
+    # Trades normalize
+    # ---------------------------
+    if tr.empty:
+        print("[WARN] trades CSV boş. Raporlar atlandı.")
+        print("\n[DONE]")
+        return
+
+    pnl_col = None
+    for c in ["pnl", "realized_pnl", "pnl_usdt", "profit"]:
+        if c in tr.columns:
+            pnl_col = c
+            break
+    if not pnl_col:
+        print("[WARN] trades CSV içinde pnl kolonu bulunamadı. Raporlar atlandı.")
+        print("\n[DONE]")
+        return
+
+    side_col = _detect_side_col(tr)
+
+    tr2 = tr.copy()
+    tr2["pnl"] = pd.to_numeric(tr2[pnl_col], errors="coerce").fillna(0.0)
+    tr2["side_norm"] = tr2[side_col].apply(_normalize_side) if side_col else "unknown"
+
+    # whale cols direkt trades içinden
+    if "whale_score" in tr2.columns:
+        tr2["whale_score"] = pd.to_numeric(tr2["whale_score"], errors="coerce").fillna(0.0)
+    else:
+        tr2["whale_score"] = 0.0
+
+    if "whale_dir" in tr2.columns:
+        tr2["whale_dir_norm"] = tr2["whale_dir"].apply(_normalize_whale_dir)
+    else:
+        tr2["whale_dir_norm"] = "none"
 
     # ---------------------------
     # 2) Long/Short performansı
     # ---------------------------
-    pnl_col = _detect_pnl_col(tr)
-    side_col = _detect_side_col(tr)
-
-    if not tr.empty and pnl_col:
-        tr2 = tr.copy()
-        tr2["pnl"] = pd.to_numeric(tr2[pnl_col], errors="coerce").fillna(0.0)
-
-        if side_col:
-            tr2["side_norm"] = tr2[side_col].apply(_normalize_side)
-        else:
-            tr2["side_norm"] = "unknown"
-
-        def _side_stats(df: pd.DataFrame):
-            n = len(df)
-            wins = int((df["pnl"] > 0).sum())
-            losses = int((df["pnl"] < 0).sum())
-            winrate = (wins / n * 100.0) if n > 0 else 0.0
-            return {
-                "n_trades": n,
-                "wins": wins,
-                "losses": losses,
-                "winrate_pct": winrate,
-                "pnl_sum": float(df["pnl"].sum()),
-                "pnl_mean": float(df["pnl"].mean()) if n > 0 else 0.0,
-                "pnl_median": float(df["pnl"].median()) if n > 0 else 0.0,
-            }
-
-        longshort_report = {
-            "long": _side_stats(tr2[tr2["side_norm"] == "long"]),
-            "short": _side_stats(tr2[tr2["side_norm"] == "short"]),
-            "unknown": _side_stats(tr2[tr2["side_norm"] == "unknown"]),
-        }
-
-        ls_df = pd.DataFrame([{"side": k, **v} for k, v in longshort_report.items()]).sort_values("side")
-        ls_path = out_dir / f"report_long_short_{args.symbol}_{args.interval}.csv"
-        ls_df.to_csv(ls_path, index=False)
-        print(f"[REPORT] long/short saved: {ls_path}")
-    else:
-        print("[WARN] trades CSV içinde pnl kolonu bulunamadı veya dosya boş. Long/Short raporu üretilemedi.")
+    ls = tr2.groupby("side_norm").apply(_grp_stats).reset_index().rename(columns={"side_norm": "side"})
+    ls_path = out_dir / f"report_long_short_{args.symbol}_{args.interval}.csv"
+    ls.to_csv(ls_path, index=False)
+    print(f"[REPORT] long/short saved: {ls_path}")
 
     # ---------------------------
-    # 3) Whale var/yok karşılaştırma
+    # 3) Whale var/yok (mevcut)
     # ---------------------------
-    whale_report_path = None
-    if not tr.empty and pnl_col:
-        trw = tr.copy()
-        trw["pnl"] = pd.to_numeric(trw[pnl_col], errors="coerce").fillna(0.0)
-
-        trw = _try_merge_whale(eq=eq, tr=trw)
-
-        if "whale_score" in trw.columns:
-            trw["whale_score"] = pd.to_numeric(trw["whale_score"], errors="coerce").fillna(0.0)
-            trw["whale_on"] = trw["whale_score"] > 0.0
-
-            def _grp(df):
-                n = len(df)
-                wins = int((df["pnl"] > 0).sum())
-                winrate = (wins / n * 100.0) if n > 0 else 0.0
-                return pd.Series(
-                    {
-                        "n_trades": n,
-                        "winrate_pct": winrate,
-                        "pnl_sum": float(df["pnl"].sum()),
-                        "pnl_mean": float(df["pnl"].mean()) if n > 0 else 0.0,
-                        "avg_whale_score": float(df["whale_score"].mean()) if n > 0 else 0.0,
-                    }
-                )
-
-            rep = trw.groupby("whale_on").apply(_grp).reset_index()
-            rep["whale_on"] = rep["whale_on"].map({True: "whale_on", False: "whale_off"})
-            whale_report_path = out_dir / f"report_whale_compare_{args.symbol}_{args.interval}.csv"
-            rep.to_csv(whale_report_path, index=False)
-            print(f"[REPORT] whale compare saved: {whale_report_path}")
-        else:
-            print("[WARN] whale_score bulunamadı (ne trades’de ne equity’de). Whale karşılaştırma üretilemedi.")
-    else:
-        print("[WARN] trades CSV boş veya pnl kolonu yok → Whale karşılaştırma atlandı.")
+    tr2["whale_on"] = tr2["whale_score"] > 0.0
+    rep = tr2.groupby("whale_on").apply(_grp_stats).reset_index()
+    rep["whale_on"] = rep["whale_on"].map({True: "whale_on", False: "whale_off"})
+    whale_report_path = out_dir / f"report_whale_compare_{args.symbol}_{args.interval}.csv"
+    rep.to_csv(whale_report_path, index=False)
+    print(f"[REPORT] whale compare saved: {whale_report_path}")
 
     # ---------------------------
-    # 4) Notebook için “tek komutla yükle” ipucu
+    # 3b) Whale strength (off/weak/strong)
+    # ---------------------------
+    thr = float(args.whale_thr)
+    def _bucket(ws: float) -> str:
+        if ws <= 0.0:
+            return "off"
+        if ws < thr:
+            return "weak"
+        return "strong"
+
+    tr2["whale_bucket"] = tr2["whale_score"].apply(_bucket)
+    rep2 = tr2.groupby("whale_bucket").apply(_grp_stats).reset_index().rename(columns={"whale_bucket": "bucket"})
+    rep2_path = out_dir / f"report_whale_strength_{args.symbol}_{args.interval}.csv"
+    rep2.to_csv(rep2_path, index=False)
+    print(f"[REPORT] whale strength saved: {rep2_path} (thr={thr})")
+
+    # ---------------------------
+    # 3c) Whale alignment (dir vs trade side)
+    # ---------------------------
+    def _aligned(row) -> str:
+        side = row["side_norm"]
+        wd = row["whale_dir_norm"]
+        if wd == "none":
+            return "no_whale"
+        if side == "long" and wd == "buy":
+            return "aligned"
+        if side == "short" and wd == "sell":
+            return "aligned"
+        if side in ("long", "short"):
+            return "opposed"
+        return "unknown"
+
+    tr2["whale_alignment"] = tr2.apply(_aligned, axis=1)
+    rep3 = tr2.groupby("whale_alignment").apply(_grp_stats).reset_index().rename(columns={"whale_alignment": "alignment"})
+    rep3_path = out_dir / f"report_whale_alignment_{args.symbol}_{args.interval}.csv"
+    rep3.to_csv(rep3_path, index=False)
+    print(f"[REPORT] whale alignment saved: {rep3_path}")
+
+    # ---------------------------
+    # 4) Notebook ipucu
     # ---------------------------
     print("\n[NOTEBOOK] Pandas ile hızlı yükleme örneği:")
     print("  import pandas as pd")

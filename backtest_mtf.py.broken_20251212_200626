@@ -8,27 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass
 
-
-
-# ==========================================================
-# Atomic CSV writer (boş/yarım dosya kalmasın)
-# ==========================================================
-def _atomic_to_csv(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(tmp, index=False)
-    tmp.replace(path)
-
-
-def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    # df boşsa header bile yazmıyordu -> 1 byte dosya üretiyordu.
-    if df is None or df.empty:
-        return pd.DataFrame(columns=cols)
-    # bazı kolonlar yoksa ekle
-    for c in cols:
-        if c not in df.columns:
-            df[c] = None
-    return df[cols]
 from config.load_env import load_environment_variables
 from core.logger import setup_logger
 from core.risk_manager import RiskManager
@@ -431,51 +410,41 @@ async def run_backtest() -> None:
                 signal = "long"
             elif p_used <= short_thr:
                 signal = "short"
-            # ----------------------------------------------------------
-            # Whale policy (opposed veto / only trade aligned)
-            # ----------------------------------------------------------
-            WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
-            WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
-            WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", True)
 
-            whale_on = (
-                whale_score is not None
-                and float(whale_score) >= WHALE_THR
-                and str(whale_dir).lower() not in ("none", "nan", "null", "")
-            )
 
-            whale_alignment = "no_whale"
-            if whale_on:
-                wd = str(whale_dir).lower().strip()
-                if signal in ("long", "short") and wd in ("long", "short"):
-                    whale_alignment = "aligned" if signal == wd else "opposed"
-                else:
-                    whale_alignment = "other"
+# ----------------------------------------------------------
+# Whale policy (opposed veto / only trade aligned)
+# ----------------------------------------------------------
+WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
+WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
+WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", True)
 
-            if WHALE_FILTER and WHALE_VETO_OPPOSED:
-                if whale_alignment == "opposed":
-                    system_logger.info(
-                        "[BT-WHALE-POLICY] VETO opposed | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f -> HOLD",
-                        i, signal, str(whale_dir), float(whale_score), WHALE_THR
-                    )
-                    signal = "hold"
+whale_on = (
+    whale_score is not None
+    and float(whale_score) >= WHALE_THR
+    and str(whale_dir).lower() not in ("none", "nan", "null", "")
+)
 
-            # analiz tarafına da yaz
-            extra["whale_alignment"] = whale_alignment
-            extra["whale_on"] = bool(whale_on)
-            extra["whale_thr"] = float(WHALE_THR)
-            # ----------------------------------------------------------
-            # Whale-only policy (only trade when whale_on AND aligned)
-            # ----------------------------------------------------------
-            WHALE_ONLY = get_bool_env("BT_WHALE_ONLY", False)
-            if WHALE_ONLY:
-                if (not whale_on) or (whale_alignment != "aligned"):
-                    system_logger.info(
-                        "[BT-WHALE-ONLY] veto | bar=%d signal=%s whale_on=%s alignment=%s thr=%.2f -> HOLD",
-                        i, signal, str(whale_on), whale_alignment, WHALE_THR
-                    )
-                    signal = "hold"
+whale_alignment = "no_whale"
+if whale_on:
+    wd = str(whale_dir).lower().strip()
+    if signal in ("long", "short") and wd in ("long", "short"):
+        whale_alignment = "aligned" if signal == wd else "opposed"
+    else:
+        whale_alignment = "other"
 
+if WHALE_FILTER and WHALE_VETO_OPPOSED:
+    if whale_alignment == "opposed":
+        system_logger.info(
+            "[BT-WHALE-POLICY] VETO opposed | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f -> HOLD",
+            i, signal, str(whale_dir), float(whale_score), WHALE_THR
+        )
+        signal = "hold"
+
+# extra içine yaz (analiz tarafında da görünsün)
+extra["whale_alignment"] = whale_alignment
+extra["whale_on"] = bool(whale_on)
+extra["whale_thr"] = float(WHALE_THR)
             # whale meta
             whale_dir = "none"
             whale_score = 0.0
@@ -550,105 +519,6 @@ async def run_backtest() -> None:
                             signal = "hold"
                 # else: whale zayıf/off → dokunma
 
-            # ----------------------------------------------------------
-
-            # Whale policy + whale-only + notional scaling  [BT-WHALE-STEP1]
-
-            # ----------------------------------------------------------
-
-            WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
-
-            WHALE_ONLY = get_bool_env("BT_WHALE_ONLY", False)
-
-            WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
-
-            WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", False)
-
-            
-
-            # opposed durumda notional'ı küçültmek için model_confidence_factor'ı düşüreceğiz
-
-            OPPOSED_SCALE = float(os.getenv("BT_WHALE_OPPOSED_SCALE", "0.30"))   # 0.30 => %70 küçült
-
-            ALIGNED_BOOST  = float(os.getenv("BT_WHALE_ALIGNED_BOOST", "1.00"))  # şimdilik boost yok
-
-            
-
-            whale_on = (
-
-                whale_score is not None
-
-                and float(whale_score) >= WHALE_THR
-
-                and str(whale_dir).lower() not in ("none", "nan", "null", "")
-
-            )
-
-            
-
-            whale_alignment = "no_whale"
-
-            if whale_on:
-
-                wd = str(whale_dir).lower().strip()
-
-                if signal in ("long", "short") and wd in ("long", "short"):
-
-                    whale_alignment = "aligned" if signal == wd else "opposed"
-
-                else:
-
-                    whale_alignment = "other"
-
-            
-
-            # Whale-only: whale_on değilse veya aligned değilse trade açma
-
-            if WHALE_ONLY:
-
-                if (not whale_on) or (whale_alignment != "aligned"):
-
-                    system_logger.info(
-
-                        "[BT-WHALE-ONLY] HOLD | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f alignment=%s",
-
-                        i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR, whale_alignment
-
-                    )
-
-                    signal = "hold"
-
-            
-
-            # Opsiyonel veto: whale_on + opposed ise HOLD
-
-            if WHALE_FILTER and WHALE_VETO_OPPOSED and whale_alignment == "opposed":
-
-                system_logger.info(
-
-                    "[BT-WHALE-VETO] HOLD(opposed) | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f",
-
-                    i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR
-
-                )
-
-                signal = "hold"
-
-            
-
-            # Notional scaling: TradeExecutor _compute_notional model_confidence_factor kullanıyor.
-
-            model_confidence_factor = 1.0
-
-            if whale_on and whale_alignment == "aligned":
-
-                model_confidence_factor *= ALIGNED_BOOST
-
-            elif whale_on and whale_alignment == "opposed":
-
-                model_confidence_factor *= OPPOSED_SCALE
-
-
             # ATR
             raw_main = raw_by_interval[main_interval].iloc[: i + 1]
             atr_value = compute_atr_from_klines(raw_main.tail(atr_period + 2), period=atr_period)
@@ -672,14 +542,6 @@ async def run_backtest() -> None:
                     "p_1h": p_1h,
                     "whale_dir": whale_dir,
                     "whale_score": float(whale_score),
-                    "whale_on": bool(whale_on),
-                    "whale_alignment": whale_alignment,
-                    "whale_thr": float(WHALE_THR),
-                    "model_confidence_factor": float(model_confidence_factor),
-                    "whale_on": bool(whale_on),
-                    "whale_alignment": whale_alignment,
-                    "whale_thr": float(WHALE_THR),
-                    "model_confidence_factor": float(model_confidence_factor),
                     "atr": float(atr_value) if atr_value is not None else None,
                 }
             )
@@ -757,12 +619,10 @@ async def run_backtest() -> None:
     trades_path = out_dir / f"trades_{symbol}_{main_interval}_{tag}.csv"
     summary_path = out_dir / f"summary_{symbol}_{main_interval}_{tag}.csv"
 
-    eq_df = _ensure_columns(pd.DataFrame(equity_rows), ['bar', 'time', 'symbol', 'interval', 'price', 'signal', 'p_used', 'p_single', 'p_1m', 'p_5m', 'p_15m', 'p_1h', 'whale_dir', 'whale_score', 'atr', 'equity', 'peak_equity', 'max_drawdown_pct', 'pnl_total'])
-    tr_df = _ensure_columns(pd.DataFrame(closed_trades), ['symbol', 'side', 'qty', 'entry_price', 'notional', 'interval', 'opened_at', 'sl_price', 'tp_price', 'trailing_pct', 'atr_value', 'highest_price', 'lowest_price', 'meta', 'closed_at', 'close_price', 'realized_pnl', 'close_reason', 'bt_symbol', 'bt_interval', 'bt_bar', 'bt_time', 'bt_signal', 'bt_price', 'bt_p_used', 'bt_p_single', 'bt_p_1m', 'bt_p_5m', 'bt_p_15m', 'bt_p_1h', 'whale_dir', 'whale_score', 'bt_atr'])
-    sm_df = pd.DataFrame([bt_stats.summary_dict()])
-    _atomic_to_csv(eq_df, equity_path)
-    _atomic_to_csv(tr_df, trades_path)
-    _atomic_to_csv(sm_df, summary_path)
+    pd.DataFrame(equity_rows).to_csv(equity_path, index=False)
+    pd.DataFrame(closed_trades).to_csv(trades_path, index=False)
+    pd.DataFrame([bt_stats.summary_dict()]).to_csv(summary_path, index=False)
+
     system_logger.info("[BT-CSV] equity_curve: %s (rows=%d)", str(equity_path), len(equity_rows))
     system_logger.info("[BT-CSV] trades:      %s (trades=%d)", str(trades_path), len(closed_trades))
     system_logger.info("[BT-CSV] summary:     %s", str(summary_path))

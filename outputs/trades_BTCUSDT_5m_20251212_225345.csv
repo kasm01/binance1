@@ -1,0 +1,1 @@
+symbol,side,qty,entry_price,notional,interval,opened_at,sl_price,tp_price,trailing_pct,atr_value,highest_price,lowest_price,meta,closed_at,close_price,realized_pnl,close_reason,bt_symbol,bt_interval,bt_bar,bt_time,bt_signal,bt_price,bt_p_used,bt_p_single,bt_p_1m,bt_p_5m,bt_p_15m,bt_p_1h,whale_dir,whale_score,bt_atr

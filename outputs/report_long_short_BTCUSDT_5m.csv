@@ -1,0 +1,2 @@
+side,n_trades,wins,losses,winrate_pct,pnl_sum,pnl_mean,pnl_median,avg_whale_score
+long,23.0,9.0,14.0,39.130434782608695,-0.2945341054347703,-0.01280583067107697,-0.1396487129672673,0.3324249712372413
