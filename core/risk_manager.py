@@ -8,6 +8,28 @@ from typing import Optional, Dict, Any
 
 @dataclass
 class RiskManager:
+
+    def _debug_limits(self, symbol: str = "", interval: str = "") -> None:
+        """Günlük limit / stop nedenlerini görünür yapmak için."""
+        try:
+            self.logger.warning(
+                "[RISK-DBG] symbol=%s interval=%s daily_realized_pnl=%s daily_pnl=%s max_daily_loss=%s "
+                "consecutive_losses=%s max_consecutive_losses=%s open_trades=%s max_open_trades=%s "
+                "halted=%s",
+                symbol,
+                interval,
+                getattr(self, "daily_realized_pnl", None),
+                getattr(self, "daily_pnl", None),
+                getattr(self, "max_daily_loss", None),
+                getattr(self, "consecutive_losses", None),
+                getattr(self, "max_consecutive_losses", None),
+                getattr(self, "open_trades", None),
+                getattr(self, "max_open_trades", None),
+                getattr(self, "trading_halted", None),
+            )
+        except Exception:
+            pass
+
     """
     RiskManager:
       - Günlük max kayıp (USDT + yüzde)

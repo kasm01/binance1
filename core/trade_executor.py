@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from config import config
 from core.risk_manager import RiskManager
@@ -21,13 +21,13 @@ class TradeExecutor:
 
     def __init__(
         self,
-        client: Optional[Any],                 # <-- BURAYA EKLEDİK
+        client: Optional[Any],
         risk_manager: RiskManager,
         position_manager: Optional[PositionManager] = None,
         logger: Optional[logging.Logger] = None,
         dry_run: bool = True,
         # temel risk parametreleri
-        base_order_notional: float = 50.0,     # varsayılan pozisyon büyüklüğü (USDT)
+        base_order_notional: float = 50.0,
         max_position_notional: float = 500.0,
         max_leverage: float = 3.0,
         # SL/TP & trailing
@@ -40,7 +40,7 @@ class TradeExecutor:
         # whale risk kancası
         whale_risk_boost: float = 2.0,
     ) -> None:
-        self.client = client                  # <-- client referansı
+        self.client = client
         self.risk_manager = risk_manager
         self.position_manager = position_manager
         self.logger = logger or logging.getLogger("system")
@@ -109,7 +109,7 @@ class TradeExecutor:
         self._local_positions.pop(symbol, None)
 
     # ------------------------------------------------------------------
-    #  Ortak pozisyon dict oluşturucu (ATR / yüzde SL-TP + meta)
+    #  Ortak pozisyon dict oluşturucu (ATR / yüzde SL-TP + meta + entry snapshot)
     # ------------------------------------------------------------------
     def _create_position_dict(
         self,
@@ -121,13 +121,12 @@ class TradeExecutor:
         interval: str,
         probs: Dict[str, float],
         extra: Dict[str, Any],
-    ) -> (Dict[str, Any], str):
+    ) -> Tuple[Dict[str, Any], str]:
         opened_at = datetime.utcnow().isoformat()
         atr_value = float(extra.get("atr", 0.0) or 0.0)
 
         # --- SL/TP hesaplama ---
         if self.use_atr_sltp and atr_value > 0.0:
-            # ATR bazlı
             if signal == "long":
                 sl_price = price - self.atr_sl_mult * atr_value
                 tp_price = price + self.atr_tp_mult * atr_value
@@ -135,7 +134,6 @@ class TradeExecutor:
                 sl_price = price + self.atr_sl_mult * atr_value
                 tp_price = price - self.atr_tp_mult * atr_value
         else:
-            # Yüzde bazlı fallback
             if signal == "long":
                 sl_price = price * (1.0 - self.sl_pct)
                 tp_price = price * (1.0 + self.tp_pct)
@@ -144,14 +142,10 @@ class TradeExecutor:
                 tp_price = price * (1.0 - self.tp_pct)
 
         # Highest/Lowest (trailing için başlangıç)
-        if signal == "long":
-            highest_price = price
-            lowest_price = price
-        else:
-            highest_price = price
-            lowest_price = price
+        highest_price = price
+        lowest_price = price
 
-        pos = {
+        pos: Dict[str, Any] = {
             "symbol": symbol,
             "side": signal,
             "qty": qty,
@@ -170,23 +164,51 @@ class TradeExecutor:
                 "extra": extra,
             },
         }
+
+        # ------------------------------------------------------------------
+        # ENTRY whale snapshot (for analysis / optimization)
+        # ------------------------------------------------------------------
+        try:
+            entry_whale_dir = str(extra.get("whale_dir", "none") or "none")
+            entry_whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+            entry_whale_thr = float(extra.get("whale_thr", 0.0) or 0.0)
+            entry_whale_on = bool(extra.get("whale_on", False))
+            entry_whale_alignment = str(
+                extra.get("whale_alignment", "no_whale") or "no_whale"
+            )
+            entry_model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
+
+            meta = pos.get("meta")
+            if not isinstance(meta, dict):
+                pos["meta"] = {}
+                meta = pos["meta"]
+
+            meta.update(
+                {
+                    "entry_whale_dir": entry_whale_dir,
+                    "entry_whale_score": entry_whale_score,
+                    "entry_whale_thr": entry_whale_thr,
+                    "entry_whale_on": entry_whale_on,
+                    "entry_whale_alignment": entry_whale_alignment,
+                    "entry_model_confidence_factor": entry_model_conf,
+                }
+            )
+        except Exception:
+            pass
+
         return pos, opened_at
+
 
     # ------------------------------------------------------------------
     #  PnL hesaplayıcı (flip + close için)
     # ------------------------------------------------------------------
     @staticmethod
     def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
-        """
-        Basit realized PnL hesaplama (USDT cinsinden):
-          long  -> (exit - entry) * qty
-          short -> (entry - exit) * qty
-        """
         if qty <= 0:
             return 0.0
         if side == "long":
             return (exit_price - entry_price) * qty
-        elif side == "short":
+        if side == "short":
             return (entry_price - exit_price) * qty
         return 0.0
 
@@ -209,7 +231,9 @@ class TradeExecutor:
         entry_price = float(pos["entry_price"])
         notional = float(pos.get("notional", qty * entry_price))
 
-        realized_pnl = self._calc_pnl(side=side, entry_price=entry_price, exit_price=price, qty=qty)
+        realized_pnl = self._calc_pnl(
+            side=side, entry_price=entry_price, exit_price=price, qty=qty
+        )
 
         self.logger.info(
             "[EXEC] Pozisyon kapatılıyor | symbol=%s side=%s qty=%.4f entry=%.2f exit=%.2f pnl=%.4f reason=%s",
@@ -222,14 +246,12 @@ class TradeExecutor:
             reason,
         )
 
-        # DRY_RUN değilse burada borsada close/market emirleri atılır
         if self.dry_run:
             self.logger.info("[EXEC] DRY_RUN=True, gerçek close emri gönderilmeyecek.")
         else:
             # TODO: Binance/OKX/KuCoin client ile close emri
             pass
 
-        # Risk manager'a bildir
         try:
             self.risk_manager.on_position_close(
                 symbol=symbol,
@@ -247,8 +269,8 @@ class TradeExecutor:
         except Exception as e:
             self.logger.warning("[RISK] on_position_close hata: %s", e)
 
-        # State temizle
         self._clear_position(symbol)
+
         pos["closed_at"] = datetime.utcnow().isoformat()
         pos["close_price"] = price
         pos["realized_pnl"] = realized_pnl
@@ -275,21 +297,17 @@ class TradeExecutor:
         highest_price = float(pos.get("highest_price", price))
         lowest_price = float(pos.get("lowest_price", price))
 
-        # --- SL / TP ---
         if side == "long":
-            # SL
             if price <= sl_price:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
-            # TP
             if price >= tp_price:
                 return self._close_position(symbol, price, reason="TP_HIT", interval=interval)
 
-            # Trailing
             if trailing_pct > 0.0:
                 if price > highest_price:
-                    highest_price = price
-                    pos["highest_price"] = highest_price
+                    pos["highest_price"] = price
                     self._set_position(symbol, pos)
+                    highest_price = price
 
                 trail_sl = highest_price * (1.0 - trailing_pct)
                 if price <= trail_sl:
@@ -298,19 +316,16 @@ class TradeExecutor:
                     )
 
         elif side == "short":
-            # SL
             if price >= sl_price:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
-            # TP
             if price <= tp_price:
                 return self._close_position(symbol, price, reason="TP_HIT", interval=interval)
 
-            # Trailing
             if trailing_pct > 0.0:
                 if price < lowest_price:
-                    lowest_price = price
-                    pos["lowest_price"] = lowest_price
+                    pos["lowest_price"] = price
                     self._set_position(symbol, pos)
+                    lowest_price = price
 
                 trail_sl = lowest_price * (1.0 + trailing_pct)
                 if price >= trail_sl:
@@ -339,86 +354,54 @@ class TradeExecutor:
           - max_position_notional clamp
         """
 
-        # --------------------------------------------------
-        # Config
-        # --------------------------------------------------
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
         whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.6))
         whale_veto_thr = float(getattr(config, "WHALE_VETO_THR", 0.6))
 
         base = float(self.base_order_notional)
-
-        # --------------------------------------------------
-        # Model confidence
-        # --------------------------------------------------
         model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
 
-        # --------------------------------------------------
-        # Whale bilgisi (ROBUST)
-        # Öncelik:
-        #   1) extra["whale_dir"] / extra["whale_score"]
-        #   2) extra["whale_meta"] veya extra["whale"]
-        # --------------------------------------------------
         whale_dir = None
         whale_score = 0.0
 
         try:
-            # 1) Direct keys (backtest_mtf.py böyle gönderiyor)
             if isinstance(extra, dict):
                 if extra.get("whale_dir") is not None:
                     whale_dir = extra.get("whale_dir")
-
                 if extra.get("whale_score") is not None:
                     whale_score = float(extra.get("whale_score") or 0.0)
 
-            # 2) Fallback: whale_meta / whale
             whale_info = extra.get("whale_meta") or extra.get("whale")
             if isinstance(whale_info, dict):
                 if whale_dir is None:
                     whale_dir = whale_info.get("direction") or whale_info.get("dir")
                 if whale_score == 0.0:
                     whale_score = float(whale_info.get("score") or 0.0)
-
         except Exception:
             whale_dir = None
             whale_score = 0.0
 
-        # normalize
-        if whale_dir is None:
-            whale_dir = "none"
-        else:
-            whale_dir = str(whale_dir).lower()
+        whale_dir = "none" if whale_dir is None else str(whale_dir).lower()
 
-        # --------------------------------------------------
-        # Agresiflik faktörü
-        # --------------------------------------------------
         aggr_factor = 1.0
 
         if aggressive_mode:
-            # 1) Whale etkisi
             if whale_score > 0.0 and whale_dir in ("long", "short"):
                 if whale_dir == signal:
-                    # Aynı yönde whale
                     if whale_score >= whale_boost_thr:
                         aggr_factor += self.whale_risk_boost * max(
                             0.0, whale_score - whale_boost_thr
                         )
                 else:
-                    # Ters yönde whale
                     if whale_score >= whale_veto_thr:
                         aggr_factor -= 0.8 * whale_score
                     else:
                         aggr_factor -= 0.4 * whale_score
 
-            # 2) Model confidence skala
-            # model_conf ∈ [0,1] → çarpan ∈ [0.5, 1.0]
             mc = max(0.0, min(model_conf, 1.0))
             aggr_factor *= (0.5 + 0.5 * mc)
 
-        # --------------------------------------------------
-        # Güvenlik sınırları
-        # --------------------------------------------------
         aggr_factor = max(0.0, aggr_factor)
         aggr_factor = min(aggr_factor, max_risk_mult)
 
@@ -426,13 +409,9 @@ class TradeExecutor:
 
         if notional > self.max_position_notional:
             notional = self.max_position_notional
-
         if notional < 10.0:
             notional = 10.0
 
-        # --------------------------------------------------
-        # Log
-        # --------------------------------------------------
         self.logger.info(
             "[EXEC] _compute_notional | symbol=%s signal=%s base=%.2f model_conf=%.2f "
             "whale_score=%.3f whale_dir=%s aggr_factor=%.3f final=%.2f",
@@ -463,16 +442,11 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        main.py içinden çağrılır.
-        signal: "long" / "short" / "hold"
-        price: son fiyat
-        size: istersen dışarıdan qty olarak gönderilebilir; None ise notional/price ile hesaplanır.
-        """
-
         extra = extra or {}
+
         self.logger.info(
-            "[EXEC] execute_decision çağrıldı | signal=%s symbol=%s price=%.2f size=%s interval=%s training_mode=%s hybrid_mode=%s probs=%s extra_keys=%s",
+            "[EXEC] execute_decision çağrıldı | signal=%s symbol=%s price=%.2f size=%s interval=%s "
+            "training_mode=%s hybrid_mode=%s probs=%s extra_keys=%s",
             signal,
             symbol,
             price,
@@ -484,39 +458,30 @@ class TradeExecutor:
             list(extra.keys()),
         )
 
-        # Eğitim modunda gerçek trade yok, sadece log
         if training_mode:
             self.logger.info(
                 "[EXEC] TRAINING_MODE=True, sadece log. Herhangi bir pozisyon açma/kapama yapılmayacak."
             )
             return
 
-        # Önce mevcut pozisyona SL/TP/trailing uygula
         self._check_sl_tp_trailing(symbol=symbol, price=price, interval=interval)
 
-        # Son güncel pozisyonu tekrar al (SL/TP ile kapanmış olabilir)
         current_pos = self._get_position(symbol)
         current_side = current_pos["side"] if current_pos else None
 
         if signal == "hold":
-            self.logger.info(
-                "[EXEC] Sinyal=HOLD, yeni pozisyon açılmayacak / flip edilmeyecek."
-            )
+            self.logger.info("[EXEC] Sinyal=HOLD, yeni pozisyon açılmayacak / flip edilmeyecek.")
             return
 
-        # ------------------------------------------------------------------
-        #  Yeni notional / qty hesapla
-        # ------------------------------------------------------------------
         if size is not None and size > 0:
             qty = float(size)
             notional = qty * price
         else:
-            notional = self._compute_notional(symbol=symbol, signal=signal, price=price, extra=extra)
+            notional = self._compute_notional(
+                symbol=symbol, signal=signal, price=price, extra=extra
+            )
             qty = notional / price
 
-        # ------------------------------------------------------------------
-        #  RiskManager can_open_new_trade kontrolü (yeni pozisyon veya flip)
-        # ------------------------------------------------------------------
         allowed = True
         if self.risk_manager is not None:
             try:
@@ -541,9 +506,9 @@ class TradeExecutor:
             )
             return
 
-        # ------------------------------------------------------------------
-        #  Pozisyon yok ve sinyal long/short → yeni pozisyon aç
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # Pozisyon yok → yeni pozisyon aç
+        # --------------------------------------------------------------
         if current_pos is None:
             if signal in ("long", "short"):
                 self.logger.info(
@@ -555,7 +520,6 @@ class TradeExecutor:
                     price,
                 )
 
-                # DRY_RUN değilse burada gerçek emir atılır
                 if self.dry_run:
                     self.logger.info(
                         "[EXEC] DRY_RUN=True, gerçek açılış emri gönderilmeyecek (sadece state+log)."
@@ -576,7 +540,6 @@ class TradeExecutor:
                 )
                 self._set_position(symbol, pos)
 
-                # risk tarafına bildir
                 try:
                     self.risk_manager.on_position_open(
                         symbol=symbol,
@@ -592,11 +555,9 @@ class TradeExecutor:
 
             return
 
-        # ------------------------------------------------------------------
-        #  Zaten pozisyon var
-        #  a) Aynı yön sinyal → şimdilik sadece log (istersen scale-in ekleriz)
-        #  b) Ters yön sinyal → FLIP (pozisyonu kapat + yeni yön aç)
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # Zaten pozisyon var → aynı yön ise hold, ters ise flip
+        # --------------------------------------------------------------
         if current_side == signal:
             self.logger.info(
                 "[EXEC] Mevcut pozisyon sinyal ile aynı yönde (side=%s), scale-in yapılmıyor, sadece HOLD.",
@@ -604,7 +565,6 @@ class TradeExecutor:
             )
             return
 
-        # --- FLIP ---
         self.logger.info(
             "[EXEC] Flip sinyali | symbol=%s current_side=%s new_side=%s",
             symbol,
@@ -612,15 +572,13 @@ class TradeExecutor:
             signal,
         )
 
-        # Önce mevcut pozisyonu kapat
-        closed_pos = self._close_position(
+        self._close_position(
             symbol=symbol,
             price=price,
             reason="FLIP_CLOSE",
             interval=interval,
         )
 
-        # Sonra yeni yönlü pozisyon aç
         self.logger.info(
             "[EXEC] Flip sonrası yeni pozisyon açılıyor | symbol=%s side=%s qty=%.4f notional=%.2f price=%.2f",
             symbol,
@@ -635,56 +593,21 @@ class TradeExecutor:
                 "[EXEC] DRY_RUN=True, flip sonrası gerçek açılış emri gönderilmeyecek (sadece state+log)."
             )
         else:
-# TODO: Borsaya yeni pozisyon emri gönder
-pass
+            # TODO: Borsaya yeni pozisyon emri gönder
+            pass
 
-new_pos, opened_at = self._create_position_dict(
-    signal=signal,
-    symbol=symbol,
-    price=price,
-    qty=qty,
-    notional=notional,
-    interval=interval,
-    probs=probs,
-    extra=extra,
-)
-
-# ------------------------------------------------------------------
-# ENTRY whale snapshot (for analysis / optimization)
-# ------------------------------------------------------------------
-try:
-    entry_whale_dir = str(extra.get("whale_dir", "none") or "none")
-    entry_whale_score = float(extra.get("whale_score", 0.0) or 0.0)
-    entry_whale_thr = float(extra.get("whale_thr", 0.0) or 0.0)
-    entry_whale_on = bool(extra.get("whale_on", False))
-    entry_whale_alignment = str(
-        extra.get("whale_alignment", "no_whale") or "no_whale"
-    )
-    entry_model_conf = float(
-        extra.get("model_confidence_factor", 1.0) or 1.0
-    )
-
-    if isinstance(new_pos, dict):
-        if not isinstance(new_pos.get("meta"), dict):
-            new_pos["meta"] = {}
-
-        new_pos["meta"].update(
-            {
-                "entry_whale_dir": entry_whale_dir,
-                "entry_whale_score": entry_whale_score,
-                "entry_whale_thr": entry_whale_thr,
-                "entry_whale_on": entry_whale_on,
-                "entry_whale_alignment": entry_whale_alignment,
-                "entry_model_confidence_factor": entry_model_conf,
-            }
+        new_pos, opened_at = self._create_position_dict(
+            signal=signal,
+            symbol=symbol,
+            price=price,
+            qty=qty,
+            notional=notional,
+            interval=interval,
+            probs=probs,
+            extra=extra,
         )
-except Exception:
-    pass
-
-        # flip sonrası yeni pozisyonu kaydet
         self._set_position(symbol, new_pos)
 
-        # risk tarafına yeni pozisyonu bildir
         try:
             self.risk_manager.on_position_open(
                 symbol=symbol,

@@ -201,6 +201,7 @@ class RiskManager:
         self._reset_if_new_day()
 
         if self._state.trading_halted:
+            self._debug_limits("daily_loss_limit_reached")
             return False, "Trading halted for today (daily loss limit reached)."
 
         if self._start_of_day_equity is None:

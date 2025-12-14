@@ -1,5 +1,5 @@
-import os
 import asyncio
+import os
 import logging
 import signal
 from typing import Optional, Dict, Any
@@ -12,7 +12,7 @@ from core.logger import setup_logger
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
 from core.trade_executor import TradeExecutor
-from data.online_learning import OnlineLearner  # şimdilik sadece placeholder
+from data.online_learning import OnlineLearner  # online model
 from core.binance_client import create_binance_client
 from models.hybrid_inference import HybridModel
 from config.settings import Settings
@@ -21,6 +21,10 @@ from data.whale_detector import MultiTimeframeWhaleDetector
 from data.anomaly_detection import AnomalyDetector
 from core.hybrid_mtf import MultiTimeframeHybridEnsemble
 
+# NEW: p_buy stabilization + safe proba
+from core.prob_stabilizer import ProbStabilizer
+from core.model_utils import safe_p_buy
+
 
 # ----------------------------------------------------------------------
 # Global config / flags
@@ -28,13 +32,9 @@ from core.hybrid_mtf import MultiTimeframeHybridEnsemble
 USE_TESTNET = getattr(Settings, "USE_TESTNET", True)
 SYMBOL = getattr(Settings, "SYMBOL", "BTCUSDT")
 
-# Global logger
 system_logger: Optional[logging.Logger] = None
 
-# Loop bekleme süresi (sn)
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
-
-# MTF intervals
 MTF_INTERVALS = ["1m", "5m", "15m", "1h"]
 
 
@@ -59,10 +59,6 @@ DRY_RUN: bool = get_bool_env("DRY_RUN", True)
 # Basit feature engineering
 # ----------------------------------------------------------------------
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Hem Binance canlı verisi (ms epoch) hem de offline CSV (ISO datetime string)
-    ile çalışacak şekilde feature üretir.
-    """
     df = raw_df.copy()
 
     # 1) Zaman kolonlarını normalize et
@@ -118,28 +114,19 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     # 4) NaN temizliği
     df = df.ffill().bfill().fillna(0.0)
-
     return df
 
 
 def build_labels(df: pd.DataFrame, horizon: int = 1) -> pd.Series:
-    """
-    Basit label: horizon bar sonra close > current close ise 1 (up), yoksa 0 (down)
-    """
     close = df["close"].astype(float)
     future = close.shift(-horizon)
-    labels = (future > close).astype(int)
-    return labels
+    return (future > close).astype(int)
 
 
 # ----------------------------------------------------------------------
 # ATR hesaplayıcı
 # ----------------------------------------------------------------------
 def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
-    """
-    True Range bazlı ATR hesaplar.
-    df: raw kline DataFrame (open, high, low, close ...)
-    """
     if df is None or len(df) < period + 2:
         return 0.0
 
@@ -167,28 +154,14 @@ async def fetch_klines(
     limit: int,
     logger: Optional[logging.Logger],
 ) -> pd.DataFrame:
-    """
-    Kline fetch helper.
-
-    - Eğer client None ise:
-        -> OFFLINE / DRY_RUN mod
-        -> data/offline_cache/{symbol}_{interval}_6m.csv dosyasından okur
-    - Eğer client varsa:
-        -> Binance'ten async get_klines ile veri çeker
-    """
-    # OFFLINE / DRY_RUN
     if client is None:
         csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
         if not os.path.exists(csv_path):
             if logger:
-                logger.error(
-                    "[DATA] client=None ve offline CSV bulunamadı: %s",
-                    csv_path,
-                )
+                logger.error("[DATA] client=None ve offline CSV bulunamadı: %s", csv_path)
             raise RuntimeError(
                 f"Offline kline dosyası yok: {csv_path}. "
-                "Lütfen BINANCE_API_KEY/BINANCE_API_SECRET set edin "
-                "veya offline cache oluşturun."
+                "Lütfen BINANCE_API_KEY/BINANCE_API_SECRET set edin veya offline cache oluşturun."
             )
 
         df = pd.read_csv(csv_path)
@@ -196,20 +169,11 @@ async def fetch_klines(
             df = df.tail(limit).reset_index(drop=True)
 
         if logger:
-            logger.info(
-                "[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s",
-                csv_path,
-                df.shape,
-            )
+            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
         return df
 
-    # ONLINE
     try:
-        klines = await client.get_klines(
-            symbol=symbol,
-            interval=interval,
-            limit=limit,
-        )
+        klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
     except Exception as e:
         if logger:
             logger.error("[DATA] Binance get_klines hatası: %s", e)
@@ -250,12 +214,7 @@ async def fetch_klines(
         df[c] = df[c].astype(int)
 
     if logger:
-        logger.info(
-            "[DATA] ONLINE mod: Binance'ten kline çekildi. symbol=%s interval=%s shape=%s",
-            symbol,
-            interval,
-            df.shape,
-        )
+        logger.info("[DATA] ONLINE mod: Binance'ten kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
     return df
 
 
@@ -263,14 +222,11 @@ async def fetch_klines(
 # Trading objeleri kurulum
 # ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
-    """
-    Tüm trading bileşenlerini (client, risk, position, trade_executor, modeller, whale) oluşturur.
-    """
     global system_logger
+
     symbol = getattr(config, "SYMBOL", SYMBOL)
     interval = os.getenv("INTERVAL", "5m")
 
-    # Binance client
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
         api_secret=BINANCE_API_SECRET,
@@ -278,7 +234,6 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
-    # Risk Manager
     daily_max_loss_usdt = float(os.getenv("DAILY_MAX_LOSS_USDT", "100"))
     daily_max_loss_pct = float(os.getenv("DAILY_MAX_LOSS_PCT", "0.03"))
     max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
@@ -294,32 +249,25 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
-    # Telegram Bot + RiskManager entegrasyonu
     tg_bot = None
     try:
         tg_bot = TelegramBot()
         if getattr(tg_bot, "dispatcher", None):
-            # Bot içinde set_risk_manager varsa kullan, yoksa attribute set et
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
                 setattr(tg_bot, "risk_manager", risk_manager)
 
             if system_logger:
-                system_logger.info(
-                    "[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif)."
-                )
+                system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif).")
         else:
             if system_logger:
-                system_logger.warning(
-                    "[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız)."
-                )
+                system_logger.warning("[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız).")
     except Exception as e:
         if system_logger:
             system_logger.warning("[MAIN] TelegramBot init/set_risk_manager hata: %s", e)
         tg_bot = None
 
-    # Position Manager
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
@@ -335,77 +283,48 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
-    # Hybrid model (ana interval)
-    hybrid_model = HybridModel(
-        model_dir="models",
-        interval=interval,
-        logger=system_logger,
-    )
+    hybrid_model = HybridModel(model_dir="models", interval=interval, logger=system_logger)
     try:
         if hasattr(hybrid_model, "use_lstm_hybrid"):
             hybrid_model.use_lstm_hybrid = HYBRID_MODE
     except Exception:
         pass
 
-    # MTF hybrid ensemble (interval başına HybridModel seti)
     mtf_ensemble = None
     if USE_MTF_ENS:
         try:
             mtf_models: Dict[str, HybridModel] = {}
             for itv in MTF_INTERVALS:
                 try:
-                    hm = HybridModel(
-                        model_dir="models",
-                        interval=itv,
-                        logger=system_logger,
-                    )
+                    hm = HybridModel(model_dir="models", interval=itv, logger=system_logger)
                     if hasattr(hm, "use_lstm_hybrid"):
                         hm.use_lstm_hybrid = HYBRID_MODE
                     mtf_models[itv] = hm
                     if system_logger:
-                        system_logger.info(
-                            "[HYBRID-MTF] HybridModel yüklendi | interval=%s", itv
-                        )
+                        system_logger.info("[HYBRID-MTF] HybridModel yüklendi | interval=%s", itv)
                 except Exception as e:
                     if system_logger:
-                        system_logger.warning(
-                            "[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s",
-                            itv,
-                            e,
-                        )
+                        system_logger.warning("[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s", itv, e)
 
             if mtf_models:
                 mtf_ensemble = MultiTimeframeHybridEnsemble(models_by_interval=mtf_models)
                 if system_logger:
-                    system_logger.info(
-                        "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
-                        list(mtf_models.keys()),
-                    )
+                    system_logger.info("[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s", list(mtf_models.keys()))
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
-                system_logger.warning(
-                    "[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s",
-                    e,
-                )
+                system_logger.warning("[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s", e)
 
-    # Whale detector (MTF)
     whale_detector = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
         if system_logger:
-            system_logger.info(
-                "[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi."
-            )
+            system_logger.info("[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi.")
     except Exception as e:
         whale_detector = None
         if system_logger:
-            system_logger.warning(
-                "[WHALE] MultiTimeframeWhaleDetector init hata: %s",
-                e,
-            )
+            system_logger.warning("[WHALE] MultiTimeframeWhaleDetector init hata: %s", e)
 
-    # Trade Executor
     base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
     max_position_notional = float(os.getenv("MAX_POSITION_NOTIONAL", "500"))
     max_leverage = float(os.getenv("MAX_LEVERAGE", "3"))
@@ -438,6 +357,9 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
     )
 
+    # NEW: online model tek instance (loop dışında!)
+    online_model = OnlineLearner(model_dir="models", base_model_name="online_model", interval=interval)
+
     return {
         "symbol": symbol,
         "interval": interval,
@@ -446,23 +368,31 @@ def create_trading_objects() -> Dict[str, Any]:
         "position_manager": position_manager,
         "trade_executor": trade_executor,
         "hybrid_model": hybrid_model,
-        "mtf_ensemble": mtf_ensemble,   # yeni
-        "mtf_model": mtf_ensemble,      # geriye dönük uyumluluk için
+        "mtf_ensemble": mtf_ensemble,
+        "mtf_model": mtf_ensemble,  # geriye dönük uyumluluk
         "whale_detector": whale_detector,
         "tg_bot": tg_bot,
+        "online_model": online_model,
     }
+
+
+def _normalize_signal(sig: Any) -> str:
+    """
+    ProbStabilizer.signal çıktısını TradeExecutor formatına çevir.
+    Kabul edilen: BUY/SELL/HOLD veya long/short/hold
+    """
+    s = str(sig).strip().lower()
+    if s in ("buy", "long"):
+        return "long"
+    if s in ("sell", "short"):
+        return "short"
+    return "hold"
+
+
 # ----------------------------------------------------------------------
 # Ana trading loop
 # ----------------------------------------------------------------------
-async def bot_loop(objs: Dict[str, Any]) -> None:
-    """
-    Ana trading loop:
-      - Kline fetch
-      - Feature build
-      - Hybrid / MTF prediction
-      - ATR & MTF whale meta
-      - TradeExecutor.execute_decision
-    """
+async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     global system_logger
 
     client = objs["client"]
@@ -470,35 +400,35 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
     trade_executor = objs["trade_executor"]
     whale_detector = objs.get("whale_detector")
     hybrid_model = objs["hybrid_model"]
-    mtf_ensemble = objs.get("mtf_ensemble")  # yeni
+    mtf_ensemble = objs.get("mtf_ensemble")
+    online_model = objs["online_model"]
 
     symbol = objs.get("symbol", getattr(config, "SYMBOL", SYMBOL))
     interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
-    data_limit = 500
+    data_limit = int(os.getenv("DATA_LIMIT", "500"))
+
+    use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", True)
 
     if system_logger:
         system_logger.info(
-            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
+            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s, USE_PBUY_STABILIZER_SIGNAL=%s)",
             symbol,
             interval,
             TRAINING_MODE,
             HYBRID_MODE,
             USE_MTF_ENS,
+            use_ema_signal,
         )
 
-    # --- AnomalyDetector: her loop’ta kullanılacak tek instance ---
     anomaly_detector = AnomalyDetector(logger=system_logger)
 
-    # Backward-compat alias map (asset_volume -> volume)
     alias_map = {
         "taker_buy_base_volume": "taker_buy_base_asset_volume",
         "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
     }
 
-    # ------------------------------ LOOP ------------------------------
     while True:
         try:
-            # 1) Ana TF KLINES -> FEATURES
             raw_df = await fetch_klines(
                 client=client,
                 symbol=symbol,
@@ -509,21 +439,14 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 
             feat_df = build_features(raw_df)
             if system_logger:
-                system_logger.info(
-                    "[FE] Features DF shape: %s, columns=%s",
-                    feat_df.shape,
-                    list(feat_df.columns),
-                )
+                system_logger.info("[FE] Features DF shape: %s, columns=%s", feat_df.shape, list(feat_df.columns))
 
-            # Backward-compat aliasları ana DF için uygula
             for old_col, new_col in alias_map.items():
                 if old_col not in feat_df.columns and new_col in feat_df.columns:
                     feat_df[old_col] = feat_df[new_col]
 
-            # Anomali filtresi (IsolationForest)
             feat_df = anomaly_detector.filter_anomalies(feat_df)
 
-            # Feature kolonları – hem eski hem yeni isimlerle uyumlu
             feature_cols = [
                 "open_time",
                 "open",
@@ -552,24 +475,20 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             feature_cols_existing = [c for c in feature_cols if c in feat_df.columns]
             missing = [c for c in feature_cols if c not in feat_df.columns]
             if missing and system_logger:
-                system_logger.warning(
-                    "[FE] Eksik feature kolonları tespit edildi: %s",
-                    missing,
-                )
+                system_logger.warning("[FE] Eksik feature kolonları tespit edildi: %s", missing)
 
             X_live = feat_df[feature_cols_existing].tail(500)
 
-            # 2) Single-TF hibrit skor (ana interval)
+            # 2) Single-TF hibrit skor
             p_arr_single, debug_single = hybrid_model.predict_proba(X_live)
             p_single = float(p_arr_single[-1])
 
-            # Model meta
             meta = getattr(hybrid_model, "meta", {}) or {}
             model_conf_factor = float(meta.get("confidence_factor", 1.0) or 1.0)
             best_auc = float(meta.get("best_auc", 0.5) or 0.5)
             best_side = meta.get("best_side", "long")
 
-            # 3) MTF features (1m, 5m, 15m, 1h) & whale raw
+            # 3) MTF setup
             mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
@@ -585,7 +504,6 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                         )
                         feat_df_itv = build_features(raw_df_itv)
 
-                        # Backward-compat alias map
                         for old_col, new_col in alias_map.items():
                             if old_col not in feat_df_itv.columns and new_col in feat_df_itv.columns:
                                 feat_df_itv[old_col] = feat_df_itv[new_col]
@@ -594,11 +512,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                         mtf_whale_raw[itv] = raw_df_itv
                     except Exception as e:
                         if system_logger:
-                            system_logger.warning(
-                                "[MTF] %s interval'i hazırlanırken hata: %s",
-                                itv,
-                                e,
-                            )
+                            system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
 
             # 4) MTF ensemble skoru
             p_used = p_single
@@ -608,17 +522,12 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
             if USE_MTF_ENS and mtf_ensemble is not None:
                 try:
                     X_by_interval: Dict[str, pd.DataFrame] = {}
-
                     for itv, df_itv in mtf_feats.items():
                         cols_itv = [c for c in feature_cols if c in df_itv.columns]
                         if not cols_itv:
                             if system_logger:
-                                system_logger.warning(
-                                    "[MTF] Interval=%s için kullanılabilir feature yok, skip ediliyor.",
-                                    itv,
-                                )
+                                system_logger.warning("[MTF] Interval=%s için kullanılabilir feature yok, skip ediliyor.", itv)
                             continue
-
                         X_by_interval[itv] = df_itv[cols_itv].tail(500)
 
                     if X_by_interval:
@@ -633,20 +542,13 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 
                 except Exception as e:
                     if system_logger:
-                        system_logger.warning(
-                            "[MTF] Ensemble hesaplanırken hata: %s",
-                            e,
-                        )
+                        system_logger.warning("[MTF] Ensemble hesaplanırken hata: %s", e)
                     p_used = p_single
                     mtf_debug = None
                     p_1m = p_5m = p_15m = p_1h = None
 
-            # 5) MTF Whale sinyali -> whale_meta
-            whale_meta: Dict[str, Any] = {
-                "direction": "none",
-                "score": 0.0,
-                "per_tf": {},
-            }
+            # 5) Whale meta
+            whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
 
             if whale_detector is not None:
                 try:
@@ -687,16 +589,13 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                         )
                 except Exception as e:
                     if system_logger:
-                        system_logger.warning(
-                            "[WHALE] MTF whale hesaplanırken hata: %s",
-                            e,
-                        )
+                        system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
 
-            # 6) ATR Hesabı
+            # 6) ATR
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
             atr_value = compute_atr_from_klines(raw_df, period=atr_period)
 
-            # 7) Extra meta paket – probs + extra
+            # 7) probs + extra
             probs = {
                 "p_used": p_used,
                 "p_single": p_single,
@@ -715,9 +614,7 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 
             if system_logger:
                 system_logger.info(
-                    "[HYBRID] mode=%s n_samples=%d n_features=%d "
-                    "p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, "
-                    "best_auc=%.4f, best_side=%s",
+                    "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f p_lstm_mean=%.4f p_hybrid_mean=%.4f best_auc=%.4f best_side=%s",
                     debug_single.get("mode", "unknown"),
                     len(X_live),
                     X_live.shape[1],
@@ -728,73 +625,115 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     best_side,
                 )
 
-            # 8) Sinyal üretimi
-            long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
-            short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
+            # ------------------------------------------------------------------
+            # NEW: Online model p_buy stabilizasyonu (EMA) + opsiyonel gating
+            # ------------------------------------------------------------------
+            signal_side: Optional[str] = None
+              try:
+                  X_last = X_live.tail(1)
+                  source = "ONLINE"
 
-            if p_used >= long_thr:
-                signal = "long"
-            elif p_used <= short_thr:
-                signal = "short"
+                  if system_logger:
+                      cols_preview = list(X_last.columns)[:8]
+                      system_logger.info(
+                          "[ONLINE_DEBUG] X_last shape=%s cols[:8]=%s",
+                          X_last.shape,
+                          cols_preview,
+                      )
+                      try:
+                          v = X_last.iloc[0].astype(float)
+                          system_logger.info(
+                              "[ONLINE_DEBUG] X_last stats | min=%.4f max=%.4f mean=%.4f",
+                              float(v.min()),
+                              float(v.max()),
+                              float(v.mean()),
+                          )
+                      except Exception as _e:
+                          system_logger.info(
+                              "[ONLINE_DEBUG] X_last stats compute failed: %s",
+                              _e,
+                          )
+
+                  p_buy_raw = safe_p_buy(online_model, X_last)
+                  p_buy_ema = prob_stab.update(p_buy_raw)
+                  sig_from_ema = _normalize_signal(
+                      prob_stab.signal(p_buy_ema)
+                  )
+
+                if system_logger:
+                    system_logger.info(
+                        "[SIGNAL_EMA] p_buy_raw=%.4f p_buy_ema=%.4f (source=%s, BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f) -> sig=%s",
+                        float(p_buy_raw),
+                        float(p_buy_ema),
+                        source,
+                        float(prob_stab.buy_thr),
+                        float(prob_stab.sell_thr),
+                        sig_from_ema,
+                    )
+
+                probs["p_buy_raw"] = float(p_buy_raw)
+                probs["p_buy_ema"] = float(p_buy_ema)
+                extra["p_buy_raw"] = float(p_buy_raw)
+                extra["p_buy_ema"] = float(p_buy_ema)
+                extra["p_buy_source"] = source
+
+                if use_ema_signal:
+                    signal_side = sig_from_ema
+
+            except Exception as e:
+                if system_logger:
+                    system_logger.warning("[ONLINE] p_buy stabilizer hata: %s", e)
+                signal_side = None
+
+            # EMA kullanılmıyorsa / hata olduysa hybrid threshold sinyaline düş
+            if signal_side is None:
+                long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
+                short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
+
+                if p_used >= long_thr:
+                    signal_side = "long"
+                elif p_used <= short_thr:
+                    signal_side = "short"
+                else:
+                    signal_side = "hold"
+
+                extra["signal_source"] = "HYBRID"
             else:
-                signal = "hold"
+                extra["signal_source"] = "EMA"
 
             # ------------------------------
-            # 9) Çoklu TF trend filtresi + mikro filtre
+            # Trend filtresi + mikro filtre
             # ------------------------------
-            # p_1m, p_5m, p_15m, p_1h zaten yukarıda set edildi (MTF varsa)
-
-            # --- Trend filtresi (1h/15m hard veto) ---
             if p_1h is not None and p_15m is not None:
-                if signal == "long" and not (p_1h > 0.6 and p_15m > 0.5):
+                if signal_side == "long" and not (p_1h > 0.6 and p_15m > 0.5):
                     if system_logger:
-                        system_logger.info(
-                            "[TREND_FILTER] 1h/15m filtre nedeniyle LONG -> HOLD "
-                            "(p_1h=%.4f, p_15m=%.4f)",
-                            p_1h,
-                            p_15m,
-                        )
-                    signal = "hold"
-                elif signal == "short" and not (p_1h < 0.4 and p_15m < 0.5):
+                        system_logger.info("[TREND_FILTER] 1h/15m veto LONG -> HOLD (p_1h=%.4f, p_15m=%.4f)", p_1h, p_15m)
+                    signal_side = "hold"
+                elif signal_side == "short" and not (p_1h < 0.4 and p_15m < 0.5):
                     if system_logger:
-                        system_logger.info(
-                            "[TREND_FILTER] 1h/15m filtre nedeniyle SHORT -> HOLD "
-                            "(p_1h=%.4f, p_15m=%.4f)",
-                            p_1h,
-                            p_15m,
-                        )
-                    signal = "hold"
+                        system_logger.info("[TREND_FILTER] 1h/15m veto SHORT -> HOLD (p_1h=%.4f, p_15m=%.4f)", p_1h, p_15m)
+                    signal_side = "hold"
 
-            # --- 1m mikro filtre (hafif fren) ---
             micro_conf_scale = 1.0
-            if signal == "long" and isinstance(p_1m, float) and p_1m < 0.30:
-                micro_conf_scale = 0.7  # %30 küçült
-            elif signal == "short" and isinstance(p_1m, float) and p_1m > 0.70:
+            if signal_side == "long" and isinstance(p_1m, float) and p_1m < 0.30:
+                micro_conf_scale = 0.7
+            elif signal_side == "short" and isinstance(p_1m, float) and p_1m > 0.70:
                 micro_conf_scale = 0.7
 
-            # Model confidence factor'u mikro filtre ile birleştir
             effective_model_conf = float(model_conf_factor) * micro_conf_scale
+            extra["model_confidence_factor"] = effective_model_conf
 
-            # Whale meta güvenli çek
-            whale_dir = None
-            whale_score = None
-            if isinstance(whale_meta, dict):
-                whale_dir = whale_meta.get("direction")
-                whale_score = whale_meta.get("score")
+            whale_dir = whale_meta.get("direction") if isinstance(whale_meta, dict) else None
+            whale_score = whale_meta.get("score") if isinstance(whale_meta, dict) else None
 
-            # Genişletilmiş SIGNAL log'u
             if system_logger:
                 system_logger.info(
-                    "[SIGNAL] p_used=%.4f, long_thr=%.3f, short_thr=%.3f, "
-                    "signal=%s, model_conf_factor=%.3f, effective_conf=%.3f, "
-                    "p_1m=%s, p_5m=%s, p_15m=%s, p_1h=%s, "
-                    "whale_dir=%s, whale_score=%s",
-                    p_used,
-                    long_thr,
-                    short_thr,
-                    signal,
+                    "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f p_1m=%s p_5m=%s p_15m=%s p_1h=%s whale_dir=%s whale_score=%s",
+                    extra.get("signal_source", "unknown"),
+                    float(p_used),
+                    signal_side,
                     float(model_conf_factor),
-                    effective_model_conf,
+                    float(effective_model_conf),
                     f"{p_1m:.4f}" if isinstance(p_1m, float) else "None",
                     f"{p_5m:.4f}" if isinstance(p_5m, float) else "None",
                     f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
@@ -803,22 +742,14 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
                     f"{whale_score:.3f}" if isinstance(whale_score, (int, float)) else "None",
                 )
 
-            # extra paketinde sadece model_confidence_factor'ü güncelle
-            extra["model_confidence_factor"] = effective_model_conf
-
-            # Label diagnostic
             last_label = build_labels(feat_df).iloc[-1]
             if system_logger:
-                system_logger.info(
-                    "[LABEL_CHECK] last_label(horizon=1)=%s (1=up,0=down)",
-                    last_label,
-                )
+                system_logger.info("[LABEL_CHECK] last_label(horizon=1)=%s (1=up,0=down)", last_label)
 
-            # 10) Kararı TradeExecutor'a gönder
             last_price = float(raw_df["close"].iloc[-1])
 
             await trade_executor.execute_decision(
-                signal=signal,
+                signal=signal_side,
                 symbol=symbol,
                 price=last_price,
                 size=None,
@@ -842,13 +773,6 @@ async def bot_loop(objs: Dict[str, Any]) -> None:
 # Async main
 # ----------------------------------------------------------------------
 async def async_main() -> None:
-    """
-    Asenkron ana giriş:
-      - ENV yüklenir
-      - logger initialize edilir
-      - trading objeleri oluşturulur
-      - bot_loop başlatılır
-    """
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN
@@ -870,25 +794,28 @@ async def async_main() -> None:
     DRY_RUN = get_bool_env("DRY_RUN", DRY_RUN)
 
     if not (BINANCE_API_KEY and BINANCE_API_SECRET):
-        system_logger.warning(
-            "[BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol."
-        )
+        system_logger.warning("[BINANCE] API key/secret env'de yok. DRY_RUN modunda çalıştığından emin ol.")
+
+    system_logger.info("[MAIN] TRAINING_MODE=%s", TRAINING_MODE)
+    system_logger.info("[MAIN] HYBRID_MODE=%s", HYBRID_MODE)
+    system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
+    system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
+
+    prob_stab = ProbStabilizer(
+        alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
+        buy_thr=float(os.getenv("BUY_THRESHOLD", "0.60")),
+        sell_thr=float(os.getenv("SELL_THRESHOLD", "0.40")),
+    )
 
     system_logger.info(
-        "[MAIN] TRAINING_MODE=%s -> %s",
-        TRAINING_MODE,
-        "Offline/eğitim modu" if TRAINING_MODE else "Normal çalışma modu (trade logic aktif)",
-    )
-    system_logger.info(
-        "[MAIN] HYBRID_MODE=%s -> %s",
-        HYBRID_MODE,
-        "LSTM+SGD hibrit skor kullanılacak (mümkünse)."
-        if HYBRID_MODE
-        else "Sadece SGD/online skor kullanılacak.",
+        "[MAIN] ProbStabilizer init | alpha=%.3f buy_thr=%.2f sell_thr=%.2f",
+        float(getattr(prob_stab, "alpha", 0.20)),
+        float(getattr(prob_stab, "buy_thr", 0.60)),
+        float(getattr(prob_stab, "sell_thr", 0.40)),
     )
 
     trading_objects = create_trading_objects()
-    await bot_loop(trading_objects)
+    await bot_loop(trading_objects, prob_stab)
 
 
 # ----------------------------------------------------------------------
@@ -902,7 +829,7 @@ def main() -> None:
         try:
             loop.add_signal_handler(sig, loop.stop)
         except NotImplementedError:
-            pass  # Windows vs.
+            pass
 
     try:
         loop.run_until_complete(async_main())
