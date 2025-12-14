@@ -635,19 +635,51 @@ class TradeExecutor:
                 "[EXEC] DRY_RUN=True, flip sonrası gerçek açılış emri gönderilmeyecek (sadece state+log)."
             )
         else:
-            # TODO: Borsaya yeni pozisyon emri gönder
-            pass
+# TODO: Borsaya yeni pozisyon emri gönder
+pass
 
-        new_pos, opened_at = self._create_position_dict(
-            signal=signal,
-            symbol=symbol,
-            price=price,
-            qty=qty,
-            notional=notional,
-            interval=interval,
-            probs=probs,
-            extra=extra,
+new_pos, opened_at = self._create_position_dict(
+    signal=signal,
+    symbol=symbol,
+    price=price,
+    qty=qty,
+    notional=notional,
+    interval=interval,
+    probs=probs,
+    extra=extra,
+)
+
+# ------------------------------------------------------------------
+# ENTRY whale snapshot (for analysis / optimization)
+# ------------------------------------------------------------------
+try:
+    entry_whale_dir = str(extra.get("whale_dir", "none") or "none")
+    entry_whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+    entry_whale_thr = float(extra.get("whale_thr", 0.0) or 0.0)
+    entry_whale_on = bool(extra.get("whale_on", False))
+    entry_whale_alignment = str(
+        extra.get("whale_alignment", "no_whale") or "no_whale"
+    )
+    entry_model_conf = float(
+        extra.get("model_confidence_factor", 1.0) or 1.0
+    )
+
+    if isinstance(new_pos, dict):
+        if not isinstance(new_pos.get("meta"), dict):
+            new_pos["meta"] = {}
+
+        new_pos["meta"].update(
+            {
+                "entry_whale_dir": entry_whale_dir,
+                "entry_whale_score": entry_whale_score,
+                "entry_whale_thr": entry_whale_thr,
+                "entry_whale_on": entry_whale_on,
+                "entry_whale_alignment": entry_whale_alignment,
+                "entry_model_confidence_factor": entry_model_conf,
+            }
         )
+except Exception:
+    pass
 
         # flip sonrası yeni pozisyonu kaydet
         self._set_position(symbol, new_pos)
