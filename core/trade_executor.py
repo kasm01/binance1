@@ -334,12 +334,14 @@ class TradeExecutor:
         Agresif notional hesaplama:
           - base_order_notional
           - model_confidence_factor
-          - whale_meta (yön + skor)
-          - AGGRESSIVE_MODE / MAX_RISK_MULTIPLIER (config)
+          - whale (dir + score)  [direct keys + whale_meta fallback]
+          - AGGRESSIVE_MODE / MAX_RISK_MULTIPLIER
           - max_position_notional clamp
         """
 
-        # Config’ten okunabilir agresiflik parametreleri
+        # --------------------------------------------------
+        # Config
+        # --------------------------------------------------
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
         whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.6))
@@ -347,69 +349,99 @@ class TradeExecutor:
 
         base = float(self.base_order_notional)
 
-        # Model güven faktörü (main.py'de effective_conf olarak set ediliyor)
+        # --------------------------------------------------
+        # Model confidence
+        # --------------------------------------------------
         model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
 
-        # Whale bilgisi (whale_meta öncelikli, sonra eski whale key'i)
-        whale_info = extra.get("whale_meta") or extra.get("whale") or {}
-        whale_score_raw = whale_info.get("score", 0.0)
-        try:
-            whale_score = float(whale_score_raw or 0.0)
-        except Exception:
-            whale_score = 0.0
-        whale_direction = whale_info.get("direction")
+        # --------------------------------------------------
+        # Whale bilgisi (ROBUST)
+        # Öncelik:
+        #   1) extra["whale_dir"] / extra["whale_score"]
+        #   2) extra["whale_meta"] veya extra["whale"]
+        # --------------------------------------------------
+        whale_dir = None
+        whale_score = 0.0
 
-        # Başlangıç agresiflik faktörü
+        try:
+            # 1) Direct keys (backtest_mtf.py böyle gönderiyor)
+            if isinstance(extra, dict):
+                if extra.get("whale_dir") is not None:
+                    whale_dir = extra.get("whale_dir")
+
+                if extra.get("whale_score") is not None:
+                    whale_score = float(extra.get("whale_score") or 0.0)
+
+            # 2) Fallback: whale_meta / whale
+            whale_info = extra.get("whale_meta") or extra.get("whale")
+            if isinstance(whale_info, dict):
+                if whale_dir is None:
+                    whale_dir = whale_info.get("direction") or whale_info.get("dir")
+                if whale_score == 0.0:
+                    whale_score = float(whale_info.get("score") or 0.0)
+
+        except Exception:
+            whale_dir = None
+            whale_score = 0.0
+
+        # normalize
+        if whale_dir is None:
+            whale_dir = "none"
+        else:
+            whale_dir = str(whale_dir).lower()
+
+        # --------------------------------------------------
+        # Agresiflik faktörü
+        # --------------------------------------------------
         aggr_factor = 1.0
 
         if aggressive_mode:
             # 1) Whale etkisi
-            if whale_score > 0 and whale_direction in ("long", "short"):
-                if whale_direction == signal:
-                    # Aynı yönde güçlü whale -> boost
+            if whale_score > 0.0 and whale_dir in ("long", "short"):
+                if whale_dir == signal:
+                    # Aynı yönde whale
                     if whale_score >= whale_boost_thr:
-                        # self.whale_risk_boost burada çarpan olarak kullanılıyor
                         aggr_factor += self.whale_risk_boost * max(
                             0.0, whale_score - whale_boost_thr
                         )
                 else:
-                    # Ters yönde whale -> agresiflik azalt
+                    # Ters yönde whale
                     if whale_score >= whale_veto_thr:
-                        # güçlü ters whale -> neredeyse kapat
                         aggr_factor -= 0.8 * whale_score
                     else:
                         aggr_factor -= 0.4 * whale_score
 
-            # 2) Model confidence ile skala
-            # model_conf [0,1]; 0.5 -> ~0.75, 1.0 -> 1.0
+            # 2) Model confidence skala
+            # model_conf ∈ [0,1] → çarpan ∈ [0.5, 1.0]
             mc = max(0.0, min(model_conf, 1.0))
             aggr_factor *= (0.5 + 0.5 * mc)
 
-        # Negatif veya çok küçük olmasın
+        # --------------------------------------------------
+        # Güvenlik sınırları
+        # --------------------------------------------------
         aggr_factor = max(0.0, aggr_factor)
-
-        # Hard risk multiplier cap
         aggr_factor = min(aggr_factor, max_risk_mult)
 
         notional = base * aggr_factor
 
-        # max_position_notional sınırı
         if notional > self.max_position_notional:
             notional = self.max_position_notional
 
-        # Minimum bir taban (çok saçma küçük olmasın)
         if notional < 10.0:
             notional = 10.0
 
+        # --------------------------------------------------
+        # Log
+        # --------------------------------------------------
         self.logger.info(
             "[EXEC] _compute_notional | symbol=%s signal=%s base=%.2f model_conf=%.2f "
             "whale_score=%.3f whale_dir=%s aggr_factor=%.3f final=%.2f",
             symbol,
             signal,
-            self.base_order_notional,
+            base,
             model_conf,
             whale_score,
-            whale_direction,
+            whale_dir,
             aggr_factor,
             notional,
         )

@@ -8,6 +8,17 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass
 
+from config.load_env import load_environment_variables
+from core.logger import setup_logger
+from core.risk_manager import RiskManager
+from core.trade_executor import TradeExecutor
+from models.hybrid_inference import HybridModel
+from core.hybrid_mtf import MultiTimeframeHybridEnsemble
+from data.whale_detector import MultiTimeframeWhaleDetector
+from data.anomaly_detection import AnomalyDetector
+
+# main.py helper'ları
+from main import build_features, compute_atr_from_klines
 
 
 # ==========================================================
@@ -20,26 +31,14 @@ def _atomic_to_csv(df: pd.DataFrame, path: Path) -> None:
     tmp.replace(path)
 
 
-def _ensure_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+def _ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     # df boşsa header bile yazmıyordu -> 1 byte dosya üretiyordu.
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
-    # bazı kolonlar yoksa ekle
     for c in cols:
         if c not in df.columns:
             df[c] = None
     return df[cols]
-from config.load_env import load_environment_variables
-from core.logger import setup_logger
-from core.risk_manager import RiskManager
-from core.trade_executor import TradeExecutor
-from models.hybrid_inference import HybridModel
-from core.hybrid_mtf import MultiTimeframeHybridEnsemble
-from data.whale_detector import MultiTimeframeWhaleDetector
-from data.anomaly_detection import AnomalyDetector
-
-# main.py helper'ları
-from main import build_features, compute_atr_from_klines, build_labels
 
 
 # ==========================================================
@@ -93,7 +92,7 @@ class BacktestStats:
 system_logger: Optional[logging.Logger] = None
 MTF_INTERVALS = ["1m", "5m", "15m", "1h"]
 
-# main.py ile uyumlu feature set (p=0.5 kilitlenmesini önlemede kritik)
+# main.py ile uyumlu feature set
 FEATURE_COLS = [
     "open_time",
     "open",
@@ -168,12 +167,6 @@ def _extract_mtf_p_last(mtf_debug: Any, itv: str) -> Optional[float]:
 
 
 def _prep_X(feat_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Model input güvenliği:
-      - FEATURE_COLS intersection
-      - numeric coercion
-      - NaN/inf temizliği
-    """
     cols = [c for c in FEATURE_COLS if c in feat_df.columns]
     if not cols:
         return pd.DataFrame()
@@ -202,20 +195,21 @@ async def run_backtest() -> None:
     long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
     short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
 
-    USE_WHALE_FILTER = get_bool_env("BT_USE_WHALE_FILTER", False)
+    # Whale Step-1 knobs
+    WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
+    WHALE_ONLY = get_bool_env("BT_WHALE_ONLY", False)
     WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
-    WHALE_MODE = os.getenv("BT_WHALE_MODE", "block_opposed").strip().lower()
-    # WHALE_MODE: block_opposed | only_aligned
+    WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", False)
+
+    OPPOSED_SCALE = float(os.getenv("BT_WHALE_OPPOSED_SCALE", "0.30"))
+    ALIGNED_BOOST = float(os.getenv("BT_WHALE_ALIGNED_BOOST", "1.00"))
 
     if main_interval not in MTF_INTERVALS:
         raise ValueError(f"BT_MAIN_INTERVAL={main_interval} MTF_INTERVALS içinde olmalı: {MTF_INTERVALS}")
 
     system_logger.info(
-        "[BT] Backtest başlıyor | symbol=%s main_interval=%s HYBRID_MODE=%s USE_MTF_ENS=%s",
-        symbol,
-        main_interval,
-        HYBRID_MODE,
-        USE_MTF_ENS,
+        "[BT] start | symbol=%s main_interval=%s HYBRID_MODE=%s USE_MTF_ENS=%s warmup=%d limit=%d",
+        symbol, main_interval, HYBRID_MODE, USE_MTF_ENS, warmup, data_limit
     )
 
     # --------------------------------------------------
@@ -265,7 +259,7 @@ async def run_backtest() -> None:
             pass
 
         mtf_models[itv] = m
-        system_logger.info("[BT] HybridModel yüklendi | interval=%s", itv)
+        system_logger.info("[BT] HybridModel loaded | interval=%s", itv)
         if itv == main_interval:
             main_model = m
 
@@ -277,7 +271,7 @@ async def run_backtest() -> None:
     whale_detector: Optional[MultiTimeframeWhaleDetector] = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
-        system_logger.info("[BT-WHALE] MultiTimeframeWhaleDetector init OK")
+        system_logger.info("[BT-WHALE] detector init OK")
     except Exception as e:
         system_logger.warning("[BT-WHALE] init hata: %s (whale kapalı)", e)
         whale_detector = None
@@ -286,10 +280,14 @@ async def run_backtest() -> None:
     # Risk & Executor
     # --------------------------------------------------
     equity_start_of_day = float(os.getenv("BT_EQUITY_START_OF_DAY", "1000"))
+
+    # Backtestte "max_consecutive_losses=5" yüzünden kilitlenmesin diye varsayılanı 999
+    max_consecutive_losses = int(os.getenv("BT_MAX_CONSECUTIVE_LOSSES", "999"))
+
     risk_manager = RiskManager(
         daily_max_loss_usdt=float(os.getenv("BT_DAILY_MAX_LOSS_USDT", "100")),
         daily_max_loss_pct=float(os.getenv("BT_DAILY_MAX_LOSS_PCT", "0.03")),
-        max_consecutive_losses=int(os.getenv("BT_MAX_CONSECUTIVE_LOSSES", "5")),
+        max_consecutive_losses=max_consecutive_losses,
         max_open_trades=int(os.getenv("BT_MAX_OPEN_TRADES", "3")),
         equity_start_of_day=equity_start_of_day,
         logger=system_logger,
@@ -314,7 +312,7 @@ async def run_backtest() -> None:
     )
 
     # --------------------------------------------------
-    # CSV Buffers + bt_context (TRADES içine whale_* direkt gidecek)
+    # CSV Buffers + bt_context
     # --------------------------------------------------
     equity_rows: List[Dict[str, Any]] = []
     closed_trades: List[Dict[str, Any]] = []
@@ -332,10 +330,14 @@ async def run_backtest() -> None:
         "p_1h": None,
         "whale_dir": None,
         "whale_score": None,
+        "whale_on": None,
+        "whale_alignment": None,
+        "whale_thr": None,
+        "model_confidence_factor": None,
         "atr": None,
     }
 
-    # Patch close_position → closed_trades’e whale_score/dir + bt_* ekle
+    # Patch close_position → closed_trades’e whale_* + bt_* ekle
     if hasattr(trade_executor, "_close_position"):
         try:
             orig = trade_executor._close_position  # type: ignore[attr-defined]
@@ -357,9 +359,13 @@ async def run_backtest() -> None:
                     closed["bt_p_15m"] = bt_context.get("p_15m")
                     closed["bt_p_1h"] = bt_context.get("p_1h")
 
-                    # İstenen: trades csv’de whale_* direkt olsun
-                    closed["whale_dir"] = bt_context.get("whale_dir")
-                    closed["whale_score"] = bt_context.get("whale_score")
+                    # whale + sizing meta
+                    closed["whale_dir"] = closed.get("whale_dir", bt_context.get("whale_dir"))
+                    closed["whale_score"] = closed.get("whale_score", bt_context.get("whale_score"))
+                    closed["whale_on"] = bt_context.get("whale_on")
+                    closed["whale_alignment"] = bt_context.get("whale_alignment")
+                    closed["whale_thr"] = bt_context.get("whale_thr")
+                    closed["model_confidence_factor"] = bt_context.get("model_confidence_factor")
 
                     closed["bt_atr"] = bt_context.get("atr")
 
@@ -382,30 +388,32 @@ async def run_backtest() -> None:
     # --------------------------------------------------
     # Loop
     # --------------------------------------------------
-    system_logger.info("[BT] warmup=%d min_len=%d long_thr=%.3f short_thr=%.3f", warmup, min_len, long_thr, short_thr)
+    system_logger.info(
+        "[BT] loop | warmup=%d min_len=%d long_thr=%.3f short_thr=%.3f WHALE_FILTER=%s WHALE_ONLY=%s WHALE_THR=%.2f",
+        warmup, min_len, long_thr, short_thr, WHALE_FILTER, WHALE_ONLY, WHALE_THR
+    )
 
     for i in range(warmup, min_len - 1):
         try:
-            # 500 bar slice
             X_by_interval: Dict[str, pd.DataFrame] = {}
             mtf_whale_raw: Dict[str, pd.DataFrame] = {}
 
             for itv in MTF_INTERVALS:
                 feat_slice_full = feat_by_interval[itv].iloc[: i + 1]
-                raw_slice = raw_by_interval[itv].iloc[: i + 1]
+                raw_slice_full = raw_by_interval[itv].iloc[: i + 1]
 
                 X = _prep_X(feat_slice_full).tail(500)
                 if X.empty:
                     continue
 
                 X_by_interval[itv] = X
-                mtf_whale_raw[itv] = raw_slice.tail(500)
+                mtf_whale_raw[itv] = raw_slice_full.tail(500)
 
             if main_interval not in X_by_interval:
                 continue
 
-            # single proba (main interval)
-            p_arr, debug = main_model.predict_proba(X_by_interval[main_interval])
+            # --- model probs ---
+            p_arr, _debug = main_model.predict_proba(X_by_interval[main_interval])
             p_single = float(p_arr[-1])
             p_used = p_single
             mtf_debug = None
@@ -419,235 +427,86 @@ async def run_backtest() -> None:
                     p_used = p_single
                     mtf_debug = None
 
-            # per-tf probs
             p_1m = _extract_mtf_p_last(mtf_debug, "1m")
             p_5m = _extract_mtf_p_last(mtf_debug, "5m")
             p_15m = _extract_mtf_p_last(mtf_debug, "15m")
             p_1h = _extract_mtf_p_last(mtf_debug, "1h")
 
-            # signal
+            # --- base signal ---
             signal = "hold"
             if p_used >= long_thr:
                 signal = "long"
             elif p_used <= short_thr:
                 signal = "short"
-            # ----------------------------------------------------------
-            # Whale policy (opposed veto / only trade aligned)
-            # ----------------------------------------------------------
-            WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
-            WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
-            WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", True)
 
-            whale_on = (
-                whale_score is not None
-                and float(whale_score) >= WHALE_THR
-                and str(whale_dir).lower() not in ("none", "nan", "null", "")
-            )
-
-            whale_alignment = "no_whale"
-            if whale_on:
-                wd = str(whale_dir).lower().strip()
-                if signal in ("long", "short") and wd in ("long", "short"):
-                    whale_alignment = "aligned" if signal == wd else "opposed"
-                else:
-                    whale_alignment = "other"
-
-            if WHALE_FILTER and WHALE_VETO_OPPOSED:
-                if whale_alignment == "opposed":
-                    system_logger.info(
-                        "[BT-WHALE-POLICY] VETO opposed | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f -> HOLD",
-                        i, signal, str(whale_dir), float(whale_score), WHALE_THR
-                    )
-                    signal = "hold"
-
-            # analiz tarafına da yaz
-            extra["whale_alignment"] = whale_alignment
-            extra["whale_on"] = bool(whale_on)
-            extra["whale_thr"] = float(WHALE_THR)
-            # ----------------------------------------------------------
-            # Whale-only policy (only trade when whale_on AND aligned)
-            # ----------------------------------------------------------
-            WHALE_ONLY = get_bool_env("BT_WHALE_ONLY", False)
-            if WHALE_ONLY:
-                if (not whale_on) or (whale_alignment != "aligned"):
-                    system_logger.info(
-                        "[BT-WHALE-ONLY] veto | bar=%d signal=%s whale_on=%s alignment=%s thr=%.2f -> HOLD",
-                        i, signal, str(whale_on), whale_alignment, WHALE_THR
-                    )
-                    signal = "hold"
-
-            # whale meta
+            # --- whale meta (ÖNCE hesapla!) ---
             whale_dir = "none"
             whale_score = 0.0
             if whale_detector is not None:
                 try:
-                    if hasattr(whale_detector, "analyze_multiple_timeframes"):
-                        whale_signals = whale_detector.analyze_multiple_timeframes(mtf_whale_raw)
-                        best_tf = None
-                        best_score = 0.0
-                        best_dir = "none"
-
-                        for tf, sig in whale_signals.items():
-                            s_dir = str(getattr(sig, "direction", "none"))
-                            s_score = float(getattr(sig, "score", 0.0) or 0.0)
-                            if s_dir != "none" and s_score > best_score:
-                                best_score = s_score
-                                best_tf = tf
-                                best_dir = s_dir
-
-                        if best_tf is not None:
-                            whale_dir = best_dir
-                            whale_score = best_score
+                    whale_signals = whale_detector.analyze_multiple_timeframes(mtf_whale_raw)  # type: ignore[attr-defined]
+                    best_score = 0.0
+                    best_dir = "none"
+                    for _tf, sig in (whale_signals or {}).items():
+                        s_dir = str(getattr(sig, "direction", "none") or "none")
+                        s_score = float(getattr(sig, "score", 0.0) or 0.0)
+                        if s_dir != "none" and s_score > best_score:
+                            best_score = s_score
+                            best_dir = s_dir
+                    whale_dir = best_dir
+                    whale_score = best_score
                 except Exception as e:
                     system_logger.warning("[BT-WHALE] analyze hata: %s", e)
 
-            # ----------------------------------------------------------
-            #  Whale Filter (opsiyonel)
-            # ----------------------------------------------------------
-            if USE_WHALE_FILTER and whale_score is not None:
-                try:
-                    ws = float(whale_score)
-                except Exception:
-                    ws = 0.0
-
-                if ws >= WHALE_THR:
-                    wd = str(whale_dir or "none").lower()
-
-                    # trade_side: long/short
-                    trade_side = signal
-                    # whale_side: buy/sell
-                    whale_side = "none"
-                    if wd in ("buy", "long", "up"):
-                        whale_side = "buy"
-                    elif wd in ("sell", "short", "down"):
-                        whale_side = "sell"
-
-                    aligned = (
-                        (trade_side == "long" and whale_side == "buy") or
-                        (trade_side == "short" and whale_side == "sell")
-                    )
-                    opposed = (
-                        (trade_side == "long" and whale_side == "sell") or
-                        (trade_side == "short" and whale_side == "buy")
-                    )
-
-                    if WHALE_MODE == "only_aligned":
-                        # whale güçlü ise sadece aligned trade'e izin ver
-                        if signal in ("long", "short") and not aligned:
-                            system_logger.info(
-                                "[BT-WHALE_FILTER] %s -> HOLD | strong_whale ws=%.3f wd=%s mode=only_aligned",
-                                signal, ws, wd
-                            )
-                            signal = "hold"
-
-                    else:
-                        # default: block_opposed
-                        if signal in ("long", "short") and opposed:
-                            system_logger.info(
-                                "[BT-WHALE_FILTER] %s -> HOLD | opposed_whale ws=%.3f wd=%s mode=block_opposed",
-                                signal, ws, wd
-                            )
-                            signal = "hold"
-                # else: whale zayıf/off → dokunma
-
-            # ----------------------------------------------------------
-
-            # Whale policy + whale-only + notional scaling  [BT-WHALE-STEP1]
-
-            # ----------------------------------------------------------
-
-            WHALE_FILTER = get_bool_env("BT_WHALE_FILTER", False)
-
-            WHALE_ONLY = get_bool_env("BT_WHALE_ONLY", False)
-
-            WHALE_THR = float(os.getenv("BT_WHALE_THR", "0.50"))
-
-            WHALE_VETO_OPPOSED = get_bool_env("BT_WHALE_VETO_OPPOSED", False)
-
-            
-
-            # opposed durumda notional'ı küçültmek için model_confidence_factor'ı düşüreceğiz
-
-            OPPOSED_SCALE = float(os.getenv("BT_WHALE_OPPOSED_SCALE", "0.30"))   # 0.30 => %70 küçült
-
-            ALIGNED_BOOST  = float(os.getenv("BT_WHALE_ALIGNED_BOOST", "1.00"))  # şimdilik boost yok
-
-            
-
+            # --- whale policy Step-1 (tek kaynak) ---
             whale_on = (
-
                 whale_score is not None
-
                 and float(whale_score) >= WHALE_THR
-
                 and str(whale_dir).lower() not in ("none", "nan", "null", "")
-
             )
 
-            
-
             whale_alignment = "no_whale"
-
             if whale_on:
-
                 wd = str(whale_dir).lower().strip()
-
                 if signal in ("long", "short") and wd in ("long", "short"):
-
                     whale_alignment = "aligned" if signal == wd else "opposed"
-
                 else:
-
                     whale_alignment = "other"
 
-            
-
-            # Whale-only: whale_on değilse veya aligned değilse trade açma
-
-            if WHALE_ONLY:
-
-                if (not whale_on) or (whale_alignment != "aligned"):
-
-                    system_logger.info(
-
-                        "[BT-WHALE-ONLY] HOLD | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f alignment=%s",
-
-                        i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR, whale_alignment
-
-                    )
-
-                    signal = "hold"
-
-            
-
-            # Opsiyonel veto: whale_on + opposed ise HOLD
-
-            if WHALE_FILTER and WHALE_VETO_OPPOSED and whale_alignment == "opposed":
-
+            # Whale-only
+            if WHALE_ONLY and ((not whale_on) or (whale_alignment != "aligned")):
                 system_logger.info(
-
-                    "[BT-WHALE-VETO] HOLD(opposed) | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f",
-
-                    i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR
-
+                    "[BT-WHALE-ONLY] HOLD | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f alignment=%s",
+                    i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR, whale_alignment
                 )
-
                 signal = "hold"
 
+            # Opsiyonel veto
+            if WHALE_FILTER and WHALE_VETO_OPPOSED and whale_alignment == "opposed":
+                system_logger.info(
+                    "[BT-WHALE-VETO] HOLD(opposed) | bar=%d signal=%s whale_dir=%s whale_score=%.3f thr=%.2f",
+                    i, signal, str(whale_dir), float(whale_score or 0.0), WHALE_THR
+                )
+                signal = "hold"
+
+            # Notional scaling
             
+            # --- model + whale combined confidence ---
 
-            # Notional scaling: TradeExecutor _compute_notional model_confidence_factor kullanıyor.
-
-            model_confidence_factor = 1.0
+            base_model_conf = 1.0
+            whale_scale = 1.0
 
             if whale_on and whale_alignment == "aligned":
 
-                model_confidence_factor *= ALIGNED_BOOST
+                whale_scale = ALIGNED_BOOST
 
             elif whale_on and whale_alignment == "opposed":
 
-                model_confidence_factor *= OPPOSED_SCALE
+                whale_scale = OPPOSED_SCALE
 
+
+
+            model_confidence_factor = base_model_conf * whale_scale
 
             # ATR
             raw_main = raw_by_interval[main_interval].iloc[: i + 1]
@@ -657,7 +516,19 @@ async def run_backtest() -> None:
             price = float(raw_by_interval[main_interval]["close"].iloc[i])
             bar_time = _safe_bar_time_iso(raw_by_interval[main_interval], i)
 
-            # ---- bt_context güncelle (KAPANIŞ ANINDA trades'e yazılacak) ----
+            # extra (tek dict)
+            extra: Dict[str, Any] = {
+                "mtf_debug": mtf_debug,
+                "whale_dir": whale_dir,
+                "whale_score": float(whale_score),
+                "whale_on": bool(whale_on),
+                "whale_alignment": whale_alignment,
+                "whale_thr": float(WHALE_THR),
+                "model_confidence_factor": float(model_confidence_factor),
+                "atr": float(atr_value) if atr_value is not None else None,
+            }
+
+            # bt_context (close patch buradan okuyacak)
             bt_context.update(
                 {
                     "bar": i,
@@ -676,16 +547,11 @@ async def run_backtest() -> None:
                     "whale_alignment": whale_alignment,
                     "whale_thr": float(WHALE_THR),
                     "model_confidence_factor": float(model_confidence_factor),
-                    "whale_on": bool(whale_on),
-                    "whale_alignment": whale_alignment,
-                    "whale_thr": float(WHALE_THR),
-                    "model_confidence_factor": float(model_confidence_factor),
                     "atr": float(atr_value) if atr_value is not None else None,
                 }
             )
 
             # pnl before
-            prev_pnl = 0.0
             try:
                 prev_pnl = float(getattr(risk_manager, "daily_realized_pnl", 0.0) or 0.0)
             except Exception:
@@ -700,12 +566,7 @@ async def run_backtest() -> None:
                 training_mode=False,
                 hybrid_mode=HYBRID_MODE,
                 probs={"p_used": float(p_used), "p_single": float(p_single)},
-                extra={
-                    "mtf_debug": mtf_debug,
-                    "whale_dir": whale_dir,
-                    "whale_score": float(whale_score),
-                    "atr": float(atr_value) if atr_value is not None else None,
-                },
+                extra=extra,
             )
 
             # pnl after
@@ -734,6 +595,10 @@ async def run_backtest() -> None:
                     "p_1h": p_1h,
                     "whale_dir": whale_dir,
                     "whale_score": float(whale_score),
+                    "whale_on": bool(whale_on),
+                    "whale_alignment": whale_alignment,
+                    "whale_thr": float(WHALE_THR),
+                    "model_confidence_factor": float(model_confidence_factor),
                     "atr": float(atr_value) if atr_value is not None else None,
                     "equity": float(bt_stats.equity),
                     "peak_equity": float(bt_stats.peak_equity),
@@ -752,19 +617,39 @@ async def run_backtest() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-
     equity_path = out_dir / f"equity_curve_{symbol}_{main_interval}_{tag}.csv"
     trades_path = out_dir / f"trades_{symbol}_{main_interval}_{tag}.csv"
     summary_path = out_dir / f"summary_{symbol}_{main_interval}_{tag}.csv"
 
-    eq_df = _ensure_columns(pd.DataFrame(equity_rows), ['bar', 'time', 'symbol', 'interval', 'price', 'signal', 'p_used', 'p_single', 'p_1m', 'p_5m', 'p_15m', 'p_1h', 'whale_dir', 'whale_score', 'atr', 'equity', 'peak_equity', 'max_drawdown_pct', 'pnl_total'])
-    tr_df = _ensure_columns(pd.DataFrame(closed_trades), ['symbol', 'side', 'qty', 'entry_price', 'notional', 'interval', 'opened_at', 'sl_price', 'tp_price', 'trailing_pct', 'atr_value', 'highest_price', 'lowest_price', 'meta', 'closed_at', 'close_price', 'realized_pnl', 'close_reason', 'bt_symbol', 'bt_interval', 'bt_bar', 'bt_time', 'bt_signal', 'bt_price', 'bt_p_used', 'bt_p_single', 'bt_p_1m', 'bt_p_5m', 'bt_p_15m', 'bt_p_1h', 'whale_dir', 'whale_score', 'bt_atr'])
+    EQ_COLS = [
+        "bar", "time", "symbol", "interval", "price", "signal",
+        "p_used", "p_single", "p_1m", "p_5m", "p_15m", "p_1h",
+        "whale_dir", "whale_score", "whale_on", "whale_alignment", "whale_thr",
+        "model_confidence_factor", "atr",
+        "equity", "peak_equity", "max_drawdown_pct", "pnl_total"
+    ]
+
+    TR_COLS = [
+        "symbol", "side", "qty", "entry_price", "notional", "interval", "opened_at",
+        "sl_price", "tp_price", "trailing_pct", "atr_value", "highest_price", "lowest_price",
+        "meta", "closed_at", "close_price", "realized_pnl", "close_reason",
+        "bt_symbol", "bt_interval", "bt_bar", "bt_time", "bt_signal", "bt_price",
+        "bt_p_used", "bt_p_single", "bt_p_1m", "bt_p_5m", "bt_p_15m", "bt_p_1h",
+        "whale_dir", "whale_score", "whale_on", "whale_alignment", "whale_thr",
+        "model_confidence_factor",
+        "bt_atr"
+    ]
+
+    eq_df = _ensure_columns(pd.DataFrame(equity_rows), EQ_COLS)
+    tr_df = _ensure_columns(pd.DataFrame(closed_trades), TR_COLS)
     sm_df = pd.DataFrame([bt_stats.summary_dict()])
+
     _atomic_to_csv(eq_df, equity_path)
     _atomic_to_csv(tr_df, trades_path)
     _atomic_to_csv(sm_df, summary_path)
-    system_logger.info("[BT-CSV] equity_curve: %s (rows=%d)", str(equity_path), len(equity_rows))
-    system_logger.info("[BT-CSV] trades:      %s (trades=%d)", str(trades_path), len(closed_trades))
+
+    system_logger.info("[BT-CSV] equity_curve: %s (rows=%d)", str(equity_path), len(eq_df))
+    system_logger.info("[BT-CSV] trades:      %s (trades=%d)", str(trades_path), len(tr_df))
     system_logger.info("[BT-CSV] summary:     %s", str(summary_path))
 
 
