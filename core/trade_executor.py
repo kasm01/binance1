@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
@@ -442,6 +443,23 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
+
+        # --------------------------------------------------
+        # SHADOW MODE: trade yok, sadece log
+        # --------------------------------------------------
+        shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1","true","yes","on")
+        if shadow:
+            if self.logger:
+                self.logger.info(
+                    "[SHADOW] signal=%s symbol=%s price=%.2f interval=%s probs=%s extra=%s",
+                    signal,
+                    symbol,
+                    float(price),
+                    interval,
+                    probs,
+                    extra,
+                )
+            return
         extra = extra or {}
 
         self.logger.info(

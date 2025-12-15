@@ -45,6 +45,39 @@ def get_bool_env(name: str, default: bool = False) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+
+# ---- helpers: EMA adaptive alpha ----
+def _compute_adaptive_alpha(atr_value: float) -> float:
+    """
+    Volatilite artınca alpha yükselsin (EMA daha hızlı adapte olsun),
+    volatilite düşükken alpha düşsün (EMA daha stabil olsun).
+    """
+    a_min = float(os.getenv("EMA_ALPHA_MIN", "0.05"))
+    a_max = float(os.getenv("EMA_ALPHA_MAX", "0.45"))
+    atr_ref = float(os.getenv("EMA_ATR_REF", "100.0"))
+
+    try:
+        atr = float(atr_value)
+    except Exception:
+        atr = 0.0
+
+    if atr_ref <= 1e-9:
+        atr_ref = 100.0
+
+    x = atr / atr_ref
+    if x < 0.0:
+        x = 0.0
+    if x > 2.0:
+        x = 2.0
+
+    alpha = a_min + (a_max - a_min) * (x / 2.0)
+
+    if alpha < a_min:
+        alpha = a_min
+    if alpha > a_max:
+        alpha = a_max
+    return float(alpha)
+
 # Global env flag’ler (async_main içinde tekrar güncellenecek)
 BINANCE_API_KEY: Optional[str] = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET: Optional[str] = os.getenv("BINANCE_API_SECRET")
@@ -173,6 +206,17 @@ async def fetch_klines(
         return df
 
     try:
+        # intraday reset (her loop başında güvenli)
+        try:
+            if hasattr(risk_manager, 'reset_if_new_day'):
+                risk_manager.reset_if_new_day()
+            else:
+                # fallback: private method varsa
+                if hasattr(risk_manager, '_maybe_reset_day'):
+                    risk_manager._maybe_reset_day()
+        except Exception:
+            pass
+
         klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
     except Exception as e:
         if logger:
@@ -626,46 +670,57 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 )
 
             # ------------------------------------------------------------------
-            # NEW: Online model p_buy stabilizasyonu (EMA) + opsiyonel gating
+                        # ------------------------------------------------------------------
+            # Online model p_buy stabilizasyonu (EMA) + whale-gating + zscore clip + adaptive alpha
             # ------------------------------------------------------------------
+            use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", False)
+            ema_whale_only = get_bool_env("EMA_WHALE_ONLY", False)
+            ema_whale_thr = float(os.getenv("EMA_WHALE_THR", "0.50"))
+
+            # z-score clip settings -> ProbStabilizer'a yansıt
+            prob_stab.use_zclip = get_bool_env("PBUY_ZCLIP_ON", True)
+            prob_stab.zclip = float(os.getenv("PBUY_ZCLIP", "3.0"))
+            prob_stab.zwin = int(os.getenv("PBUY_ZWIN", "60"))
+
             signal_side: Optional[str] = None
+
             try:
+                # adaptive alpha (ATR’ye göre)
+                alpha_dyn = _compute_adaptive_alpha(atr_value)
+                if hasattr(prob_stab, "set_alpha"):
+                    prob_stab.set_alpha(alpha_dyn)
+                else:
+                    prob_stab.alpha = float(alpha_dyn)
+
                 X_last = X_live.tail(1)
                 source = "ONLINE"
 
-                if system_logger:
-                    cols_preview = list(X_last.columns)[:8]
-                    system_logger.info(
-                        "[ONLINE_DEBUG] X_last shape=%s cols[:8]=%s",
-                        X_last.shape,
-                        cols_preview,
-                    )
-                    try:
-                        v = X_last.iloc[0].astype(float)
-                        system_logger.info(
-                            "[ONLINE_DEBUG] X_last stats | min=%.4f max=%.4f mean=%.4f",
-                            float(v.min()),
-                            float(v.max()),
-                            float(v.mean()),
-                        )
-                    except Exception as _e:
-                        system_logger.info(
-                            "[ONLINE_DEBUG] X_last stats compute failed: %s",
-                            _e,
-                        )
+                # whale_on hesapla
+                whale_score = 0.0
+                whale_dir = "none"
+                if isinstance(whale_meta, dict):
+                    whale_score = float(whale_meta.get("score", 0.0) or 0.0)
+                    whale_dir = str(whale_meta.get("direction", "none") or "none")
+                whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
 
+                # p_buy
                 p_buy_raw = safe_p_buy(online_model, X_last)
                 p_buy_ema = prob_stab.update(p_buy_raw)
                 sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
 
                 if system_logger:
                     system_logger.info(
-                        "[SIGNAL_EMA] p_buy_raw=%.4f p_buy_ema=%.4f (source=%s, BUY_THRESHOLD=%.2f, SELL_THRESHOLD=%.2f) -> sig=%s",
+                        "[SIGNAL_EMA] p_buy_raw=%.4f p_buy_ema=%.4f alpha=%.3f zclip=%s(%.2f,w=%d) whale_on=%s(%.3f/%s thr=%.2f) -> sig=%s",
                         float(p_buy_raw),
                         float(p_buy_ema),
-                        source,
-                        float(prob_stab.buy_thr),
-                        float(prob_stab.sell_thr),
+                        float(getattr(prob_stab, "alpha", 0.0)),
+                        "ON" if getattr(prob_stab, "use_zclip", False) else "OFF",
+                        float(getattr(prob_stab, "zclip", 0.0)),
+                        int(getattr(prob_stab, "zwin", 0)),
+                        str(whale_on),
+                        float(whale_score),
+                        whale_dir,
+                        float(ema_whale_thr),
                         sig_from_ema,
                     )
 
@@ -674,16 +729,22 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 extra["p_buy_raw"] = float(p_buy_raw)
                 extra["p_buy_ema"] = float(p_buy_ema)
                 extra["p_buy_source"] = source
+                extra["ema_alpha"] = float(getattr(prob_stab, "alpha", alpha_dyn))
+                extra["ema_whale_only"] = bool(ema_whale_only)
+                extra["ema_whale_thr"] = float(ema_whale_thr)
+                extra["ema_whale_on"] = bool(whale_on)
 
-                if use_ema_signal:
+                # whale-gating:
+                # - use_ema_signal=true ve (ema_whale_only=false OR whale_on=true) ise EMA sinyali kullan
+                if use_ema_signal and (not ema_whale_only or whale_on):
                     signal_side = sig_from_ema
 
             except Exception as e:
                 if system_logger:
-                    system_logger.warning("[ONLINE] p_buy stabilizer hata: %s", e)
+                    system_logger.warning("[ONLINE] EMA block hata: %s", e)
                 signal_side = None
 
-            # EMA kullanılmıyorsa / hata olduysa hybrid threshold sinyaline düş
+            # EMA kullanılmadıysa hybrid threshold sinyaline düş
             if signal_side is None:
                 long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
                 short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
@@ -699,7 +760,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             else:
                 extra["signal_source"] = "EMA"
 
-            # ------------------------------
+# ------------------------------
             # Trend filtresi + mikro filtre
             # ------------------------------
             if p_1h is not None and p_15m is not None:

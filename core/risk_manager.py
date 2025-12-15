@@ -8,28 +8,6 @@ from typing import Optional, Dict, Any
 
 @dataclass
 class RiskManager:
-
-    def _debug_limits(self, symbol: str = "", interval: str = "") -> None:
-        """Günlük limit / stop nedenlerini görünür yapmak için."""
-        try:
-            self.logger.warning(
-                "[RISK-DBG] symbol=%s interval=%s daily_realized_pnl=%s daily_pnl=%s max_daily_loss=%s "
-                "consecutive_losses=%s max_consecutive_losses=%s open_trades=%s max_open_trades=%s "
-                "halted=%s",
-                symbol,
-                interval,
-                getattr(self, "daily_realized_pnl", None),
-                getattr(self, "daily_pnl", None),
-                getattr(self, "max_daily_loss", None),
-                getattr(self, "consecutive_losses", None),
-                getattr(self, "max_consecutive_losses", None),
-                getattr(self, "open_trades", None),
-                getattr(self, "max_open_trades", None),
-                getattr(self, "trading_halted", None),
-            )
-        except Exception:
-            pass
-
     """
     RiskManager:
       - Günlük max kayıp (USDT + yüzde)
@@ -37,23 +15,24 @@ class RiskManager:
       - Max open trades
       - Pozisyon açma/kapama olaylarından beslenen basit state
       - Son trade metalarını ve basit istatistikleri tutar
+      - Intraday reset + new-day auto reset destekler
     """
 
+    # -----------------------------
     # Konfigürasyon parametreleri
+    # -----------------------------
     daily_max_loss_usdt: float = 100.0
     daily_max_loss_pct: float = 0.03
     max_consecutive_losses: int = 5
     max_open_trades: int = 3
     equity_start_of_day: float = 1000.0
 
-    logger: logging.Logger = field(
-        default_factory=lambda: logging.getLogger("RiskManager")
-    )
+    logger: logging.Logger = field(default_factory=lambda: logging.getLogger("RiskManager"))
 
+    # -----------------------------
     # Günlük / runtime state
-    current_day: date = field(
-        default_factory=lambda: datetime.now(timezone.utc).date()
-    )
+    # -----------------------------
+    current_day: date = field(default_factory=lambda: datetime.now(timezone.utc).date())
     daily_realized_pnl: float = 0.0
     consecutive_losses: int = 0
     open_trades: int = 0
@@ -85,7 +64,79 @@ class RiskManager:
             )
 
     # --------------------------------------------------
+    # Debug helper: limitleri görünür yap
+    # --------------------------------------------------
+    def _debug_limits(self, symbol: str = "", interval: str = "") -> None:
+        """Günlük limit / stop nedenlerini görünür yapmak için."""
+        try:
+            if self.logger:
+                self.logger.warning(
+                    "[RISK-DBG] symbol=%s interval=%s daily_realized_pnl=%s max_daily_loss_usdt=%s "
+                    "daily_max_loss_pct=%s equity_start_of_day=%s consecutive_losses=%s "
+                    "max_consecutive_losses=%s open_trades=%s max_open_trades=%s",
+                    symbol,
+                    interval,
+                    getattr(self, "daily_realized_pnl", None),
+                    getattr(self, "daily_max_loss_usdt", None),
+                    getattr(self, "daily_max_loss_pct", None),
+                    getattr(self, "equity_start_of_day", None),
+                    getattr(self, "consecutive_losses", None),
+                    getattr(self, "max_consecutive_losses", None),
+                    getattr(self, "open_trades", None),
+                    getattr(self, "max_open_trades", None),
+                )
+        except Exception:
+            pass
+
+    # --------------------------------------------------
+    # Intraday reset API (YENİ)
+    # --------------------------------------------------
+    def reset_intraday(self, new_equity_start: Optional[float] = None, reset_open_trades: bool = False) -> None:
+        """
+        Gün içi reset: daily pnl, consecutive losses vb.
+        - reset_open_trades=False önerilir (PositionManager gerçek pozisyonları yönetiyor)
+        """
+        if new_equity_start is not None:
+            try:
+                self.equity_start_of_day = float(new_equity_start)
+            except Exception:
+                pass
+
+        self.daily_realized_pnl = 0.0
+        self.consecutive_losses = 0
+        self.last_realized_pnl = 0.0
+
+        # İstersen resetle ama default kapalı
+        if reset_open_trades:
+            self.open_trades = 0
+
+        if self.logger:
+            self.logger.info(
+                "[RISK] Intraday reset applied | equity_start_of_day=%.2f reset_open_trades=%s",
+                float(self.equity_start_of_day),
+                str(bool(reset_open_trades)),
+            )
+
+    def reset_if_new_day(self, now_utc: Optional[datetime] = None, new_equity_start: Optional[float] = None) -> bool:
+        """
+        Dışarıdan çağrılabilen güvenli 'yeni gün' kontrolü.
+        Yeni günse reset uygular ve True döner.
+        """
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+
+        d = now_utc.date()
+        if d != self.current_day:
+            if self.logger:
+                self.logger.info("[RISK] New day detected via reset_if_new_day (%s -> %s)", self.current_day, d)
+            self.current_day = d
+            self.reset_intraday(new_equity_start=new_equity_start, reset_open_trades=False)
+            return True
+        return False
+
+    # --------------------------------------------------
     # İç helper: gün değiştiyse günlük metrikleri resetle
+    # (Mevcut davranış KORUNDU)
     # --------------------------------------------------
     def _maybe_reset_day(self) -> None:
         now_day = datetime.now(timezone.utc).date()
@@ -102,14 +153,15 @@ class RiskManager:
             self.current_day = now_day
             self.daily_realized_pnl = 0.0
             self.consecutive_losses = 0
-            # open_trades sayısını burada resetlemiyoruz; aktif pozisyonlar
-            # PositionManager tarafından yönetiliyor, biz sadece sayacı tutuyoruz.
+            # open_trades resetlenmez (pozisyon state’i PositionManager tarafında)
 
     # --------------------------------------------------
     # Pozisyon açılabilir mi?
-    # TradeExecutor.execute_decision şuradan çağırıyor:
-    #   can_open_new_trade(symbol=..., side=..., price=..., notional=..., interval=...)
     # --------------------------------------------------
+    def reset_if_new_day(self) -> None:
+        """Public wrapper: loop başında güvenle çağrılabilir."""
+        self._maybe_reset_day()
+
     def can_open_new_trade(
         self,
         symbol: str,
@@ -121,8 +173,6 @@ class RiskManager:
     ) -> bool:
         """
         Yeni pozisyon açmadan önce risk limitlerini kontrol eder.
-        Tüm parametreler şu an sadece log için kullanılıyor, ama gelecekte
-        position-size dinamikleştirmede de kullanılabilir.
         """
         self._maybe_reset_day()
 
@@ -138,6 +188,7 @@ class RiskManager:
                     side,
                     interval,
                 )
+                self._debug_limits(symbol, interval)
             return False
 
         # 2) Günlük yüzde bazlı kayıp limiti
@@ -160,6 +211,7 @@ class RiskManager:
                     side,
                     interval,
                 )
+                self._debug_limits(symbol, interval)
             return False
 
         # 3) Max consecutive losses
@@ -174,6 +226,7 @@ class RiskManager:
                     side,
                     interval,
                 )
+                self._debug_limits(symbol, interval)
             return False
 
         # 4) Max open trades
@@ -188,9 +241,9 @@ class RiskManager:
                     side,
                     interval,
                 )
+                self._debug_limits(symbol, interval)
             return False
 
-        # Hepsi geçti -> trade açılabilir
         if self.logger:
             self.logger.info(
                 "[RISK] can_open_new_trade=TRUE | symbol=%s side=%s price=%.2f notional=%.2f "
@@ -203,11 +256,10 @@ class RiskManager:
                 self.consecutive_losses,
                 self.open_trades,
             )
-
         return True
 
     # --------------------------------------------------
-    # Pozisyon açıldığında TradeExecutor tarafından çağrılır
+    # Pozisyon açıldığında çağrılır
     # --------------------------------------------------
     def on_position_open(
         self,
@@ -249,7 +301,7 @@ class RiskManager:
             )
 
     # --------------------------------------------------
-    # Pozisyon kapandığında / flip olduğunda TradeExecutor tarafından çağrılır
+    # Pozisyon kapandığında çağrılır
     # --------------------------------------------------
     def on_position_close(
         self,
@@ -266,31 +318,25 @@ class RiskManager:
         realized_pnl: USDT cinsinden, pozisyonun toplam kar/zararı
         price      : kapatma fiyatı (exit)
         meta       : TradeExecutor._close_position içinden gelir
-                     örn: {"reason": "...", "entry_price": ...}
         """
         self._maybe_reset_day()
 
-        # Açık pozisyon sayısını azalt
         self.open_trades = max(0, self.open_trades - 1)
 
-        # Günlük PnL ve son PnL
         self.daily_realized_pnl += float(realized_pnl)
         self.last_realized_pnl = float(realized_pnl)
 
-        # Toplam trade sayaçları
         self.total_trades += 1
         if realized_pnl > 0:
             self.total_wins += 1
         elif realized_pnl < 0:
             self.total_losses += 1
 
-        # Consecutive losses
         if realized_pnl < 0:
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
 
-        # Son close metası
         ts = datetime.now(timezone.utc).isoformat()
         m = meta or {}
         self.last_close_trade = {
