@@ -629,36 +629,34 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             # NEW: Online model p_buy stabilizasyonu (EMA) + opsiyonel gating
             # ------------------------------------------------------------------
             signal_side: Optional[str] = None
-              try:
-                  X_last = X_live.tail(1)
-                  source = "ONLINE"
+            try:
+                X_last = X_live.tail(1)
+                source = "ONLINE"
 
-                  if system_logger:
-                      cols_preview = list(X_last.columns)[:8]
-                      system_logger.info(
-                          "[ONLINE_DEBUG] X_last shape=%s cols[:8]=%s",
-                          X_last.shape,
-                          cols_preview,
-                      )
-                      try:
-                          v = X_last.iloc[0].astype(float)
-                          system_logger.info(
-                              "[ONLINE_DEBUG] X_last stats | min=%.4f max=%.4f mean=%.4f",
-                              float(v.min()),
-                              float(v.max()),
-                              float(v.mean()),
-                          )
-                      except Exception as _e:
-                          system_logger.info(
-                              "[ONLINE_DEBUG] X_last stats compute failed: %s",
-                              _e,
-                          )
+                if system_logger:
+                    cols_preview = list(X_last.columns)[:8]
+                    system_logger.info(
+                        "[ONLINE_DEBUG] X_last shape=%s cols[:8]=%s",
+                        X_last.shape,
+                        cols_preview,
+                    )
+                    try:
+                        v = X_last.iloc[0].astype(float)
+                        system_logger.info(
+                            "[ONLINE_DEBUG] X_last stats | min=%.4f max=%.4f mean=%.4f",
+                            float(v.min()),
+                            float(v.max()),
+                            float(v.mean()),
+                        )
+                    except Exception as _e:
+                        system_logger.info(
+                            "[ONLINE_DEBUG] X_last stats compute failed: %s",
+                            _e,
+                        )
 
-                  p_buy_raw = safe_p_buy(online_model, X_last)
-                  p_buy_ema = prob_stab.update(p_buy_raw)
-                  sig_from_ema = _normalize_signal(
-                      prob_stab.signal(p_buy_ema)
-                  )
+                p_buy_raw = safe_p_buy(online_model, X_last)
+                p_buy_ema = prob_stab.update(p_buy_raw)
+                sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
 
                 if system_logger:
                     system_logger.info(
