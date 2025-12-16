@@ -4,7 +4,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, date
 from typing import Optional, Dict, Any
-from core.trade_journal import TradeJournal
 
 
 @dataclass
@@ -375,20 +374,3 @@ class RiskManager:
                 self.total_losses,
                 meta,
             )
-
-        # --- TradeJournal close log ---
-        try:
-            if not hasattr(self, "trade_journal"):
-                self.trade_journal = TradeJournal(logger=self.logger)
-
-            _meta = meta if isinstance(meta, dict) else {}
-
-            self.trade_journal.log_trade_from_close(
-                symbol=symbol,
-                exit_price=price,
-                pnl_usdt=realized_pnl,
-                meta=_meta,
-            )
-        except Exception as e:
-            if self.logger:
-                self.logger.warning("[RISK] TradeJournal log hata: %s", e)

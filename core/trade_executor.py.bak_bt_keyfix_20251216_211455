@@ -163,13 +163,8 @@ class TradeExecutor:
             "meta": {
                 "probs": probs,
                 "extra": extra,
-                "bt_p_buy_raw": extra.get("ensemble_p") if isinstance(extra, dict) else None,
-                "bt_p_buy_ema": probs.get("p_single") if isinstance(probs, dict) else None,
-                "bt_ema_alpha": None,
-
             },
         }
-
 
         # ------------------------------------------------------------------
         # ENTRY whale snapshot (for analysis / optimization)
@@ -279,9 +274,24 @@ class TradeExecutor:
                     "probs": (pos.get("meta", {}).get("probs", {}) if isinstance(pos.get("meta", {}), dict) else {}),
                     "extra": (pos.get("meta", {}).get("extra", {}) if isinstance(pos.get("meta", {}), dict) else {}),
                     # --- EMA / ProbStabilizer fields (flatten for journal) ---
-                    "bt_p_buy_raw": (pos.get("meta", {}) if isinstance(pos.get("meta", {}), dict) else {}).get("extra", {}).get("ensemble_p"),
-                    "bt_p_buy_ema": (pos.get("meta", {}) if isinstance(pos.get("meta", {}), dict) else {}).get("probs", {}).get("p_single"),
-                    "bt_ema_alpha": None,
+                    "bt_p_buy_raw": (
+                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_raw"))
+                        if isinstance(pos.get("meta", {}), dict)
+                        and pos.get("meta", {}).get("probs", {}).get("p_buy_raw") is not None
+                        else None
+                    ),
+                    "bt_p_buy_ema": (
+                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_ema"))
+                        if isinstance(pos.get("meta", {}), dict)
+                        and pos.get("meta", {}).get("probs", {}).get("p_buy_ema") is not None
+                        else None
+                    ),
+                    "bt_ema_alpha": (
+                        float(pos.get("meta", {}).get("extra", {}).get("ema_alpha"))
+                        if isinstance(pos.get("meta", {}), dict)
+                        and pos.get("meta", {}).get("extra", {}).get("ema_alpha") is not None
+                        else None
+                    ),
 
 
                 },
@@ -576,17 +586,36 @@ class TradeExecutor:
                     extra=extra,
                 )
                 self._set_position(symbol, pos)
-                self.risk_manager.on_position_open(
-                symbol=symbol,
-                side=signal,
-                qty=qty,
-                notional=notional,
-                price=price,
-                interval=interval,
-                meta=(lambda _m: (_m.update({'opened_at': opened_at, 'source': 'TradeExecutor'}) or _m))(
-                    dict(pos.get('meta', {})) if isinstance(pos.get('meta', {}), dict) else {}
-                ),
-            )
+
+                try:
+                    # --- ProbStabilizer snapshot (OPEN POSITION) ---
+                    try:
+                        # on_position_open meta argümanını yakala (meta değişken adı farklı olabilir)
+                        _m = None
+                        if "meta" in locals():
+                            _m = locals().get("meta")
+                        elif "meta" in locals():
+                            _m = locals().get("meta")
+                    
+                        if isinstance(_m, dict):
+                            _m.setdefault("bt_p_buy_raw", probs.get("p_buy_raw") if isinstance(probs, dict) else None)
+                            _m.setdefault("bt_p_buy_ema", probs.get("p_buy_ema") if isinstance(probs, dict) else None)
+                            _m.setdefault("bt_ema_alpha", extra.get("ema_alpha") if isinstance(extra, dict) else None)
+                    except Exception:
+                        pass
+
+                    self.risk_manager.on_position_open(
+                        symbol=symbol,
+                        side=signal,
+                        qty=qty,
+                        notional=notional,
+                        price=price,
+                        interval=interval,
+                        meta={"opened_at": opened_at, "source": "TradeExecutor"},
+                    )
+                except Exception as e:
+                    self.logger.warning("[RISK] on_position_open hata: %s", e)
+
             return
 
         # --------------------------------------------------------------
@@ -642,14 +671,15 @@ class TradeExecutor:
         )
         self._set_position(symbol, new_pos)
 
-        self.risk_manager.on_position_open(
+        try:
+            self.risk_manager.on_position_open(
                 symbol=symbol,
                 side=signal,
                 qty=qty,
                 notional=notional,
                 price=price,
                 interval=interval,
-                meta=(lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor_flip"}) or _m))(dict(pos.get("meta", {})) if isinstance(pos.get("meta", {}), dict) else {}),
+                meta={"opened_at": opened_at, "source": "TradeExecutor_flip"},
             )
         except Exception as e:
             self.logger.warning("[RISK] on_position_open (flip) hata: %s", e)

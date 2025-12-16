@@ -576,17 +576,20 @@ class TradeExecutor:
                     extra=extra,
                 )
                 self._set_position(symbol, pos)
-                self.risk_manager.on_position_open(
-                symbol=symbol,
-                side=signal,
-                qty=qty,
-                notional=notional,
-                price=price,
-                interval=interval,
-                meta=(lambda _m: (_m.update({'opened_at': opened_at, 'source': 'TradeExecutor'}) or _m))(
-                    dict(pos.get('meta', {})) if isinstance(pos.get('meta', {}), dict) else {}
-                ),
-            )
+                try:
+                    self.risk_manager.on_position_open(
+                        symbol=symbol,
+                        side=signal,
+                        qty=qty,
+                        notional=notional,
+                        price=price,
+                        interval=interval,
+                        meta=(lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor"}) or _m))(
+                            dict(pos.get("meta", {})) if isinstance(pos.get("meta", {}), dict) else {}
+                        ),
+                    )
+                   self.risk_manager.on_position_open(
+
             return
 
         # --------------------------------------------------------------
@@ -642,7 +645,8 @@ class TradeExecutor:
         )
         self._set_position(symbol, new_pos)
 
-        self.risk_manager.on_position_open(
+        try:
+            self.risk_manager.on_position_open(
                 symbol=symbol,
                 side=signal,
                 qty=qty,

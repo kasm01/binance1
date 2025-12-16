@@ -163,13 +163,22 @@ class TradeExecutor:
             "meta": {
                 "probs": probs,
                 "extra": extra,
-                "bt_p_buy_raw": extra.get("ensemble_p") if isinstance(extra, dict) else None,
-                "bt_p_buy_ema": probs.get("p_single") if isinstance(probs, dict) else None,
-                "bt_ema_alpha": None,
-
             },
         }
 
+        # --- ProbStabilizer / journal flatten (ENTRY SNAPSHOT) ---
+        try:
+            meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
+            probs_d = meta.get("probs") if isinstance(meta.get("probs"), dict) else {}
+            extra_d = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
+            meta["bt_p_buy_raw"] = extra_d.get("ensemble_p")
+            meta["bt_p_buy_ema"] = probs_d.get("p_single")
+            meta["bt_ema_alpha"] = extra_d.get("ema_alpha") if extra_d.get("ema_alpha") is not None else None
+            pos["meta"] = meta
+        except Exception:
+            pass
+
+        }
 
         # ------------------------------------------------------------------
         # ENTRY whale snapshot (for analysis / optimization)
@@ -576,17 +585,9 @@ class TradeExecutor:
                     extra=extra,
                 )
                 self._set_position(symbol, pos)
-                self.risk_manager.on_position_open(
-                symbol=symbol,
-                side=signal,
-                qty=qty,
-                notional=notional,
-                price=price,
-                interval=interval,
-                meta=(lambda _m: (_m.update({'opened_at': opened_at, 'source': 'TradeExecutor'}) or _m))(
-                    dict(pos.get('meta', {})) if isinstance(pos.get('meta', {}), dict) else {}
-                ),
-            )
+                try:
+                    self.risk_manager.on_position_open(
+
             return
 
         # --------------------------------------------------------------
@@ -642,7 +643,8 @@ class TradeExecutor:
         )
         self._set_position(symbol, new_pos)
 
-        self.risk_manager.on_position_open(
+        try:
+            self.risk_manager.on_position_open(
                 symbol=symbol,
                 side=signal,
                 qty=qty,
