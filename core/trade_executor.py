@@ -252,6 +252,7 @@ class TradeExecutor:
         else:
             # TODO: Binance/OKX/KuCoin client ile close emri
             pass
+
         try:
             self.risk_manager.on_position_close(
                 symbol=symbol,
@@ -264,26 +265,10 @@ class TradeExecutor:
                 meta={
                     "reason": reason,
                     "entry_price": entry_price,
-                    "bt_p_buy_raw": (
-                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_raw"))
-                        if pos.get("meta", {}).get("probs", {}).get("p_buy_raw") is not None
-                        else None
-                    ),
-                    "bt_p_buy_ema": (
-                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_ema"))
-                        if pos.get("meta", {}).get("probs", {}).get("p_buy_ema") is not None
-                        else None
-                    ),
-                    "bt_ema_alpha": (
-                        float(pos.get("meta", {}).get("extra", {}).get("ema_alpha"))
-                        if pos.get("meta", {}).get("extra", {}).get("ema_alpha") is not None
-                        else None
-                    ),
+                    "probs": pos.get("meta", {}).get("probs", {}) if isinstance(pos.get("meta", {}), dict) else {},
+                    "extra": pos.get("meta", {}).get("extra", {}) if isinstance(pos.get("meta", {}), dict) else {},
                 },
             )
-        except Exception as e:
-            self.logger.warning("[RISK] on_position_close hata: %s", e)
-
         except Exception as e:
             self.logger.warning("[RISK] on_position_close hata: %s", e)
 
