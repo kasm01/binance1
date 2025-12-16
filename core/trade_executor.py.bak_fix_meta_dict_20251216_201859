@@ -254,8 +254,6 @@ class TradeExecutor:
             pass
 
         try:
-            meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-
             self.risk_manager.on_position_close(
                 symbol=symbol,
                 side=side,
@@ -267,26 +265,28 @@ class TradeExecutor:
                 meta={
                     "reason": reason,
                     "entry_price": entry_price,
-                    "probs": meta_dict.get("probs", {})
-                    if isinstance(meta_dict, dict)
+                    "probs": pos.get("meta", {}).get("probs", {})
+                    if isinstance(pos.get("meta", {}), dict)
                     else {} ,
-                    "extra": meta_dict.get("extra", {})
-                    if isinstance(meta_dict, dict)
+                    "extra": pos.get("meta", {}).get("extra", {})
+                    if isinstance(pos.get("meta", {}), dict)
                     else {} ,
+                    meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
+
                     # --- EMA / ProbStabilizer (flatten for journal) ---
                     "bt_p_buy_raw": (
-                        float(meta_dict.get("probs", {}).get("p_buy_raw"))
-                        if meta_dict.get("probs", {}).get("p_buy_raw") is not None
+                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_raw"))
+                        if pos.get("meta", {}).get("probs", {}).get("p_buy_raw") is not None
                         else None
                     ),
                     "bt_p_buy_ema": (
-                        float(meta_dict.get("probs", {}).get("p_buy_ema"))
-                        if meta_dict.get("probs", {}).get("p_buy_ema") is not None
+                        float(pos.get("meta", {}).get("probs", {}).get("p_buy_ema"))
+                        if pos.get("meta", {}).get("probs", {}).get("p_buy_ema") is not None
                         else None
                     ),
                     "bt_ema_alpha": (
-                        float(meta_dict.get("extra", {}).get("ema_alpha"))
-                        if meta_dict.get("extra", {}).get("ema_alpha") is not None
+                        float(pos.get("meta", {}).get("extra", {}).get("ema_alpha"))
+                        if pos.get("meta", {}).get("extra", {}).get("ema_alpha") is not None
                         else None
                     ),
 

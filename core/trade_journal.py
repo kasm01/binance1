@@ -1,116 +1,188 @@
-from __future__ import annotations
-
+import os
 import csv
-import json
-from pathlib import Path
+import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except Exception:
+    gspread = None
+    Credentials = None
 
 
 class TradeJournal:
     """
-    CSV journal writer.
-    Amaç: meta içindeki alanları tek bir 'meta' kolonu yerine, kolonlara açarak yazmak (flatten).
-    Böylece bt_p_buy_raw / bt_p_buy_ema / bt_ema_alpha gibi alanlar gerçekten CSV header'a girer.
+    Close-event tabanlı journal.
+
+    RiskManager.on_position_close -> TradeJournal.log_trade_from_close(...)
+    CSV kolonları (header):
+      timestamp,symbol,side,interval,entry_price,exit_price,qty,notional,pnl_usdt,pnl_pct,duration_min,reason,label_best_side,model_conf,
+      bt_p_buy_raw,bt_p_buy_ema,bt_ema_alpha
     """
 
-    def __init__(self, path: str = "logs/trade_journal.csv") -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, logger: Optional[logging.Logger] = None) -> None:
+        self.logger = logger or logging.getLogger("system")
 
-        # Header'ı ilk yazışta dinamik oluşturacağız.
-        # Eğer dosya yoksa header yazar; varsa mevcut header ile append eder.
-        self._header: Optional[list[str]] = None
-        if self.path.exists():
+        self.csv_path = os.getenv("TRADE_JOURNAL_CSV_PATH", "logs/trade_journal.csv")
+        csv_dir = os.path.dirname(self.csv_path) or "."
+        os.makedirs(csv_dir, exist_ok=True)
+
+        # Google Sheet opsiyonel
+        self.gs_enabled = os.getenv("ENABLE_GSHEET_JOURNAL", "0") in ("1", "true", "True")
+        self.gs_credentials_path = os.getenv("GSHEET_CREDENTIALS_PATH", "")
+        self.gs_spreadsheet_id = os.getenv("GSHEET_TRADES_SHEET_ID", "")
+        self.gs_worksheet_name = os.getenv("GSHEET_TRADES_WORKSHEET", "Trades")
+
+        self.gs_client = None
+        self.gs_sheet = None
+
+        if self.gs_enabled:
+            self._init_gsheet()
+
+        self._ensure_csv_header()
+
+    def _init_gsheet(self) -> None:
+        if gspread is None or Credentials is None:
+            self.logger.warning("[JOURNAL] gspread yok, gsheet kapalı.")
+            self.gs_enabled = False
+            return
+
+        try:
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ]
+            creds = Credentials.from_service_account_file(self.gs_credentials_path, scopes=scopes)
+            self.gs_client = gspread.authorize(creds)
+            sh = self.gs_client.open_by_key(self.gs_spreadsheet_id)
+            self.gs_sheet = sh.worksheet(self.gs_worksheet_name)
+            self.logger.info("[JOURNAL] GSheet ready: %s/%s", self.gs_spreadsheet_id, self.gs_worksheet_name)
+        except Exception as e:
+            self.logger.warning("[JOURNAL] GSheet init hata: %s", e)
+            self.gs_enabled = False
+            self.gs_client = None
+            self.gs_sheet = None
+
+    def _header(self) -> list[str]:
+        return [
+            "timestamp",
+            "symbol",
+            "side",
+            "interval",
+            "entry_price",
+            "exit_price",
+            "qty",
+            "notional",
+            "pnl_usdt",
+            "pnl_pct",
+            "duration_min",
+            "reason",
+            "label_best_side",
+            "model_conf",
+            "bt_p_buy_raw",
+            "bt_p_buy_ema",
+            "bt_ema_alpha",
+        ]
+
+    def _ensure_csv_header(self) -> None:
+        if os.path.isfile(self.csv_path) and os.path.getsize(self.csv_path) > 0:
+            return
+
+        with open(self.csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(self._header())
+
+    def _append_csv_row(self, row: Dict[str, Any]) -> None:
+        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=self._header(), extrasaction="ignore")
+            w.writerow(row)
+
+    def log_trade_from_close(
+        self,
+        symbol: str,
+        exit_price: float,
+        pnl_usdt: float,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Kapanış anında tek satır log.
+        meta beklenen alanlar:
+          - closed_side (long/short)
+          - interval
+          - entry_price
+          - opened_at (iso str)  -> duration hesaplamak için
+          - qty, notional
+          - reason
+          - label_best_side, model_conf
+          - bt_p_buy_raw, bt_p_buy_ema, bt_ema_alpha  (flatten)
+        """
+        meta = meta or {}
+
+        side = str(meta.get("closed_side") or meta.get("side") or "").lower() or "unknown"
+        interval = str(meta.get("interval") or "")
+        entry_price = meta.get("entry_price")
+
+        qty = meta.get("qty")
+        notional = meta.get("notional")
+        reason = meta.get("reason", "")
+
+        label_best_side = meta.get("label_best_side", "")
+        model_conf = meta.get("model_conf", "")
+
+        bt_p_buy_raw = meta.get("bt_p_buy_raw")
+        bt_p_buy_ema = meta.get("bt_p_buy_ema")
+        bt_ema_alpha = meta.get("bt_ema_alpha")
+
+        # pnl_pct
+        pnl_pct = None
+        try:
+            if entry_price is not None and float(entry_price) != 0:
+                # yön bağımsız: kapanış pnl_usdt / notional approx yerine entry bazlı basit oran
+                pnl_pct = float(pnl_usdt) / (abs(float(notional)) if notional not in (None, 0) else 1.0)
+        except Exception:
+            pnl_pct = None
+
+        # duration
+        duration_min = None
+        opened_at = meta.get("opened_at")
+        try:
+            if opened_at:
+                t0 = datetime.fromisoformat(str(opened_at).replace("Z", ""))
+                t1 = datetime.utcnow()
+                duration_min = (t1 - t0).total_seconds() / 60.0
+        except Exception:
+            duration_min = None
+
+        row = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "symbol": symbol,
+            "side": side,
+            "interval": interval,
+            "entry_price": float(entry_price) if entry_price is not None else None,
+            "exit_price": float(exit_price),
+            "qty": float(qty) if qty is not None else None,
+            "notional": float(notional) if notional is not None else None,
+            "pnl_usdt": float(pnl_usdt),
+            "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
+            "duration_min": float(duration_min) if duration_min is not None else None,
+            "reason": reason,
+            "label_best_side": label_best_side,
+            "model_conf": model_conf,
+            "bt_p_buy_raw": float(bt_p_buy_raw) if bt_p_buy_raw is not None else None,
+            "bt_p_buy_ema": float(bt_p_buy_ema) if bt_p_buy_ema is not None else None,
+            "bt_ema_alpha": float(bt_ema_alpha) if bt_ema_alpha is not None else None,
+        }
+
+        try:
+            self._append_csv_row(row)
+        except Exception as e:
+            self.logger.warning("[JOURNAL] CSV append hata: %s", e)
+
+        # opsiyonel: gsheet
+        if self.gs_enabled and self.gs_sheet is not None:
             try:
-                with self.path.open("r", newline="", encoding="utf-8") as f:
-                    r = csv.reader(f)
-                    self._header = next(r, None)
-            except Exception:
-                self._header = None
-
-    def _flatten_meta(self, meta: Any) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        if not isinstance(meta, dict):
-            return out
-
-        # 1) meta'nın düz anahtarlarını yaz
-        for k, v in meta.items():
-            if k in ("probs", "extra"):
-                continue
-            out[k] = v
-
-        # 2) probs içinden seçili alanları kolonlaştır
-        probs = meta.get("probs")
-        if isinstance(probs, dict):
-            # “bt_” prefix ile standardize edelim
-            if probs.get("p_buy_raw") is not None:
-                out["bt_p_buy_raw"] = float(probs.get("p_buy_raw"))
-            else:
-                out.setdefault("bt_p_buy_raw", None)
-
-            if probs.get("p_buy_ema") is not None:
-                out["bt_p_buy_ema"] = float(probs.get("p_buy_ema"))
-            else:
-                out.setdefault("bt_p_buy_ema", None)
-
-            # mevcutlarda da işine yarar:
-            if probs.get("p_used") is not None:
-                out["bt_p_used"] = float(probs.get("p_used"))
-            if probs.get("p_single") is not None:
-                out["bt_p_single"] = float(probs.get("p_single"))
-
-        # 3) extra içinden seçili alanları kolonlaştır
-        extra = meta.get("extra")
-        if isinstance(extra, dict):
-            if extra.get("ema_alpha") is not None:
-                out["bt_ema_alpha"] = float(extra.get("ema_alpha"))
-            else:
-                out.setdefault("bt_ema_alpha", None)
-
-            # debug büyükse csv şişmesin: json olarak tek kolonda sakla (isteğe bağlı)
-            if "mtf_debug" in extra:
-                try:
-                    out["bt_mtf_debug_json"] = json.dumps(extra.get("mtf_debug"), ensure_ascii=False)
-                except Exception:
-                    out["bt_mtf_debug_json"] = None
-
-        # Kolonların kesin var olması için (header tutarlılığı):
-        out.setdefault("bt_p_buy_raw", None)
-        out.setdefault("bt_p_buy_ema", None)
-        out.setdefault("bt_ema_alpha", None)
-
-        return out
-
-    def append(self, row: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> None:
-        # base row
-        out: Dict[str, Any] = dict(row)
-
-        # meta flatten
-        if meta is None:
-            meta = out.get("meta") if isinstance(out.get("meta"), dict) else None
-        flat = self._flatten_meta(meta)
-        out.update(flat)
-
-        # "meta" kolonunu istemiyorsan kaldır (opsiyonel)
-        # out.pop("meta", None)
-
-        # header oluştur/ genişlet
-        keys = list(out.keys())
-        if self._header is None:
-            self._header = keys
-            write_header = True
-        else:
-            write_header = False
-            # yeni kolon geldiyse header'ı genişlet (mevcut dosyada header eskiyse sorun çıkarır)
-            # Bu yüzden biz dosyayı baştan yedekleyip sıfırlamayı önerdik.
-            new_cols = [k for k in keys if k not in self._header]
-            if new_cols:
-                self._header.extend(new_cols)
-
-        # yaz
-        mode = "a" if self.path.exists() else "w"
-        with self.path.open(mode, newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=self._header, extrasaction="ignore")
-            if write_header and mode == "w":
-                w.writeheader()
-            w.writerow(out)
+                self.gs_sheet.append_row([row.get(k, "") for k in self._header()])
+            except Exception as e:
+                self.logger.warning("[JOURNAL] GSheet append hata: %s", e)
