@@ -163,12 +163,13 @@ class TradeExecutor:
             "meta": {
                 "probs": probs,
                 "extra": extra,
-                # journal flatten (entry snapshot)
                 "bt_p_buy_raw": extra.get("ensemble_p") if isinstance(extra, dict) else None,
                 "bt_p_buy_ema": probs.get("p_single") if isinstance(probs, dict) else None,
                 "bt_ema_alpha": None,
+
             },
         }
+
 
         # ------------------------------------------------------------------
         # ENTRY whale snapshot (for analysis / optimization)
@@ -202,6 +203,7 @@ class TradeExecutor:
             pass
 
         return pos, opened_at
+
 
     # ------------------------------------------------------------------
     #  PnL hesaplayıcı (flip + close için)
@@ -258,16 +260,29 @@ class TradeExecutor:
 
         try:
             meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-            probs_dict = meta_dict.get("probs") if isinstance(meta_dict.get("probs"), dict) else {}
-            extra_dict = meta_dict.get("extra") if isinstance(meta_dict.get("extra"), dict) else {}
 
-            # --- bt_* force-set (CLOSE): meta_dict üzerinde kesinleştir ---
+            # --- bt_* force-set (CLOSE) ---
+
             try:
-                meta_dict["bt_p_buy_raw"] = extra_dict.get("ensemble_p")
-                meta_dict["bt_p_buy_ema"] = probs_dict.get("p_single")
-                meta_dict["bt_ema_alpha"] = None
+
+                # Bu blok, on_position_close'a giden 'meta' dict'ini kesin doldurur.
+
+                if "meta" in locals() and isinstance(meta, dict):
+
+                    _extra = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
+
+                    _probs = meta.get("probs") if isinstance(meta.get("probs"), dict) else {}
+
+                    meta["bt_p_buy_raw"] = _extra.get("ensemble_p")
+
+                    meta["bt_p_buy_ema"] = _probs.get("p_single")
+
+                    meta["bt_ema_alpha"] = None
+
             except Exception:
+
                 pass
+
 
             self.risk_manager.on_position_close(
                 symbol=symbol,
@@ -284,12 +299,17 @@ class TradeExecutor:
                     "interval": interval,
                     "qty": qty,
                     "notional": notional,
-                    "probs": probs_dict,
-                    "extra": extra_dict,
-                    # --- flatten for journal ---
-                    "bt_p_buy_raw": meta_dict.get("bt_p_buy_raw"),
-                    "bt_p_buy_ema": meta_dict.get("bt_p_buy_ema"),
-                    "bt_ema_alpha": meta_dict.get("bt_ema_alpha"),
+                    "probs": (pos.get("meta", {}).get("probs", {}) if isinstance(pos.get("meta", {}), dict) else {}),
+                    "extra": (pos.get("meta", {}).get("extra", {}) if isinstance(pos.get("meta", {}), dict) else {}),
+                    # --- EMA / ProbStabilizer fields (flatten for journal) ---
+                    "bt_ema_alpha": None,
+                    "bt_p_buy_ema": (pos.get("meta", {}).get("probs", {}).get("p_single") if isinstance(pos.get("meta", {}), dict) else None),
+                    "bt_ema_alpha": None,
+                    "bt_p_buy_raw": (pos.get("meta", {}).get("extra", {}).get("ensemble_p") if isinstance(pos.get("meta", {}), dict) else None),
+
+
+
+
                 },
             )
         except Exception as e:
@@ -302,7 +322,6 @@ class TradeExecutor:
         pos["realized_pnl"] = realized_pnl
         pos["close_reason"] = reason
         return pos
-
 
     # ------------------------------------------------------------------
     #  SL/TP + trailing stop kontrolleri
@@ -473,7 +492,7 @@ class TradeExecutor:
         # --------------------------------------------------
         # SHADOW MODE: trade yok, sadece log
         # --------------------------------------------------
-        shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes", "on")
+        shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1","true","yes","on")
         if shadow:
             if self.logger:
                 self.logger.info(
@@ -486,7 +505,6 @@ class TradeExecutor:
                     extra,
                 )
             return
-
         extra = extra or {}
 
         self.logger.info(
@@ -500,7 +518,7 @@ class TradeExecutor:
             training_mode,
             hybrid_mode,
             probs,
-            list(extra.keys()) if isinstance(extra, dict) else [],
+            list(extra.keys()),
         )
 
         if training_mode:
@@ -518,9 +536,6 @@ class TradeExecutor:
             self.logger.info("[EXEC] Sinyal=HOLD, yeni pozisyon açılmayacak / flip edilmeyecek.")
             return
 
-        # --------------------------------------------------
-        # qty / notional hesapla
-        # --------------------------------------------------
         if size is not None and size > 0:
             qty = float(size)
             notional = qty * price
@@ -530,52 +545,30 @@ class TradeExecutor:
             )
             qty = notional / price
 
-            # --------------------------------------------------
+
             # --- BT sizing (ensemble) ---
             if os.getenv("ENABLE_BT_SIZING", "0") in ("1", "true", "True"):
                 try:
                     pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
-                    smin  = float(os.getenv("BT_SIZING_MIN", "0.6"))
-                    smax  = float(os.getenv("BT_SIZING_MAX", "1.3"))
+                    smin = float(os.getenv("BT_SIZING_MIN", "0.6"))
+                    smax = float(os.getenv("BT_SIZING_MAX", "1.3"))
 
-                    # probe
-                    if getattr(self, "logger", None):
+                    # debug: bloğa girildi mi
+                    if self.logger:
                         self.logger.info(
                             "[EXEC][BT] sizing probe | extra_type=%s extra_keys=%s",
                             type(extra).__name__,
-                            sorted(list(extra.keys())) if isinstance(extra, dict) else None,
+                            sorted(extra.keys()) if isinstance(extra, dict) else None,
                         )
 
-                    # confidence seçimi (fallback zinciri)
                     p_ens = None
                     if isinstance(extra, dict):
                         p_ens = extra.get("ensemble_p")
-                        if p_ens is None:
-                            p_ens = extra.get("model_confidence_factor")
-                        if p_ens is None:
-                            p_ens = extra.get("p_buy_ema")
-                        if p_ens is None:
-                            p_ens = extra.get("p_buy_raw")
 
-                    if p_ens is None:
-                        if getattr(self, "logger", None):
-                            self.logger.info("[EXEC][BT] sizing skip | reason=no_p_ens")
-                    else:
+                    if p_ens is not None:
                         p_ens = float(p_ens)
 
-                        # clamp params
-                        if smin <= 0:
-                            smin = 0.01
-                        if smax <= 0:
-                            smax = 0.01
-                        if smax < smin:
-                            smax, smin = smin, smax
-                        if pivot < 0:
-                            pivot = 0.0
-                        if pivot > 1:
-                            pivot = 1.0
-
-                        # piecewise linear
+                        # piecewise linear scaling
                         if pivot <= 0:
                             factor = 1.0
                         elif p_ens <= pivot:
@@ -584,49 +577,21 @@ class TradeExecutor:
                             denom = (1.0 - pivot) if (1.0 - pivot) != 0 else 1e-9
                             factor = 1.0 + ((p_ens - pivot) / denom) * (smax - 1.0)
 
-                        if factor < smin:
-                            factor = smin
-                        if factor > smax:
-                            factor = smax
+                        qty *= factor
+                        notional *= factor
 
-                        qty = float(qty) * float(factor)
-                        notional = float(qty) * float(price)
-
-                        if getattr(self, "logger", None):
+                        if self.logger:
                             self.logger.info(
-                                "[EXEC][BT] sizing applied | p=%.4f factor=%.3f qty=%.8f notional=%.2f",
-                                p_ens, factor, qty, notional,
+                                "[EXEC][BT] sizing applied | ensemble_p=%.4f factor=%.3f qty=%.8f notional=%.2f",
+                                p_ens,
+                                factor,
+                                qty,
+                                notional,
                             )
 
                 except Exception as e:
-                    if getattr(self, "logger", None):
+                    if self.logger:
                         self.logger.warning("[EXEC][BT] sizing error: %s", e)
-        # --------------------------------------------------
-        # RiskManager gate
-        # --------------------------------------------------
-        allowed = True
-        if self.risk_manager is not None:
-            try:
-                allowed = self.risk_manager.can_open_new_trade(
-                    symbol=symbol,
-                    side=signal,
-                    notional=notional,
-                    price=price,
-                    interval=interval,
-                    meta={"has_position": bool(current_pos)},
-                )
-            except Exception as e:
-                self.logger.warning("[RISK] can_open_new_trade hata: %s, default=True", e)
-                allowed = True
-
-        if not allowed:
-            self.logger.info(
-                "[RISK] can_open_new_trade=False | symbol=%s side=%s notional=%.2f -> trade açılmadı.",
-                symbol,
-                signal,
-                notional,
-            )
-            return
 
         # --------------------------------------------------------------
         # Pozisyon yok → yeni pozisyon aç
@@ -661,25 +626,17 @@ class TradeExecutor:
                     extra=extra,
                 )
                 self._set_position(symbol, pos)
-
-                # RiskManager open hook
-                try:
-                    self.risk_manager.on_position_open(
-                        symbol=symbol,
-                        side=signal,
-                        qty=qty,
-                        notional=notional,
-                        price=price,
-                        interval=interval,
-                        meta=(
-                            lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor"}) or _m)
-                        )(
-                            dict(pos.get("meta", {})) if isinstance(pos.get("meta", {}), dict) else {}
-                        ),
-                    )
-                except Exception as e:
-                    self.logger.warning("[RISK] on_position_open hata: %s", e)
-
+                self.risk_manager.on_position_open(
+                symbol=symbol,
+                side=signal,
+                qty=qty,
+                notional=notional,
+                price=price,
+                interval=interval,
+                meta=(lambda _m: (_m.update({'opened_at': opened_at, 'source': 'TradeExecutor'}) or _m))(
+                    dict(pos.get('meta', {})) if isinstance(pos.get('meta', {}), dict) else {}
+                ),
+            )
             return
 
         # --------------------------------------------------------------
@@ -743,8 +700,8 @@ class TradeExecutor:
                 notional=notional,
                 price=price,
                 interval=interval,
-                meta=(lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor_flip"}) or _m))(
-                    dict(new_pos.get("meta", {})) if isinstance(new_pos.get("meta", {}), dict) else {}
+                meta=(lambda _m: (_m.update({'opened_at': opened_at, 'source': 'TradeExecutor_flip'}) or _m))(
+                    dict(new_pos.get('meta', {})) if isinstance(new_pos.get('meta', {}), dict) else {}
                 ),
             )
         except Exception as e:
