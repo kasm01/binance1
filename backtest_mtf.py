@@ -35,9 +35,11 @@ def _ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     # df boşsa header bile yazmıyordu -> 1 byte dosya üretiyordu.
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
+
     for c in cols:
         if c not in df.columns:
             df[c] = None
+
     return df[cols]
 
 
@@ -177,6 +179,14 @@ def _prep_X(feat_df: pd.DataFrame) -> pd.DataFrame:
     return X
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+
 # ==========================================================
 # Backtest Core
 # ==========================================================
@@ -204,12 +214,26 @@ async def run_backtest() -> None:
     OPPOSED_SCALE = float(os.getenv("BT_WHALE_OPPOSED_SCALE", "0.30"))
     ALIGNED_BOOST = float(os.getenv("BT_WHALE_ALIGNED_BOOST", "1.00"))
 
+    # Ensemble-p sizing knobs
+    ENS_SIZE_MODE = os.getenv("BT_ENS_SIZE_MODE", "off").strip().lower()  # off | linear
+    ENS_MIN_P = float(os.getenv("BT_MIN_ENSEMBLE_P", "0.0"))
+    ENS_MAX_BOOST = float(os.getenv("BT_ENS_SIZE_MAX_BOOST", "2.0"))
+    ENS_MIN_SCALE = float(os.getenv("BT_ENS_SIZE_MIN_SCALE", "0.2"))
+
     if main_interval not in MTF_INTERVALS:
         raise ValueError(f"BT_MAIN_INTERVAL={main_interval} MTF_INTERVALS içinde olmalı: {MTF_INTERVALS}")
 
     system_logger.info(
         "[BT] start | symbol=%s main_interval=%s HYBRID_MODE=%s USE_MTF_ENS=%s warmup=%d limit=%d",
         symbol, main_interval, HYBRID_MODE, USE_MTF_ENS, warmup, data_limit
+    )
+    system_logger.info(
+        "[BT] whale | FILTER=%s ONLY=%s THR=%.2f VETO_OPPOSED=%s opposed_scale=%.2f aligned_boost=%.2f",
+        WHALE_FILTER, WHALE_ONLY, WHALE_THR, WHALE_VETO_OPPOSED, OPPOSED_SCALE, ALIGNED_BOOST
+    )
+    system_logger.info(
+        "[BT] ens_sizing | mode=%s min_p=%.3f min_scale=%.2f max_boost=%.2f",
+        ENS_SIZE_MODE, ENS_MIN_P, ENS_MIN_SCALE, ENS_MAX_BOOST
     )
 
     # --------------------------------------------------
@@ -293,13 +317,15 @@ async def run_backtest() -> None:
         logger=system_logger,
     )
 
+    base_order_notional = float(os.getenv("BT_BASE_ORDER_NOTIONAL", "50"))
+
     trade_executor = TradeExecutor(
         client=None,
         risk_manager=risk_manager,
         position_manager=None,
         logger=system_logger,
         dry_run=True,
-        base_order_notional=float(os.getenv("BT_BASE_ORDER_NOTIONAL", "50")),
+        base_order_notional=base_order_notional,
         max_position_notional=float(os.getenv("BT_MAX_POSITION_NOTIONAL", "500")),
         max_leverage=float(os.getenv("BT_MAX_LEVERAGE", "3")),
         sl_pct=float(os.getenv("BT_SL_PCT", "0.01")),
@@ -334,10 +360,12 @@ async def run_backtest() -> None:
         "whale_alignment": None,
         "whale_thr": None,
         "model_confidence_factor": None,
+        "ens_scale": None,
+        "ens_notional": None,
         "atr": None,
     }
 
-    # Patch close_position → closed_trades’e whale_* + bt_* ekle
+    # Patch close_position → closed_trades’e whale_* + bt_* + ens_* ekle
     if hasattr(trade_executor, "_close_position"):
         try:
             orig = trade_executor._close_position  # type: ignore[attr-defined]
@@ -367,13 +395,16 @@ async def run_backtest() -> None:
                     closed["whale_thr"] = bt_context.get("whale_thr")
                     closed["model_confidence_factor"] = bt_context.get("model_confidence_factor")
 
+                    closed["ens_scale"] = bt_context.get("ens_scale")
+                    closed["ens_notional"] = bt_context.get("ens_notional")
+
                     closed["bt_atr"] = bt_context.get("atr")
 
                     closed_trades.append(closed)
                 return closed
 
             trade_executor._close_position = patched  # type: ignore[method-assign]
-            system_logger.info("[BT] TradeExecutor._close_position patch OK (trades içine whale_* yazılacak).")
+            system_logger.info("[BT] TradeExecutor._close_position patch OK (trades içine whale_* + ens_* yazılacak).")
         except Exception as e:
             system_logger.warning("[BT] TradeExecutor patch başarısız (trades whale_* eksik olabilir): %s", e)
     else:
@@ -389,8 +420,8 @@ async def run_backtest() -> None:
     # Loop
     # --------------------------------------------------
     system_logger.info(
-        "[BT] loop | warmup=%d min_len=%d long_thr=%.3f short_thr=%.3f WHALE_FILTER=%s WHALE_ONLY=%s WHALE_THR=%.2f",
-        warmup, min_len, long_thr, short_thr, WHALE_FILTER, WHALE_ONLY, WHALE_THR
+        "[BT] loop | warmup=%d min_len=%d long_thr=%.3f short_thr=%.3f",
+        warmup, min_len, long_thr, short_thr
     )
 
     for i in range(warmup, min_len - 1):
@@ -489,32 +520,75 @@ async def run_backtest() -> None:
                 )
                 signal = "hold"
 
-            # Notional scaling
-            
-            # --- model + whale combined confidence ---
-
+            # ----------------------------------------------------------
+            # Model + whale confidence factor (mevcut)
+            # ----------------------------------------------------------
             base_model_conf = 1.0
             whale_scale = 1.0
 
             if whale_on and whale_alignment == "aligned":
-
                 whale_scale = ALIGNED_BOOST
-
             elif whale_on and whale_alignment == "opposed":
-
                 whale_scale = OPPOSED_SCALE
 
+            model_confidence_factor = float(base_model_conf) * float(whale_scale)
 
+            # ----------------------------------------------------------
+            # Ensemble_p (p_used) based sizing (ENV controlled)
+            # - hard filter: p_used < ENS_MIN_P => HOLD
+            # - linear scaling: p=0.5 => 1.0, p=1 => ENS_MAX_BOOST, p=0 => ENS_MIN_SCALE
+            # ----------------------------------------------------------
+            try:
+                p_used_f = float(p_used)
+            except Exception:
+                p_used_f = 0.5
 
-            model_confidence_factor = base_model_conf * whale_scale
+            p_used_f = _clamp(p_used_f, 0.0, 1.0)
 
+            if ENS_MIN_P > 0.0 and p_used_f < ENS_MIN_P:
+                signal = "hold"
+
+            ens_scale = 1.0
+
+            if ENS_SIZE_MODE == "off":
+                ens_scale = 1.0
+            elif ENS_SIZE_MODE == "linear":
+                # piecewise around 0.5
+                if p_used_f >= 0.5:
+                    # 0.5 -> 1.0, 1.0 -> max_boost
+                    t = (p_used_f - 0.5) / 0.5
+                    ens_scale = 1.0 + t * (ENS_MAX_BOOST - 1.0)
+                else:
+                    # 0.5 -> 1.0, 0.0 -> min_scale
+                    t = (0.5 - p_used_f) / 0.5
+                    ens_scale = 1.0 - t * (1.0 - ENS_MIN_SCALE)
+
+                ens_scale = _clamp(float(ens_scale), float(ENS_MIN_SCALE), float(ENS_MAX_BOOST))
+            else:
+                # bilinmeyen mod => off
+                ens_scale = 1.0
+
+            # ----------------------------------------------------------
             # ATR
+            # ----------------------------------------------------------
             raw_main = raw_by_interval[main_interval].iloc[: i + 1]
             atr_value = compute_atr_from_klines(raw_main.tail(atr_period + 2), period=atr_period)
 
             # price/time
             price = float(raw_by_interval[main_interval]["close"].iloc[i])
             bar_time = _safe_bar_time_iso(raw_by_interval[main_interval], i)
+
+            # ----------------------------------------------------------
+            # Notional (execute_decision size)
+            # - base_notional * model_confidence_factor * ens_scale
+            # ----------------------------------------------------------
+            sizing_factor = float(model_confidence_factor) * float(ens_scale)
+            notional = float(base_order_notional) * float(sizing_factor)
+
+            # HOLD ise size gönderme (TradeExecutor kendi içinde açmayacak)
+            size_arg: Optional[float] = None
+            if signal in ("long", "short"):
+                size_arg = float(notional)
 
             # extra (tek dict)
             extra: Dict[str, Any] = {
@@ -525,6 +599,10 @@ async def run_backtest() -> None:
                 "whale_alignment": whale_alignment,
                 "whale_thr": float(WHALE_THR),
                 "model_confidence_factor": float(model_confidence_factor),
+                "ens_size_mode": str(ENS_SIZE_MODE),
+                "ens_min_p": float(ENS_MIN_P),
+                "ens_scale": float(ens_scale),
+                "ens_notional": float(notional),
                 "atr": float(atr_value) if atr_value is not None else None,
             }
 
@@ -547,6 +625,8 @@ async def run_backtest() -> None:
                     "whale_alignment": whale_alignment,
                     "whale_thr": float(WHALE_THR),
                     "model_confidence_factor": float(model_confidence_factor),
+                    "ens_scale": float(ens_scale),
+                    "ens_notional": float(notional),
                     "atr": float(atr_value) if atr_value is not None else None,
                 }
             )
@@ -561,7 +641,7 @@ async def run_backtest() -> None:
                 signal=signal,
                 symbol=symbol,
                 price=price,
-                size=None,
+                size=size_arg,  # <<<<<<<<<<<<<< sizing burada
                 interval=main_interval,
                 training_mode=False,
                 hybrid_mode=HYBRID_MODE,
@@ -599,6 +679,8 @@ async def run_backtest() -> None:
                     "whale_alignment": whale_alignment,
                     "whale_thr": float(WHALE_THR),
                     "model_confidence_factor": float(model_confidence_factor),
+                    "ens_scale": float(ens_scale),
+                    "ens_notional": float(notional),
                     "atr": float(atr_value) if atr_value is not None else None,
                     "equity": float(bt_stats.equity),
                     "peak_equity": float(bt_stats.peak_equity),
@@ -625,7 +707,9 @@ async def run_backtest() -> None:
         "bar", "time", "symbol", "interval", "price", "signal",
         "p_used", "p_single", "p_1m", "p_5m", "p_15m", "p_1h",
         "whale_dir", "whale_score", "whale_on", "whale_alignment", "whale_thr",
-        "model_confidence_factor", "atr",
+        "model_confidence_factor",
+        "ens_scale", "ens_notional",
+        "atr",
         "equity", "peak_equity", "max_drawdown_pct", "pnl_total"
     ]
 
@@ -637,6 +721,7 @@ async def run_backtest() -> None:
         "bt_p_used", "bt_p_single", "bt_p_1m", "bt_p_5m", "bt_p_15m", "bt_p_1h",
         "whale_dir", "whale_score", "whale_on", "whale_alignment", "whale_thr",
         "model_confidence_factor",
+        "ens_scale", "ens_notional",
         "bt_atr"
     ]
 

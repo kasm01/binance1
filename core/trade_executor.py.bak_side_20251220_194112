@@ -589,7 +589,6 @@ class TradeExecutor:
         # Pozisyon aç / flip
         # --------------------------------------------------
         await self._open_or_flip_position(
-            side=signal,
             signal=signal,
             symbol=symbol,
             price=price,

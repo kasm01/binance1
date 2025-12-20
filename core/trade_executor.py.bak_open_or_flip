@@ -428,64 +428,6 @@ class TradeExecutor:
     # ------------------------------------------------------------------
     #  Ana karar fonksiyonu
     # ------------------------------------------------------------------
-    async def _open_or_flip_position(
-        self,
-        symbol,
-        side,
-        qty,
-        price,
-        interval=None,
-        meta=None,
-        extra=None,
-        **kwargs,
-    ):
-        """Backward-compat helper.
-
-        execute_decision() eski sürümlerde bu metodu çağırabiliyor.
-        Bu wrapper:
-          - mümkünse ters pozisyonu kapatır
-          - sonra yeni pozisyonu açar
-        Var olan open/close methodlarını (hangi isimle varsa) kullanır.
-        """
-        pm = getattr(self, "position_manager", None)
-
-        # Detect current side if possible
-        current_side = None
-        try:
-            if pm is not None and hasattr(pm, "get_open_position"):
-                pos = pm.get_open_position(symbol)
-                current_side = getattr(pos, "side", None) if pos else None
-        except Exception:
-            current_side = None
-
-        # Close if opposite
-        try:
-            if current_side and str(current_side).lower() != str(side).lower():
-                if hasattr(self, "_close_position"):
-                    await self._close_position(symbol=symbol, price=price, interval=interval, meta=meta, extra=extra)
-                elif hasattr(self, "close_position"):
-                    res = self.close_position(symbol=symbol, price=price, interval=interval, meta=meta, extra=extra)
-                    if hasattr(res, "__await__"):
-                        await res
-        except Exception:
-            pass
-
-        # Open new
-        if hasattr(self, "_open_position"):
-            return await self._open_position(symbol=symbol, side=side, qty=qty, price=price, interval=interval, meta=meta, extra=extra)
-        if hasattr(self, "open_position"):
-            res = self.open_position(symbol=symbol, side=side, qty=qty, price=price, interval=interval, meta=meta, extra=extra)
-            if hasattr(res, "__await__"):
-                return await res
-            return res
-        if hasattr(self, "execute_trade"):
-            res = self.execute_trade(symbol=symbol, signal=side, qty=qty, price=price, interval=interval, meta=meta, extra=extra)
-            if hasattr(res, "__await__"):
-                return await res
-            return res
-
-        raise AttributeError("No open_position/execute_trade method found to open a position.")
-
     async def execute_decision(
         self,
         signal: str,
@@ -589,7 +531,6 @@ class TradeExecutor:
         # Pozisyon aç / flip
         # --------------------------------------------------
         await self._open_or_flip_position(
-            side=signal,
             signal=signal,
             symbol=symbol,
             price=price,

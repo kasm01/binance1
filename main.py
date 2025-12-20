@@ -1,36 +1,31 @@
 import asyncio
-import os
 import logging
+import os
 import signal
-import threading
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from config.load_env import load_environment_variables
-import config.config as config
 from config.settings import Settings
+
 from core.logger import setup_logger
-
-from core.risk_manager import RiskManager
-from core.position_manager import PositionManager
-from core.trade_executor import TradeExecutor
 from core.binance_client import create_binance_client
+from core.position_manager import PositionManager
+from core.risk_manager import RiskManager
+from core.trade_executor import TradeExecutor
 
-from data.online_learning import OnlineLearner
 from data.anomaly_detection import AnomalyDetector
+from data.online_learning import OnlineLearner
 from data.whale_detector import MultiTimeframeWhaleDetector
 
-from models.hybrid_inference import HybridModel
 from core.hybrid_mtf import MultiTimeframeHybridEnsemble
-from config import config as cfg
+from models.hybrid_inference import HybridModel
 
 from tg_bot.telegram_bot import TelegramBot
 
 # WebSocket
-from websocket.binance_ws import start_ws_in_thread
-from websocket.reconnect_manager import reconnect_ws_loop
-
+from websocket.binance_ws import BinanceWS  # Biz bunu aşağıda websocket/binance_ws.py içinde tanımlayacağız
 
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
@@ -254,12 +249,14 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
 # ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
+    global BINANCE_API_KEY, BINANCE_API_SECRET
+    global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN, USE_TESTNET
 
-    # config/config.py -> cfg.SYMBOL fallback zinciri
+    # config/config.py -> env -> Settings fallback zinciri
     symbol = (
         getattr(cfg, "SYMBOL", None)
         or os.getenv("SYMBOL")
-        or Settings.SYMBOL
+        or getattr(Settings, "SYMBOL", None)
         or "BTCUSDT"
     )
 
@@ -267,18 +264,21 @@ def create_trading_objects() -> Dict[str, Any]:
     interval = (
         os.getenv("INTERVAL")
         or getattr(cfg, "DEFAULT_INTERVAL", None)
-        or Settings.INTERVAL
+        or getattr(Settings, "INTERVAL", None)
         or "5m"
     )
 
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
         api_secret=BINANCE_API_SECRET,
-        testnet=USE_TESTNET,
+        testnet=bool(USE_TESTNET),
         logger=system_logger,
-        dry_run=DRY_RUN,
+        dry_run=bool(DRY_RUN),
     )
 
+    # --------------------------
+    # Risk Manager
+    # --------------------------
     daily_max_loss_usdt = float(os.getenv("DAILY_MAX_LOSS_USDT", "100"))
     daily_max_loss_pct = float(os.getenv("DAILY_MAX_LOSS_PCT", "0.03"))
     max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
@@ -294,25 +294,38 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
+    # --------------------------
+    # Telegram (opsiyonel)
+    # --------------------------
     tg_bot = None
     try:
         tg_bot = TelegramBot()
+
+        # python-telegram-bot token yoksa TelegramBot içi bot/dispatcher None kalabiliyor
         if getattr(tg_bot, "dispatcher", None):
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
+                # çok eski sürümler için fallback
                 setattr(tg_bot, "risk_manager", risk_manager)
 
             if system_logger:
-                system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif).")
+                system_logger.info(
+                    "[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif)."
+                )
         else:
             if system_logger:
-                system_logger.warning("[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız).")
+                system_logger.warning(
+                    "[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız)."
+                )
     except Exception as e:
-        if system_logger:
-            system_logger.warning("[MAIN] TelegramBot init/set_risk_manager hata: %s", e)
         tg_bot = None
+        if system_logger:
+            system_logger.warning("[MAIN] TelegramBot init/enjeksiyon hata: %s", e)
 
+    # --------------------------
+    # Position Manager (Redis/PG)
+    # --------------------------
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
@@ -328,38 +341,64 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
+    # --------------------------
+    # Hybrid Model (single TF)
+    # --------------------------
     hybrid_model = HybridModel(model_dir="models", interval=interval, logger=system_logger)
     try:
+        # HYBRID_MODE, LSTM kullanımını kontrol ediyorsa
         if hasattr(hybrid_model, "use_lstm_hybrid"):
-            hybrid_model.use_lstm_hybrid = HYBRID_MODE
+            hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
     except Exception:
         pass
 
+    # --------------------------
+    # MTF Ensemble (opsiyonel)
+    # --------------------------
     mtf_ensemble = None
     if USE_MTF_ENS:
         try:
+            # MTF_INTERVALS main.py içinde tanımlı değilse fallback:
+            try:
+                mtf_intervals = list(MTF_INTERVALS)  # type: ignore[name-defined]
+            except Exception:
+                mtf_intervals = ["1m", "5m", "15m", "1h"]
+
             mtf_models: Dict[str, HybridModel] = {}
-            for itv in MTF_INTERVALS:
+            for itv in mtf_intervals:
                 try:
                     hm = HybridModel(model_dir="models", interval=itv, logger=system_logger)
                     if hasattr(hm, "use_lstm_hybrid"):
-                        hm.use_lstm_hybrid = HYBRID_MODE
+                        hm.use_lstm_hybrid = bool(HYBRID_MODE)
                     mtf_models[itv] = hm
                     if system_logger:
                         system_logger.info("[HYBRID-MTF] HybridModel yüklendi | interval=%s", itv)
                 except Exception as e:
                     if system_logger:
-                        system_logger.warning("[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s", itv, e)
+                        system_logger.warning(
+                            "[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s",
+                            itv,
+                            e,
+                        )
 
             if mtf_models:
                 mtf_ensemble = MultiTimeframeHybridEnsemble(models_by_interval=mtf_models)
                 if system_logger:
-                    system_logger.info("[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s", list(mtf_models.keys()))
+                    system_logger.info(
+                        "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
+                        list(mtf_models.keys()),
+                    )
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
-                system_logger.warning("[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s", e)
+                system_logger.warning(
+                    "[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s",
+                    e,
+                )
 
+    # --------------------------
+    # Whale Detector (opsiyonel)
+    # --------------------------
     whale_detector = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
@@ -370,6 +409,9 @@ def create_trading_objects() -> Dict[str, Any]:
         if system_logger:
             system_logger.warning("[WHALE] MultiTimeframeWhaleDetector init hata: %s", e)
 
+    # --------------------------
+    # Trade Executor
+    # --------------------------
     base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
     max_position_notional = float(os.getenv("MAX_POSITION_NOTIONAL", "500"))
     max_leverage = float(os.getenv("MAX_LEVERAGE", "3"))
@@ -389,7 +431,7 @@ def create_trading_objects() -> Dict[str, Any]:
         risk_manager=risk_manager,
         position_manager=position_manager,
         logger=system_logger,
-        dry_run=DRY_RUN,
+        dry_run=bool(DRY_RUN),
         base_order_notional=base_order_notional,
         max_position_notional=max_position_notional,
         max_leverage=max_leverage,
@@ -402,6 +444,9 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
     )
 
+    # --------------------------
+    # Online model
+    # --------------------------
     online_model = OnlineLearner(model_dir="models", base_model_name="online_model", interval=interval)
 
     return {
@@ -831,6 +876,25 @@ async def async_main() -> None:
             float(getattr(prob_stab, "buy_thr", 0.60)),
             float(getattr(prob_stab, "sell_thr", 0.40)),
         )
+    # -----------------------------
+    # WebSocket enable/disable
+    # -----------------------------
+    enable_ws = get_bool_env("ENABLE_WS", False)
+    ws = None
+
+    if enable_ws:
+        symbol = os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT"))
+        ws = BinanceWS(symbol=symbol)
+        ws.run_background()
+
+        if system_logger:
+            system_logger.info(
+                "[WS] ENABLE_WS=true -> websocket started. symbol=%s",
+                symbol,
+            )
+    else:
+        if system_logger:
+            system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
 
     # -----------------------------
     # Trading objects
