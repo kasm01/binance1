@@ -8,7 +8,6 @@ from typing import Optional, Dict, Any
 import pandas as pd
 
 from config.load_env import load_environment_variables
-import config.config as config
 from config.settings import Settings
 from core.logger import setup_logger
 
@@ -445,7 +444,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     mtf_ensemble = objs.get("mtf_ensemble")
     online_model = objs["online_model"]
 
-    symbol = objs.get("symbol", os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT")))
+    symbol = objs.get("symbol", getattr(config, "SYMBOL", SYMBOL))
     interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
     data_limit = int(os.getenv("DATA_LIMIT", "500"))
 

@@ -446,87 +446,97 @@ class TradeExecutor:
         # --------------------------------------------------
         shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes", "on")
         if shadow:
-            if self.logger:
-                pass
             return
 
         extra = extra or {}
 
-
         if training_mode:
             return
 
+        # SL / TP / trailing kontrolü
         self._check_sl_tp_trailing(symbol=symbol, price=price, interval=interval)
 
         current_pos = self._get_position(symbol)
         current_side = current_pos["side"] if current_pos else None
 
         if signal == "hold":
-            self.logger.info("[EXEC] Sinyal=HOLD, yeni pozisyon açılmayacak / flip edilmeyecek.")
+            if self.logger:
+                self.logger.info("[EXEC] Signal=HOLD")
             return
 
         # --------------------------------------------------
-        # qty / notional hesapla
+        # qty / notional hesaplama
         # --------------------------------------------------
         if size is not None and size > 0:
             qty = float(size)
             notional = qty * price
         else:
             notional = self._compute_notional(
-                symbol=symbol, signal=signal, price=price, extra=extra
+                symbol=symbol,
+                signal=signal,
+                price=price,
+                extra=extra,
             )
             qty = notional / price
 
-# --------------------------------------------------
-# --- BT sizing (ensemble) ---
-if os.getenv("ENABLE_BT_SIZING", "0") in ("1", "true", "True"):
-    try:
-        pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
-        smin  = float(os.getenv("BT_SIZING_MIN", "0.7"))
-        smax  = float(os.getenv("BT_SIZING_MAX", "1.2"))
-
-        # Probe (log geliyorsa blok çalışıyor demektir)
-        if getattr(self, "logger", None):
+        # --------------------------------------------------
+        # BT ENSEMBLE SIZING (🔥 DOĞRU YER 🔥)
+        # --------------------------------------------------
+        if os.getenv("ENABLE_BT_SIZING", "0").lower() in ("1", "true", "yes"):
             try:
-                self.logger.info(
-                    "[EXEC][BT] sizing probe | extra_type=%s extra_keys=%s",
-                    type(extra).__name__,
-                    sorted(list(extra.keys())) if isinstance(extra, dict) else None,
-                )
-            except Exception:
-                pass
+                pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
+                smin = float(os.getenv("BT_SIZING_MIN", "0.70"))
+                smax = float(os.getenv("BT_SIZING_MAX", "1.20"))
 
-        # p seçimi (fallback zinciri)
-        p_ens = None
-        if isinstance(extra, dict):
-            p_ens = extra.get("ensemble_p")
-            if p_ens is None:
-                # sizin loglarda extra'da bunlar var: p_buy_raw / p_buy_ema / model_confidence_factor
-                p_ens = extra.get("p_buy_raw") or extra.get("p_buy_ema") or extra.get("model_confidence_factor")
+                p_ens = None
+                if isinstance(extra, dict):
+                    p_ens = (
+                        extra.get("ensemble_p")
+                        or extra.get("p_buy_raw")
+                        or extra.get("p_buy_ema")
+                        or extra.get("model_confidence_factor")
+                    )
 
-        if p_ens is None:
-            if getattr(self, "logger", None):
-                self.logger.info("[EXEC][BT] sizing skip | reason=p_missing")
-        else:
-            p_ens = float(p_ens)
+                if p_ens is not None:
+                    p_ens = float(p_ens)
 
-            # piecewise linear scale: [0..pivot] -> [smin..1.0], [pivot..1] -> [1.0..smax]
-            if pivot <= 0:
-                factor = 1.0
-            elif p_ens <= pivot:
-                factor = smin + (p_ens / pivot) * (1.0 - smin)
-            else:
-                denom = (1.0 - pivot) if (1.0 - pivot) != 0 else 1e-9
-                factor = 1.0 + ((p_ens - pivot) / denom) * (smax - 1.0)
+                    if pivot <= 0:
+                        factor = 1.0
+                    elif p_ens <= pivot:
+                        factor = smin + (p_ens / pivot) * (1.0 - smin)
+                    else:
+                        denom = (1.0 - pivot) or 1e-9
+                        factor = 1.0 + ((p_ens - pivot) / denom) * (smax - 1.0)
 
-            qty = float(qty) * float(factor)
-            notional = float(qty) * float(price)
+                    qty *= factor
+                    notional = qty * price
 
-            if getattr(self, "logger", None):
-                self.logger.info(
-                    "[EXEC][BT] sizing applied | p=%.4f factor=%.3f qty=%.8f notional=%.2f",
-                    p_ens, factor, qty, notional
-                )
-    except Exception as e:
-        if getattr(self, "logger", None):
-            self.logger.warning("[EXEC][BT] sizing error: %s", e)
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][BT] sizing | p=%.4f factor=%.3f qty=%.6f notional=%.2f",
+                            p_ens,
+                            factor,
+                            qty,
+                            notional,
+                        )
+                else:
+                    if self.logger:
+                        self.logger.info("[EXEC][BT] sizing skipped | p missing")
+
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning("[EXEC][BT] sizing error: %s", e)
+
+        # --------------------------------------------------
+        # Pozisyon aç / flip
+        # --------------------------------------------------
+        await self._open_or_flip_position(
+            signal=signal,
+            symbol=symbol,
+            price=price,
+            qty=qty,
+            notional=notional,
+            interval=interval,
+            probs=probs,
+            extra=extra,
+        )
