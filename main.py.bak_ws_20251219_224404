@@ -2,32 +2,25 @@ import asyncio
 import os
 import logging
 import signal
-import threading
 from typing import Optional, Dict, Any
 
 import pandas as pd
 
 from config.load_env import load_environment_variables
-from config.settings import Settings
+from config import config
 from core.logger import setup_logger
-
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
 from core.trade_executor import TradeExecutor
+from data.online_learning import OnlineLearner  # online model
 from core.binance_client import create_binance_client
-
-from data.online_learning import OnlineLearner
-from data.anomaly_detection import AnomalyDetector
-from data.whale_detector import MultiTimeframeWhaleDetector
-
 from models.hybrid_inference import HybridModel
-from core.hybrid_mtf import MultiTimeframeHybridEnsemble
-
+from config.settings import Settings
 from tg_bot.telegram_bot import TelegramBot
-
-# WebSocket
-from websocket.binance_ws import start_ws_in_thread
-from websocket.reconnect_manager import reconnect_ws_loop
+from data.whale_detector import MultiTimeframeWhaleDetector
+from data.anomaly_detection import AnomalyDetector
+from core.hybrid_mtf import MultiTimeframeHybridEnsemble
+from websocket.binance_ws import BinanceWS
 
 
 # NEW: p_buy stabilization + safe proba
@@ -46,7 +39,6 @@ system_logger: Optional[logging.Logger] = None
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
 MTF_INTERVALS = ["1m", "5m", "15m", "1h"]
 
-current_ws = None
 
 def get_bool_env(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -799,15 +791,14 @@ async def async_main() -> None:
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
 
         if not (BINANCE_API_KEY and BINANCE_API_SECRET):
-            system_logger.warning(
-                "[BINANCE] API key/secret env'de yok. DRY_RUN modunda olduğundan emin ol."
-            )
+            system_logger.warning("[BINANCE] API key/secret env'de yok. DRY_RUN modunda olduğundan emin ol.")
 
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
         buy_thr=float(os.getenv("BUY_THRESHOLD", "0.60")),
         sell_thr=float(os.getenv("SELL_THRESHOLD", "0.40")),
     )
+
     if system_logger:
         system_logger.info(
             "[MAIN] ProbStabilizer init | alpha=%.3f buy_thr=%.2f sell_thr=%.2f",
@@ -816,94 +807,8 @@ async def async_main() -> None:
             float(getattr(prob_stab, "sell_thr", 0.40)),
         )
 
-    # -----------------------------
-    # Trading objects
-    # -----------------------------
     trading_objects = create_trading_objects()
-
-    # ------------------------------------------------------------
-    # WebSocket enable (Binance trade stream)
-    # ------------------------------------------------------------
-    enable_ws = get_bool_env("ENABLE_WS", False)
-
-    global current_ws
-    if enable_ws:
-        try:
-            symbol = getattr(Settings, "SYMBOL", "BTCUSDT")
-        except Exception:
-            symbol = "BTCUSDT"
-
-        # İlk bağlantı
-        current_ws = start_ws_in_thread(symbol=symbol)
-
-        # Reconnect loop (ayrı thread)
-        def get_ws():
-            global current_ws
-            return current_ws
-
-        def set_ws(new_ws):
-            global current_ws
-            current_ws = new_ws
-
-        threading.Thread(
-            target=reconnect_ws_loop,
-            args=(get_ws, set_ws),
-            kwargs={"retry_interval": int(os.getenv("WS_RETRY_INTERVAL", "5"))},
-            daemon=True,
-        ).start()
-
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=true -> websocket thread + reconnect loop started.")
-    else:
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
-
-    # -----------------------------
-    # WebSocket (optional) + reconnect loop
-    # -----------------------------
-    enable_ws = get_bool_env("ENABLE_WS", False)
-
-    # nonlocal hatasına girmemek için holder dict kullanıyoruz
-    ws_holder = {"ws": None}
-
-    if enable_ws:
-        # symbol'ü trading_objects içinden yakalamaya çalış
-        symbol = None
-        try:
-            symbol = trading_objects.get("symbol")  # type: ignore[attr-defined]
-        except Exception:
-            symbol = None
-
-        ws_holder["ws"] = start_ws_in_thread(symbol=symbol)
-
-        def _get_ws():
-            return ws_holder["ws"]
-
-        def _set_ws(new_ws):
-            ws_holder["ws"] = new_ws
-
-        threading.Thread(
-            target=reconnect_ws_loop,
-            args=(_get_ws, _set_ws),
-            daemon=True,
-        ).start()
-
-        if system_logger:
-            system_logger.info("[WebSocket] ENABLE_WS=true → WS started + reconnect loop running.")
-
-    # -----------------------------
-    # Main bot loop
-    # -----------------------------
-    try:
-        await bot_loop(trading_objects, prob_stab)
-    finally:
-        # WS graceful close (optional)
-        try:
-            ws = ws_holder.get("ws")
-            if ws is not None:
-                ws.close()
-        except Exception:
-            pass
+    await bot_loop(trading_objects, prob_stab)
 
 
 # ----------------------------------------------------------------------
@@ -931,35 +836,6 @@ def main() -> None:
             pass
         loop.close()
 
-
-
-# -----------------------------
-# WebSocket (optional)
-# -----------------------------
-enable_ws = get_bool_env("ENABLE_WS", False)
-ws = None
-
-if enable_ws:
-    # İlk bağlantı
-    ws = start_ws_in_thread(symbol=symbol)
-
-    # Reconnect loop: ws kapanırsa yeniden bağlan
-    current_ws = ws
-
-    def _get_ws():
-        return current_ws
-
-    def _set_ws(new_ws):
-        current_ws = new_ws
-
-    threading.Thread(
-        target=reconnect_ws_loop,
-        args=(_get_ws, _set_ws),
-        daemon=True,
-    ).start()
-
-    if system_logger:
-        system_logger.info("[WebSocket] ENABLE_WS=true → WS thread + reconnect loop started.")
 
 if __name__ == "__main__":
     main()

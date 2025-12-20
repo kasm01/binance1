@@ -447,7 +447,6 @@ class TradeExecutor:
         shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes", "on")
         if shadow:
             if self.logger:
-                pass
             return
 
         extra = extra or {}
@@ -477,56 +476,168 @@ class TradeExecutor:
             )
             qty = notional / price
 
-# --------------------------------------------------
-# --- BT sizing (ensemble) ---
-if os.getenv("ENABLE_BT_SIZING", "0") in ("1", "true", "True"):
-    try:
-        pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
-        smin  = float(os.getenv("BT_SIZING_MIN", "0.7"))
-        smax  = float(os.getenv("BT_SIZING_MAX", "1.2"))
+            # --------------------------------------------------
+            # --- BT sizing (ensemble) ---
+            if os.getenv("ENABLE_BT_SIZING", "0") in ("1", "true", "True"):
+                try:
+                    pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
+                    smin  = float(os.getenv("BT_SIZING_MIN", "0.6"))
+                    smax  = float(os.getenv("BT_SIZING_MAX", "1.3"))
 
-        # Probe (log geliyorsa blok çalışıyor demektir)
-        if getattr(self, "logger", None):
+                    # probe (blok çalışıyor mu?)
+                    if getattr(self, "logger", None):
+
+                    # confidence seçimi: ensemble_p yoksa (loglara göre) p_buy_raw/p_buy_ema kullan
+                    p = None
+                    if isinstance(extra, dict):
+                        p = extra.get("ensemble_p")
+                        if p is None:
+                            p = extra.get("p_buy_raw")
+                        if p is None:
+                            p = extra.get("p_buy_ema")
+                        if p is None:
+                            p = extra.get("model_confidence_factor")
+
+                    if p is None:
+                        if getattr(self, "logger", None):
+                            self.logger.info("[EXEC][BT] sizing skip | reason=no_confidence_value")
+                    else:
+                        p = float(p)
+
+                        # param clamp
+                        smin = max(0.01, float(smin))
+                        smax = max(0.01, float(smax))
+                        if smax < smin:
+                            smin, smax = smax, smin
+                        pivot = max(0.0, min(1.0, float(pivot)))
+
+                        # piecewise linear scale
+                        if pivot <= 0.0:
+                            factor = 1.0
+                        elif p <= pivot:
+                            factor = smin + (p / pivot) * (1.0 - smin)
+                        else:
+                            denom = (1.0 - pivot) if (1.0 - pivot) != 0 else 1e-9
+                            factor = 1.0 + ((p - pivot) / denom) * (smax - 1.0)
+
+                        factor = max(smin, min(smax, float(factor)))
+
+                        qty = float(qty) * float(factor)
+                        notional = float(qty) * float(price)
+
+                        if getattr(self, "logger", None):
+
+                except Exception as e:
+                    if getattr(self, "logger", None):
+                        self.logger.warning("[EXEC][BT] sizing error: %s", e)
+
+        # --------------------------------------------------
+        # RiskManager gate
+        # --------------------------------------------------
+        allowed = True
+        if self.risk_manager is not None:
             try:
-                self.logger.info(
-                    "[EXEC][BT] sizing probe | extra_type=%s extra_keys=%s",
-                    type(extra).__name__,
-                    sorted(list(extra.keys())) if isinstance(extra, dict) else None,
+                allowed = self.risk_manager.can_open_new_trade(
+                    symbol=symbol,
+                    side=signal,
+                    notional=notional,
+                    price=price,
+                    interval=interval,
+                    meta={"has_position": bool(current_pos)},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning("[RISK] can_open_new_trade hata: %s, default=True", e)
+                allowed = True
 
-        # p seçimi (fallback zinciri)
-        p_ens = None
-        if isinstance(extra, dict):
-            p_ens = extra.get("ensemble_p")
-            if p_ens is None:
-                # sizin loglarda extra'da bunlar var: p_buy_raw / p_buy_ema / model_confidence_factor
-                p_ens = extra.get("p_buy_raw") or extra.get("p_buy_ema") or extra.get("model_confidence_factor")
+        if not allowed:
+            return
 
-        if p_ens is None:
-            if getattr(self, "logger", None):
-                self.logger.info("[EXEC][BT] sizing skip | reason=p_missing")
+        # --------------------------------------------------------------
+        # Pozisyon yok → yeni pozisyon aç
+        # --------------------------------------------------------------
+        if current_pos is None:
+            if signal in ("long", "short"):
+
+                if self.dry_run:
+                else:
+                    # TODO: Borsaya market/limit order gönder
+                    pass
+
+                pos, opened_at = self._create_position_dict(
+                    signal=signal,
+                    symbol=symbol,
+                    price=price,
+                    qty=qty,
+                    notional=notional,
+                    interval=interval,
+                    probs=probs,
+                    extra=extra,
+                )
+                self._set_position(symbol, pos)
+
+                # RiskManager open hook
+                try:
+                    self.risk_manager.on_position_open(
+                        symbol=symbol,
+                        side=signal,
+                        qty=qty,
+                        notional=notional,
+                        price=price,
+                        interval=interval,
+                        meta=(
+                            lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor"}) or _m)
+                        )(
+                            dict(pos.get("meta", {})) if isinstance(pos.get("meta", {}), dict) else {}
+                        ),
+                    )
+                except Exception as e:
+                    self.logger.warning("[RISK] on_position_open hata: %s", e)
+
+            return
+
+        # --------------------------------------------------------------
+        # Zaten pozisyon var → aynı yön ise hold, ters ise flip
+        # --------------------------------------------------------------
+        if current_side == signal:
+            return
+
+
+        self._close_position(
+            symbol=symbol,
+            price=price,
+            reason="FLIP_CLOSE",
+            interval=interval,
+        )
+
+
+        if self.dry_run:
         else:
-            p_ens = float(p_ens)
+            # TODO: Borsaya yeni pozisyon emri gönder
+            pass
 
-            # piecewise linear scale: [0..pivot] -> [smin..1.0], [pivot..1] -> [1.0..smax]
-            if pivot <= 0:
-                factor = 1.0
-            elif p_ens <= pivot:
-                factor = smin + (p_ens / pivot) * (1.0 - smin)
-            else:
-                denom = (1.0 - pivot) if (1.0 - pivot) != 0 else 1e-9
-                factor = 1.0 + ((p_ens - pivot) / denom) * (smax - 1.0)
+        new_pos, opened_at = self._create_position_dict(
+            signal=signal,
+            symbol=symbol,
+            price=price,
+            qty=qty,
+            notional=notional,
+            interval=interval,
+            probs=probs,
+            extra=extra,
+        )
+        self._set_position(symbol, new_pos)
 
-            qty = float(qty) * float(factor)
-            notional = float(qty) * float(price)
-
-            if getattr(self, "logger", None):
-                self.logger.info(
-                    "[EXEC][BT] sizing applied | p=%.4f factor=%.3f qty=%.8f notional=%.2f",
-                    p_ens, factor, qty, notional
-                )
-    except Exception as e:
-        if getattr(self, "logger", None):
-            self.logger.warning("[EXEC][BT] sizing error: %s", e)
+        try:
+            self.risk_manager.on_position_open(
+                symbol=symbol,
+                side=signal,
+                qty=qty,
+                notional=notional,
+                price=price,
+                interval=interval,
+                meta=(lambda _m: (_m.update({"opened_at": opened_at, "source": "TradeExecutor_flip"}) or _m))(
+                    dict(new_pos.get("meta", {})) if isinstance(new_pos.get("meta", {}), dict) else {}
+                ),
+            )
+        except Exception as e:
+            self.logger.warning("[RISK] on_position_open (flip) hata: %s", e)
