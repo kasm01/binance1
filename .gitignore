@@ -127,3 +127,17 @@ pytest_cache/
 *.tfrecord
 *.ckpt
 
+
+# local backups / temp
+*.bak
+*.bak_*
+*.save
+*.save.*
+*.broken_*
+*.bak_sigjunk_*
+*.bak_unmatched_*
+*.bak_return_block
+*.log
+outputs/
+logs/
+__pycache__/
