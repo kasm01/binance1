@@ -486,55 +486,6 @@ class TradeExecutor:
 
         raise AttributeError("No open_position/execute_trade method found to open a position.")
 
-    # ------------------------------------------------------------------
-
-    # Backtest/Paper uyumluluk shim'i
-
-    # _open_or_flip_position eski akışta open_position/execute_trade arayabilir.
-
-    # ------------------------------------------------------------------
-
-    async def open_position(self, *args, **kwargs):
-
-        """Backtest/Paper trade uyumluluk katmanı.
-
-        Varsa position_manager.open_position'a delege eder.
-
-        Yoksa DRY_RUN/backtest için no-op yapar.
-
-        """
-
-        pm = getattr(self, "position_manager", None)
-
-        if pm is not None and hasattr(pm, "open_position"):
-
-            res = pm.open_position(*args, **kwargs)
-
-            try:
-
-                import inspect
-
-                if inspect.isawaitable(res):
-
-                    return await res
-
-            except Exception:
-
-                pass
-
-            return res
-
-        return None
-
-
-    async def execute_trade(self, *args, **kwargs):
-
-        """Eski isimle alias."""
-
-        return await self.open_position(*args, **kwargs)
-
-
-
     async def execute_decision(
         self,
         signal: str,

@@ -143,18 +143,7 @@ class BacktestPositionManager:
     def execute_trade(self, *args, **kwargs):
         return self.open_position(*args, **kwargs)
 
-    def open_position(self, *args, entry_price=None, **kwargs):
-        # --- auto-fix: entry_price fallback (backtest uyumu) ---
-        if entry_price is None:
-            entry_price = (
-                kwargs.get('entry_price')
-                or kwargs.get('price')
-                or kwargs.get('current_price')
-                or kwargs.get('last_price')
-            )
-        if entry_price is None:
-            raise TypeError('BacktestPositionManager.open_position requires entry_price (or price/current_price).')
-        # --------------------------------------------------------
+    def open_position(
         self,
         symbol: str,
         side: str,

@@ -89,174 +89,6 @@ class BacktestStats:
 
 
 # ==========================================================
-# Backtest Position Manager (TradeExecutor için minimal API)
-# - TradeExecutor open_position/close_position arıyor.
-# - Burada simulated position + realized_pnl üretiyoruz.
-# ==========================================================
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional, Dict, Any
-
-
-@dataclass
-class BTPosition:
-    symbol: str
-    side: str                 # "long" | "short"
-    qty: float
-    entry_price: float
-    notional: float
-    interval: str
-    opened_at: str
-    sl_price: Optional[float] = None
-    tp_price: Optional[float] = None
-    trailing_pct: Optional[float] = None
-    atr_value: Optional[float] = None
-    highest_price: Optional[float] = None
-    lowest_price: Optional[float] = None
-    meta: Optional[Dict[str, Any]] = None
-
-
-class BacktestPositionManager:
-    """
-    TradeExecutor'ın ihtiyaç duyduğu minimum interface:
-      - open_position(...) / execute_trade(...)
-      - close_position(...)
-      - get_open_position(...) / has_open_position(...)
-    """
-
-    def __init__(self, risk_manager=None, logger=None):
-        self.risk_manager = risk_manager
-        self.logger = logger
-        self._pos: Optional[BTPosition] = None
-
-    def has_open_position(self, symbol: str) -> bool:
-        return self._pos is not None and self._pos.symbol == symbol
-
-    def get_open_position(self, symbol: str) -> Optional[Dict[str, Any]]:
-        if not self.has_open_position(symbol):
-            return None
-        pos = self._pos
-        assert pos is not None
-        return pos.__dict__.copy()
-
-    # TradeExecutor bazen open_position, bazen execute_trade çağırıyor olabilir.
-    def execute_trade(self, *args, **kwargs):
-        return self.open_position(*args, **kwargs)
-
-    def open_position(self, *args, entry_price=None, **kwargs):
-        # --- auto-fix: entry_price fallback (backtest uyumu) ---
-        if entry_price is None:
-            entry_price = (
-                kwargs.get('entry_price')
-                or kwargs.get('price')
-                or kwargs.get('current_price')
-                or kwargs.get('last_price')
-            )
-        if entry_price is None:
-            raise TypeError('BacktestPositionManager.open_position requires entry_price (or price/current_price).')
-        # --------------------------------------------------------
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        entry_price: float,
-        notional: Optional[float] = None,
-        interval: str = "5m",
-        sl_price: Optional[float] = None,
-        tp_price: Optional[float] = None,
-        trailing_pct: Optional[float] = None,
-        atr_value: Optional[float] = None,
-        meta: Optional[Dict[str, Any]] = None,
-        **_kwargs,
-    ) -> Dict[str, Any]:
-        n = float(notional) if notional is not None else float(qty) * float(entry_price)
-
-        now = datetime.utcnow().isoformat()
-        self._pos = BTPosition(
-            symbol=str(symbol),
-            side=str(side),
-            qty=float(qty),
-            entry_price=float(entry_price),
-            notional=float(n),
-            interval=str(interval),
-            opened_at=now,
-            sl_price=sl_price,
-            tp_price=tp_price,
-            trailing_pct=trailing_pct,
-            atr_value=atr_value,
-            highest_price=float(entry_price),
-            lowest_price=float(entry_price),
-            meta=meta or {},
-        )
-
-        if self.logger:
-            self.logger.info("[BT-PM] OPEN | %s %s qty=%.6f entry=%.2f notional=%.2f",
-                             symbol, side, float(qty), float(entry_price), float(n))
-
-        return self._pos.__dict__.copy()
-
-    def close_position(
-        self,
-        symbol: str,
-        price: float,
-        reason: str = "close",
-        interval: str = "5m",
-        **_kwargs,
-    ) -> Dict[str, Any]:
-        if not self.has_open_position(symbol):
-            return {}
-
-        pos = self._pos
-        assert pos is not None
-
-        px = float(price)
-        # realized pnl
-        if pos.side == "long":
-            realized = (px - float(pos.entry_price)) * float(pos.qty)
-        else:
-            realized = (float(pos.entry_price) - px) * float(pos.qty)
-
-        # RiskManager'a yaz (TradeExecutor zaten yazıyorsa double sayım olur.
-        # Bu yüzden sadece attribute varsa ve değişkeni biz yönetiyorsak ekle.)
-        try:
-            if self.risk_manager is not None and hasattr(self.risk_manager, "daily_realized_pnl"):
-                cur = float(getattr(self.risk_manager, "daily_realized_pnl") or 0.0)
-                setattr(self.risk_manager, "daily_realized_pnl", cur + float(realized))
-        except Exception:
-            pass
-
-        now = datetime.utcnow().isoformat()
-
-        trade = {
-            "symbol": pos.symbol,
-            "side": pos.side,
-            "qty": float(pos.qty),
-            "entry_price": float(pos.entry_price),
-            "notional": float(pos.notional),
-            "interval": str(interval or pos.interval),
-            "opened_at": pos.opened_at,
-            "sl_price": pos.sl_price,
-            "tp_price": pos.tp_price,
-            "trailing_pct": pos.trailing_pct,
-            "atr_value": pos.atr_value,
-            "highest_price": pos.highest_price,
-            "lowest_price": pos.lowest_price,
-            "meta": pos.meta,
-            "closed_at": now,
-            "close_price": float(px),
-            "realized_pnl": float(realized),
-            "close_reason": str(reason),
-        }
-
-        if self.logger:
-            self.logger.info("[BT-PM] CLOSE | %s %s pnl=%.4f reason=%s",
-                             symbol, pos.side, float(realized), reason)
-
-        self._pos = None
-        return trade
-
-
-# ==========================================================
 # Globals
 # ==========================================================
 system_logger: Optional[logging.Logger] = None
@@ -485,14 +317,12 @@ async def run_backtest() -> None:
         logger=system_logger,
     )
 
-    bt_position_manager = BacktestPositionManager(risk_manager=risk_manager, logger=system_logger)
-
     base_order_notional = float(os.getenv("BT_BASE_ORDER_NOTIONAL", "50"))
 
     trade_executor = TradeExecutor(
         client=None,
         risk_manager=risk_manager,
-        position_manager=bt_position_manager,
+        position_manager=None,
         logger=system_logger,
         dry_run=True,
         base_order_notional=base_order_notional,
