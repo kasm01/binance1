@@ -1,5 +1,6 @@
 import logging
 import os
+import inspect
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
@@ -499,52 +500,35 @@ class TradeExecutor:
     # ------------------------------------------------------------------
 
     async def open_position(self, *args, **kwargs):
-
-        """Backtest/Paper trade uyumluluk katmanı.
-
-        Varsa position_manager.open_position'a delege eder.
-
-        Yoksa DRY_RUN/backtest için no-op yapar.
-
         """
+        Backtest/Paper trade uyumluluk katmanı.
 
+        - Varsa position_manager.open_position'a delege eder.
+        - open_position async dönerse await eder.
+        - Yoksa DRY_RUN/backtest için no-op yapar.
+        """
         pm = getattr(self, "position_manager", None)
-
         if pm is not None and hasattr(pm, "open_position"):
-
             res = pm.open_position(*args, **kwargs)
 
             try:
 
-                import inspect
-
                 if inspect.isawaitable(res):
-
                     return await res
-
             except Exception:
-
                 pass
 
             return res
 
         return None
 
-
     async def execute_trade(self, *args, **kwargs):
-
         """Eski isimle alias."""
-
         return await self.open_position(*args, **kwargs)
 
-
-
     async def execute_decision(
-        try:
-        except Exception:
-            pass
         self,
-        signal: str,
+        decision: str,
         symbol: str,
         price: float,
         size: Optional[float],
@@ -554,11 +538,21 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        import os
-        bt_debug = os.getenv('BT_DEBUG', '0').strip() == '1'
+        # ------------------------------------------------------
+        # Debug (ENV: BT_DEBUG=1)
+        # ------------------------------------------------------
         try:
-            if bt_debug and getattr(self, 'logger', None):
-                self.logger.info('[BT-DBG] execute_decision symbol=%s decision=%s price=%s interval=%s', symbol, decision, price, interval)
+            import os
+
+            bt_debug = os.getenv("BT_DEBUG", "0").strip() == "1"
+            if bt_debug and getattr(self, "logger", None):
+                self.logger.info(
+                    "[BT-DBG] execute_decision symbol=%s decision=%s price=%s interval=%s",
+                    symbol,
+                    decision,
+                    price,
+                    interval,
+                )
         except Exception:
             pass
 
