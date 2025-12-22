@@ -115,7 +115,6 @@ class BTPosition:
     lowest_price: Optional[float] = None
     meta: Optional[Dict[str, Any]] = None
 
-
 class BacktestPositionManager:
     """
     TradeExecutor'ın ihtiyaç duyduğu minimum interface:
@@ -140,43 +139,55 @@ class BacktestPositionManager:
         return pos.__dict__.copy()
 
     # TradeExecutor bazen open_position, bazen execute_trade çağırıyor olabilir.
+
+    def get_position(self, symbol: str):
+
+        # alias for TradeExecutor compatibility
+
+        return self.get_open_position(symbol)
+
     def execute_trade(self, *args, **kwargs):
         return self.open_position(*args, **kwargs)
 
-    def open_position(self, *args, entry_price=None, **kwargs):
-        # --- auto-fix: entry_price fallback (backtest uyumu) ---
-        if entry_price is None:
-            entry_price = (
-                kwargs.get('entry_price')
-                or kwargs.get('price')
-                or kwargs.get('current_price')
-                or kwargs.get('last_price')
-            )
-        if entry_price is None:
-            raise TypeError('BacktestPositionManager.open_position requires entry_price (or price/current_price).')
-        # --------------------------------------------------------
+    def open_position(
         self,
         symbol: str,
         side: str,
         qty: float,
-        entry_price: float,
-        notional: Optional[float] = None,
+        entry_price: float | None = None,
+        *,
+        price: float | None = None,
+        current_price: float | None = None,
+        last_price: float | None = None,
+        notional: float | None = None,
         interval: str = "5m",
-        sl_price: Optional[float] = None,
-        tp_price: Optional[float] = None,
-        trailing_pct: Optional[float] = None,
-        atr_value: Optional[float] = None,
-        meta: Optional[Dict[str, Any]] = None,
+        sl_price: float | None = None,
+        tp_price: float | None = None,
+        trailing_pct: float | None = None,
+        atr_value: float | None = None,
+        meta: dict[str, Any] | None = None,
         **_kwargs,
     ) -> Dict[str, Any]:
-        n = float(notional) if notional is not None else float(qty) * float(entry_price)
+        ep = entry_price
+        if ep is None:
+            ep = price if price is not None else ep
+        if ep is None:
+            ep = current_price if current_price is not None else ep
+        if ep is None:
+            ep = last_price if last_price is not None else ep
+        if ep is None:
+            raise TypeError(
+                "BacktestPositionManager.open_position requires entry_price "
+                "(or price/current_price/last_price)."
+            )
 
+        n = float(notional) if notional is not None else float(qty) * float(ep)
         now = datetime.utcnow().isoformat()
         self._pos = BTPosition(
             symbol=str(symbol),
             side=str(side),
             qty=float(qty),
-            entry_price=float(entry_price),
+            entry_price=float(ep),
             notional=float(n),
             interval=str(interval),
             opened_at=now,
@@ -184,76 +195,77 @@ class BacktestPositionManager:
             tp_price=tp_price,
             trailing_pct=trailing_pct,
             atr_value=atr_value,
-            highest_price=float(entry_price),
-            lowest_price=float(entry_price),
+            highest_price=float(ep),
+            lowest_price=float(ep),
             meta=meta or {},
         )
-
-        if self.logger:
-            self.logger.info("[BT-PM] OPEN | %s %s qty=%.6f entry=%.2f notional=%.2f",
-                             symbol, side, float(qty), float(entry_price), float(n))
-
-        return self._pos.__dict__.copy()
-
+        return self.get_open_position(symbol)
     def close_position(
         self,
         symbol: str,
-        price: float,
+        close_price: Optional[float] = None,
         reason: str = "close",
-        interval: str = "5m",
-        **_kwargs,
-    ) -> Dict[str, Any]:
+        **kwargs,
+    ) -> Optional[Dict[str, Any]]:
         if not self.has_open_position(symbol):
-            return {}
+            return None
+
+        if close_price is None:
+            close_price = (
+                kwargs.get("close_price")
+                or kwargs.get("price")
+                or kwargs.get("current_price")
+                or kwargs.get("last_price")
+                or kwargs.get("mark_price")
+            )
+        if close_price is None:
+            raise TypeError(
+                "BacktestPositionManager.close_position requires close_price "
+                "(or price/current_price/last_price/mark_price)."
+            )
 
         pos = self._pos
         assert pos is not None
 
-        px = float(price)
-        # realized pnl
-        if pos.side == "long":
-            realized = (px - float(pos.entry_price)) * float(pos.qty)
-        else:
-            realized = (float(pos.entry_price) - px) * float(pos.qty)
-
-        # RiskManager'a yaz (TradeExecutor zaten yazıyorsa double sayım olur.
-        # Bu yüzden sadece attribute varsa ve değişkeni biz yönetiyorsak ekle.)
+        # high/low güncelle
         try:
-            if self.risk_manager is not None and hasattr(self.risk_manager, "daily_realized_pnl"):
-                cur = float(getattr(self.risk_manager, "daily_realized_pnl") or 0.0)
-                setattr(self.risk_manager, "daily_realized_pnl", cur + float(realized))
+            px = float(close_price)
+            pos.highest_price = max(float(pos.highest_price), px)
+            pos.lowest_price = min(float(pos.lowest_price), px)
         except Exception:
             pass
 
-        now = datetime.utcnow().isoformat()
+        # realized pnl
+        qty = float(pos.qty)
+        entry = float(pos.entry_price)
+        cp = float(close_price)
 
-        trade = {
-            "symbol": pos.symbol,
-            "side": pos.side,
-            "qty": float(pos.qty),
-            "entry_price": float(pos.entry_price),
-            "notional": float(pos.notional),
-            "interval": str(interval or pos.interval),
-            "opened_at": pos.opened_at,
-            "sl_price": pos.sl_price,
-            "tp_price": pos.tp_price,
-            "trailing_pct": pos.trailing_pct,
-            "atr_value": pos.atr_value,
-            "highest_price": pos.highest_price,
-            "lowest_price": pos.lowest_price,
-            "meta": pos.meta,
-            "closed_at": now,
-            "close_price": float(px),
-            "realized_pnl": float(realized),
-            "close_reason": str(reason),
-        }
+        pnl = (cp - entry) * qty
+        if str(pos.side).lower() in ("short", "sell"):
+            pnl = -pnl
 
-        if self.logger:
-            self.logger.info("[BT-PM] CLOSE | %s %s pnl=%.4f reason=%s",
-                             symbol, pos.side, float(realized), reason)
+        pos.closed_at = datetime.utcnow().isoformat()
+        pos.close_price = cp
+        pos.realized_pnl = float(pnl)
+        pos.close_reason = str(reason)
 
+        out = None
+        try:
+            from dataclasses import asdict
+            out = asdict(pos)
+        except Exception:
+            out = dict(getattr(pos, "__dict__", {}))
+
+        # artık pozisyon yok
         self._pos = None
-        return trade
+
+        if getattr(self, "logger", None):
+            self.logger.info(
+                "[BT-PM] CLOSE %s reason=%s close=%.6f pnl=%.6f",
+                symbol, str(reason), float(cp), float(pnl)
+            )
+
+        return out
 
 
 # ==========================================================
@@ -807,6 +819,23 @@ async def run_backtest() -> None:
             except Exception:
                 prev_pnl = 0.0
 
+            # --- bt_signal_norm: long/short -> BUY/SELL ---
+
+            sig_raw = (str(signal).strip().lower() if signal is not None else "hold")
+
+            if sig_raw in ("buy", "long"):
+
+                bt_decision = "BUY"
+
+            elif sig_raw in ("sell", "short"):
+
+                bt_decision = "SELL"
+
+            else:
+
+                bt_decision = "HOLD"
+
+
             await trade_executor.execute_decision(
                 signal=signal,
                 symbol=symbol,
@@ -869,6 +898,29 @@ async def run_backtest() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    # ----------------------------------------------------------
+    # Force close at end of backtest (so trades>0 even if no SL/TP hit)
+    # Robust: df/data/main_df hangisi varsa onu kullanır, position_manager/pm hangisi varsa onu kullanır
+    # ----------------------------------------------------------
+    try:
+        _pm = locals().get("position_manager") or locals().get("pm")
+        _df = locals().get("df") or locals().get("data") or locals().get("main_df") or locals().get("df_main")
+
+        if _pm is not None and _df is not None and _pm.has_open_position(symbol):
+            last_price = float(_df["close"].iloc[-1])
+            closed = _pm.close_position(
+                symbol,
+                price=last_price,
+                reason="eob_force_close",
+            )
+            if closed:
+                closed_trades.append(closed)
+    except Exception as e:
+        if system_logger:
+            system_logger.error("[BT] force-close failed: %s", e, exc_info=True)
+
+
+
     equity_path = out_dir / f"equity_curve_{symbol}_{main_interval}_{tag}.csv"
     trades_path = out_dir / f"trades_{symbol}_{main_interval}_{tag}.csv"
     summary_path = out_dir / f"summary_{symbol}_{main_interval}_{tag}.csv"

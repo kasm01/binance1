@@ -301,16 +301,20 @@ class TradeExecutor:
             return None
 
         side = pos["side"]
-        sl_price = float(pos["sl_price"])
-        tp_price = float(pos["tp_price"])
-        trailing_pct = float(pos.get("trailing_pct", 0.0))
+        sl_raw = pos.get("sl_price")
+        tp_raw = pos.get("tp_price")
+        trailing_raw = pos.get("trailing_pct", 0.0)
+
+        sl_price = float(sl_raw) if sl_raw is not None else None
+        tp_price = float(tp_raw) if tp_raw is not None else None
+        trailing_pct = float(trailing_raw) if trailing_raw not in (None, "") else 0.0
         highest_price = float(pos.get("highest_price", price))
         lowest_price = float(pos.get("lowest_price", price))
 
         if side == "long":
-            if price <= sl_price:
+            if sl_price is not None and price <= sl_price:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
-            if price >= tp_price:
+            if tp_price is not None and price >= tp_price:
                 return self._close_position(symbol, price, reason="TP_HIT", interval=interval)
 
             if trailing_pct > 0.0:
@@ -326,9 +330,9 @@ class TradeExecutor:
                     )
 
         elif side == "short":
-            if price >= sl_price:
+            if sl_price is not None and price >= sl_price:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
-            if price <= tp_price:
+            if tp_price is not None and price <= tp_price:
                 return self._close_position(symbol, price, reason="TP_HIT", interval=interval)
 
             if trailing_pct > 0.0:
@@ -536,6 +540,9 @@ class TradeExecutor:
 
 
     async def execute_decision(
+        try:
+        except Exception:
+            pass
         self,
         signal: str,
         symbol: str,
@@ -547,6 +554,13 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
+        import os
+        bt_debug = os.getenv('BT_DEBUG', '0').strip() == '1'
+        try:
+            if bt_debug and getattr(self, 'logger', None):
+                self.logger.info('[BT-DBG] execute_decision symbol=%s decision=%s price=%s interval=%s', symbol, decision, price, interval)
+        except Exception:
+            pass
 
         # --------------------------------------------------
         # SHADOW MODE: trade yok, sadece log
