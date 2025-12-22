@@ -1,6 +1,5 @@
 import logging
 import os
-import inspect
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
@@ -500,35 +499,49 @@ class TradeExecutor:
     # ------------------------------------------------------------------
 
     async def open_position(self, *args, **kwargs):
-        """
-        Backtest/Paper trade uyumluluk katmanı.
 
-        - Varsa position_manager.open_position'a delege eder.
-        - open_position async dönerse await eder.
-        - Yoksa DRY_RUN/backtest için no-op yapar.
+        """Backtest/Paper trade uyumluluk katmanı.
+
+        Varsa position_manager.open_position'a delege eder.
+
+        Yoksa DRY_RUN/backtest için no-op yapar.
+
         """
+
         pm = getattr(self, "position_manager", None)
+
         if pm is not None and hasattr(pm, "open_position"):
+
             res = pm.open_position(*args, **kwargs)
 
             try:
 
+                import inspect
+
                 if inspect.isawaitable(res):
+
                     return await res
+
             except Exception:
+
                 pass
 
             return res
 
         return None
 
+
     async def execute_trade(self, *args, **kwargs):
+
         """Eski isimle alias."""
+
         return await self.open_position(*args, **kwargs)
+
+
 
     async def execute_decision(
         self,
-        decision: str,
+        signal: str,
         symbol: str,
         price: float,
         size: Optional[float],
@@ -538,27 +551,35 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # ------------------------------------------------------
-        # Debug (ENV: BT_DEBUG=1)
-        # ------------------------------------------------------
+        import os
+        bt_debug = os.getenv('BT_DEBUG', '0').strip() == '1'
         try:
-            import os
-
-            bt_debug = os.getenv("BT_DEBUG", "0").strip() == "1"
-            if bt_debug and getattr(self, "logger", None):
-                self.logger.info(
-                    "[BT-DBG] execute_decision symbol=%s decision=%s price=%s interval=%s",
-                    symbol,
-                    decision,
-                    price,
-                    interval,
-                )
+            raw = locals().get('decision', locals().get('signal', None))
+            raw_s = str(raw) if raw is not None else ''
+            norm = raw_s.strip().lower()
+            if bt_debug and getattr(self, 'logger', None):
+                self.logger.info('[BT-DBG] execute_decision symbol=%s raw=%s norm=%s price=%s interval=%s size=%s', symbol, raw_s, norm, price, interval, size)
         except Exception:
             pass
 
         # --------------------------------------------------
         # SHADOW MODE: trade yok, sadece log
         # --------------------------------------------------
+        # --------------------------------------------------
+        # signal mapping (BUY/SELL/HOLD) + long/short uyumu
+        # --------------------------------------------------
+        try:
+            _raw = signal
+            _s = str(_raw).strip().lower()
+            if _s in ("buy", "long", "1", "true"):
+                signal = "BUY"
+            elif _s in ("sell", "short", "-1", "false"):
+                signal = "SELL"
+            else:
+                signal = "HOLD"
+        except Exception:
+            signal = "HOLD"
+
         shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes", "on")
         if shadow:
             return
