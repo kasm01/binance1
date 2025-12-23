@@ -772,12 +772,25 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             elif signal_side == "short" and isinstance(p_1m, float) and p_1m > 0.70:
                 micro_conf_scale = 0.7
 
+            effective_model_conf = float(model_conf_factor) * micro_conf_scale
 
             # ==============================
             # p_used DEBUG SNAPSHOT
             # ==============================
             if system_logger:
                 system_logger.info(
+                    # P_USED_DBG_RL (60s)
+                    try:
+                        from datetime import datetime
+                        _now = datetime.utcnow().timestamp()
+                        _last = getattr(self, 'p_used_dbg_last_ts', 0) if 'self' in locals() else 0
+                        _ok = (_now - float(_last or 0)) > 60
+                        if _ok and 'self' in locals():
+                            setattr(self, 'p_used_dbg_last_ts', _now)
+                    except Exception:
+                        _ok = True
+                    if not _ok:
+                        pass
                     "[P_USED_DBG] p_used=%.6f src=%s p_buy_raw=%r p_buy_ema=%r stable=%r thr_buy=%r thr_sell=%r",
                     float(p_used),
                     extra.get("p_buy_source", "unknown"),
@@ -805,17 +818,21 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
                 if atr is not None and atr_hi > atr_lo:
                     t = (atr - atr_lo) / (atr_hi - atr_lo)
-                    if t < 0.0: t = 0.0
-                    if t > 1.0: t = 1.0
-                    gamma = g_max - t * (g_max - g_min)
+                    if t < 0.0:
+                        t = 0.0
+                    if t > 1.0:
+                        t = 1.0
+                    gamma = g_max - t * (g_max - g_min)  # atr ↑ -> gamma ↓
             except Exception:
                 pass
 
+            # debug için extra'ya yaz
             try:
                 if isinstance(extra, dict):
                     extra["mcf_gamma"] = gamma
             except Exception:
                 pass
+
             effective_model_conf = float(model_conf_factor) * micro_conf_scale
 
             # --- model_confidence_factor (normalized & HOLD-safe) ---
@@ -832,19 +849,70 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 elif mcf > 1.0:
                     mcf = 1.0
 
-                # 2) compression (aşırı confidence'ı bastır)
-                gamma = float(os.getenv("MCF_GAMMA", "0.6"))
+                # 2) compression (aşırı confidence'ı bastır) -> ATR'den gelen gamma kullanılır
                 mcf = 0.5 + (mcf - 0.5) * gamma
 
-                # tekrar clamp
+                # 3) tekrar clamp
                 if mcf < 0.0:
                     mcf = 0.0
                 elif mcf > 1.0:
                     mcf = 1.0
 
-            # HOLD guard: signal_side burada "hold" (küçük) olduğu için buna göre kontrol
-            if signal_side != "hold" and mcf is not None:
-                extra["model_confidence_factor"] = mcf
+            # HOLD guard: signal_side "hold" ise mcf yazma
+            if mcf is not None and str(signal_side).lower() != "hold":
+                # --- model_confidence_factor (normalized + compression + HOLD-safe) ---
+                mcf = None
+                try:
+                    mcf = float(mcf)
+                except Exception:
+                    mcf = None
+
+                if mcf is not None:
+                    # 0..100 gelme ihtimaline karşı normalize
+                    if mcf > 1.0 and mcf <= 100.0:
+                        mcf = mcf / 100.0
+
+                    # 1) clamp 0..1
+                    if mcf < 0.0:
+                        mcf = 0.0
+                    elif mcf > 1.0:
+                        mcf = 1.0
+
+                    # 2) compression: aşırı confidence'ı bastır
+                    try:
+                        g = float(gamma)  # ATR bazlı gamma varsa
+                    except Exception:
+                        g = float(os.getenv("MCF_GAMMA", "0.6"))
+                    mcf = 0.5 + (mcf - 0.5) * g
+
+                    # tekrar clamp
+                    if mcf < 0.0:
+                        mcf = 0.0
+                    elif mcf > 1.0:
+                        mcf = 1.0
+
+                # HOLD guard (signal_side: 'hold'/'long'/'short')
+                if str(signal_side).lower() != "hold" and mcf is not None:
+                    extra["model_confidence_factor"] = mcf
+                    if system_logger:
+                        try:
+                            system_logger.info(
+                                "[MCF_DBG] eff=%r micro=%r mcf_final=%r gamma=%r sig=%s atr=%r",
+                                (float(effective_model_conf) if 'effective_model_conf' in locals() else None),
+                                (float(micro_conf_scale) if 'micro_conf_scale' in locals() else None),
+                                mcf,
+                                (gamma if 'gamma' in locals() else None),
+                                str(signal_side),
+                                (extra.get('atr') if isinstance(extra, dict) else None),
+                            )
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        extra.pop("model_confidence_factor", None)
+                    except Exception:
+                        pass
+
             # --- /model_confidence_factor ---
 
             if system_logger:
