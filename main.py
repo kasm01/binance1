@@ -766,30 +766,86 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             # ------------------------------
             # Trend filtresi + mikro filtre
             # ------------------------------
-            if p_1h is not None and p_15m is not None:
-                if signal_side == "long" and not (p_1h > 0.6 and p_15m > 0.5):
-                    if system_logger:
-                        system_logger.info(
-                            "[TREND_FILTER] 1h/15m veto LONG -> HOLD (p_1h=%.4f, p_15m=%.4f)",
-                            p_1h, p_15m
-                        )
-                    signal_side = "hold"
-                elif signal_side == "short" and not (p_1h < 0.4 and p_15m < 0.5):
-                    if system_logger:
-                        system_logger.info(
-                            "[TREND_FILTER] 1h/15m veto SHORT -> HOLD (p_1h=%.4f, p_15m=%.4f)",
-                            p_1h, p_15m
-                        )
-                    signal_side = "hold"
-
             micro_conf_scale = 1.0
             if signal_side == "long" and isinstance(p_1m, float) and p_1m < 0.30:
                 micro_conf_scale = 0.7
             elif signal_side == "short" and isinstance(p_1m, float) and p_1m > 0.70:
                 micro_conf_scale = 0.7
 
+
+            # ==============================
+            # p_used DEBUG SNAPSHOT
+            # ==============================
+            if system_logger:
+                system_logger.info(
+                    "[P_USED_DBG] p_used=%.6f src=%s p_buy_raw=%r p_buy_ema=%r stable=%r thr_buy=%r thr_sell=%r",
+                    float(p_used),
+                    extra.get("p_buy_source", "unknown"),
+                    extra.get("p_buy_raw", None),
+                    extra.get("p_buy_ema", None),
+                    extra.get("p_buy_stable", None),
+                    os.getenv("LONG_THRESHOLD"),
+                    os.getenv("SHORT_THRESHOLD"),
+                )
+
+            # ==============================
+            # ATR bazlı dinamik MCF_GAMMA
+            # ==============================
+            gamma = float(os.getenv("MCF_GAMMA", "0.6"))
+            try:
+                atr = None
+                if isinstance(extra, dict):
+                    atr = extra.get("atr")
+                atr = float(atr) if atr is not None else None
+
+                atr_lo = float(os.getenv("MCF_ATR_LO", "50"))
+                atr_hi = float(os.getenv("MCF_ATR_HI", "300"))
+                g_min  = float(os.getenv("MCF_GAMMA_MIN", "0.45"))
+                g_max  = float(os.getenv("MCF_GAMMA_MAX", "0.85"))
+
+                if atr is not None and atr_hi > atr_lo:
+                    t = (atr - atr_lo) / (atr_hi - atr_lo)
+                    if t < 0.0: t = 0.0
+                    if t > 1.0: t = 1.0
+                    gamma = g_max - t * (g_max - g_min)
+            except Exception:
+                pass
+
+            try:
+                if isinstance(extra, dict):
+                    extra["mcf_gamma"] = gamma
+            except Exception:
+                pass
             effective_model_conf = float(model_conf_factor) * micro_conf_scale
-            extra["model_confidence_factor"] = effective_model_conf
+
+            # --- model_confidence_factor (normalized & HOLD-safe) ---
+            mcf_raw = effective_model_conf
+            try:
+                mcf = float(mcf_raw)
+            except Exception:
+                mcf = None
+
+            if mcf is not None:
+                # 1) clamp 0..1
+                if mcf < 0.0:
+                    mcf = 0.0
+                elif mcf > 1.0:
+                    mcf = 1.0
+
+                # 2) compression (aşırı confidence'ı bastır)
+                gamma = float(os.getenv("MCF_GAMMA", "0.6"))
+                mcf = 0.5 + (mcf - 0.5) * gamma
+
+                # tekrar clamp
+                if mcf < 0.0:
+                    mcf = 0.0
+                elif mcf > 1.0:
+                    mcf = 1.0
+
+            # HOLD guard: signal_side burada "hold" (küçük) olduğu için buna göre kontrol
+            if signal_side != "hold" and mcf is not None:
+                extra["model_confidence_factor"] = mcf
+            # --- /model_confidence_factor ---
 
             if system_logger:
                 whale_dir_dbg = whale_meta.get("direction") if isinstance(whale_meta, dict) else None

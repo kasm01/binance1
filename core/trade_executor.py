@@ -604,6 +604,64 @@ class TradeExecutor:
 
         # ✅ HOLD bug fix: mapping "HOLD" üretiyor; case-safe kontrol
         if str(signal).upper() == "HOLD":
+            # HOLD journal (CSV) + return
+            try:
+                from pathlib import Path
+                import csv
+                from datetime import datetime
+        
+                out = Path("logs/hold_decisions.csv")
+                out.parent.mkdir(parents=True, exist_ok=True)
+        
+                p_val = None
+                p_src = "none"
+                ens = None
+                mcf = None
+                pbe = None
+                pbr = None
+        
+                if isinstance(extra, dict):
+                    ens = extra.get("ensemble_p")
+                    mcf = extra.get("model_confidence_factor")
+                    pbe = extra.get("p_buy_ema")
+                    pbr = extra.get("p_buy_raw")
+                    for k in ("ensemble_p", "p_buy_ema", "p_buy_raw", "model_confidence_factor"):
+                        v = extra.get(k)
+                        if v is not None:
+                            p_val = v
+                            p_src = k
+                            break
+        
+                # p clamp 0..1 (safe)
+                try:
+                    if p_val is not None:
+                        pv = float(p_val)
+                        if pv < 0.0: pv = 0.0
+                        if pv > 1.0: pv = 1.0
+                        p_val = pv
+                except Exception:
+                    p_val = None
+        
+                write_header = not out.exists()
+                with out.open("a", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    if write_header:
+                        w.writerow(["timestamp","symbol","interval","signal","p","p_source","ensemble_p","model_confidence_factor","p_buy_ema","p_buy_raw"])
+                    w.writerow([
+                        datetime.utcnow().isoformat(),
+                        symbol,
+                        interval,
+                        "HOLD",
+                        p_val,
+                        p_src,
+                        ens,
+                        mcf,
+                        pbe,
+                        pbr,
+                    ])
+            except Exception:
+                pass
+        
             if getattr(self, "logger", None):
                 self.logger.info("[EXEC] Signal=HOLD")
             return
@@ -614,80 +672,142 @@ class TradeExecutor:
 
         extra = extra or {}
 
-
-
         # --- HOLD decision journal (auto) ---
-        # HOLD ise trade yok: sizing de yok. HOLD'ları ayrı CSV'ye yaz.
+        # HOLD kararlarını CSV'ye yaz (BT sizing HOLD'ta tamamen skip)
         if signal == "HOLD":
             try:
                 from pathlib import Path
                 import csv
                 from datetime import datetime
         
+                out = Path("logs/hold_decisions.csv")
+                out.parent.mkdir(parents=True, exist_ok=True)
+        
+                # p + kaynak seçimi (BT sizing ile uyumlu öncelik)
                 p_val = None
                 p_src = "none"
                 if isinstance(extra, dict):
-                    for k in ("ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw"):
-                if k.startswith('probs.'):
-                    # probs: önce extra içinden, yoksa üst scope 'probs' değişkeninden dene
-                    kk = k.split('.', 1)[1]
-                    v = None
-                    if isinstance(extra, dict):
-                        _pd = extra.get('probs') or extra.get('probs_dict')
-                        if isinstance(_pd, dict):
-                            v = _pd.get(kk)
-                    if v is None:
-                        try:
-                            v = (probs or {}).get(kk)  # probs paramı varsa
-                        except Exception:
-                            v = None
-                else:
-                    v = extra.get(k)
-
+                    for k in ("ensemble_p", "p_buy_ema", "p_buy_raw", "model_confidence_factor"):
+                        v = extra.get(k)
                         if v is not None:
                             p_val = v
                             p_src = k
-                            # snapshot debug (rate-limited)
-                            try:
-                                from datetime import datetime
-                                _now = datetime.utcnow().timestamp()
-                                _last = getattr(self, 'bt_extra_snapshot_last_ts', 0) or 0
-                                if k == 'model_confidence_factor' and (_now - float(_last)) > 60:
-                                    setattr(self, 'bt_extra_snapshot_last_ts', _now)
-                                    if getattr(self, 'logger', None):
-                                        self.logger.info('[EXEC][BT] extra snapshot | keys=%s mcf=%r p_buy_raw=%r p_buy_ema=%r ens=%r',
-                                                         sorted(list(extra.keys())) if isinstance(extra, dict) else None,
-                                                         (extra.get('model_confidence_factor') if isinstance(extra, dict) else None),
-                                                         (extra.get('p_buy_raw') if isinstance(extra, dict) else None),
-                                                         (extra.get('p_buy_ema') if isinstance(extra, dict) else None),
-                                                         (extra.get('ensemble_p') if isinstance(extra, dict) else None))
-                            except Exception:
-                                pass
-
                             break
         
+                # raw alanları da saklayalım
+                ens = extra.get("ensemble_p") if isinstance(extra, dict) else None
+                mcf = extra.get("model_confidence_factor") if isinstance(extra, dict) else None
+                pbe = extra.get("p_buy_ema") if isinstance(extra, dict) else None
+                pbr = extra.get("p_buy_raw") if isinstance(extra, dict) else None
+        
                 try:
-                    p_val = float(p_val) if p_val is not None else None
+                    p_num = float(p_val) if p_val is not None else None
+                except Exception:
+                    p_num = None
+        
+                exists = out.exists()
+                with out.open("a", newline="") as f:
+                    w = csv.writer(f)
+                    if not exists:
+                        w.writerow(["timestamp","symbol","interval","signal","p","p_source","ensemble_p","model_confidence_factor","p_buy_ema","p_buy_raw"]) 
+                    w.writerow([datetime.utcnow().isoformat(), symbol, interval, signal, p_num, p_src, ens, mcf, pbe, pbr])
+            except Exception:
+                pass
+
+        # --- TRADE decision journal (auto) ---
+        # BUY/SELL kararlarını CSV'ye yaz (HOLD ayrı dosyada)
+        if signal in ("BUY", "SELL"):
+            try:
+                from pathlib import Path
+                import csv
+                from datetime import datetime
+        
+                out = Path("logs/trade_decisions.csv")
+                out.parent.mkdir(parents=True, exist_ok=True)
+        
+                p_val = None
+                p_src = "none"
+                if isinstance(extra, dict):
+                    for k in ("ensemble_p", "p_buy_ema", "p_buy_raw", "model_confidence_factor"):
+                        v = extra.get(k)
+                        if v is not None:
+                            p_val = v
+                            p_src = k
+                            break
+        
+                ens = extra.get("ensemble_p") if isinstance(extra, dict) else None
+                mcf = extra.get("model_confidence_factor") if isinstance(extra, dict) else None
+                pbe = extra.get("p_buy_ema") if isinstance(extra, dict) else None
+                pbr = extra.get("p_buy_raw") if isinstance(extra, dict) else None
+        
+                try:
+                    p_num = float(p_val) if p_val is not None else None
+                except Exception:
+                    p_num = None
+        
+                exists = out.exists()
+                with out.open("a", newline="") as f:
+                    w = csv.writer(f)
+                    if not exists:
+                        w.writerow(["timestamp","symbol","interval","signal","p","p_source","ensemble_p","model_confidence_factor","p_buy_ema","p_buy_raw"]) 
+                    w.writerow([datetime.utcnow().isoformat(), symbol, interval, signal, p_num, p_src, ens, mcf, pbe, pbr])
+            except Exception:
+                pass
+
+                out = Path("logs/trade_decisions.csv")
+                out.parent.mkdir(parents=True, exist_ok=True)
+        
+                # p + kaynak seçimi (BT sizing ile uyumlu öncelik)
+                p_val = None
+                p_src = "none"
+                ens = None
+                mcf = None
+                pbe = None
+                pbr = None
+                if isinstance(extra, dict):
+                    ens = extra.get("ensemble_p")
+                    mcf = extra.get("model_confidence_factor")
+                    pbe = extra.get("p_buy_ema")
+                    pbr = extra.get("p_buy_raw")
+                    for k in ("ensemble_p", "p_buy_ema", "p_buy_raw", "model_confidence_factor"):
+                        v = extra.get(k)
+                        if v is not None:
+                            p_val = v
+                            p_src = k
+                            break
+        
+                # p clamp 0..1 (safe)
+                try:
+                    if p_val is not None:
+                        pv = float(p_val)
+                        if pv < 0.0: pv = 0.0
+                        if pv > 1.0: pv = 1.0
+                        p_val = pv
                 except Exception:
                     p_val = None
         
-                # clamp 0..1
-                if p_val is not None:
-                    if p_val < 0.0: p_val = 0.0
-                    elif p_val > 1.0: p_val = 1.0
-        
-                outp = Path("logs/hold_decisions.csv")
-                outp.parent.mkdir(parents=True, exist_ok=True)
-        
-                newfile = not outp.exists()
-                with outp.open("a", newline="", encoding="utf-8") as f:
+                write_header = not out.exists()
+                with out.open("a", newline="", encoding="utf-8") as f:
                     w = csv.writer(f)
-                    if newfile:
-                        w.writerow(["ts","symbol","interval","p","p_source"])
-                    w.writerow([datetime.utcnow().isoformat(), symbol, interval, p_val, p_src])
+                    if write_header:
+                        w.writerow(["timestamp","symbol","interval","signal","p","p_source","ensemble_p","model_confidence_factor","p_buy_ema","p_buy_raw"])
+                    w.writerow([
+                        datetime.utcnow().isoformat(),
+                        symbol,
+                        interval,
+                        signal,
+                        p_val,
+                        p_src,
+                        ens,
+                        mcf,
+                        pbe,
+                        pbr,
+                    ])
             except Exception:
                 pass
-            return
+
+
+
 
         # --- HOLD tracking / cooldown / logging ---
 
