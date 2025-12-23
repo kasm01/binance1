@@ -532,11 +532,8 @@ class TradeExecutor:
 
 
     async def execute_trade(self, *args, **kwargs):
-
         """Eski isimle alias."""
-
         return await self.open_position(*args, **kwargs)
-
 
 
     async def execute_decision(
@@ -551,14 +548,19 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # --------------------------------------------------
+        # BT debug (opsiyonel)
+        # --------------------------------------------------
         import os
-        bt_debug = os.getenv('BT_DEBUG', '0').strip() == '1'
+        bt_debug = os.getenv("BT_DEBUG", "0").strip() == "1"
         try:
-            raw = locals().get('decision', locals().get('signal', None))
-            raw_s = str(raw) if raw is not None else ''
-            norm = raw_s.strip().lower()
-            if bt_debug and getattr(self, 'logger', None):
-                self.logger.info('[BT-DBG] execute_decision symbol=%s raw=%s norm=%s price=%s interval=%s size=%s', symbol, raw_s, norm, price, interval, size)
+            if bt_debug and getattr(self, "logger", None):
+                raw_s = str(signal) if signal is not None else ""
+                norm = raw_s.strip().lower()
+                self.logger.info(
+                    "[BT-DBG] execute_decision symbol=%s raw=%s norm=%s price=%s interval=%s size=%s",
+                    symbol, raw_s, norm, price, interval, size
+                )
         except Exception:
             pass
 
