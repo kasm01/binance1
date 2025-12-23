@@ -252,21 +252,20 @@ def create_trading_objects() -> Dict[str, Any]:
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN, USE_TESTNET
 
-    # config/config.py -> env -> Settings fallback zinciri
+# --- SYMBOL & INTERVAL (env öncelikli, cfg opsiyonel) ---
+    cfg = globals().get("cfg", None)
+
     symbol = (
-        getattr(cfg, "SYMBOL", None)
-        or os.getenv("SYMBOL")
+        os.getenv("SYMBOL")
         or getattr(Settings, "SYMBOL", None)
         or "BTCUSDT"
     )
-
-    # interval fallback zinciri
     interval = (
         os.getenv("INTERVAL")
-        or getattr(cfg, "DEFAULT_INTERVAL", None)
         or getattr(Settings, "INTERVAL", None)
         or "5m"
     )
+# --- /SYMBOL & INTERVAL ---
 
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
