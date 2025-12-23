@@ -84,6 +84,18 @@ class ProbStabilizer:
         except Exception:
             x = 0.5
 
+
+        # --- SATDBG: p_raw -> clamp -> zclip -> ema (ENV: PROBSTAB_DEBUG=1) ---
+        try:
+            _dbg = str(__import__('os').getenv('PROBSTAB_DEBUG','0')).lower() in ('1','true','yes','on')
+        except Exception:
+            _dbg = False
+        if _dbg:
+            try:
+                # x daha clamp edilmeden burada (float(p_raw) sonrası) görülecek
+                self._dbg_last = {'p_raw': p_raw, 'x_float': x, 'ema_before': self._ema, 'alpha': self.alpha}
+            except Exception:
+                pass
         if x < 0:
             x = 0.0
         elif x > 1:
@@ -94,6 +106,26 @@ class ProbStabilizer:
 
         # z-score clip
         x2 = self._zscore_clip(x)
+        # --- debug: saturate/zclip gözlem (ENV: PROBSTAB_DEBUG=1) ---
+        try:
+            import os
+            _dbg = str(os.getenv('PROBSTAB_DEBUG','0')).lower() in ('1','true','yes','on')
+        except Exception:
+            _dbg = False
+        if _dbg:
+            try:
+                # x: clamp sonrası, x2: zclip sonrası, ema: önce/sonra
+                _ema_prev = self._ema
+                self._last_dbg = (float(p_raw), float(x), float(x2), None if _ema_prev is None else float(_ema_prev))
+            except Exception:
+                pass
+
+        if _dbg:
+            try:
+                if isinstance(getattr(self,'_dbg_last',None), dict):
+                    self._dbg_last.update({'x_clamped': x, 'x_zclip': x2})
+            except Exception:
+                pass
 
         if self._ema is None:
             self._ema = float(x2)
@@ -101,6 +133,12 @@ class ProbStabilizer:
 
         a = float(self.alpha)
         self._ema = a * float(x2) + (1.0 - a) * float(self._ema)
+        if _dbg:
+            try:
+                if isinstance(getattr(self,'_dbg_last',None), dict):
+                    self._dbg_last.update({'ema_after': self._ema})
+            except Exception:
+                pass
         return float(self._ema)
 
     def signal(self, p_ema: float) -> str:
