@@ -1,5 +1,7 @@
 import logging
 import os
+import time
+import csv
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
@@ -19,6 +21,24 @@ class TradeExecutor:
       - Flip (long -> short, short -> long) durumunda PnL hesaplar
       - DRY_RUN modunda gerçek emir atmadan her şeyi simüle eder
     """
+    def _append_hold_csv(self, row: dict) -> None:
+        """HOLD kararlarını logs/hold_decisions.csv içine ekler."""
+        try:
+            path = os.getenv("HOLD_DECISIONS_CSV_PATH", "logs/hold_decisions.csv")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            header = [
+                "timestamp","symbol","interval","signal",
+                "p","p_source","ensemble_p","model_confidence_factor","p_buy_ema","p_buy_raw",
+            ]
+            new_file = not Path(path).exists() or Path(path).stat().st_size == 0
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=header)
+                if new_file:
+                    w.writeheader()
+                w.writerow({k: row.get(k, "") for k in header})
+        except Exception:
+            pass
+
 
     def __init__(
         self,
@@ -582,11 +602,200 @@ class TradeExecutor:
         except Exception:
             signal = "HOLD"
 
+        # ✅ HOLD bug fix: mapping "HOLD" üretiyor; case-safe kontrol
+        if str(signal).upper() == "HOLD":
+            if getattr(self, "logger", None):
+                self.logger.info("[EXEC] Signal=HOLD")
+            return
+
         shadow = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes", "on")
         if shadow:
             return
 
         extra = extra or {}
+
+
+
+        # --- HOLD decision journal (auto) ---
+        # HOLD ise trade yok: sizing de yok. HOLD'ları ayrı CSV'ye yaz.
+        if signal == "HOLD":
+            try:
+                from pathlib import Path
+                import csv
+                from datetime import datetime
+        
+                p_val = None
+                p_src = "none"
+                if isinstance(extra, dict):
+                    for k in ("ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw"):
+                if k.startswith('probs.'):
+                    # probs: önce extra içinden, yoksa üst scope 'probs' değişkeninden dene
+                    kk = k.split('.', 1)[1]
+                    v = None
+                    if isinstance(extra, dict):
+                        _pd = extra.get('probs') or extra.get('probs_dict')
+                        if isinstance(_pd, dict):
+                            v = _pd.get(kk)
+                    if v is None:
+                        try:
+                            v = (probs or {}).get(kk)  # probs paramı varsa
+                        except Exception:
+                            v = None
+                else:
+                    v = extra.get(k)
+
+                        if v is not None:
+                            p_val = v
+                            p_src = k
+                            # snapshot debug (rate-limited)
+                            try:
+                                from datetime import datetime
+                                _now = datetime.utcnow().timestamp()
+                                _last = getattr(self, 'bt_extra_snapshot_last_ts', 0) or 0
+                                if k == 'model_confidence_factor' and (_now - float(_last)) > 60:
+                                    setattr(self, 'bt_extra_snapshot_last_ts', _now)
+                                    if getattr(self, 'logger', None):
+                                        self.logger.info('[EXEC][BT] extra snapshot | keys=%s mcf=%r p_buy_raw=%r p_buy_ema=%r ens=%r',
+                                                         sorted(list(extra.keys())) if isinstance(extra, dict) else None,
+                                                         (extra.get('model_confidence_factor') if isinstance(extra, dict) else None),
+                                                         (extra.get('p_buy_raw') if isinstance(extra, dict) else None),
+                                                         (extra.get('p_buy_ema') if isinstance(extra, dict) else None),
+                                                         (extra.get('ensemble_p') if isinstance(extra, dict) else None))
+                            except Exception:
+                                pass
+
+                            break
+        
+                try:
+                    p_val = float(p_val) if p_val is not None else None
+                except Exception:
+                    p_val = None
+        
+                # clamp 0..1
+                if p_val is not None:
+                    if p_val < 0.0: p_val = 0.0
+                    elif p_val > 1.0: p_val = 1.0
+        
+                outp = Path("logs/hold_decisions.csv")
+                outp.parent.mkdir(parents=True, exist_ok=True)
+        
+                newfile = not outp.exists()
+                with outp.open("a", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    if newfile:
+                        w.writerow(["ts","symbol","interval","p","p_source"])
+                    w.writerow([datetime.utcnow().isoformat(), symbol, interval, p_val, p_src])
+            except Exception:
+                pass
+            return
+
+        # --- HOLD tracking / cooldown / logging ---
+
+        now_ts = time.time()
+
+        signal_u = str(signal).strip().upper()
+
+        if not hasattr(self, "_hold_state"):
+
+            self._hold_state = {}
+
+        st = self._hold_state.get(symbol) or {"last_signal": None, "last_hold_ts": None}
+
+        # HOLD ise: state güncelle, HOLD kararını csv’ye yaz, trading’e devam etme (training_mode harici)
+
+        if signal_u == "HOLD":
+
+            st["last_signal"] = "HOLD"
+
+            st["last_hold_ts"] = now_ts
+
+            self._hold_state[symbol] = st
+
+            # HOLD confidence snapshot
+
+            if isinstance(extra, dict):
+
+                ens = extra.get("ensemble_p")
+
+                mcf = extra.get("model_confidence_factor")
+
+                pbe = extra.get("p_buy_ema")
+
+                pbr = extra.get("p_buy_raw")
+
+            else:
+
+                ens = mcf = pbe = pbr = None
+
+            # en “yakın” p seçimi (0..1 clamp)
+
+            p_val = ens if ens is not None else (mcf if mcf is not None else (pbe if pbe is not None else pbr))
+
+            p_src = "ensemble_p" if ens is not None else ("model_confidence_factor" if mcf is not None else ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none")))
+
+            try:
+
+                p_f = float(p_val) if p_val is not None else None
+
+                if p_f is not None:
+
+                    if p_f < 0.0: p_f = 0.0
+
+                    if p_f > 1.0: p_f = 1.0
+
+            except Exception:
+
+                p_f = None
+
+            self._append_hold_csv({
+
+                "timestamp": datetime.utcnow().isoformat(),
+
+                "symbol": symbol,
+
+                "interval": interval,
+
+                "signal": "HOLD",
+
+                "p": p_f,
+
+                "p_source": p_src,
+
+                "ensemble_p": ens,
+
+                "model_confidence_factor": mcf,
+
+                "p_buy_ema": pbe,
+
+                "p_buy_raw": pbr,
+
+            })
+
+            # HOLD sırasında sizing dahil hiçbir şey çalışmasın (log bile yok)
+
+            return
+
+        
+
+        # HOLD -> BUY/SELL cooldown
+
+        cooldown = int(os.getenv("HOLD_COOLDOWN_SEC", "0") or "0")
+
+        if st.get("last_signal") == "HOLD" and st.get("last_hold_ts") and cooldown > 0:
+
+            if now_ts - float(st.get("last_hold_ts") or 0) < cooldown:
+
+                if getattr(self, "logger", None):
+
+                    self.logger.info("[EXEC][HOLD] cooldown skip | symbol=%s remain=%.1fs", symbol, cooldown - (now_ts - float(st.get("last_hold_ts") or 0)))
+
+                return
+
+        
+
+        st["last_signal"] = signal_u
+
+        self._hold_state[symbol] = st
 
         if training_mode:
             return
@@ -597,7 +806,7 @@ class TradeExecutor:
         current_pos = self._get_position(symbol)
         current_side = current_pos["side"] if current_pos else None
 
-        if signal == "hold":
+        if str(signal).strip().upper() == "HOLD":
             if self.logger:
                 self.logger.info("[EXEC] Signal=HOLD")
             return
@@ -618,64 +827,63 @@ class TradeExecutor:
             qty = notional / price
 
         # --------------------------------------------------
-        # BT ENSEMBLE SIZING (🔥 DOĞRU YER 🔥)
+        # BT ENSEMBLE SIZING (GÜNCELLENDİ)
         # --------------------------------------------------
-        if os.getenv("ENABLE_BT_SIZING", "0").lower() in ("1", "true", "yes"):
+        # --- BT sizing (ensemble) ---
+        # HOLD ise sizing tamamen skip (log bile yok)
+        if signal != "HOLD" and os.getenv("ENABLE_BT_SIZING", "0") in ("1", "true", "True"):
             try:
                 pivot = float(os.getenv("BT_SIZING_PIVOT", "0.75"))
-                smin = float(os.getenv("BT_SIZING_MIN", "0.70"))
-                smax = float(os.getenv("BT_SIZING_MAX", "1.20"))
+                smin  = float(os.getenv("BT_SIZING_MIN", "0.6"))
+                smax  = float(os.getenv("BT_SIZING_MAX", "1.3"))
 
-                p_ens = None
+                raw_p = None
+                p_src = "none"
+
                 if isinstance(extra, dict):
-                    p_ens = (
-                        extra.get("ensemble_p")
-                        or extra.get("p_buy_raw")
-                        or extra.get("p_buy_ema")
-                        or extra.get("model_confidence_factor")
-                    )
+                    # Öncelik: ensemble_p -> p_buy_ema -> p_buy_raw -> model_confidence_factor
+                    for k in ("ensemble_p", "bt_p_buy_ema", "bt_p_buy_raw", "p_buy_ema", "p_buy_raw", "probs.p_used", "probs.p_single", "model_confidence_factor"):
+                        v = extra.get(k)
+                        if v is not None:
+                            raw_p = v
+                            p_src = k
+                            break
 
-                if p_ens is not None:
-                    p_ens = float(p_ens)
-
-                    if pivot <= 0:
-                        factor = 1.0
-                    elif p_ens <= pivot:
-                        factor = smin + (p_ens / pivot) * (1.0 - smin)
-                    else:
-                        denom = (1.0 - pivot) or 1e-9
-                        factor = 1.0 + ((p_ens - pivot) / denom) * (smax - 1.0)
-
-                    qty *= factor
-                    notional = qty * price
-
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][BT] sizing | p=%.4f factor=%.3f qty=%.6f notional=%.2f",
-                            p_ens,
-                            factor,
-                            qty,
-                            notional,
-                        )
+                if raw_p is None:
+                    # p yoksa sizing uygulama
+                    pass
                 else:
-                    if self.logger:
-                        self.logger.info("[EXEC][BT] sizing skipped | p missing")
+                    try:
+                        p_val = float(raw_p)
+                    except Exception:
+                        p_val = None
 
+                    if p_val is None:
+                        pass
+                    else:
+                        # clamp 0..1
+                        if p_val < 0.0:
+                            p_val = 0.0
+                        elif p_val > 1.0:
+                            p_val = 1.0
+
+                        # piecewise linear scale
+                        if pivot <= 0:
+                            factor = 1.0
+                        elif p_val <= pivot:
+                            factor = smin + (p_val / pivot) * (1.0 - smin)
+                        else:
+                            denom = (1.0 - pivot) if (1.0 - pivot) != 0 else 1e-9
+                            factor = 1.0 + ((p_val - pivot) / denom) * (smax - 1.0)
+
+                        qty *= factor
+                        notional *= factor
+
+                        if getattr(self, "logger", None):
+                            self.logger.info(
+                                "[EXEC][BT] sizing | p=%.4f src=%s raw=%r factor=%.3f qty=%.6f notional=%.2f",
+                                p_val, p_src, raw_p, factor, qty, notional
+                            )
             except Exception as e:
-                if self.logger:
+                if getattr(self, "logger", None):
                     self.logger.warning("[EXEC][BT] sizing error: %s", e)
-
-        # --------------------------------------------------
-        # Pozisyon aç / flip
-        # --------------------------------------------------
-        await self._open_or_flip_position(
-            side=signal,
-            signal=signal,
-            symbol=symbol,
-            price=price,
-            qty=qty,
-            notional=notional,
-            interval=interval,
-            probs=probs,
-            extra=extra,
-        )
