@@ -205,6 +205,25 @@ class HybridModel:
             return np.full(X.shape[0], 0.5, dtype=float)
 
         try:
+            # === SGD_SAT_DBG (auto) ===
+            try:
+                import os
+                import numpy as _np
+                from datetime import datetime as _dt
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+                _now = _dt.utcnow().timestamp()
+                _last = getattr(self, '_sgd_dbg_last_ts', 0) or 0
+                if _dbg and (_now - float(_last)) > 60:
+                    self._sgd_dbg_last_ts = _now
+                    _X = _np.asarray(X, dtype=float)
+                    _nan = float(_np.isnan(_X).mean()) if _X.size else 0.0
+                    self._log(20, '[SGDDBG] X shape=%s nan=%.4f min=%.6g max=%.6g mean=%.6g',
+                             tuple(_X.shape), _nan,
+                             float(_np.nanmin(_X)) if _X.size else 0.0,
+                             float(_np.nanmax(_X)) if _X.size else 0.0,
+                             float(_np.nanmean(_X)) if _X.size else 0.0)
+            except Exception:
+                pass
             proba = self.sgd_model.predict_proba(X)
             if proba.ndim == 2 and proba.shape[1] >= 2:
                 return proba[:, 1]

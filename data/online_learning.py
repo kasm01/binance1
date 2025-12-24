@@ -324,6 +324,26 @@ class OnlineLearner:
         - İsteğe bağlı batch_size ile küçük batch'ler halinde partial_fit yapılır.
         - Her çağrı sonunda model models/online_model.joblib olarak kaydedilir.
         """
+        # === LABEL_DIST_DBG (auto) ===
+        try:
+            from collections import Counter as _Counter
+            from datetime import datetime as _dt
+            _now = _dt.utcnow().timestamp()
+            _last = getattr(self, '_label_dbg_last_ts', 0) or 0
+            if (_now - float(_last)) > 60:
+                setattr(self, '_label_dbg_last_ts', _now)
+                _yy = y
+                try:
+                    _yy = list(_yy) if _yy is not None else []
+                except Exception:
+                    _yy = []
+                _c = _Counter(_yy)
+                lg = getattr(self, 'logger', None)
+                if lg:
+                    lg.info('[ONLINE][LABEL] last_batch=%d dist=%s', len(_yy), dict(_c))
+        except Exception:
+            pass
+
         X_clean, y_clean = self._sanitize_X_y(X, y)
         if X_clean.shape[0] == 0:
             logger.warning("[ONLINE] partial_update skipped: no valid samples.")
