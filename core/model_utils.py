@@ -1,6 +1,32 @@
 import numpy as np
 
 def safe_p_buy(model, X) -> float:
+    # === SAFE_P_BUY_DBG (auto) ===
+    try:
+        import numpy as _np
+        from datetime import datetime as _dt
+        _now = _dt.utcnow().timestamp()
+        _last = globals().get('_SAFE_P_BUY_DBG_LAST_TS', 0) or 0
+        if (_now - float(_last)) > 60:
+            globals()['_SAFE_P_BUY_DBG_LAST_TS'] = _now
+            _X = X
+            _Xa = _np.asarray(_X) if _X is not None else None
+            _x_min = float(_np.nanmin(_Xa)) if _Xa is not None else None
+            _x_max = float(_np.nanmax(_Xa)) if _Xa is not None else None
+            _x_nan = int(_np.isnan(_Xa).sum()) if _Xa is not None else None
+            _cls = type(model).__name__ if model is not None else None
+            _has_pp = hasattr(model, 'predict_proba')
+            # ham predict_proba snapshot (exception swallow)
+            _pp = None
+            if _has_pp:
+                try:
+                    _pp = model.predict_proba(X)
+                except Exception as _e:
+                    _pp = f'EXC:{_e}'
+            print("[SAFE_P_BUY_DBG] model=%s has_predict_proba=%s X[min,max,nan]=%r %r %r proba=%r" % (_cls, _has_pp, _x_min, _x_max, _x_nan, _pp))
+    except Exception:
+        pass
+    # === /SAFE_P_BUY_DBG ===
     """
     Online modelden p_buy üret:
       1) predict_proba varsa direkt
