@@ -795,7 +795,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                             float(micro_conf_scale),
                             float(effective_model_conf),
                             str(signal_side),
-                            getattr(globals().get("prob_stab", None), "_dbg_last", None),
+                            prob_dbg,  # (p_raw, x_clamped, x2_zclipped, ema_prev)
+
                         )
             except Exception:
                 pass
