@@ -694,6 +694,9 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 "mtf_debug": mtf_debug,
                 "whale_meta": whale_meta,
                 "atr": atr_value,
+
+                # SATDBG / P_USED_DBG için kaynak
+                "p_buy_source": (debug_single.get("mode") if isinstance(debug_single, dict) else "unknown"),
             }
 
             # ------------------------------------------------------------------
@@ -778,7 +781,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             # === SATURATION SNAPSHOT (auto) ===
             prob_dbg = getattr(prob_stab, "_last_dbg", None)
 
-            # rate-limit: 60sn (loop sık ise log şişmesin)
             try:
                 from datetime import datetime
 
@@ -788,49 +790,29 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 if (_now - float(_last)) > 60:
                     globals()["_SATDBG_LAST_TS"] = _now
 
-                    # --- resolve p_src for debug clarity ---
-                    p_src_dbg = "unknown"
-                    try:
-                        if isinstance(extra, dict):
-                            p_src_dbg = extra.get("p_buy_source") or extra.get("p_source") or p_src_dbg
-
-                        if p_src_dbg in (None, "", "unknown"):
-                            _mode = locals().get("mode") or locals().get("hybrid_mode") or ""
-                            _mode = str(_mode).strip().lower()
-                            if "lstm" in _mode:
-                                p_src_dbg = "lstm"
-                            elif "helper" in _mode:
-                                p_src_dbg = "sgd_helper"
-                            elif "sgd" in _mode:
-                                p_src_dbg = "sgd"
-                            elif "blend" in _mode or "hybrid" in _mode:
-                                p_src_dbg = "blend"
-
-                        # son çare: eldeki olasılık değişkenlerinden tahmin
-                        if p_src_dbg in (None, "", "unknown"):
-                            if locals().get("p_lstm", None) is not None and str(locals().get("mode", "")).lower().find("lstm") >= 0:
-                                p_src_dbg = "lstm"
-                            elif locals().get("p_sgd_helper", None) is not None:
-                                p_src_dbg = "sgd_helper"
-                            elif locals().get("p_sgd", None) is not None:
-                                p_src_dbg = "sgd"
-                    except Exception:
-                        p_src_dbg = "unknown"
+                    if isinstance(extra, dict):
+                        p_src_dbg = extra.get("p_buy_source") or "unknown"
+                    else:
+                        p_src_dbg = "noextra"
 
                     if system_logger:
                         system_logger.info(
-                            "[SATDBG] p_used=%.6f p_src=%s raw=%r ema=%r stable=%r mcf=%.6f micro=%.3f eff=%.6f signal_side=%s prob_dbg=%s",
+                            "[SATDBG] p_used=%.6f p_src=%s "
+                            "raw=%r ema=%r stable=%r "
+                            "mcf=%.6f micro=%.3f eff=%.6f "
+                            "signal_side=%s prob_dbg=%s",
                             float(p_used),
                             p_src_dbg,
-                            (extra.get("p_buy_raw") if isinstance(extra, dict) else None),
-                            (extra.get("p_buy_ema") if isinstance(extra, dict) else None),
-                            (extra.get("p_buy_stable") if isinstance(extra, dict) else None),
+                            extra.get("p_buy_raw") if isinstance(extra, dict) else None,
+                            extra.get("p_buy_ema") if isinstance(extra, dict) else None,
+                            extra.get("p_buy_stable") if isinstance(extra, dict) else None,
                             float(model_conf_factor),
                             float(micro_conf_scale),
                             float(effective_model_conf),
                             str(signal_side),
-                            prob_dbg,  # (p_raw, x_clamped, x2_zclipped, ema_prev)
+                            prob_dbg,
                         )
+
             except Exception:
                 pass
             # === /SATURATION SNAPSHOT ===
@@ -849,7 +831,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         system_logger.info(
                             "[P_USED_DBG] p_used=%.6f src=%s p_buy_raw=%r p_buy_ema=%r stable=%r thr_buy=%r thr_sell=%r",
                             float(p_used),
-                            (extra.get("p_buy_source", "unknown") if isinstance(extra, dict) else "unknown"),
+                            (extra.get("p_buy_source") or extra.get("p_source") or extra.get("mode") or "unknown") if isinstance(extra, dict) else "unknown",
                             (extra.get("p_buy_raw", None) if isinstance(extra, dict) else None),
                             (extra.get("p_buy_ema", None) if isinstance(extra, dict) else None),
                             (extra.get("p_buy_stable", None) if isinstance(extra, dict) else None),
