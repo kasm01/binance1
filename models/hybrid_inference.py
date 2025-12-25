@@ -635,6 +635,16 @@ class HybridModel:
         # main.py logger'ı için son debug state'ini sakla
         self.last_debug = debug
 
+        # --- export mode/source into extra for main.py SATDBG/P_USED_DBG ---
+        try:
+            if 'extra' not in locals() or not isinstance(locals().get('extra'), dict):
+                extra = {}
+            _m = locals().get('mode', None)
+            if _m is not None:
+                extra['mode'] = str(_m)
+                extra['p_buy_source'] = str(_m)
+        except Exception:
+            pass
         self._log(
             logging.INFO,
             "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
