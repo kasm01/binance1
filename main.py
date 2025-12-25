@@ -725,7 +725,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     whale_dir = str(whale_meta.get("direction", "none") or "none")
                 whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
 
-                p_buy_raw = safe_p_buy(online_model, X_last)
+                # patched: in HYBRID_MODE, feed stabilizer with p_used (avoid OnlineLearner saturation)
+                p_buy_raw = float(p_used)
                 p_buy_ema = prob_stab.update(p_buy_raw)
                 sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
 
