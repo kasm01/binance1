@@ -727,6 +727,9 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     whale_score = float(whale_meta.get("score", 0.0) or 0.0)
                     whale_dir = str(whale_meta.get("direction", "none") or "none")
                 whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
+                # trade_executor için direkt alanlar (kolay tüketim)
+                extra["whale_dir"] = whale_dir
+                extra["whale_score"] = float(whale_score)
 
                 # patched: in HYBRID_MODE, feed stabilizer with p_used (avoid OnlineLearner saturation)
                 p_buy_raw = float(p_used)
@@ -768,7 +771,47 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 extra["signal_source"] = "EMA"
 
             # ------------------------------
-            # Trend filtresi + mikro filtre
+            # Trend veto (15m/1h) + Whale veto/boost
+            # ------------------------------
+            try:
+                # Trend threshold'lar (env ile yönetilebilir)
+                trend_long_1h  = float(os.getenv("TREND_LONG_1H", "0.60"))
+                trend_long_15m = float(os.getenv("TREND_LONG_15M", "0.55"))
+                trend_short_1h  = float(os.getenv("TREND_SHORT_1H", "0.40"))
+                trend_short_15m = float(os.getenv("TREND_SHORT_15M", "0.45"))
+
+                # Whale threshold'lar
+                whale_strong_thr = float(os.getenv("WHALE_STRONG_THR", "0.60"))
+                whale_veto_thr   = float(os.getenv("WHALE_VETO_THR", "0.60"))
+
+                # 1) Trend veto: büyük TF ters ise HOLD
+                if signal_side in ("long", "short") and isinstance(p_1h, float) and isinstance(p_15m, float):
+                    if signal_side == "long" and not (p_1h > trend_long_1h and p_15m > trend_long_15m):
+                        if isinstance(extra, dict):
+                            extra["trend_veto"] = {"p_1h": p_1h, "p_15m": p_15m}
+                        signal_side = "hold"
+                    elif signal_side == "short" and not (p_1h < trend_short_1h and p_15m < trend_short_15m):
+                        if isinstance(extra, dict):
+                            extra["trend_veto"] = {"p_1h": p_1h, "p_15m": p_15m}
+                        signal_side = "hold"
+
+                # 2) Whale veto: güçlü ters whale varsa HOLD
+                if signal_side in ("long", "short") and whale_dir in ("long", "short"):
+                    if float(whale_score) >= whale_veto_thr and whale_dir != signal_side:
+                        if isinstance(extra, dict):
+                            extra["whale_veto"] = {"whale_dir": whale_dir, "whale_score": float(whale_score)}
+                        signal_side = "hold"
+
+                    # 3) Whale boost: aynı yönde güçlü whale varsa işaretle (sizing zaten trade_executor'da)
+                    if float(whale_score) >= whale_strong_thr and whale_dir == signal_side:
+                        if isinstance(extra, dict):
+                            extra["whale_boost"] = {"whale_dir": whale_dir, "whale_score": float(whale_score)}
+
+            except Exception:
+                pass
+
+            # ------------------------------
+            # Mikro filtre (1m) + model güveni (p_used tabanlı)
             # ------------------------------
             micro_conf_scale = 1.0
             if signal_side == "long" and isinstance(p_1m, float) and p_1m < 0.30:
@@ -776,7 +819,18 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             elif signal_side == "short" and isinstance(p_1m, float) and p_1m > 0.70:
                 micro_conf_scale = 0.7
 
-            effective_model_conf = float(model_conf_factor) * micro_conf_scale
+            # Model güvenini p_used'dan türet (0..1). 0.5'e yakınsa düşük güven.
+            base_conf = None
+            try:
+                base_conf = abs(float(p_used) - 0.5) * 2.0
+                if base_conf < 0.0:
+                    base_conf = 0.0
+                elif base_conf > 1.0:
+                    base_conf = 1.0
+            except Exception:
+                base_conf = float(model_conf_factor) if model_conf_factor is not None else 1.0
+
+            effective_model_conf = float(base_conf) * micro_conf_scale
 
             # === SATURATION SNAPSHOT (auto) ===
             prob_dbg = getattr(prob_stab, "_last_dbg", None)
