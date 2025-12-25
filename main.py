@@ -980,11 +980,39 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
             # --- /model_confidence_factor ---
 
+            # ------------------------------
+            # Veto / Boost flag'lerini log için hazırla
+            # ------------------------------
+            veto_flags = ""
+
+            try:
+                if isinstance(extra, dict):
+                    if "trend_veto" in extra:
+                        veto_flags += " trend_veto=1"
+                    if "whale_veto" in extra:
+                        veto_flags += " whale_veto=1"
+                    if "whale_boost" in extra:
+                        veto_flags += " whale_boost=1"
+            except Exception:
+                pass
+
             if system_logger:
-                whale_dir_dbg = whale_meta.get("direction") if isinstance(whale_meta, dict) else None
-                whale_score_dbg = whale_meta.get("score") if isinstance(whale_meta, dict) else None
+                whale_dir_dbg = (
+                    whale_meta.get("direction")
+                    if isinstance(whale_meta, dict)
+                    else None
+                )
+                whale_score_dbg = (
+                    whale_meta.get("score")
+                    if isinstance(whale_meta, dict)
+                    else None
+                )
+
                 system_logger.info(
-                    "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f p_1m=%s p_5m=%s p_15m=%s p_1h=%s whale_dir=%s whale_score=%s",
+                    "[SIGNAL] source=%s p_used=%.4f signal=%s "
+                    "model_conf=%.3f eff_conf=%.3f "
+                    "p_1m=%s p_5m=%s p_15m=%s p_1h=%s "
+                    "whale_dir=%s whale_score=%s%s",
                     extra.get("signal_source", "unknown"),
                     float(p_used),
                     signal_side,
@@ -995,7 +1023,12 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
                     f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
                     whale_dir_dbg if whale_dir_dbg is not None else "None",
-                    f"{whale_score_dbg:.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
+                    (
+                        f"{whale_score_dbg:.3f}"
+                        if isinstance(whale_score_dbg, (int, float))
+                        else "None"
+                    ),
+                    veto_flags,
                 )
 
             last_price = float(raw_df["close"].iloc[-1])
@@ -1011,14 +1044,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 probs=probs,
                 extra=extra,
             )
-
-        except Exception as e:
-            if system_logger:
-                system_logger.exception("[LOOP ERROR] %s", e)
-            else:
-                print("[LOOP ERROR]", e)
-
-        await asyncio.sleep(LOOP_SLEEP_SECONDS)
 
 
 # ----------------------------------------------------------------------
