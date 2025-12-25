@@ -1,55 +1,94 @@
 import numpy as np
 
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 def safe_p_buy(model, X) -> float:
-    # === SAFE_P_BUY_DBG (auto) ===
-    try:
-        import numpy as _np
-        from datetime import datetime as _dt
-        _now = _dt.utcnow().timestamp()
-        _last = globals().get('_SAFE_P_BUY_DBG_LAST_TS', 0) or 0
-        if (_now - float(_last)) > 60:
-            globals()['_SAFE_P_BUY_DBG_LAST_TS'] = _now
-            _X = X
-            _Xa = _np.asarray(_X) if _X is not None else None
-            _x_min = float(_np.nanmin(_Xa)) if _Xa is not None else None
-            _x_max = float(_np.nanmax(_Xa)) if _Xa is not None else None
-            _x_nan = int(_np.isnan(_Xa).sum()) if _Xa is not None else None
-            _cls = type(model).__name__ if model is not None else None
-            _has_pp = hasattr(model, 'predict_proba')
-            # ham predict_proba snapshot (exception swallow)
-            _pp = None
-            if _has_pp:
-                try:
-                    _pp = model.predict_proba(X)
-                except Exception as _e:
-                    _pp = f'EXC:{_e}'
-            print("[SAFE_P_BUY_DBG] model=%s has_predict_proba=%s X[min,max,nan]=%r %r %r proba=%r" % (_cls, _has_pp, _x_min, _x_max, _x_nan, _pp))
-    except Exception:
-        pass
-    # === /SAFE_P_BUY_DBG ===
     """
     Online modelden p_buy üret:
-      1) predict_proba varsa direkt
-      2) decision_function varsa sigmoid
+      1) predict_proba (tercih)
+      2) decision_function -> sigmoid
       3) fallback predict (0/1)
+
+    Notlar:
+      - robust: exception olursa fallback’a iner
+      - clamp: NaN/inf/taşma durumlarını güvenli aralıkta tutar
+      - debug: 60 sn’de bir gerçek p_buy’ı ve X stats basar
     """
     # --- DISABLE_SGD OnlineLearner guard ---
     try:
         import os
-        _disable_sgd = str(os.getenv("DISABLE_SGD","0")).lower() in ("1","true","yes","on")
+        _disable_sgd = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
         if _disable_sgd and model.__class__.__name__ == "OnlineLearner":
             return 0.5
     except Exception:
         pass
 
+    def _clamp01(v: float) -> float:
+        if not np.isfinite(v):
+            return 0.5
+        if v < 0.0:
+            return 0.0
+        if v > 1.0:
+            return 1.0
+        return float(v)
+
+    # --- compute p safely ---
+    p = None
+    src = "UNKNOWN"
+    err = None
+
     if hasattr(model, "predict_proba"):
-        p = model.predict_proba(X)[0, 1]
-        return float(p)
+        try:
+            proba = model.predict_proba(X)
+            # proba shape: (n, 2) bekliyoruz
+            p = float(proba[0, 1])
+            src = "predict_proba"
+        except Exception as e:
+            err = f"predict_proba:{e}"
 
-    if hasattr(model, "decision_function"):
-        z = float(model.decision_function(X)[0])
-        p = 1.0 / (1.0 + np.exp(-z))
-        return float(p)
+    if p is None and hasattr(model, "decision_function"):
+        try:
+            z = float(model.decision_function(X)[0])
+            # sigmoid
+            p = float(1.0 / (1.0 + np.exp(-z)))
+            src = "decision_function"
+        except Exception as e:
+            err = (err + " | " if err else "") + f"decision_function:{e}"
 
-    pred = model.predict(X)[0]
-    return 1.0 if int(pred) == 1 else 0.0
+    if p is None:
+        try:
+            pred = model.predict(X)[0]
+            p = 1.0 if int(pred) == 1 else 0.0
+            src = "predict"
+        except Exception as e:
+            # en kötü durumda bile botu düşürmeyelim
+            logger.exception("[safe_p_buy] predict fallback failed: %s", e)
+            return 0.5
+
+    p = _clamp01(p)
+
+    # --- debug throttle 60s ---
+    try:
+        import time
+        now = time.time()
+        last = globals().get("_SAFE_P_BUY_DBG_LAST_TS", 0) or 0
+        if (now - float(last)) > 60:
+            globals()["_SAFE_P_BUY_DBG_LAST_TS"] = now
+            Xa = np.asarray(X) if X is not None else None
+            x_min = float(np.nanmin(Xa)) if Xa is not None else None
+            x_max = float(np.nanmax(Xa)) if Xa is not None else None
+            x_nan = int(np.isnan(Xa).sum()) if Xa is not None else None
+            cls = type(model).__name__ if model is not None else None
+            loss = getattr(model, "loss", None)
+            logger.info(
+                "[SAFE_P_BUY_DBG] model=%s loss=%s src=%s p_buy=%.10f X[min,max,nan]=%r %r %r err=%r",
+                cls, loss, src, p, x_min, x_max, x_nan, err
+            )
+    except Exception:
+        pass
+
+    return p
+

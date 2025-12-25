@@ -1,4 +1,10 @@
 from __future__ import annotations
+import logging
+import numpy as np
+logger = logging.getLogger(__name__)
+
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -308,6 +314,10 @@ class OnlineLearner:
             X_clean.shape[1],
         )
 
+        u = np.unique(y_batch)
+        if u.size < 2:
+            logger.warning("[ONLINE] skip partial_fit: single-class batch (label=%s, n=%d)", int(u[0]), len(y_batch))
+            return
         self.model.partial_fit(X_clean, y_clean, classes=np.asarray(classes, dtype=int))
         self._is_fitted = True
 
@@ -396,9 +406,17 @@ class OnlineLearner:
             y_batch = y_clean[batch_idx]
 
             if not self._is_fitted:
+                u = np.unique(y_batch)
+                if u.size < 2:
+                    logger.warning("[ONLINE] skip partial_fit: single-class batch (label=%s, n=%d)", int(u[0]), len(y_batch))
+                    return
                 self.model.partial_fit(X_batch, y_batch, classes=classes)
                 self._is_fitted = True
             else:
+                u = np.unique(y_batch)
+                if u.size < 2:
+                    logger.warning("[ONLINE] skip partial_fit: single-class batch (label=%s, n=%d)", int(u[0]), len(y_batch))
+                    return
                 self.model.partial_fit(X_batch, y_batch)
 
         logger.info(
