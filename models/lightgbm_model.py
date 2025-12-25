@@ -45,3 +45,21 @@ class LightGBMModel:
         obj = cls()
         obj.model = joblib.load(path)
         return obj
+
+    @classmethod
+    def load(cls, path: str):
+        """Load a trained LightGBM model from disk (joblib)."""
+        import joblib
+        obj = cls()
+        obj.model = joblib.load(path)
+        return obj
+
+    def predict_proba_1d(self, X):
+        """Return p(class=1) as 1D array."""
+        import numpy as np
+        proba = self.model.predict_proba(X)
+        proba = np.asarray(proba)
+        if proba.ndim == 2 and proba.shape[1] >= 2:
+            return proba[:, 1].astype(float)
+        return proba.reshape(-1).astype(float)
+

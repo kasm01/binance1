@@ -312,6 +312,7 @@ class OnlineLearner:
         self._is_fitted = True
 
     def partial_update(
+
         self,
         X: Union[np.ndarray, "Any"],
         y: ArrayLike,
@@ -324,6 +325,29 @@ class OnlineLearner:
         - İsteğe bağlı batch_size ile küçük batch'ler halinde partial_fit yapılır.
         - Her çağrı sonunda model models/online_model.joblib olarak kaydedilir.
         """
+        # === ONLINE_LABEL_DIST_DBG (auto) ===
+        try:
+            import os
+            _dbg = str(os.getenv('ONLINE_LABEL_DBG','0')).lower() in ('1','true','yes','on')
+        except Exception:
+            _dbg = False
+        if _dbg:
+            try:
+                from collections import Counter
+                from datetime import datetime
+                _now = datetime.utcnow().timestamp()
+                _last = getattr(self, '_label_dbg_last_ts', 0) or 0
+                if (_now - float(_last)) > 60:
+                    setattr(self, '_label_dbg_last_ts', _now)
+                    _y = locals().get('y', None)
+                    if _y is not None:
+                        c = Counter(list(_y))
+                        if getattr(self, 'logger', None):
+                            self.logger.info('[ONLINE][YDBG] y_dist=%s n=%s', dict(c), len(_y))
+            except Exception:
+                pass
+        # === /ONLINE_LABEL_DIST_DBG ===
+
         # === LABEL_DIST_DBG (auto) ===
         try:
             from collections import Counter as _Counter

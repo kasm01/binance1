@@ -1,4 +1,5 @@
 import os
+from models.sgd_helper_runtime import SGDHelperRuntime
 import json
 import logging
 from typing import Any, Dict, Optional, Tuple, Union
@@ -35,6 +36,11 @@ class HybridModel:
     def __init__(self, model_dir: str, interval: str, logger: Optional[logging.Logger] = None) -> None:
         self.model_dir = model_dir
         self.interval = interval
+        # --- SGD helper (aux) ---
+        self.sgd_helper = None
+        self.enable_sgd_helper = str(os.getenv("ENABLE_SGD_HELPER","1")).lower() in ("1","true","yes","on")
+        self.sgd_helper_sat_thr = float(os.getenv("SGD_HELPER_SAT_THR","0.95"))
+
         self.logger = logger or logging.getLogger("system")
 
         # hybrid weight: p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
@@ -111,6 +117,19 @@ class HybridModel:
             self.meta.update(meta_file)
             self.use_lstm_hybrid = bool(self.meta.get("use_lstm_hybrid", False))
             self._log(logging.INFO, "[HYBRID] Meta loaded from %s", path)
+            # --- load SGD helper bundle (optional) ---
+            try:
+                _disable_sgd = str(os.getenv("DISABLE_SGD","0")).lower() in ("1","true","yes","on")
+                if self.enable_sgd_helper and (not _disable_sgd):
+                    helper_path = os.getenv("SGD_HELPER_PATH", os.path.join(self.model_dir, "sgd_helper.joblib"))
+                    if os.path.exists(helper_path):
+                        self.sgd_helper = SGDHelperRuntime(helper_path)
+                        self._log(logging.INFO, "[HYBRID] SGD helper loaded from %s", helper_path)
+                    else:
+                        self._log(logging.WARNING, "[HYBRID] SGD helper not found: %s", helper_path)
+            except Exception as _e:
+                self._log(logging.WARNING, "[HYBRID] SGD helper load failed: %s", _e)
+
         except FileNotFoundError:
             self._log(
                 logging.WARNING,
@@ -201,7 +220,77 @@ class HybridModel:
     # SGD part
     # ------------------------------------------------------------------
     def _predict_sgd_proba(self, X: np.ndarray) -> np.ndarray:
+        # --- runtime switch: disable SGD (ENV: DISABLE_SGD=1) ---
+        try:
+            import os
+            _disable = str(os.getenv('DISABLE_SGD','0')).lower() in ('1','true','yes','on')
+        except Exception:
+            _disable = False
+        if _disable:
+            import numpy as _np
+            return _np.full(X.shape[0], 0.5, dtype=float)
+
         if self.sgd_model is None:
+            # === SGD_SAT_PROOF_DBG (auto) ===
+            try:
+                import os, numpy as np, time
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+            except Exception:
+                _dbg = False
+            if _dbg:
+                try:
+                    _now = time.time()
+                    _last = getattr(self, '_sgd_sat_proof_last_ts', 0) or 0
+                    if (_now - float(_last)) > 60:
+                        setattr(self, '_sgd_sat_proof_last_ts', _now)
+                        _X = np.asarray(X, dtype=float)
+                        _nan = int(np.isnan(_X).sum()) if _X.size else 0
+                        _xmin = float(np.nanmin(_X)) if _X.size else 0.0
+                        _xmax = float(np.nanmax(_X)) if _X.size else 0.0
+                        _Xs = None
+                        try:
+                            sc = getattr(self, 'scaler', None)
+                            _Xs = sc.transform(_X) if sc is not None else None
+                        except Exception:
+                            _Xs = None
+                        if _Xs is not None:
+                            _Xs = np.asarray(_Xs, dtype=float)
+                            _snan = int(np.isnan(_Xs).sum()) if _Xs.size else 0
+                            _smin = float(np.nanmin(_Xs)) if _Xs.size else 0.0
+                            _smax = float(np.nanmax(_Xs)) if _Xs.size else 0.0
+                        else:
+                            _snan = None; _smin = None; _smax = None
+            
+                        mdl = getattr(self, 'model', None) or getattr(self, 'sgd_model', None)
+                        dfmn = dfmx = None
+                        try:
+                            if mdl is not None and hasattr(mdl, 'decision_function'):
+                                _df = mdl.decision_function(_Xs if _Xs is not None else _X)
+                                _df = np.asarray(_df, dtype=float).reshape(-1)
+                                dfmn = float(np.nanmin(_df)) if _df.size else None
+                                dfmx = float(np.nanmax(_df)) if _df.size else None
+                        except Exception:
+                            pass
+            
+                        # proba değişken adını yakalamak için: local scope'da en son üretileni arar
+                        _p = locals().get('proba', None)
+                        pmin = pmax = None
+                        try:
+                            if _p is not None:
+                                _p = np.asarray(_p, dtype=float)
+                                pmin = float(np.nanmin(_p))
+                                pmax = float(np.nanmax(_p))
+                        except Exception:
+                            pass
+            
+                        self._log(
+                            20,
+                            '[SGD_SAT_PROOF] X[min,max,nan]=%.6g %.6g %s | Xs[min,max,nan]=%s %s %s | df[min,max]=%s %s | proba[min,max]=%s %s',
+                            _xmin, _xmax, _nan, _smin, _smax, _snan, dfmn, dfmx, pmin, pmax
+                        )
+                except Exception:
+                    pass
+            # === /SGD_SAT_PROOF_DBG ===
             return np.full(X.shape[0], 0.5, dtype=float)
 
         try:
@@ -224,9 +313,194 @@ class HybridModel:
                              float(_np.nanmean(_X)) if _X.size else 0.0)
             except Exception:
                 pass
+            # === SGD_COLMAX_DBG (auto) ===
+            try:
+                import os, numpy as _np, logging
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+            except Exception:
+                _dbg = False
+            if _dbg:
+                try:
+                    _X = _np.asarray(X)
+                    if _X.ndim == 2 and _X.shape[1] > 0:
+                        _m = _np.nanmax(_np.abs(_X), axis=0)
+                        _top = _np.argsort(_m)[-5:][::-1]
+                        _pairs = []
+                        for _i in _top:
+                            _pairs.append('c%d=%.4g' % (int(_i), float(_m[_i])))
+                        self._log(logging.INFO, '[SGDDBG] top_abs_cols=%s', ','.join(_pairs))
+                except Exception:
+                    pass
+
+            # === SGD_PROOF_DBG (auto) ===
+            # Proof: what SGD model returns (ENV: SGD_PROBA_DEBUG=1)
+            try:
+                import os, numpy as _np
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+            except Exception:
+                _dbg = False
+            if _dbg:
+                try:
+                    _t = type(getattr(self,'sgd_model',None))
+                    _name = getattr(_t,'__name__', str(_t))
+                    _mod  = getattr(_t,'__module__', '')
+                    _df = None
+                    try:
+                        _df = self.sgd_model.decision_function(X)
+                    except Exception:
+                        _df = None
+                    if _df is not None:
+                        _df = _np.asarray(_df)
+                        self._log(logging.INFO, '[SGDPROOF] model=%s.%s decision_function: min=%.6g max=%.6g mean=%.6g', _mod, _name, float(_df.min()), float(_df.max()), float(_df.mean()))
+                    else:
+                        self._log(logging.INFO, '[SGDPROOF] model=%s.%s decision_function: None', _mod, _name)
+                except Exception as _e:
+                    self._log(logging.INFO, '[SGDPROOF] meta_error=%r', _e)
+            # === SGDPROOF_MIN (auto) ===
+            try:
+                import os, numpy as _np
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+            except Exception:
+                _dbg = False
+            if _dbg:
+                try:
+                    _t = type(getattr(self,'sgd_model',None))
+                    self._log(logging.INFO, '[SGDPROOF] model=%s.%s Xshape=%s Xmin=%.6g Xmax=%.6g', getattr(_t,'__module__',''), getattr(_t,'__name__',''), getattr(X,'shape',None), float(_np.min(X)), float(_np.max(X)))
+                except Exception as _e:
+                    self._log(logging.INFO, '[SGDPROOF] meta_error=%r', _e)
             proba = self.sgd_model.predict_proba(X)
+            # === SGD_PROBA_SAT_DBG (auto) ===
+            try:
+                import os, numpy as _np, logging
+                _dbg = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+            except Exception:
+                _dbg = False
+            if _dbg:
+                try:
+                    from datetime import datetime as _dt
+                    _now = _dt.utcnow().timestamp()
+                    _last = getattr(self, '_sgd_dbg_last_ts', 0) or 0
+                    if (_now - float(_last)) > 60:
+                        setattr(self, '_sgd_dbg_last_ts', _now)
+                        _X = _np.asarray(X)
+                        _nan = int(_np.isnan(_X).sum()) if _X.size else 0
+                        _inf = int(_np.isinf(_X).sum()) if _X.size else 0
+                        _xmin = float(_np.nanmin(_X)) if _X.size else 0.0
+                        _xmax = float(_np.nanmax(_X)) if _X.size else 0.0
+                        _xmean = float(_np.nanmean(_X)) if _X.size else 0.0
+                        # kolon std (tamamen sabit feature var mı?)
+                        _std_min = None
+                        _std_max = None
+                        try:
+                            if _X.ndim == 2 and _X.shape[0] > 1:
+                                _std = _np.nanstd(_X, axis=0)
+                                _std_min = float(_np.nanmin(_std))
+                                _std_max = float(_np.nanmax(_std))
+                        except Exception:
+                            pass
+                        _P = _np.asarray(proba)
+                        # proba matrisi ise class1 sütununu al
+                        if _P.ndim == 2 and _P.shape[1] >= 2:
+                            _p1 = _P[:, 1]
+                        else:
+                            _p1 = _P.reshape(-1)
+                        _p1 = _np.clip(_p1.astype(float), 0.0, 1.0)
+                        _p_mean = float(_p1.mean()) if _p1.size else 0.0
+                        _p_min = float(_p1.min()) if _p1.size else 0.0
+                        _p_max = float(_p1.max()) if _p1.size else 0.0
+                        _p_ones = float((_p1 >= 0.999999).mean()) if _p1.size else 0.0
+                        _p_zeros = float((_p1 <= 0.000001).mean()) if _p1.size else 0.0
+                        # decision_function varsa ek bilgi
+                        _df_min = _df_max = None
+                        try:
+                            if hasattr(self.sgd_model, 'decision_function'):
+                                _df = self.sgd_model.decision_function(_X)
+                                _df = _np.asarray(_df).reshape(-1)
+                                _df_min = float(_np.nanmin(_df))
+                                _df_max = float(_np.nanmax(_df))
+                        except Exception:
+                            pass
+                        # LOG: tek satırda kanıt
+                        try:
+                            self._log(
+                                logging.INFO,
+                                '[SGDDBG] Xshape=%s nan=%d inf=%d xmin=%.4g xmax=%.4g xmean=%.4g std_min=%s std_max=%s | p1_mean=%.6f p1_min=%.6f p1_max=%.6f ones=%.3f zeros=%.3f df_min=%s df_max=%s',
+                                tuple(_X.shape), _nan, _inf, _xmin, _xmax, _xmean,
+                                ('%.4g'%_std_min if _std_min is not None else 'None'),
+                                ('%.4g'%_std_max if _std_max is not None else 'None'),
+                                _p_mean, _p_min, _p_max, _p_ones, _p_zeros,
+                                ('%.4g'%_df_min if _df_min is not None else 'None'),
+                                ('%.4g'%_df_max if _df_max is not None else 'None'),
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            # === /SGD_PROBA_SAT_DBG ===
+            # === SGD_PROBA_STATS_DBG (auto) ===
+            try:
+                import os
+                import numpy as _np
+                from datetime import datetime as _dt
+                # After p1 extraction, log raw p1 stats (before/after helper if present)
+                if _dbg:
+                    try:
+                        import numpy as _np
+                        _p1 = _np.asarray(p1, dtype=float)
+                        self._log(logging.INFO, '[SGDPROOF] p1_raw: min=%.6g max=%.6g mean=%.6g uniq_head=%s', float(_p1.min()), float(_p1.max()), float(_p1.mean()), _np.unique(_p1)[:5])
+                    except Exception as _e:
+                        self._log(logging.INFO, '[SGDPROOF] p1_stat_error=%r', _e)
+                _dbg2 = str(os.getenv('SGD_PROBA_DEBUG','0')).lower() in ('1','true','yes','on')
+                _now2 = _dt.utcnow().timestamp()
+                _last2 = getattr(self, '_sgd_dbg_proba_ts', 0) or 0
+                if _dbg2 and (_now2 - float(_last2)) > 60:
+                    self._sgd_dbg_proba_ts = _now2
+                    _P = _np.asarray(proba)
+                    if _P.ndim == 2 and _P.shape[1] >= 2:
+                        _p1 = _P[:, 1].astype(float)
+                    else:
+                        _p1 = _P.reshape(-1).astype(float)
+                    _p1 = _np.nan_to_num(_p1, nan=0.5, posinf=1.0, neginf=0.0)
+                    one = float((_p1 >= 0.999999).mean()) if _p1.size else 0.0
+                    zero = float((_p1 <= 0.000001).mean()) if _p1.size else 0.0
+                    uniq = _np.unique(_p1[:min(5000, _p1.size)])
+                    self._log(20, '[SGDDBG] p1 stats: min=%.6g max=%.6g mean=%.6g one_ratio=%.3f zero_ratio=%.3f uniq_head=%s',
+                             float(_np.min(_p1)) if _p1.size else 0.0,
+                             float(_np.max(_p1)) if _p1.size else 0.0,
+                             float(_np.mean(_p1)) if _p1.size else 0.0,
+                             one, zero,
+                             str(uniq[:10]))
+            except Exception:
+                pass
             if proba.ndim == 2 and proba.shape[1] >= 2:
                 return proba[:, 1]
+                # === SGD_HELPER_RUNTIME (auto) ===
+                # SGD helper: center->0.5, compress around 0.5, optional disable
+                try:
+                    import os
+                    _disable = str(os.getenv('DISABLE_SGD','0')).lower() in ('1','true','yes','on')
+                    _center  = str(os.getenv('SGD_CENTER','1')).lower() in ('1','true','yes','on')
+                    _band    = float(os.getenv('SGD_BAND','0.10'))  # +/- band around 0.5
+                except Exception:
+                    _disable, _center, _band = False, True, 0.10
+                if _disable:
+                    try:
+                        import numpy as np
+                        return np.full(X.shape[0], 0.5, dtype=float)
+                    except Exception:
+                        return np.array([0.5], dtype=float)
+                try:
+                    import numpy as np
+                    p1 = np.asarray(p1, dtype=float)
+                    p1 = np.clip(p1, 0.0, 1.0)
+                    if _center:
+                        # shift mean towards 0.5
+                        p1 = p1 - (float(np.mean(p1)) - 0.5)
+                    # compress around 0.5 so SGD can't dominate
+                    p1 = 0.5 + np.clip(p1 - 0.5, -abs(_band), abs(_band))
+                    p1 = np.clip(p1, 0.0, 1.0)
+                except Exception:
+                    pass
             return proba.reshape(-1)
         except Exception:
             return np.full(X.shape[0], 0.5, dtype=float)
@@ -316,17 +590,34 @@ class HybridModel:
 
         # SGD
         p_sgd = self._predict_sgd_proba(X_arr)
+        # === DISABLE_SGD_GUARD (auto) ===
+        try:
+            import os
+            _disable_sgd = str(os.getenv('DISABLE_SGD','0')).lower() in ('1','true','yes','on')
+        except Exception:
+            _disable_sgd = False
+        if _disable_sgd:
+            try:
+                import numpy as np
+                p_sgd = np.full(X_arr.shape[0], 0.5, dtype=float)
+            except Exception:
+                pass
+            debug['sgd_disabled'] = True
+        else:
+            debug['sgd_disabled'] = False
 
         # LSTM
         p_lstm, lstm_debug = self._predict_lstm_proba(X_arr)
 
         # Combine
+        # Combine (TEMP): disable SGD in decision path (keep computed for debug)
+        # If LSTM available -> use LSTM; else fallback to 0.5 (not SGD)
         if self.use_lstm_hybrid and lstm_debug.get("lstm_used", False):
-            p_hybrid = self.alpha * p_lstm + (1.0 - self.alpha) * p_sgd
-            mode = "lstm+sgd"
+            p_hybrid = p_lstm
+            mode = "lstm_only"
         else:
-            p_hybrid = p_sgd
-            mode = "sgd_only"
+            p_hybrid = np.full(X_arr.shape[0], 0.5, dtype=float)
+            mode = "uniform_fallback"
 
         debug.update(
             {

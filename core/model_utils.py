@@ -33,6 +33,15 @@ def safe_p_buy(model, X) -> float:
       2) decision_function varsa sigmoid
       3) fallback predict (0/1)
     """
+    # --- DISABLE_SGD OnlineLearner guard ---
+    try:
+        import os
+        _disable_sgd = str(os.getenv("DISABLE_SGD","0")).lower() in ("1","true","yes","on")
+        if _disable_sgd and model.__class__.__name__ == "OnlineLearner":
+            return 0.5
+    except Exception:
+        pass
+
     if hasattr(model, "predict_proba"):
         p = model.predict_proba(X)[0, 1]
         return float(p)
