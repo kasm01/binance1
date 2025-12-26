@@ -2,13 +2,11 @@
   "interval": "1h",
   "symbol": "BTCUSDT",
   "feature_schema": [
-    "open_time",
     "open",
     "high",
     "low",
     "close",
     "volume",
-    "close_time",
     "quote_asset_volume",
     "number_of_trades",
     "taker_buy_base_volume",
@@ -25,12 +23,47 @@
     "vol_10",
     "dummy_extra"
   ],
-  "feature_source": "fixed_schema",
+  "feature_source": "train_sgd_online_strict::make_matrix(FEATURE_SCHEMA_22)",
   "n_samples": 4320,
-  "best_auc": 0.5520898081663274,
-  "best_side": "long",
-  "use_lstm_hybrid": false,
-  "seq_len": 32,
-  "meta_version": 1,
-  "label_horizon": 1
+  "n_features": 20,
+  "label_horizon": 3,
+  "label_thr": 0.0005,
+  "alpha": 1e-05,
+  "max_iter": 120000,
+  "tol": 1e-06,
+  "meta_version": 4,
+  "walk_forward": [
+    {
+      "fold": 1,
+      "auc": 0.5586503959536895,
+      "pnl": 0.007606297977480803,
+      "n_test": 720
+    },
+    {
+      "fold": 2,
+      "auc": 0.547306455680242,
+      "pnl": 0.057984262427688255,
+      "n_test": 720
+    },
+    {
+      "fold": 3,
+      "auc": 0.5030287597132517,
+      "pnl": 0.03717604330591119,
+      "n_test": 720
+    },
+    {
+      "fold": 4,
+      "auc": 0.52843336368093,
+      "pnl": 0.11994085278676044,
+      "n_test": 720
+    },
+    {
+      "fold": 5,
+      "auc": 0.47493489583333337,
+      "pnl": -0.03695061737228488,
+      "n_test": 720
+    }
+  ],
+  "wf_auc_mean": 0.5224707741722894,
+  "wf_pnl_sum": 0.1857568391255558
 }

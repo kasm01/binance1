@@ -1,10 +1,10 @@
+from features.pipeline import make_matrix
 import os
 from models.sgd_helper_runtime import SGDHelperRuntime
 import json
 import logging
 from typing import Any, Dict, Optional, Tuple, Union
 
-import numpy as np
 import pandas as pd
 from joblib import load
 # ----------------------------------------------------------------------
@@ -291,7 +291,7 @@ class HybridModel:
                 except Exception:
                     pass
             # === /SGD_SAT_PROOF_DBG ===
-            return np.full(X.shape[0], 0.5, dtype=float)
+        return np.full(X.shape[0], 0.5, dtype=float)
 
         try:
             # === SGD_SAT_DBG (auto) ===
@@ -483,14 +483,14 @@ class HybridModel:
                     _band    = float(os.getenv('SGD_BAND','0.10'))  # +/- band around 0.5
                 except Exception:
                     _disable, _center, _band = False, True, 0.10
+
                 if _disable:
                     try:
-                        import numpy as np
                         return np.full(X.shape[0], 0.5, dtype=float)
                     except Exception:
                         return np.array([0.5], dtype=float)
+
                 try:
-                    import numpy as np
                     p1 = np.asarray(p1, dtype=float)
                     p1 = np.clip(p1, 0.0, 1.0)
                     if _center:
@@ -499,11 +499,9 @@ class HybridModel:
                     # compress around 0.5 so SGD can't dominate
                     p1 = 0.5 + np.clip(p1 - 0.5, -abs(_band), abs(_band))
                     p1 = np.clip(p1, 0.0, 1.0)
+                    return p1.reshape(-1)
                 except Exception:
-                    pass
-            return proba.reshape(-1)
-        except Exception:
-            return np.full(X.shape[0], 0.5, dtype=float)
+                    return np.full(X.shape[0], 0.5, dtype=float)
 
     # ------------------------------------------------------------------
     # LSTM part
@@ -528,7 +526,7 @@ class HybridModel:
             and self.lstm_scaler is not None
         ):
             debug["lstm_used"] = False
-            return np.full(X.shape[0], 0.5, dtype=float), debug
+        return np.full(X.shape[0], 0.5, dtype=float), debug
 
         try:
             X_scaled = self.lstm_scaler.transform(X)
@@ -554,7 +552,7 @@ class HybridModel:
         except Exception as e:
             debug["lstm_used"] = False
             debug["error"] = str(e)
-            return np.full(X.shape[0], 0.5, dtype=float), debug
+        return np.full(X.shape[0], 0.5, dtype=float), debug
 
     # ------------------------------------------------------------------
     # Public API
@@ -598,7 +596,6 @@ class HybridModel:
             _disable_sgd = False
         if _disable_sgd:
             try:
-                import numpy as np
                 p_sgd = np.full(X_arr.shape[0], 0.5, dtype=float)
             except Exception:
                 pass

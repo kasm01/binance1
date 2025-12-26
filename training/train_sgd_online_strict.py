@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
-import json
-import time
+import os, json
 from pathlib import Path
 
 import numpy as np
@@ -14,8 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
 
-# Projende var
-from features.pipeline import make_matrix_sgd
+from features.pipeline import make_matrix, FEATURE_SCHEMA_22
 
 
 def make_labels(df: pd.DataFrame, horizon: int, thr: float) -> np.ndarray:
@@ -27,15 +24,24 @@ def make_labels(df: pd.DataFrame, horizon: int, thr: float) -> np.ndarray:
     return y
 
 
-def walk_forward_eval(pipe: Pipeline, X: np.ndarray, y: np.ndarray, close: np.ndarray, n_folds: int = 5):
+def walk_forward_eval(
+    pipe: Pipeline,
+    X: np.ndarray,
+    y: np.ndarray,
+    close: np.ndarray,
+    n_folds: int = 5,
+    buy_thr: float = 0.60,
+    sell_thr: float = 0.40,
+):
     """
-    X,y,close aynı uzunlukta olmalı.
+    X,y aynı uzunlukta olmalı.
     close: aynı indeks hizasında kapanış fiyatları (PnL için).
     """
-    n = int(len(y))
+    n = len(y)
     fold_size = n // (n_folds + 1)
     results = []
 
+    import copy
     for k in range(1, n_folds + 1):
         train_end = fold_size * k
         test_end = min(fold_size * (k + 1), n)
@@ -48,20 +54,17 @@ def walk_forward_eval(pipe: Pipeline, X: np.ndarray, y: np.ndarray, close: np.nd
             results.append({"fold": k, "auc": None, "pnl": None, "note": "single-class fold"})
             continue
 
-        # fresh clone: yeni pipeline instance
-        from sklearn.base import clone
-        p = clone(pipe)
+        p = copy.deepcopy(pipe)
         p.fit(Xtr, ytr)
 
         proba = p.predict_proba(Xte)[:, 1]
         auc = float(roc_auc_score(yte, proba))
 
-        # basit PnL: proba>0.6 long, <0.4 short, arada flat
         if len(close_te) >= 2:
             ret = (close_te[1:] - close_te[:-1]) / np.maximum(close_te[:-1], 1e-12)
             sig = np.zeros(len(ret), dtype=float)
-            sig[proba[:-1] > 0.60] = 1.0
-            sig[proba[:-1] < 0.40] = -1.0
+            sig[proba[:-1] > buy_thr] = 1.0
+            sig[proba[:-1] < sell_thr] = -1.0
             pnl = float(np.sum(sig * ret))
         else:
             pnl = 0.0
@@ -86,34 +89,28 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(train_csv)
-    if "close" not in df.columns:
-        raise RuntimeError("CSV içinde 'close' kolonu yok. make_labels için gerekli.")
 
-    # --- features ---
-    feat = make_matrix_sgd(df)  # np.ndarray (n, f)
-    if not hasattr(feat, "shape") or len(feat.shape) != 2:
-        raise RuntimeError(f"make_matrix_sgd beklenmeyen çıktı döndürdü: {type(feat)}")
+    # --- feature schema (isimli) ---
+    feature_names = [c for c in FEATURE_SCHEMA_22 if c not in ("open_time", "close_time")]
 
-    print(f"[FE] builder=make_matrix_sgd | feat_shape={feat.shape}")
+    # --- features (numpy matrix) ---
+    schema_used = feature_names
+    feat = make_matrix(df, schema=schema_used)
+    feat = np.asarray(feat, dtype=float)
+    print(f"[FE] builder=make_matrix(schema_used) | feat_shape={feat.shape}")
 
     # --- labels ---
-    y_full = make_labels(df, horizon=horizon, thr=thr)
+    y = make_labels(df, horizon=horizon, thr=thr)
 
-    # align: en güvenlisi -> hepsini aynı min uzunluğa kırp
-    n = min(len(y_full), feat.shape[0], len(df))
-    X = np.asarray(feat[:n], dtype=float)
-    y = np.asarray(y_full[:n], dtype=int)
-    close_aligned = df["close"].astype(float).values[:n]
+    # align (horizon kaynaklı)
+    if feat.ndim == 2 and len(y) != feat.shape[0]:
+        feat = feat[: len(y), :]
 
-    # NaN/inf temizliği + close/y ile birlikte maskele
-    X = np.where(np.isfinite(X), X, np.nan)
+    # numeric temizlik
+    X = np.where(np.isfinite(feat), feat, np.nan)
     row_ok = ~np.isnan(X).any(axis=1)
     X = X[row_ok]
-    y = y[row_ok]
-    close_aligned = close_aligned[row_ok]
-
-    # feature names (np path)
-    feature_names = [f"f{i}" for i in range(X.shape[1])]
+    y = np.asarray(y, dtype=int)[: X.shape[0]]
 
     u, cnt = np.unique(y, return_counts=True)
     freq = dict(zip(u.tolist(), cnt.tolist()))
@@ -121,46 +118,61 @@ def main():
     if len(freq) < 2:
         raise RuntimeError(f"Tek sınıf label çıktı: {freq}. thr/horizon ayarını gözden geçir.")
 
-    # --- pipeline ---
-    pipe = Pipeline([
-        ("scaler", StandardScaler(with_mean=True, with_std=True)),
-        ("clf", SGDClassifier(
-            loss="log_loss",
-            alpha=alpha,
-            max_iter=max_iter,
-            tol=tol,
-            learning_rate="optimal",
-            early_stopping=False,
-            random_state=42
-        ))
-    ])
-
-    # --- label imbalance auto-reweight ---
+    # ---- label imbalance auto-reweight (sample_weight) ----
     w0 = 0.5 / max(freq.get(0, 1), 1)
     w1 = 0.5 / max(freq.get(1, 1), 1)
     sw = np.where(y == 1, w1, w0).astype(float)
 
+    pipe = Pipeline(
+        [
+            ("scaler", StandardScaler(with_mean=True, with_std=True)),
+            (
+                "clf",
+                SGDClassifier(
+                    loss="log_loss",
+                    alpha=alpha,
+                    max_iter=max_iter,
+                    tol=tol,
+                    learning_rate="optimal",
+                    early_stopping=False,
+                    random_state=42,
+                ),
+            ),
+        ]
+    )
+
     pipe.fit(X, y, clf__sample_weight=sw)
 
-    # --- walk-forward validation ---
-    wf = walk_forward_eval(pipe, X, y, close_aligned, n_folds=5)
+    # ---- walk-forward validation ----
+    close = df["close"].astype(float).values
+    close = close[: len(row_ok)][row_ok]  # row_ok hizası
+    close = close[: len(y)]               # safety
+    wf = walk_forward_eval(pipe, X, y, close, n_folds=5)
+    aucs = [r["auc"] for r in wf if r.get("auc") is not None]
+    pnls = [r["pnl"] for r in wf if r.get("pnl") is not None]
 
-    # save model + meta
+    # ---- save model + meta ----
     model_path = out_dir / f"online_model_{interval}_best.joblib"
     meta_path = out_dir / f"model_meta_{interval}.json"
+
     joblib.dump(pipe, model_path)
 
     meta = {
         "interval": interval,
         "symbol": "BTCUSDT",
         "feature_schema": feature_names,
-        "feature_source": "train_sgd_online_strict::make_matrix_sgd",
+        "feature_source": "train_sgd_online_strict::make_matrix(FEATURE_SCHEMA_22)",
         "n_samples": int(X.shape[0]),
         "n_features": int(X.shape[1]),
         "label_horizon": horizon,
         "label_thr": thr,
-        "meta_version": 3,
+        "alpha": alpha,
+        "max_iter": max_iter,
+        "tol": tol,
+        "meta_version": 4,
         "walk_forward": wf,
+        "wf_auc_mean": float(np.mean(aucs)) if aucs else None,
+        "wf_pnl_sum": float(np.sum(pnls)) if pnls else None,
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -168,19 +180,17 @@ def main():
     try:
         X0 = np.zeros((1, len(feature_names)), dtype=float)
         p1 = float(pipe.predict_proba(X0)[0, 1])
-        p1c = min(0.95, max(0.05, p1))
-        print("[OK] p1@zeros:", p1, "clamped:", p1c)
     except Exception as e:
         p1 = None
-        p1c = None
         print("[WARN] sanity predict_proba failed:", repr(e))
 
-    # --- metrics csv log ---
+    if p1 is not None:
+        p1c = min(0.95, max(0.05, p1))
+        print("[OK] p1@zeros:", p1, "clamped:", p1c)
+
+    # ---- metrics log append ----
     metrics_path = Path("logs/training/metrics_log.csv")
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
-
-    aucs = [r.get("auc") for r in wf if r.get("auc") is not None]
-    pnls = [r.get("pnl") for r in wf if r.get("pnl") is not None]
 
     row = {
         "ts": pd.Timestamp.utcnow().isoformat(),
@@ -193,8 +203,8 @@ def main():
         "alpha": alpha,
         "max_iter": max_iter,
         "tol": tol,
-        "p1_zeros": p1,
-        "p1_zeros_clamped": p1c,
+        "p1_zeros": float(p1) if p1 is not None else None,
+        "p1_zeros_clamped": float(min(0.95, max(0.05, p1))) if p1 is not None else None,
         "wf_auc_mean": float(np.mean(aucs)) if aucs else None,
         "wf_pnl_sum": float(np.sum(pnls)) if pnls else None,
     }
@@ -208,7 +218,7 @@ def main():
     print("[OK] saved:", model_path)
     print("[OK] meta :", meta_path)
     print("[LOG] metrics appended:", metrics_path)
-    print("[OK] n_samples:", int(X.shape[0]), "n_features:", int(X.shape[1]))
+    print(f"[OK] n_samples: {X.shape[0]} n_features: {X.shape[1]}")
 
 
 if __name__ == "__main__":
