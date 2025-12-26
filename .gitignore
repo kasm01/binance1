@@ -141,3 +141,11 @@ pytest_cache/
 outputs/
 logs/
 __pycache__/
+
+# --- allow specific tracked artifacts ---
+!logs/
+!logs/training/
+!logs/training/metrics_log.csv
+
+!models/
+!models/online_model_5m_best.joblib
