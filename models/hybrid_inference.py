@@ -197,6 +197,25 @@ class HybridModel:
             return X_num.to_numpy(dtype=float)
 
         raise TypeError(f"Unsupported X type: {type(X)}")
+    def _get_feature_schema(self) -> Optional[list[str]]:
+        sch = self.meta.get("feature_schema")
+        if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
+            return sch
+        return None
+ 
+    def _align_df_to_schema(self, df: pd.DataFrame) -> pd.DataFrame:
+        sch = self._get_feature_schema()
+        if not sch:
+            return df
+
+        # schema dışındaki kolonlar (open_time/close_time gibi) otomatik düşer
+        keep = [c for c in sch if c in df.columns]
+        if len(keep) != len(sch):
+            missing = [c for c in sch if c not in df.columns]
+            self._log(logging.WARNING, "[HYBRID] feature_schema missing cols: %s", missing)
+            # Eksik varsa: SGD’ye zorlamayalım, sadece mevcutları seçelim (ya da fallback)
+            # Burada mevcutları seçiyoruz; istersen direkt raise da yapabiliriz.
+        return df[keep].copy()
 
     # ------------------------------------------------------------------
     # SGD part
@@ -205,6 +224,21 @@ class HybridModel:
         # runtime switch: disable SGD
         _disable = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
         if _disable:
+            return np.full(X.shape[0], 0.5, dtype=float)
+        # Modelin beklediği feature sayısı
+        expected = None
+        try:
+            expected = int(self.meta.get("n_features") or 0) or None
+        except Exception:
+            expected = None
+
+        if expected is not None and X.shape[1] != expected:
+            self._log(
+                logging.WARNING,
+                "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
+                X.shape,
+                expected,
+            )
             return np.full(X.shape[0], 0.5, dtype=float)
 
         if self.sgd_model is None:
@@ -303,9 +337,13 @@ class HybridModel:
     # ------------------------------------------------------------------
     def predict_proba(self, X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> Tuple[np.ndarray, Dict[str, Any]]:
         debug: Dict[str, Any] = {}
-
         try:
-            X_arr = self._to_numeric_matrix(X)
+            # DataFrame ise meta schema ile kolonları hizala (open_time/close_time gibi fazlalıkları atar)
+            if isinstance(X, pd.DataFrame):
+                X_aligned = self._align_df_to_schema(X)
+                X_arr = self._to_numeric_matrix(X_aligned)
+            else:
+                X_arr = self._to_numeric_matrix(X)
         except Exception as e:
             self._log(logging.WARNING, "[HYBRID] Failed to convert X to numeric matrix: %s. Using 0.5 uniform.", e)
             n = X.shape[0] if hasattr(X, "shape") else len(X)
@@ -331,13 +369,22 @@ class HybridModel:
         # LSTM
         p_lstm, lstm_debug = self._predict_lstm_proba(X_arr)
 
-        # Combine (şu an karar path'i LSTM odaklı; istersen p_hybrid=alpha*lstm+(1-a)*sgd yapılır)
+        # Combine: prefer LSTM if available, otherwise use SGD.
+        # If both available -> blend.
         if self.use_lstm_hybrid and lstm_debug.get("lstm_used", False):
-            p_hybrid = p_lstm
-            mode = "lstm_only"
+            try:
+                a = float(getattr(self, "alpha", 0.6))
+            except Exception:
+                a = 0.6
+            a = max(0.0, min(1.0, a))
+
+            # blend
+            p_hybrid = a * p_lstm + (1.0 - a) * p_sgd
+            mode = "lstm+sgd"
         else:
-            p_hybrid = np.full(X_arr.shape[0], 0.5, dtype=float)
-            mode = "uniform_fallback"
+            # SGD-only (no LSTM)
+            p_hybrid = p_sgd
+            mode = "sgd_only"
 
         debug.update(
             {
@@ -421,10 +468,22 @@ class HybridMultiTFModel:
                 self._log(logging.WARNING, "[HYBRID-MTF] Failed to init HybridModel for %s: %s", itv, e)
 
     def _compute_weight_from_meta(self, meta: Dict[str, Any]) -> float:
+        """
+        Öncelik:
+          1) walk-forward ortalama AUC (wf_auc_mean)
+          2) best_auc (eski meta)
+          3) default 0.5
+        """
+        auc_raw = meta.get("wf_auc_mean", None)
+        if auc_raw is None:
+            auc_raw = meta.get("best_auc", None)
+
         try:
-            auc = float(meta.get("best_auc", 0.5))
+            auc = float(auc_raw) if auc_raw is not None else 0.5
         except Exception:
             auc = 0.5
+
+        # AUC 0.5 altı -> 0 ağırlık
         return max(auc - 0.5, 0.0)
 
     def predict_proba_multi(self, X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]]) -> Tuple[float, Dict[str, Any]]:
@@ -446,14 +505,21 @@ class HybridMultiTFModel:
 
                 p_last = float(p_arr[-1])
                 w = self._compute_weight_from_meta(model.meta)
+                _auc_used = model.meta.get("wf_auc_mean", None)
+                if _auc_used is None:
+                    _auc_used = model.meta.get("best_auc", None)
+                self._log(logging.INFO, "[HYBRID-MTF] interval=%s auc_used=%s weight=%.4f", itv, str(_auc_used), w)
+            except Exception:
+                pass
 
+                # weight hesaplandıktan sonra:
                 if w <= 0.0:
-                    if itv == "1m":
-                        w = 0.30  # düşük güvenle de olsa katkı versin
-                        self._log(logging.INFO, "[HYBRID-MTF] Interval=%s düşük AUC ile düşük weight=%.2f kullanılıyor.", itv, w)
-                    else:
-                        self._log(logging.INFO, "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.", itv)
-                        continue
+                    self._log(
+                        logging.INFO,
+                        "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.",
+                        itv,
+                    )
+                    continue
 
                 probs_list.append(p_last)
                 weights_list.append(w)
@@ -462,6 +528,11 @@ class HybridMultiTFModel:
                     "p_last": p_last,
                     "weight": w,
                     "debug": dbg,
+                    "wf_auc_mean_meta": (
+                        float(model.meta.get("wf_auc_mean"))
+                        if model.meta.get("wf_auc_mean") is not None
+                        else None
+                    ),
                     "best_auc_meta": float(model.meta.get("best_auc", 0.5)),
                     "best_side_meta": model.meta.get("best_side", "best"),
                 }
