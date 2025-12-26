@@ -26,14 +26,15 @@ def safe_p_buy(model, X) -> float:
     except Exception:
         pass
 
-    def _clamp01(v: float) -> float:
-        if not np.isfinite(v):
-            return 0.5
-        if v < 0.0:
-            return 0.0
-        if v > 1.0:
-            return 1.0
-        return float(v)
+def _clamp01(v: float) -> float:
+    if not np.isfinite(v):
+        return 0.5
+    # saturation guard
+    if v < 0.05:
+        return 0.05
+    if v > 0.95:
+        return 0.95
+    return float(v)
 
     # --- compute p safely ---
     p = None
