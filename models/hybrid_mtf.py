@@ -65,7 +65,7 @@ class MultiTimeframeHybridEnsemble:
         return wf
 
     def predict_mtf(
-        self,
+                self,
         X_by_interval: Dict[str, Any],
         weight_by_interval: Dict[str, float] | None = None,
     ) -> Tuple[float, Dict[str, Any]]:
@@ -216,7 +216,7 @@ class HybridMTF:
     # --------------------------------------------------------------
     # AUC seçim + standardizasyon
     # --------------------------------------------------------------
-    def _pick_auc_from_meta(self, interval: str, meta: Dict[str, Any]) -> Tuple[float, str]:
+    def _pick_auc_from_meta(self, meta: Dict[str, Any]) -> Tuple[float, str]:
         """
         meta içinde AUC alanını öncelik sırasına göre seçer.
 
@@ -233,15 +233,19 @@ class HybridMTF:
         for key in self.auc_key_priority:
             if key not in meta:
                 continue
+
             raw = meta.get(key, None)
             if raw is None:
                 continue
+
             try:
                 v = float(raw)
             except Exception:
                 continue
+
             if not np.isfinite(v):
                 continue
+
             return v, key
 
         return 0.5, "fallback"
@@ -475,7 +479,8 @@ class HybridMTF:
         for itv, model in self.models_by_interval.items():
             meta = getattr(model, "meta", {}) or {}
 
-            auc_used, auc_key_used = self._pick_auc_from_meta(itv, meta)
+            auc_used, auc_key_used = self._pick_auc_from_meta(meta)
+
             self._maybe_standardize_auc(
                 model=model,
                 auc_value=auc_used,
@@ -483,7 +488,10 @@ class HybridMTF:
                 overwrite=standardize_overwrite,
             )
 
-            auc_max_used = self._calibrate_auc_max(itv, meta)
+            # Standardize yazdıysak, kalibrasyonda güncel meta'yı kullanmak için meta'yı tekrar alalım
+            meta2 = getattr(model, "meta", {}) or {}
+
+            auc_max_used = self._calibrate_auc_max(itv, meta2)
 
             weight = self._get_weight_for_interval(
                 interval=itv,
@@ -498,8 +506,8 @@ class HybridMTF:
                 "auc_key_used": str(auc_key_used),
                 "auc_max_used": float(auc_max_used),
                 "weight": float(weight),
-                "best_side": meta.get("best_side", "long"),
-                "has_auc_history": bool(meta.get("auc_history") is not None),
+                "best_side": meta2.get("best_side", "long"),
+                "has_auc_history": bool(meta2.get("auc_history") is not None),
             }
 
         ensemble_p, mtf_debug = self._ensemble.predict_mtf(

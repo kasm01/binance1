@@ -19,8 +19,7 @@ from data.anomaly_detection import AnomalyDetector
 from data.online_learning import OnlineLearner
 from data.whale_detector import MultiTimeframeWhaleDetector
 
-from core.hybrid_mtf import MultiTimeframeHybridEnsemble
-from models.hybrid_inference import HybridModel
+from models.hybrid_inference import HybridModel, HybridMultiTFModel
 
 from tg_bot.telegram_bot import TelegramBot
 
@@ -352,6 +351,8 @@ def create_trading_objects() -> Dict[str, Any]:
         pass
 
     # --------------------------
+    # --------------------------
+    # --------------------------
     # MTF Ensemble (opsiyonel)
     # --------------------------
     mtf_ensemble = None
@@ -363,40 +364,22 @@ def create_trading_objects() -> Dict[str, Any]:
             except Exception:
                 mtf_intervals = ["1m", "5m", "15m", "1h"]
 
-            mtf_models: Dict[str, HybridModel] = {}
-            for itv in mtf_intervals:
-                try:
-                    hm = HybridModel(model_dir="models", interval=itv, logger=system_logger)
-                    if hasattr(hm, "use_lstm_hybrid"):
-                        hm.use_lstm_hybrid = bool(HYBRID_MODE)
-                    mtf_models[itv] = hm
-                    if system_logger:
-                        system_logger.info("[HYBRID-MTF] HybridModel yüklendi | interval=%s", itv)
-                except Exception as e:
-                    if system_logger:
-                        system_logger.warning(
-                            "[HYBRID-MTF] %s interval'i için HybridModel yüklenemedi: %s",
-                            itv,
-                            e,
-                        )
+            mtf_ensemble = HybridMultiTFModel(model_dir="models", intervals=mtf_intervals, logger=system_logger)
 
-            if mtf_models:
-                mtf_ensemble = MultiTimeframeHybridEnsemble(models_by_interval=mtf_models)
-                if system_logger:
-                    system_logger.info(
-                        "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
-                        list(mtf_models.keys()),
-                    )
+            if system_logger:
+                system_logger.info(
+                    "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
+                    list(mtf_intervals),
+                )
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning(
-                    "[MAIN] MultiTimeframeHybridEnsemble init hata, MTF ensemble devre dışı: %s",
+                    "[MAIN] HybridMultiTFModel init hata, MTF ensemble devre dışı: %s",
                     e,
                 )
 
-    # --------------------------
-    # Whale Detector (opsiyonel)
+# Whale Detector (opsiyonel)
     # --------------------------
     whale_detector = None
     try:
@@ -615,7 +598,11 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         X_by_interval[itv] = df_itv[cols_itv].tail(500)
 
                     if X_by_interval:
-                        p_ens, mtf_debug = mtf_ensemble.predict_mtf(X_by_interval)
+                        p_ens, mtf_debug = mtf_ensemble.predict_proba_multi(
+                        X_dict=X_by_interval,
+                        standardize_auc_key="auc_used",
+                        standardize_overwrite=False,
+                    )
                         p_used = float(p_ens)
 
                         per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}

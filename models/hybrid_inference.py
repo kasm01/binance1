@@ -1,3 +1,5 @@
+# models/hybrid_inference.py
+
 from __future__ import annotations
 
 import os
@@ -9,9 +11,8 @@ import numpy as np
 import pandas as pd
 from joblib import load
 
-from features.pipeline import make_matrix
 from models.sgd_helper_runtime import SGDHelperRuntime
-from models.hybrid_mtf import HybridMTF  # <-- TEK KAYNAK WEIGHT/LOG/ENSEMBLE
+from models.hybrid_mtf import HybridMTF  # TEK KAYNAK: weight/log/ensemble/auc standardization
 
 # ----------------------------------------------------------------------
 # TensorFlow / LSTM opsiyonel import
@@ -376,7 +377,11 @@ class HybridModel:
             else:
                 X_arr = self._to_numeric_matrix(X)
         except Exception as e:
-            self._log_startup(logging.WARNING, "[HYBRID] Failed to convert X to numeric matrix: %s. Using 0.5 uniform.", e)
+            self._log_startup(
+                logging.WARNING,
+                "[HYBRID] Failed to convert X to numeric matrix: %s. Using 0.5 uniform.",
+                e,
+            )
             n = X.shape[0] if hasattr(X, "shape") else len(X)
             p_uniform = np.full(n, 0.5, dtype=float)
             debug.update(
@@ -463,13 +468,13 @@ class HybridMultiTFModel:
     """
     Multi-timeframe hibrit model sarmalayıcısı.
 
-    ÖNEMLİ:
-    - Ensemble ağırlıkları / logları / AUC standardizasyonu TEK KAYNAK:
-        models.hybrid_mtf.HybridMTF
-    - Bu sınıf artık sadece:
-        1) interval modellerini yükler
-        2) X_dict'i HybridMTF.predict_mtf() formatına çevirir
-        3) sonucu döner
+    TEK KAYNAK:
+    - Ensemble ağırlıkları / logları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
+
+    Bu sınıfın sorumluluğu:
+      1) interval modellerini yüklemek
+      2) X_dict'i HybridMTF.predict_mtf() formatına geçirmek
+      3) sonucu döndürmek
     """
 
     def __init__(self, model_dir: str, intervals: list[str], logger: Optional[logging.Logger] = None) -> None:
@@ -477,7 +482,7 @@ class HybridMultiTFModel:
         self.intervals = intervals
         self.logger = logger or logging.getLogger("system")
 
-        # HybridModel ile aynı startup kontrol env’leri
+        # startup log control (model load spam azaltma)
         self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
         self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
             "1",
@@ -489,6 +494,7 @@ class HybridMultiTFModel:
         self.models: Dict[str, HybridModel] = {}
         self._init_models()
 
+        # TEK KAYNAK: AUC priority + ensemble logic
         self.mtf = HybridMTF(
             models_by_interval=self.models,
             logger=self.logger,
@@ -522,6 +528,14 @@ class HybridMultiTFModel:
         standardize_auc_key: str = "auc_used",
         standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Bu fonksiyon artık:
+        - weight/AUC hesaplamaz
+        - interval bazlı log basmaz
+        - ensemble hesaplamaz
+
+        Hepsi HybridMTF içinde yapılır.
+        """
         X_by_interval: Dict[str, Any] = dict(X_dict)
 
         ensemble_p, mtf_debug = self.mtf.predict_mtf(
