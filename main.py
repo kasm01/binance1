@@ -832,7 +832,12 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     globals()["_SATDBG_LAST_TS"] = _now
 
                     if isinstance(extra, dict):
-                        p_src_dbg = extra.get("p_buy_source") or "unknown"
+                            p_src_dbg = "ensemble_p"
+                        else:
+                            p_src_dbg = "ensemble_p"
+
+                        else:
+                            p_src_dbg = extra.get("p_buy_source") or "unknown"
                     else:
                         p_src_dbg = "noextra"
 
@@ -986,11 +991,27 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 whale_dir_dbg = whale_meta.get("direction") if isinstance(whale_meta, dict) else None
                 whale_score_dbg = whale_meta.get("score") if isinstance(whale_meta, dict) else None
 
+                # source: MTF ensemble gerçekten kullanıldıysa MTF yaz
+                signal_source = "MTF" if (USE_MTF_ENS and mtf_debug is not None) else "HYBRID"
+                # extra içinde varsa override et (ör: başka yerde set ediyorsan)
+                signal_source = str(extra.get("signal_source", signal_source))
+
+                try:
+                    p_used_f = float(p_used)
+                except Exception:
+                    p_used_f = 0.5
+
                 system_logger.info(
+                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and mtf_debug.get("ensemble_p") is not None:
+                        signal_source = "MTF"
+                    elif isinstance(extra, dict):
+                        signal_source = signal_source
+                    else:
+                        signal_source = "noextra"
                     "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f "
                     "p_1m=%s p_5m=%s p_15m=%s p_1h=%s whale_dir=%s whale_score=%s%s",
-                    extra.get("signal_source", "unknown"),
-                    float(p_used),
+                    (("MTF" if (USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None)) else (signal_source if isinstance(extra, dict) else "noextra"))),
+                    p_used_f,
                     signal_side,
                     float(model_conf_factor),
                     float(effective_model_conf),
@@ -999,9 +1020,21 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
                     f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
                     whale_dir_dbg if whale_dir_dbg is not None else "None",
-                    f"{whale_score_dbg:.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
+                    f"{float(whale_score_dbg):.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
                     veto_flags,
                 )
+            extra["signal_source"] = signal_source
+            if mtf_debug is not None and isinstance(mtf_debug, dict):
+                    # MTF kullanıldıysa: p_src için ensemble_p yaz
+                    try:
+                        extra["ensemble_p"] = float(p_used)
+                    except Exception:
+                        extra["ensemble_p"] = None
+                    extra["p_buy_source"] = "ensemble_p"
+                    extra["signal_source"] = "MTF"
+                else:
+                    extra["ensemble_p"] = None
+
 
             last_price = float(raw_df["close"].iloc[-1])
 

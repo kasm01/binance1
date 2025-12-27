@@ -466,18 +466,30 @@ class HybridMTF:
         standardize_auc_key: str | None = "auc_used",
         standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
-        """
-        1) Interval meta içinden AUC alanını (auc_key_priority) ile seçer
-        2) Opsiyonel: seçilen AUC'yi meta[standardize_auc_key] içine yazar
-        3) Interval meta içinden AUC history ile auc_max_used kalibre eder
-        4) auc_used + auc_max_used -> weight
-        5) Ensemble: predict_proba -> p_last, ağırlıklı ortalama
-        """
+        self.logger.info(
+            "[HYBRID-MTF] predict_mtf called | intervals=%s",
+            list(self.models_by_interval.keys()),
+        )
+
         weight_by_interval: Dict[str, float] = {}
         meta_by_interval: Dict[str, Any] = {}
 
         for itv, model in self.models_by_interval.items():
             meta = getattr(model, "meta", {}) or {}
+
+            # AUC history yoksa ve wf_auc_mean varsa history bootstrap et
+            if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
+                try:
+                    self.update_auc_history(interval=itv, auc_value=float(meta["wf_auc_mean"]))
+                except Exception:
+                    pass
+
+            # Eğer auc_history yoksa ama wf_auc_mean varsa, otomatik history başlat
+            try:
+                if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
+                    self.update_auc_history(interval=itv, auc_value=float(meta["wf_auc_mean"]))
+            except Exception:
+                pass
 
             auc_used, auc_key_used = self._pick_auc_from_meta(meta)
 
