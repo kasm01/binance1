@@ -11,12 +11,14 @@ from joblib import load
 
 from features.pipeline import make_matrix
 from models.sgd_helper_runtime import SGDHelperRuntime
+from models.hybrid_mtf import HybridMTF  # <-- TEK KAYNAK WEIGHT/LOG/ENSEMBLE
 
 # ----------------------------------------------------------------------
 # TensorFlow / LSTM opsiyonel import
 # ----------------------------------------------------------------------
 try:
     from tensorflow.keras.models import load_model  # type: ignore
+
     TENSORFLOW_AVAILABLE = True
 except Exception:
     TENSORFLOW_AVAILABLE = False
@@ -44,6 +46,26 @@ class HybridModel:
         self.sgd_helper_sat_thr = float(os.getenv("SGD_HELPER_SAT_THR", "0.95"))
 
         self.logger = logger or logging.getLogger("system")
+
+        # --- runtime logging control (inference spam azaltma) ---
+        # HYBRID_MODEL_LOG_LEVEL=DEBUG/INFO/WARNING/ERROR/CRITICAL
+        self.hybrid_model_log_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
+        self.disable_hybrid_model_inference_log = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        # --- startup logging control (load/init spam azaltma) ---
+        # HYBRID_MODEL_STARTUP_LOG_LEVEL=DEBUG/INFO/WARNING/ERROR/CRITICAL
+        self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
+        self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         # hybrid weight: p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
         self.alpha: float = 0.6
@@ -92,13 +114,25 @@ class HybridModel:
         else:
             print(msg % args if args else msg)
 
+    def _log_startup(self, level: int, msg: str, *args: Any) -> None:
+        if self.disable_hybrid_model_startup_log:
+            return
+        self._log(level, msg, *args)
+
+    def _log_inference(self, msg: str, *args: Any) -> None:
+        if self.disable_hybrid_model_inference_log:
+            return
+        level = getattr(logging, self.hybrid_model_log_level, logging.DEBUG)
+        self._log(level, msg, *args)
+
     def _load_sgd_model(self) -> None:
         path = os.path.join(self.model_dir, f"online_model_{self.interval}_best.joblib")
         try:
             self.sgd_model = load(path)
-            self._log(logging.INFO, "[HYBRID] SGD model loaded from %s (interval=%s)", path, self.interval)
+            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+            self._log_startup(level, "[HYBRID] SGD model loaded from %s (interval=%s)", path, self.interval)
         except Exception as e:
-            self._log(logging.WARNING, "[HYBRID] Could not load SGD model from %s: %s", path, e)
+            self._log_startup(logging.WARNING, "[HYBRID] Could not load SGD model from %s: %s", path, e)
             self.sgd_model = None
 
     def _load_meta(self) -> None:
@@ -108,7 +142,9 @@ class HybridModel:
                 meta_file = json.load(f) or {}
             self.meta.update(meta_file)
             self.use_lstm_hybrid = bool(self.meta.get("use_lstm_hybrid", False))
-            self._log(logging.INFO, "[HYBRID] Meta loaded from %s", path)
+
+            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+            self._log_startup(level, "[HYBRID] Meta loaded from %s", path)
 
             # --- load SGD helper bundle (optional) ---
             try:
@@ -117,22 +153,23 @@ class HybridModel:
                     helper_path = os.getenv("SGD_HELPER_PATH", os.path.join(self.model_dir, "sgd_helper.joblib"))
                     if os.path.exists(helper_path):
                         self.sgd_helper = SGDHelperRuntime(helper_path)
-                        self._log(logging.INFO, "[HYBRID] SGD helper loaded from %s", helper_path)
+                        self._log_startup(level, "[HYBRID] SGD helper loaded from %s", helper_path)
                     else:
-                        self._log(logging.WARNING, "[HYBRID] SGD helper not found: %s", helper_path)
+                        self._log_startup(logging.WARNING, "[HYBRID] SGD helper not found: %s", helper_path)
             except Exception as _e:
-                self._log(logging.WARNING, "[HYBRID] SGD helper load failed: %s", _e)
+                self._log_startup(logging.WARNING, "[HYBRID] SGD helper load failed: %s", _e)
 
         except FileNotFoundError:
-            self._log(logging.WARNING, "[HYBRID] Meta file %s not found. Using defaults.", path)
+            self._log_startup(logging.WARNING, "[HYBRID] Meta file %s not found. Using defaults.", path)
         except Exception as e:
-            self._log(logging.WARNING, "[HYBRID] Error while loading meta from %s: %s", path, e)
+            self._log_startup(logging.WARNING, "[HYBRID] Error while loading meta from %s: %s", path, e)
 
     def _load_lstm_models(self) -> None:
         if not self.use_lstm_hybrid:
             return
+
         if not TENSORFLOW_AVAILABLE:
-            self._log(logging.WARNING, "[HYBRID] TensorFlow not available, LSTM disabled.")
+            self._log_startup(logging.WARNING, "[HYBRID] TensorFlow not available, LSTM disabled.")
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
             return
@@ -140,8 +177,7 @@ class HybridModel:
         long_path = os.path.join(self.model_dir, f"lstm_long_{self.interval}.h5")
         short_path = os.path.join(self.model_dir, f"lstm_short_{self.interval}.h5")
         scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
-        if not os.path.exists(scaler_path):
-            scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+
         if not os.path.exists(scaler_path):
             scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
 
@@ -149,9 +185,15 @@ class HybridModel:
             self.lstm_long = load_model(long_path)
             self.lstm_short = load_model(short_path)
             self.lstm_scaler = load(scaler_path)
-            self._log(logging.INFO, "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)", self.interval)
+
+            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+            self._log_startup(
+                level,
+                "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)",
+                self.interval,
+            )
         except Exception as e:
-            self._log(
+            self._log_startup(
                 logging.WARNING,
                 "[HYBRID] Could not load LSTM models or scaler (%s): %s. Disabling LSTM.",
                 self.interval,
@@ -163,20 +205,11 @@ class HybridModel:
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
 
-
     # ------------------------------------------------------------------
     # Feature matrix helper
     # ------------------------------------------------------------------
     @staticmethod
     def _to_numeric_matrix(X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> np.ndarray:
-        """
-        Convert X to numeric numpy array.
-
-        - DataFrame: keep only numeric columns
-        - Series: reshape to (n, 1)
-        - ndarray: if mixed dtype, convert via DataFrame and select numeric cols
-        - list: convert to ndarray and recurse
-        """
         if isinstance(X, pd.DataFrame):
             X_num = X.select_dtypes(include=[np.number])
             if X_num.empty:
@@ -201,35 +234,33 @@ class HybridModel:
             return X_num.to_numpy(dtype=float)
 
         raise TypeError(f"Unsupported X type: {type(X)}")
+
     def _get_feature_schema(self) -> Optional[list[str]]:
         sch = self.meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
- 
+
     def _align_df_to_schema(self, df: pd.DataFrame) -> pd.DataFrame:
         sch = self._get_feature_schema()
         if not sch:
             return df
 
-        # schema dışındaki kolonlar (open_time/close_time gibi) otomatik düşer
         keep = [c for c in sch if c in df.columns]
         if len(keep) != len(sch):
             missing = [c for c in sch if c not in df.columns]
-            self._log(logging.WARNING, "[HYBRID] feature_schema missing cols: %s", missing)
-            # Eksik varsa: SGD’ye zorlamayalım, sadece mevcutları seçelim (ya da fallback)
-            # Burada mevcutları seçiyoruz; istersen direkt raise da yapabiliriz.
+            self._log_startup(logging.WARNING, "[HYBRID] feature_schema missing cols: %s", missing)
+
         return df[keep].copy()
 
     # ------------------------------------------------------------------
     # SGD part
     # ------------------------------------------------------------------
     def _predict_sgd_proba(self, X: np.ndarray) -> np.ndarray:
-        # runtime switch: disable SGD
         _disable = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
         if _disable:
             return np.full(X.shape[0], 0.5, dtype=float)
-        # Modelin beklediği feature sayısı
+
         expected = None
         try:
             expected = int(self.meta.get("n_features") or 0) or None
@@ -237,7 +268,7 @@ class HybridModel:
             expected = None
 
         if expected is not None and X.shape[1] != expected:
-            self._log(
+            self._log_startup(
                 logging.WARNING,
                 "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
                 X.shape,
@@ -251,11 +282,9 @@ class HybridModel:
         try:
             proba = self.sgd_model.predict_proba(X)
         except Exception as e:
-            # scaler/feature mismatch vb. durumda fallback
-            self._log(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
+            self._log_startup(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
             return np.full(X.shape[0], 0.5, dtype=float)
 
-        # proba -> p1
         try:
             if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
                 p1 = proba[:, 1]
@@ -264,8 +293,6 @@ class HybridModel:
         except Exception:
             return np.full(X.shape[0], 0.5, dtype=float)
 
-        # === SGD_HELPER_RUNTIME (auto) ===
-        # center->0.5, compress around 0.5, optional disable
         try:
             _center = str(os.getenv("SGD_CENTER", "1")).lower() in ("1", "true", "yes", "on")
             _band = float(os.getenv("SGD_BAND", "0.10"))
@@ -294,7 +321,7 @@ class HybridModel:
 
         seqs = []
         for i in range(seq_len, X.shape[0] + 1):
-            seqs.append(X[i - seq_len: i, :])
+            seqs.append(X[i - seq_len : i, :])
         return np.asarray(seqs)
 
     def _predict_lstm_proba(self, X: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -317,7 +344,6 @@ class HybridModel:
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
             p_lstm = 0.5 * (p_long + p_short)
 
-            # align back to X rows
             if len(p_lstm) < X.shape[0]:
                 pad_len = X.shape[0] - len(p_lstm)
                 p_lstm = np.concatenate([np.full(pad_len, p_lstm[0]), p_lstm])
@@ -334,7 +360,7 @@ class HybridModel:
         except Exception as e:
             debug["lstm_used"] = False
             debug["error"] = str(e)
-            self._log(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
+            self._log_startup(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
     # ------------------------------------------------------------------
@@ -342,15 +368,15 @@ class HybridModel:
     # ------------------------------------------------------------------
     def predict_proba(self, X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> Tuple[np.ndarray, Dict[str, Any]]:
         debug: Dict[str, Any] = {}
+
         try:
-            # DataFrame ise meta schema ile kolonları hizala (open_time/close_time gibi fazlalıkları atar)
             if isinstance(X, pd.DataFrame):
                 X_aligned = self._align_df_to_schema(X)
                 X_arr = self._to_numeric_matrix(X_aligned)
             else:
                 X_arr = self._to_numeric_matrix(X)
         except Exception as e:
-            self._log(logging.WARNING, "[HYBRID] Failed to convert X to numeric matrix: %s. Using 0.5 uniform.", e)
+            self._log_startup(logging.WARNING, "[HYBRID] Failed to convert X to numeric matrix: %s. Using 0.5 uniform.", e)
             n = X.shape[0] if hasattr(X, "shape") else len(X)
             p_uniform = np.full(n, 0.5, dtype=float)
             debug.update(
@@ -367,15 +393,11 @@ class HybridModel:
             )
             return p_uniform, debug
 
-        # SGD
         p_sgd = self._predict_sgd_proba(X_arr)
         debug["sgd_disabled"] = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
 
-        # LSTM
         p_lstm, lstm_debug = self._predict_lstm_proba(X_arr)
 
-        # Combine: prefer LSTM if available, otherwise use SGD.
-        # If both available -> blend.
         if self.use_lstm_hybrid and lstm_debug.get("lstm_used", False):
             try:
                 a = float(getattr(self, "alpha", 0.6))
@@ -383,11 +405,9 @@ class HybridModel:
                 a = 0.6
             a = max(0.0, min(1.0, a))
 
-            # blend
             p_hybrid = a * p_lstm + (1.0 - a) * p_sgd
             mode = "lstm+sgd"
         else:
-            # SGD-only (no LSTM)
             p_hybrid = p_sgd
             mode = "sgd_only"
 
@@ -406,9 +426,8 @@ class HybridModel:
 
         self.last_debug = debug
 
-        self._log(
-            logging.INFO,
-            "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f, p_lstm_mean=%.4f, p_hybrid_mean=%.4f, best_auc=%.4f, best_side=%s",
+        self._log_inference(
+            "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f p_lstm_mean=%.4f p_hybrid_mean=%.4f best_auc=%.4f best_side=%s",
             mode,
             X_arr.shape[0],
             X_arr.shape[1],
@@ -422,10 +441,6 @@ class HybridModel:
         return p_hybrid, debug
 
     def predict_proba_single(self, X):
-        """
-        Online tarafta kullanılan convenience wrapper:
-        sadece SON bar için class=1 olasılığını döner.
-        """
         if hasattr(X, "tail") and hasattr(X, "values"):
             X_input = X
         else:
@@ -444,10 +459,17 @@ class HybridModel:
         return np.array([last_p], dtype=float)
 
 
-
 class HybridMultiTFModel:
     """
     Multi-timeframe hibrit model sarmalayıcısı.
+
+    ÖNEMLİ:
+    - Ensemble ağırlıkları / logları / AUC standardizasyonu TEK KAYNAK:
+        models.hybrid_mtf.HybridMTF
+    - Bu sınıf artık sadece:
+        1) interval modellerini yükler
+        2) X_dict'i HybridMTF.predict_mtf() formatına çevirir
+        3) sonucu döner
     """
 
     def __init__(self, model_dir: str, intervals: list[str], logger: Optional[logging.Logger] = None) -> None:
@@ -455,8 +477,23 @@ class HybridMultiTFModel:
         self.intervals = intervals
         self.logger = logger or logging.getLogger("system")
 
+        # HybridModel ile aynı startup kontrol env’leri
+        self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
+        self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
         self.models: Dict[str, HybridModel] = {}
         self._init_models()
+
+        self.mtf = HybridMTF(
+            models_by_interval=self.models,
+            logger=self.logger,
+            auc_key_priority=("auc_used", "wf_auc_mean", "val_auc", "best_auc", "auc", "oof_auc"),
+        )
 
     def _log(self, level: int, msg: str, *args: Any) -> None:
         if self.logger:
@@ -464,112 +501,33 @@ class HybridMultiTFModel:
         else:
             print(msg % args if args else msg)
 
+    def _log_startup(self, level: int, msg: str, *args: Any) -> None:
+        if self.disable_hybrid_model_startup_log:
+            return
+        self._log(level, msg, *args)
+
     def _init_models(self) -> None:
+        level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+
         for itv in self.intervals:
             try:
                 self.models[itv] = HybridModel(model_dir=self.model_dir, interval=itv, logger=self.logger)
-                self._log(logging.INFO, "[HYBRID-MTF] Loaded HybridModel for interval=%s", itv)
+                self._log_startup(level, "[HYBRID-MTF] Loaded HybridModel for interval=%s", itv)
             except Exception as e:
-                self._log(logging.WARNING, "[HYBRID-MTF] Failed to init HybridModel for %s: %s", itv, e)
-
-    def _compute_weight_from_meta(self, meta: Dict[str, Any]) -> float:
-        """
-        Öncelik:
-          1) walk-forward ortalama AUC (wf_auc_mean)
-          2) best_auc (eski meta)
-          3) default 0.5
-        """
-        auc_raw = meta.get("wf_auc_mean", None)
-        if auc_raw is None:
-            auc_raw = meta.get("best_auc", None)
-
-        try:
-            auc = float(auc_raw) if auc_raw is not None else 0.5
-        except Exception:
-            auc = 0.5
-
-        # AUC 0.5 altı -> 0 ağırlık
-        return max(auc - 0.5, 0.0)
+                self._log_startup(logging.WARNING, "[HYBRID-MTF] Failed to init HybridModel for %s: %s", itv, e)
 
     def predict_proba_multi(
         self,
         X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]],
+        standardize_auc_key: str = "auc_used",
+        standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
-        per_interval: Dict[str, Any] = {}
-        probs_list: list[float] = []
-        weights_list: list[float] = []
+        X_by_interval: Dict[str, Any] = dict(X_dict)
 
-        for itv, model in self.models.items():
-            X = X_dict.get(itv)
-            if X is None:
-                self._log(logging.INFO, "[HYBRID-MTF] No features provided for interval=%s, skipping.", itv)
-                continue
+        ensemble_p, mtf_debug = self.mtf.predict_mtf(
+            X_by_interval=X_by_interval,
+            standardize_auc_key=standardize_auc_key,
+            standardize_overwrite=standardize_overwrite,
+        )
 
-            try:
-                p_arr, dbg = model.predict_proba(X)
-                if p_arr is None or len(p_arr) == 0:
-                    self._log(logging.WARNING, "[HYBRID-MTF] Empty proba array for interval=%s, skipping.", itv)
-                    continue
-
-                p_last = float(p_arr[-1])
-                w = self._compute_weight_from_meta(model.meta)
-
-                auc_used = model.meta.get("wf_auc_mean", None)
-                if auc_used is None:
-                    auc_used = model.meta.get("best_auc", None)
-
-                self._log(
-                    logging.INFO,
-                    "[HYBRID-MTF] interval=%s auc_used=%s weight=%.4f",
-                    itv,
-                    str(auc_used),
-                    w,
-                )
-
-                if w <= 0.0:
-                    self._log(
-                        logging.INFO,
-                        "[HYBRID-MTF] Interval=%s weight=0 (auc<=0.5), skipping in ensemble.",
-                        itv,
-                    )
-                    continue
-
-                probs_list.append(p_last)
-                weights_list.append(w)
-
-                per_interval[itv] = {
-                    "p_last": p_last,
-                    "weight": w,
-                    "debug": dbg,
-                    "wf_auc_mean_meta": (
-                        float(model.meta.get("wf_auc_mean"))
-                        if model.meta.get("wf_auc_mean") is not None
-                        else None
-                    ),
-                    "best_auc_meta": float(model.meta.get("best_auc", 0.5)),
-                    "best_side_meta": model.meta.get("best_side", "best"),
-                }
-
-            except Exception as e:
-                self._log(logging.WARNING, "[HYBRID-MTF] predict_proba failed for interval=%s: %s", itv, e)
-                continue
-
-        if probs_list and weights_list and sum(weights_list) > 0:
-            probs_arr = np.asarray(probs_list, dtype=float)
-            weights_arr = np.asarray(weights_list, dtype=float)
-            ensemble_p = float((probs_arr * weights_arr).sum() / weights_arr.sum())
-        elif probs_list:
-            ensemble_p = float(np.mean(probs_list))
-        else:
-            ensemble_p = 0.5
-
-        debug_out = {
-            "per_interval": per_interval,
-            "ensemble": {
-                "p": ensemble_p,
-                "n_used": len(probs_list),
-            },
-        }
-
-        self._log(logging.INFO, "[HYBRID-MTF] ensemble_p=%.4f, n_used=%d", ensemble_p, len(probs_list))
-        return ensemble_p, debug_out
+        return ensemble_p, mtf_debug
