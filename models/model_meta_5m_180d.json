@@ -60,5 +60,7 @@
       "pnl": 0.10075694922909663,
       "n_test": 8640
     }
-  ]
+  ],
+  "use_lstm_hybrid": true,
+  "seq_len": 32
 }

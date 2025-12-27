@@ -139,7 +139,11 @@ class HybridModel:
 
         long_path = os.path.join(self.model_dir, f"lstm_long_{self.interval}.h5")
         short_path = os.path.join(self.model_dir, f"lstm_short_{self.interval}.h5")
-        scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
+        scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+        if not os.path.exists(scaler_path):
+            scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+        if not os.path.exists(scaler_path):
+            scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
 
         try:
             self.lstm_long = load_model(long_path)
@@ -330,6 +334,7 @@ class HybridModel:
         except Exception as e:
             debug["lstm_used"] = False
             debug["error"] = str(e)
+            self._log(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
     # ------------------------------------------------------------------
@@ -486,7 +491,10 @@ class HybridMultiTFModel:
         # AUC 0.5 altı -> 0 ağırlık
         return max(auc - 0.5, 0.0)
 
-    def predict_proba_multi(self, X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]]) -> Tuple[float, Dict[str, Any]]:
+    def predict_proba_multi(
+        self,
+        X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]],
+    ) -> Tuple[float, Dict[str, Any]]:
         per_interval: Dict[str, Any] = {}
         probs_list: list[float] = []
         weights_list: list[float] = []
@@ -505,14 +513,19 @@ class HybridMultiTFModel:
 
                 p_last = float(p_arr[-1])
                 w = self._compute_weight_from_meta(model.meta)
-                _auc_used = model.meta.get("wf_auc_mean", None)
-                if _auc_used is None:
-                    _auc_used = model.meta.get("best_auc", None)
-                self._log(logging.INFO, "[HYBRID-MTF] interval=%s auc_used=%s weight=%.4f", itv, str(_auc_used), w)
-            except Exception:
-                pass
 
-                # weight hesaplandıktan sonra:
+                auc_used = model.meta.get("wf_auc_mean", None)
+                if auc_used is None:
+                    auc_used = model.meta.get("best_auc", None)
+
+                self._log(
+                    logging.INFO,
+                    "[HYBRID-MTF] interval=%s auc_used=%s weight=%.4f",
+                    itv,
+                    str(auc_used),
+                    w,
+                )
+
                 if w <= 0.0:
                     self._log(
                         logging.INFO,
@@ -539,6 +552,7 @@ class HybridMultiTFModel:
 
             except Exception as e:
                 self._log(logging.WARNING, "[HYBRID-MTF] predict_proba failed for interval=%s: %s", itv, e)
+                continue
 
         if probs_list and weights_list and sum(weights_list) > 0:
             probs_arr = np.asarray(probs_list, dtype=float)

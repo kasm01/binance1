@@ -11,7 +11,11 @@ for meta_path in models_dir.glob("model_meta_*.json"):
     # LSTM dosyaları gerçekten var mı?
     long_path = models_dir / f"lstm_long_{interval}.h5"
     short_path = models_dir / f"lstm_short_{interval}.h5"
-    scaler_path = models_dir / f"lstm_scaler_{interval}.joblib"
+    scaler_path = models_dir / f"lstm_scaler_{interval}.pkl"
+    if not scaler_path.exists():
+        scaler_path = models_dir / f"lstm_scaler_{interval}.pkl"
+    if not scaler_path.exists():
+        scaler_path = models_dir / f"lstm_scaler_{interval}.joblib"
 
     has_lstm = long_path.exists() and short_path.exists() and scaler_path.exists()
 

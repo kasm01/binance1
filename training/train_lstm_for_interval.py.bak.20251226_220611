@@ -15,14 +15,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
 
 # Projedeki config + feature/label fonksiyonlarını kullan
-# OPTIONAL CONFIG (patched)
-try:
-    # project may expose config differently; do not hard-fail
-    from config.config import Config as _Config  # type: ignore
-    _CFG = _Config()
-except Exception:
-    _CFG = None
-
+from config.config import config
 from main import build_features, build_labels
 
 logger = logging.getLogger("lstm_train")
@@ -203,7 +196,7 @@ def build_lstm_model(window: int, n_features: int) -> tf.keras.Model:
 
 def main() -> None:
     # Sembol / interval / horizon
-    symbol = os.getenv("SYMBOL", ("BTCUSDT" if _CFG is None else getattr(_CFG, "SYMBOL", "BTCUSDT")))
+    symbol = os.getenv("SYMBOL", getattr(config, "SYMBOL", "BTCUSDT"))
     interval = os.getenv("INTERVAL", "5m")
     horizon = int(os.getenv("LSTM_HORIZON", "1"))
 
@@ -294,7 +287,7 @@ def main() -> None:
         model.save(model_path)
 
     # Scaler'ı kaydet (HybridModel joblib.load ile bekliyor)
-    scaler_path = models_dir / f"lstm_scaler_{interval}.joblib"
+    scaler_path = models_dir / f"lstm_scaler_{interval}.pkl"
     joblib.dump(scaler, scaler_path)
     logger.info("[SAVE] Scaler kaydedildi: %s", scaler_path)
 

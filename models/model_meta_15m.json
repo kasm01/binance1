@@ -1,6 +1,5 @@
 {
-  "interval": "15m",
-  "symbol": "BTCUSDT",
+  "alpha": 1e-05,
   "feature_schema": [
     "open",
     "high",
@@ -24,44 +23,49 @@
     "dummy_extra"
   ],
   "feature_source": "train_sgd_online_strict::make_matrix(FEATURE_SCHEMA_22)",
-  "n_samples": 17280,
-  "n_features": 20,
+  "interval": "15m",
   "label_horizon": 3,
   "label_thr": 0.0005,
-  "alpha": 1e-05,
+  "lstm_long_auc": 0.50544,
+  "lstm_short_auc": 0.50544,
   "max_iter": 120000,
-  "tol": 1e-06,
   "meta_version": 4,
+  "n_features": 20,
+  "n_samples": 17280,
+  "seq_len": 50,
+  "symbol": "BTCUSDT",
+  "tol": 1e-06,
+  "use_lstm_hybrid": true,
   "walk_forward": [
     {
-      "fold": 1,
       "auc": 0.4690903968086456,
-      "pnl": -0.02125050212177504,
-      "n_test": 2880
+      "fold": 1,
+      "n_test": 2880,
+      "pnl": -0.02125050212177504
     },
     {
-      "fold": 2,
       "auc": 0.5094688025774851,
-      "pnl": 0.0012296708440300702,
-      "n_test": 2880
+      "fold": 2,
+      "n_test": 2880,
+      "pnl": 0.0012296708440300702
     },
     {
-      "fold": 3,
       "auc": 0.5108789980800894,
-      "pnl": -0.03943100976618234,
-      "n_test": 2880
+      "fold": 3,
+      "n_test": 2880,
+      "pnl": -0.03943100976618234
     },
     {
-      "fold": 4,
       "auc": 0.46453431882426366,
-      "pnl": 0.30458043729075657,
-      "n_test": 2880
+      "fold": 4,
+      "n_test": 2880,
+      "pnl": 0.30458043729075657
     },
     {
-      "fold": 5,
       "auc": 0.5278414481873002,
-      "pnl": 0.0706046909050527,
-      "n_test": 2880
+      "fold": 5,
+      "n_test": 2880,
+      "pnl": 0.0706046909050527
     }
   ],
   "wf_auc_mean": 0.49636279289555674,
