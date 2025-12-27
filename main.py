@@ -1002,10 +1002,16 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     p_used_f = 0.5
 
                 system_logger.info(
-                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and mtf_debug.get("ensemble_p") is not None:
                         signal_source = "MTF"
                     elif isinstance(extra, dict):
                         signal_source = signal_source
+                    else:
+                        signal_source = "noextra"
+                    # --- SIGNAL SOURCE RESOLUTION ---
+                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and mtf_debug.get("ensemble_p") is not None:
+                        signal_source = "MTF"
+                    elif isinstance(extra, dict):
+                        signal_source = extra.get("signal_source", "unknown")
                     else:
                         signal_source = "noextra"
                     "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f "
