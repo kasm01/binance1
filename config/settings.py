@@ -18,8 +18,8 @@ class Settings:
     """
 
     # ───────────── Binance temel ayarları ─────────────
-    BINANCE_SYMBOL: str = os.getenv("BINANCE_SYMBOL", "BTCUSDT")
-    BINANCE_INTERVAL: str = os.getenv("BINANCE_INTERVAL", "1m")
+    BINANCE_SYMBOL: str = os.getenv("BINANCE_SYMBOL", os.getenv("SYMBOL", "BTCUSDT"))
+    BINANCE_INTERVAL: str = os.getenv("BINANCE_INTERVAL", os.getenv("INTERVAL", "1m"))
     KLINES_LIMIT: int = int(os.getenv("KLINES_LIMIT", "500"))
 
     # Eski kod geriye dönük uyumluluk için

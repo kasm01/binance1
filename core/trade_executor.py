@@ -84,6 +84,16 @@ class TradeExecutor:
         self._local_positions: Dict[str, Dict[str, Any]] = {}
 
 
+    def _normalize_side(self, signal: str) -> str:
+        s = str(signal or "").strip().lower()
+        if s in ("buy", "long", "1", "true"):
+            return "long"
+        if s in ("sell", "short", "-1", "false"):
+            return "short"
+        return "hold"
+
+
+
     # ------------------------------------------------------------------
     #  Low-level position access (PositionManager varsa onu kullan)
     # ------------------------------------------------------------------
@@ -194,7 +204,7 @@ class TradeExecutor:
             entry_whale_alignment = str(
                 extra.get("whale_alignment", "no_whale") or "no_whale"
             )
-            entry_model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
+            entry_model_conf = float(extra.get("effective_model_conf", extra.get("model_confidence_factor", 1.0)) or 1.0)
 
             meta = pos.get("meta")
             if not isinstance(meta, dict):
@@ -445,10 +455,25 @@ class TradeExecutor:
             notional = self.max_position_notional
         if notional < 10.0:
             notional = 10.0
-
+        try:
+            if getattr(self, "logger", None):
+                self.logger.info(
+                    "[EXEC][NOTIONAL] base=%.2f aggr=%.3f mc=%.3f whale_dir=%s whale_score=%.3f "
+                    "whale_boost_thr=%.2f whale_veto_thr=%.2f notional=%.2f clamp=[10..%.2f]",
+                    base,
+                    aggr_factor,
+                    float(model_conf),
+                    str(whale_dir),
+                    float(whale_score),
+                    whale_boost_thr,
+                    whale_veto_thr,
+                    float(notional),
+                    float(self.max_position_notional),
+                )
+        except Exception:
+            pass
 
         return notional
-
     # ------------------------------------------------------------------
     #  Ana karar fonksiyonu
     # ------------------------------------------------------------------
@@ -601,6 +626,8 @@ class TradeExecutor:
                 signal = "HOLD"
         except Exception:
             signal = "HOLD"
+
+        side_norm = self._normalize_side(signal)
 
         # ✅ HOLD bug fix: mapping "HOLD" üretiyor; case-safe kontrol
         if str(signal).upper() == "HOLD":
@@ -920,6 +947,22 @@ class TradeExecutor:
         if training_mode:
             return
 
+        # Whale veto (classic scalper çizgisi)
+        try:
+            whale_dir = str(extra.get("whale_dir", "none") or "none").lower()
+            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+            veto_thr = float(os.getenv("WHALE_VETO_THR", "0.70"))
+            if side_norm in ("long", "short") and whale_dir in ("long", "short"):
+                if whale_dir != side_norm and whale_score >= veto_thr:
+                    if getattr(self, "logger", None):
+                        self.logger.info(
+                            "[EXEC][VETO] WHALE_VETO | side=%s whale_dir=%s whale_score=%.3f thr=%.2f -> HOLD",
+                            side_norm, whale_dir, whale_score, veto_thr
+                        )
+                    return
+        except Exception:
+            pass
+
         # SL / TP / trailing kontrolü
         self._check_sl_tp_trailing(symbol=symbol, price=price, interval=interval)
 
@@ -940,7 +983,7 @@ class TradeExecutor:
         else:
             notional = self._compute_notional(
                 symbol=symbol,
-                signal=signal,
+                signal=side_norm,
                 price=price,
                 extra=extra,
             )

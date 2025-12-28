@@ -159,10 +159,9 @@ class RiskManager:
     # --------------------------------------------------
     # Pozisyon açılabilir mi?
     # --------------------------------------------------
-    def reset_if_new_day(self) -> None:
-        """Public wrapper: loop başında güvenle çağrılabilir."""
+    def tick(self) -> None:
+        """Loop başında güvenle çağrılabilir."""
         self._maybe_reset_day()
-
     def can_open_new_trade(
         self,
         symbol: str,

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+import threading
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -1135,88 +1136,12 @@ async def async_main() -> None:
     # -----------------------------
     trading_objects = create_trading_objects()
 
-    # ------------------------------------------------------------
-    # WebSocket enable (Binance trade stream)
-    # ------------------------------------------------------------
-    enable_ws = get_bool_env("ENABLE_WS", False)
-
-    global current_ws
-    if enable_ws:
-        try:
-            symbol = getattr(Settings, "SYMBOL", "BTCUSDT")
-        except Exception:
-            symbol = "BTCUSDT"
-
-        # İlk bağlantı
-        current_ws = start_ws_in_thread(symbol=symbol)
-
-        # Reconnect loop (ayrı thread)
-        def get_ws():
-            global current_ws
-            return current_ws
-
-        def set_ws(new_ws):
-            global current_ws
-            current_ws = new_ws
-
-        threading.Thread(
-            target=reconnect_ws_loop,
-            args=(get_ws, set_ws),
-            kwargs={"retry_interval": int(os.getenv("WS_RETRY_INTERVAL", "5"))},
-            daemon=True,
-        ).start()
-
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=true -> websocket thread + reconnect loop started.")
-    else:
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
-
-    # -----------------------------
-    # WebSocket (optional) + reconnect loop
-    # -----------------------------
-    enable_ws = get_bool_env("ENABLE_WS", False)
-
-    # nonlocal hatasına girmemek için holder dict kullanıyoruz
-    ws_holder = {"ws": None}
-
-    if enable_ws:
-        # symbol'ü trading_objects içinden yakalamaya çalış
-        symbol = None
-        try:
-            symbol = trading_objects.get("symbol")  # type: ignore[attr-defined]
-        except Exception:
-            symbol = None
-
-        ws_holder["ws"] = start_ws_in_thread(symbol=symbol)
-
-        def _get_ws():
-            return ws_holder["ws"]
-
-        def _set_ws(new_ws):
-            ws_holder["ws"] = new_ws
-
-        threading.Thread(
-            target=reconnect_ws_loop,
-            args=(_get_ws, _set_ws),
-            daemon=True,
-        ).start()
-
-        if system_logger:
-            system_logger.info("[WebSocket] ENABLE_WS=true → WS started + reconnect loop running.")
-
     # -----------------------------
     # Main bot loop
     # -----------------------------
     try:
         await bot_loop(trading_objects, prob_stab)
     finally:
-        # WS graceful close (optional)
-        try:
-            ws = ws_holder.get("ws")
-            if ws is not None:
-                ws.close()
-        except Exception:
             pass
 
 
@@ -1244,36 +1169,6 @@ def main() -> None:
         except Exception:
             pass
         loop.close()
-
-
-
-# -----------------------------
-# WebSocket (optional)
-# -----------------------------
-enable_ws = get_bool_env("ENABLE_WS", False)
-ws = None
-
-if enable_ws:
-    # İlk bağlantı
-    ws = start_ws_in_thread(symbol=symbol)
-
-    # Reconnect loop: ws kapanırsa yeniden bağlan
-    current_ws = ws
-
-    def _get_ws():
-        return current_ws
-
-    def _set_ws(new_ws):
-        current_ws = new_ws
-
-    threading.Thread(
-        target=reconnect_ws_loop,
-        args=(_get_ws, _set_ws),
-        daemon=True,
-    ).start()
-
-    if system_logger:
-        system_logger.info("[WebSocket] ENABLE_WS=true → WS thread + reconnect loop started.")
 
 if __name__ == "__main__":
     main()
