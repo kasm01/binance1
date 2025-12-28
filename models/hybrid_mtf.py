@@ -476,6 +476,25 @@ class HybridMTF:
 
         for itv, model in self.models_by_interval.items():
             meta = getattr(model, "meta", {}) or {}
+            # --- AUC HISTORY SEED (ilk çalıştırma stabilitesi) ---
+            if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
+                try:
+                    self.update_auc_history(
+                        interval=itv,
+                        auc_value=float(meta["wf_auc_mean"]),
+                    )
+                    self.logger.info(
+                        "[HYBRID-MTF] Interval=%s auc_history seed edildi (wf_auc_mean=%.4f)",
+                        itv,
+                        float(meta["wf_auc_mean"]),
+                    )
+                except Exception as _e:
+                    self.logger.warning(
+                        "[HYBRID-MTF] Interval=%s auc_history seed edilemedi: %s",
+                        itv,
+                        _e,
+                    )
+
 
             # AUC history yoksa ve wf_auc_mean varsa history bootstrap et
             if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):

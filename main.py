@@ -831,15 +831,14 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 if (_now - float(_last)) > 60:
                     globals()["_SATDBG_LAST_TS"] = _now
 
-                    if isinstance(extra, dict):
-                            p_src_dbg = "ensemble_p"
-                        else:
-                            p_src_dbg = "ensemble_p"
-
-                        else:
-                            p_src_dbg = extra.get("p_buy_source") or "unknown"
+                    # p_src_dbg: SATDBG kaynak etiketi
+                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
+                        p_src_dbg = "ensemble_p"
                     else:
-                        p_src_dbg = "noextra"
+                        if isinstance(extra, dict):
+                            p_src_dbg = extra.get("p_buy_source") or "unknown"
+                        else:
+                            p_src_dbg = "noextra"
 
                     if system_logger:
                         system_logger.info(
@@ -1001,22 +1000,25 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 except Exception:
                     p_used_f = 0.5
 
+                # --- SIGNAL SOURCE RESOLUTION ---
+                if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
+                    signal_source = "MTF"
+                elif isinstance(extra, dict):
+                    signal_source = extra.get("signal_source", "unknown")
+                else:
+                    signal_source = "noextra"
+
+                # MTF varsa ensemble_p'yi extra içine yaz (trade_journal / executor p_src önceliği için)
+                try:
+                    if isinstance(extra, dict) and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
+                        extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
+                except Exception:
+                    pass
+
                 system_logger.info(
-                        signal_source = "MTF"
-                    elif isinstance(extra, dict):
-                        signal_source = signal_source
-                    else:
-                        signal_source = "noextra"
-                    # --- SIGNAL SOURCE RESOLUTION ---
-                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and mtf_debug.get("ensemble_p") is not None:
-                        signal_source = "MTF"
-                    elif isinstance(extra, dict):
-                        signal_source = extra.get("signal_source", "unknown")
-                    else:
-                        signal_source = "noextra"
                     "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f "
                     "p_1m=%s p_5m=%s p_15m=%s p_1h=%s whale_dir=%s whale_score=%s%s",
-                    (("MTF" if (USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None)) else (signal_source if isinstance(extra, dict) else "noextra"))),
+                    signal_source,
                     p_used_f,
                     signal_side,
                     float(model_conf_factor),
@@ -1026,21 +1028,22 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
                     f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
                     whale_dir_dbg if whale_dir_dbg is not None else "None",
-                    f"{float(whale_score_dbg):.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
+                    f"{whale_score_dbg:.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
                     veto_flags,
                 )
-            extra["signal_source"] = signal_source
-            if mtf_debug is not None and isinstance(mtf_debug, dict):
+            # extra içine source/ensemble_p yaz (journal/debug için)
+            if isinstance(extra, dict):
+                extra["signal_source"] = signal_source
+                if isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
                     # MTF kullanıldıysa: p_src için ensemble_p yaz
                     try:
-                        extra["ensemble_p"] = float(p_used)
+                        extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
                     except Exception:
                         extra["ensemble_p"] = None
                     extra["p_buy_source"] = "ensemble_p"
                     extra["signal_source"] = "MTF"
                 else:
                     extra["ensemble_p"] = None
-
 
             last_price = float(raw_df["close"].iloc[-1])
 
