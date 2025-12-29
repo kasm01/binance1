@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import signal
-import threading
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -25,7 +24,7 @@ from models.hybrid_inference import HybridModel, HybridMultiTFModel
 from tg_bot.telegram_bot import TelegramBot
 
 # WebSocket
-from websocket.binance_ws import BinanceWS  # Biz bunu aşağıda websocket/binance_ws.py içinde tanımlayacağız
+from websocket.binance_ws import BinanceWS
 
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
@@ -41,9 +40,10 @@ SYMBOL = getattr(Settings, "SYMBOL", "BTCUSDT")
 system_logger: Optional[logging.Logger] = None
 
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
-MTF_INTERVALS = ["1m", "5m", "15m", "1h"]
+MTF_INTERVALS = ["1m", "5m", "15m", "30m", "1h"]  # 30m eklendi
 
 current_ws = None
+
 
 def get_bool_env(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -52,12 +52,19 @@ def get_bool_env(name: str, default: bool = False) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def get_float_env(name: str, default: float) -> float:
+    """ENV float okuyucu (hatalarda default döner)."""
+    try:
+        v = os.getenv(name, None)
+        if v is None or str(v).strip() == "":
+            return float(default)
+        return float(str(v).strip())
+    except Exception:
+        return float(default)
+
+
 # ---- helpers: EMA adaptive alpha ----
 def _compute_adaptive_alpha(atr_value: float) -> float:
-    """
-    Volatilite artınca alpha yükselsin (EMA daha hızlı adapte olsun),
-    volatilite düşükken alpha düşsün (EMA daha stabil olsun).
-    """
     a_min = float(os.getenv("EMA_ALPHA_MIN", "0.05"))
     a_max = float(os.getenv("EMA_ALPHA_MAX", "0.45"))
     atr_ref = float(os.getenv("EMA_ATR_REF", "100.0"))
@@ -78,6 +85,175 @@ def _compute_adaptive_alpha(atr_value: float) -> float:
     return float(alpha)
 
 
+# ----------------------------------------------------------------------
+# NEW: Whale short-layer weights veto/boost + renorm + trend veto
+# ----------------------------------------------------------------------
+def _apply_whale_to_short_weights(
+    mtf_debug: dict,
+    whale_dir: str,
+    whale_score: float,
+    base_side: str,
+    veto_thr: float = 0.70,
+    boost_thr: float = 0.60,
+    boost_max: float = 1.25,
+):
+    if not isinstance(mtf_debug, dict):
+        return mtf_debug, {"whale_applied": False}
+
+    intervals = mtf_debug.get("intervals_used") or []
+    w_raw = mtf_debug.get("weights_raw") or []
+    if not intervals or not w_raw or len(intervals) != len(w_raw):
+        return mtf_debug, {"whale_applied": False, "reason": "no_weights"}
+
+    short_set = {"1m", "3m", "5m"}
+
+    if whale_dir not in ("long", "short") or whale_score <= 0:
+        return mtf_debug, {"whale_applied": False}
+
+    aligned = (whale_dir == base_side)
+    opp = not aligned
+
+    if opp and whale_score >= veto_thr:
+        w2 = []
+        for itv, w in zip(intervals, w_raw):
+            if itv in short_set:
+                w2.append(0.0)
+            else:
+                w2.append(float(w))
+        mtf_debug["weights_raw"] = w2
+        return mtf_debug, {
+            "whale_applied": True,
+            "mode": "VETO_SHORT_LAYERS",
+            "whale_score": float(whale_score),
+        }
+
+    if aligned and whale_score >= boost_thr:
+        mult = min(boost_max, 1.0 + (whale_score - boost_thr))
+        w2 = []
+        for itv, w in zip(intervals, w_raw):
+            if itv in short_set:
+                w2.append(float(w) * mult)
+            else:
+                w2.append(float(w))
+        mtf_debug["weights_raw"] = w2
+        return mtf_debug, {
+            "whale_applied": True,
+            "mode": "BOOST_SHORT_LAYERS",
+            "mult": float(mult),
+            "whale_score": float(whale_score),
+        }
+
+    return mtf_debug, {"whale_applied": False}
+
+
+def _renorm_weights(mtf_debug: dict):
+    w = mtf_debug.get("weights_raw") or []
+    s = float(sum(w)) if w else 0.0
+    if s > 0:
+        mtf_debug["weights_norm"] = [float(x) / s for x in w]
+    else:
+        mtf_debug["weights_norm"] = [0.0 for _ in w]
+    return mtf_debug
+
+
+def _trend_veto(signal_side: str, p_by_itv: dict):
+    """
+    Eşikler ENV'den okunur, yoksa defaultlar korunur.
+    ENV isimleri:
+      TREND_VETO_LONG_15M, TREND_VETO_LONG_30M, TREND_VETO_LONG_1H
+      TREND_VETO_SHORT_15M, TREND_VETO_SHORT_30M, TREND_VETO_SHORT_1H
+    """
+    veto_long_15m = get_float_env("TREND_VETO_LONG_15M", 0.48)
+    veto_long_30m = get_float_env("TREND_VETO_LONG_30M", 0.48)
+    veto_long_1h = get_float_env("TREND_VETO_LONG_1H", 0.47)
+
+    veto_short_15m = get_float_env("TREND_VETO_SHORT_15M", 0.52)
+    veto_short_30m = get_float_env("TREND_VETO_SHORT_30M", 0.52)
+    veto_short_1h = get_float_env("TREND_VETO_SHORT_1H", 0.53)
+
+    p15 = p_by_itv.get("15m")
+    p30 = p_by_itv.get("30m")
+    p1h = p_by_itv.get("1h")
+
+    if signal_side == "long":
+        if (p15 is not None and p15 < veto_long_15m) or \
+           (p30 is not None and p30 < veto_long_30m) or \
+           (p1h is not None and p1h < veto_long_1h):
+            return True, f"TREND_VETO_LONG p15={p15} p30={p30} p1h={p1h}"
+        return False, "OK"
+
+    if signal_side == "short":
+        if (p15 is not None and p15 > veto_short_15m) or \
+           (p30 is not None and p30 > veto_short_30m) or \
+           (p1h is not None and p1h > veto_short_1h):
+            return True, f"TREND_VETO_SHORT p15={p15} p30={p30} p1h={p1h}"
+        return False, "OK"
+
+    return False, "HOLD"
+
+
+def _extract_p_by_itv(mtf_debug: dict) -> Dict[str, Optional[float]]:
+    p_by_itv: Dict[str, Optional[float]] = {}
+    if not isinstance(mtf_debug, dict):
+        return p_by_itv
+
+    itvs = mtf_debug.get("intervals_used") or []
+    per = mtf_debug.get("per_interval") if isinstance(mtf_debug.get("per_interval"), dict) else {}
+
+    for itv in itvs:
+        p_last = None
+        try:
+            if isinstance(per, dict) and isinstance(per.get(itv), dict):
+                p_last = per.get(itv, {}).get("p_last")
+            elif isinstance(mtf_debug.get(itv), dict):
+                p_last = mtf_debug.get(itv, {}).get("p_last")
+        except Exception:
+            p_last = None
+
+        if p_last is None:
+            p_by_itv[itv] = None
+        else:
+            try:
+                p_by_itv[itv] = float(p_last)
+            except Exception:
+                p_by_itv[itv] = None
+
+    return p_by_itv
+
+
+def _recompute_ensemble_from_debug(mtf_debug: dict) -> Optional[float]:
+    if not isinstance(mtf_debug, dict):
+        return None
+
+    intervals = mtf_debug.get("intervals_used") or []
+    w_norm = mtf_debug.get("weights_norm") or []
+    if not intervals or not w_norm or len(intervals) != len(w_norm):
+        return None
+
+    p_by_itv = _extract_p_by_itv(mtf_debug)
+
+    num = 0.0
+    den = 0.0
+    for itv, w in zip(intervals, w_norm):
+        p = p_by_itv.get(itv)
+        if p is None:
+            continue
+        try:
+            wf = float(w)
+            pf = float(p)
+        except Exception:
+            continue
+        if wf <= 0:
+            continue
+        num += wf * pf
+        den += wf
+
+    if den <= 1e-12:
+        return None
+
+    return float(num / den)
+
+
 # Global env flag’ler (async_main içinde tekrar güncellenecek)
 BINANCE_API_KEY: Optional[str] = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET: Optional[str] = os.getenv("BINANCE_API_SECRET")
@@ -94,7 +270,6 @@ DRY_RUN: bool = get_bool_env("DRY_RUN", True)
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = raw_df.copy()
 
-    # 1) Zaman kolonlarını normalize et
     for col in ["open_time", "close_time"]:
         if col not in df.columns:
             continue
@@ -102,18 +277,11 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
             dt = pd.to_datetime(df[col], unit="ms", utc=True)
         else:
             dt = pd.to_datetime(df[col], utc=True)
-        df[col] = dt.astype("int64") / 1e9  # saniye
+        df[col] = dt.astype("int64") / 1e9
 
-    # 2) Numeric cast
     float_cols = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_asset_volume",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
+        "open", "high", "low", "close", "volume",
+        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
     ]
     int_cols = ["number_of_trades", "ignore"]
 
@@ -128,7 +296,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     if "ignore" not in df.columns:
         df["ignore"] = 0.0
 
-    # 3) Teknik feature'lar
     df["hl_range"] = df["high"] - df["low"]
     df["oc_change"] = df["close"] - df["open"]
 
@@ -145,15 +312,8 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     if "dummy_extra" not in df.columns:
         df["dummy_extra"] = 0.0
 
-    # 4) NaN temizliği
     df = df.ffill().bfill().fillna(0.0)
     return df
-
-
-def build_labels(df: pd.DataFrame, horizon: int = 1) -> pd.Series:
-    close = df["close"].astype(float)
-    future = close.shift(-horizon)
-    return (future > close).astype(int)
 
 
 # ----------------------------------------------------------------------
@@ -196,32 +356,17 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         raise
 
     columns = [
-        "open_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
-        "ignore",
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
     ]
     df = pd.DataFrame(klines, columns=columns)
 
     float_cols = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_asset_volume",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
+        "open", "high", "low", "close", "volume",
+        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
     ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]  # <-- ignore eklendi
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
     for c in float_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
@@ -229,35 +374,20 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
     for c in int_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
 
-    # ekstra güvenlik: ignore garanti
     if "ignore" in df.columns:
         df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
 
     if logger:
         logger.info(
-            "[DATA] LIVE(PUBLIC) mod: REST ile kline çekildi. symbol=%s interval=%s shape=%s",
+            "[DATA] LIVE(PUBLIC) REST kline çekildi. symbol=%s interval=%s shape=%s",
             symbol, interval, df.shape
         )
     return df
-async def fetch_klines(
-    client,
-    symbol: str,
-    interval: str,
-    limit: int,
-    logger: Optional[logging.Logger],
-) -> pd.DataFrame:
-    """
-    DATA_MODE=LIVE  -> (1) client varsa await client.get_klines
-                      (2) client yoksa public REST /api/v3/klines (API key gerekmez)
-                      (3) LIVE modda CSV fallback YOK (asla CSV okunmaz)
-    DATA_MODE=OFFLINE -> CSV: data/offline_cache/{symbol}_{interval}_6m.csv
-    default: OFFLINE
-    """
+
+
+async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     data_mode = str(os.getenv("DATA_MODE", "OFFLINE")).upper().strip()
 
-    # -----------------------
-    # OFFLINE: sadece CSV
-    # -----------------------
     if data_mode != "LIVE":
         csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
         if not os.path.exists(csv_path):
@@ -276,38 +406,19 @@ async def fetch_klines(
             logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
         return df
 
-    # -----------------------
-    # LIVE: CSV ASLA OKUMA
-    # -----------------------
     last_err: Optional[Exception] = None
 
     columns = [
-        "open_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
-        "ignore",
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
     ]
     float_cols = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_asset_volume",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
+        "open", "high", "low", "close", "volume",
+        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
     ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]  # <-- ignore eklendi
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
-    # 1) client varsa async client ile çek
     if client is not None:
         try:
             klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -315,19 +426,13 @@ async def fetch_klines(
 
             for c in float_cols:
                 df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
-
             for c in int_cols:
                 df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-
-            # ekstra güvenlik
             if "ignore" in df.columns:
                 df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
 
             if logger:
-                logger.info(
-                    "[DATA] LIVE(CLIENT) mod: client.get_klines ile çekildi. symbol=%s interval=%s shape=%s",
-                    symbol, interval, df.shape
-                )
+                logger.info("[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
             return df
 
         except Exception as e:
@@ -335,32 +440,16 @@ async def fetch_klines(
             if logger:
                 logger.error("[DATA] LIVE(CLIENT) client.get_klines hatası: %s", e)
 
-    # 2) client yoksa veya client patladıysa public REST
     try:
         df = _fetch_klines_public_rest(symbol, interval, limit, logger)
-
-        # (garanti) tekrar cast — zarar vermez
-        for c in float_cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
-
-        for c in int_cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-
-        if "ignore" in df.columns:
-            df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
-
         return df
-
     except Exception as e:
         last_err = e
         if logger:
-            logger.error("[DATA] LIVE(PUBLIC) public REST de başarısız: %s", e)
+            logger.error("[DATA] LIVE(PUBLIC) REST de başarısız: %s", e)
 
-    raise RuntimeError(
-        f"DATA_MODE=LIVE fakat live fetch başarısız (CSV fallback yok). last_err={last_err!r}"
-    )
+    raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
+
 
 # ----------------------------------------------------------------------
 # Trading objeleri kurulum
@@ -370,20 +459,8 @@ def create_trading_objects() -> Dict[str, Any]:
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN, USE_TESTNET
 
-# --- SYMBOL & INTERVAL (env öncelikli, cfg opsiyonel) ---
-    cfg = globals().get("cfg", None)
-
-    symbol = (
-        os.getenv("SYMBOL")
-        or getattr(Settings, "SYMBOL", None)
-        or "BTCUSDT"
-    )
-    interval = (
-        os.getenv("INTERVAL")
-        or getattr(Settings, "INTERVAL", None)
-        or "5m"
-    )
-# --- /SYMBOL & INTERVAL ---
+    symbol = os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", None) or "BTCUSDT"
+    interval = os.getenv("INTERVAL") or getattr(Settings, "INTERVAL", None) or "5m"
 
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
@@ -393,9 +470,6 @@ def create_trading_objects() -> Dict[str, Any]:
         dry_run=bool(DRY_RUN),
     )
 
-    # --------------------------
-    # Risk Manager
-    # --------------------------
     daily_max_loss_usdt = float(os.getenv("DAILY_MAX_LOSS_USDT", "100"))
     daily_max_loss_pct = float(os.getenv("DAILY_MAX_LOSS_PCT", "0.03"))
     max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
@@ -411,38 +485,24 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
-    # --------------------------
-    # Telegram (opsiyonel)
-    # --------------------------
     tg_bot = None
     try:
         tg_bot = TelegramBot()
-
-        # python-telegram-bot token yoksa TelegramBot içi bot/dispatcher None kalabiliyor
         if getattr(tg_bot, "dispatcher", None):
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
-                # çok eski sürümler için fallback
                 setattr(tg_bot, "risk_manager", risk_manager)
-
             if system_logger:
-                system_logger.info(
-                    "[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk komutu aktif)."
-                )
+                system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk aktif).")
         else:
             if system_logger:
-                system_logger.warning(
-                    "[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN tanımsız)."
-                )
+                system_logger.warning("[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN yok).")
     except Exception as e:
         tg_bot = None
         if system_logger:
             system_logger.warning("[MAIN] TelegramBot init/enjeksiyon hata: %s", e)
 
-    # --------------------------
-    # Position Manager (Redis/PG)
-    # --------------------------
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
@@ -458,61 +518,39 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
-    # --------------------------
-    # Hybrid Model (single TF)
-    # --------------------------
     hybrid_model = HybridModel(model_dir="models", interval=interval, logger=system_logger)
     try:
-        # HYBRID_MODE, LSTM kullanımını kontrol ediyorsa
         if hasattr(hybrid_model, "use_lstm_hybrid"):
             hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
     except Exception:
         pass
 
-    # --------------------------
-    # --------------------------
-    # --------------------------
-    # MTF Ensemble (opsiyonel)
-    # --------------------------
     mtf_ensemble = None
     if USE_MTF_ENS:
         try:
-            # MTF_INTERVALS main.py içinde tanımlı değilse fallback:
             try:
-                mtf_intervals = list(MTF_INTERVALS)  # type: ignore[name-defined]
+                mtf_intervals = list(MTF_INTERVALS)
             except Exception:
-                mtf_intervals = ["1m", "5m", "15m", "1h"]
+                mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
 
             mtf_ensemble = HybridMultiTFModel(model_dir="models", intervals=mtf_intervals, logger=system_logger)
-
             if system_logger:
-                system_logger.info(
-                    "[MAIN] Multi-timeframe hybrid ensemble aktif: intervals=%s",
-                    list(mtf_intervals),
-                )
+                system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
-                system_logger.warning(
-                    "[MAIN] HybridMultiTFModel init hata, MTF ensemble devre dışı: %s",
-                    e,
-                )
+                system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
 
-# Whale Detector (opsiyonel)
-    # --------------------------
     whale_detector = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
         if system_logger:
-            system_logger.info("[WHALE] MultiTimeframeWhaleDetector başarıyla init edildi.")
+            system_logger.info("[WHALE] MultiTimeframeWhaleDetector init OK.")
     except Exception as e:
         whale_detector = None
         if system_logger:
             system_logger.warning("[WHALE] MultiTimeframeWhaleDetector init hata: %s", e)
 
-    # --------------------------
-    # Trade Executor
-    # --------------------------
     base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
     max_position_notional = float(os.getenv("MAX_POSITION_NOTIONAL", "500"))
     max_leverage = float(os.getenv("MAX_LEVERAGE", "3"))
@@ -545,9 +583,6 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
     )
 
-    # --------------------------
-    # Online model
-    # --------------------------
     online_model = OnlineLearner(model_dir="models", base_model_name="online_model", interval=interval)
 
     return {
@@ -566,10 +601,6 @@ def create_trading_objects() -> Dict[str, Any]:
 
 
 def _normalize_signal(sig: Any) -> str:
-    """
-    ProbStabilizer.signal çıktısını TradeExecutor formatına çevir.
-    Kabul edilen: BUY/SELL/HOLD veya long/short/hold
-    """
     s = str(sig).strip().lower()
     if s in ("buy", "long"):
         return "long"
@@ -589,23 +620,15 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     whale_detector = objs.get("whale_detector")
     hybrid_model = objs["hybrid_model"]
     mtf_ensemble = objs.get("mtf_ensemble")
-    online_model = objs["online_model"]
 
     symbol = objs.get("symbol", os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT")))
     interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
     data_limit = int(os.getenv("DATA_LIMIT", "500"))
 
-    use_ema_signal_default = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", True)
-
     if system_logger:
         system_logger.info(
-            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s, USE_PBUY_STABILIZER_SIGNAL=%s)",
-            symbol,
-            interval,
-            TRAINING_MODE,
-            HYBRID_MODE,
-            USE_MTF_ENS,
-            use_ema_signal_default,
+            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
+            symbol, interval, TRAINING_MODE, HYBRID_MODE, USE_MTF_ENS
         )
 
     anomaly_detector = AnomalyDetector(logger=system_logger)
@@ -616,28 +639,11 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     }
 
     feature_cols = [
-        "open_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_asset_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
-        "ignore",
-        "hl_range",
-        "oc_change",
-        "return_1",
-        "return_3",
-        "return_5",
-        "ma_5",
-        "ma_10",
-        "ma_20",
-        "vol_10",
-        "dummy_extra",
+        "open_time", "open", "high", "low", "close", "volume", "close_time",
+        "quote_asset_volume", "number_of_trades", "taker_buy_base_volume",
+        "taker_buy_quote_volume", "ignore",
+        "hl_range", "oc_change", "return_1", "return_3", "return_5",
+        "ma_5", "ma_10", "ma_20", "vol_10", "dummy_extra",
     ]
 
     while True:
@@ -659,10 +665,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             feat_df = anomaly_detector.filter_anomalies(feat_df)
 
             feature_cols_existing = [c for c in feature_cols if c in feat_df.columns]
-            missing = [c for c in feature_cols if c not in feat_df.columns]
-            if missing and system_logger:
-                system_logger.warning("[FE] Eksik feature kolonları tespit edildi: %s", missing)
-
             X_live = feat_df[feature_cols_existing].tail(500)
 
             # 1) Single-TF hibrit skor
@@ -679,7 +681,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
             if USE_MTF_ENS and mtf_ensemble is not None:
-                for itv in ["1m", "15m", "1h"]:
+                for itv in ["1m", "15m", "30m", "1h"]:  # ✅ 30m eklendi
                     try:
                         raw_df_itv = await fetch_klines(
                             client=client,
@@ -703,7 +705,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             # 3) MTF ensemble skoru
             p_used = p_single
             mtf_debug: Optional[Dict[str, Any]] = None
-            p_1m = p_5m = p_15m = p_1h = None
+
+            p_1m = p_5m = p_15m = p_30m = p_1h = None
 
             if USE_MTF_ENS and mtf_ensemble is not None:
                 try:
@@ -711,23 +714,22 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     for itv, df_itv in mtf_feats.items():
                         cols_itv = [c for c in feature_cols if c in df_itv.columns]
                         if not cols_itv:
-                            if system_logger:
-                                system_logger.warning("[MTF] Interval=%s için kullanılabilir feature yok, skip ediliyor.", itv)
                             continue
                         X_by_interval[itv] = df_itv[cols_itv].tail(500)
 
                     if X_by_interval:
                         p_ens, mtf_debug = mtf_ensemble.predict_proba_multi(
-                        X_dict=X_by_interval,
-                        standardize_auc_key="auc_used",
-                        standardize_overwrite=False,
-                    )
+                            X_dict=X_by_interval,
+                            standardize_auc_key="auc_used",
+                            standardize_overwrite=False,
+                        )
                         p_used = float(p_ens)
 
                         per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}
                         p_1m = per_int.get("1m", {}).get("p_last")
                         p_5m = per_int.get("5m", {}).get("p_last")
                         p_15m = per_int.get("15m", {}).get("p_last")
+                        p_30m = per_int.get("30m", {}).get("p_last")
                         p_1h = per_int.get("1h", {}).get("p_last")
 
                 except Exception as e:
@@ -735,10 +737,11 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         system_logger.warning("[MTF] Ensemble hesaplanırken hata: %s", e)
                     p_used = p_single
                     mtf_debug = None
-                    p_1m = p_5m = p_15m = p_1h = None
 
             # 4) Whale meta
             whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
+            whale_dir = "none"
+            whale_score = 0.0
 
             if whale_detector is not None:
                 try:
@@ -777,6 +780,10 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                                 "meta": ws.meta,
                             }
                         )
+
+                    whale_dir = str(whale_meta.get("direction", "none") or "none")
+                    whale_score = float(whale_meta.get("score", 0.0) or 0.0)
+
                 except Exception as e:
                     if system_logger:
                         system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
@@ -785,7 +792,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
             atr_value = compute_atr_from_klines(raw_df, period=atr_period)
 
-            # 6) probs + extra
+            # probs + extra
             probs: Dict[str, Any] = {
                 "p_used": p_used,
                 "p_single": p_single,
@@ -800,23 +807,16 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 "mtf_debug": mtf_debug,
                 "whale_meta": whale_meta,
                 "atr": atr_value,
-
-                # SATDBG / P_USED_DBG için kaynak
                 "p_buy_source": (debug_single.get("mode") if isinstance(debug_single, dict) else "unknown"),
+                "whale_dir": whale_dir,
+                "whale_score": float(whale_score),
             }
 
-            # ------------------------------------------------------------------
-            # Online model p_buy stabilizasyonu (EMA) + zscore clip + adaptive alpha
-            # ------------------------------------------------------------------
+            # Signal decision
+            signal_side: Optional[str] = None
             use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", False)
             ema_whale_only = get_bool_env("EMA_WHALE_ONLY", False)
             ema_whale_thr = float(os.getenv("EMA_WHALE_THR", "0.50"))
-
-            prob_stab.use_zclip = get_bool_env("PBUY_ZCLIP_ON", True)
-            prob_stab.zclip = float(os.getenv("PBUY_ZCLIP", "3.0"))
-            prob_stab.zwin = int(os.getenv("PBUY_ZWIN", "60"))
-
-            signal_side: Optional[str] = None
 
             try:
                 alpha_dyn = _compute_adaptive_alpha(atr_value)
@@ -825,19 +825,9 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 else:
                     prob_stab.alpha = float(alpha_dyn)
 
-                X_last = X_live.tail(1)
-
-                whale_score = 0.0
-                whale_dir = "none"
-                if isinstance(whale_meta, dict):
-                    whale_score = float(whale_meta.get("score", 0.0) or 0.0)
-                    whale_dir = str(whale_meta.get("direction", "none") or "none")
                 whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
-                # trade_executor için direkt alanlar (kolay tüketim)
-                extra["whale_dir"] = whale_dir
-                extra["whale_score"] = float(whale_score)
+                extra["ema_whale_on"] = bool(whale_on)
 
-                # patched: in HYBRID_MODE, feed stabilizer with p_used (avoid OnlineLearner saturation)
                 p_buy_raw = float(p_used)
                 p_buy_ema = prob_stab.update(p_buy_raw)
                 sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
@@ -850,7 +840,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 extra["ema_alpha"] = float(getattr(prob_stab, "alpha", alpha_dyn))
                 extra["ema_whale_only"] = bool(ema_whale_only)
                 extra["ema_whale_thr"] = float(ema_whale_thr)
-                extra["ema_whale_on"] = bool(whale_on)
 
                 if use_ema_signal and (not ema_whale_only or whale_on):
                     signal_side = sig_from_ema
@@ -860,309 +849,64 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     system_logger.warning("[ONLINE] EMA block hata: %s", e)
                 signal_side = None
 
-            # EMA kullanılmadıysa hybrid threshold sinyaline düş
             if signal_side is None:
                 long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
                 short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
-
                 if p_used >= long_thr:
                     signal_side = "long"
                 elif p_used <= short_thr:
                     signal_side = "short"
                 else:
                     signal_side = "hold"
-
                 extra["signal_source"] = "HYBRID"
             else:
                 extra["signal_source"] = "EMA"
 
-            # ------------------------------
-            # Trend veto (15m/1h) + Whale veto/boost
-            # ------------------------------
+            # Trend veto (ENV configurable)
             try:
-                # Trend threshold'lar (env ile yönetilebilir)
-                trend_long_1h  = float(os.getenv("TREND_LONG_1H", "0.60"))
-                trend_long_15m = float(os.getenv("TREND_LONG_15M", "0.55"))
-                trend_short_1h  = float(os.getenv("TREND_SHORT_1H", "0.40"))
-                trend_short_15m = float(os.getenv("TREND_SHORT_15M", "0.45"))
-
-                # Whale threshold'lar
-                whale_strong_thr = float(os.getenv("WHALE_STRONG_THR", "0.60"))
-                whale_veto_thr   = float(os.getenv("WHALE_VETO_THR", "0.60"))
-
-                # 1) Trend veto: büyük TF ters ise HOLD
-                if signal_side in ("long", "short") and isinstance(p_1h, float) and isinstance(p_15m, float):
-                    if signal_side == "long" and not (p_1h > trend_long_1h and p_15m > trend_long_15m):
-                        if isinstance(extra, dict):
-                            extra["trend_veto"] = {"p_1h": p_1h, "p_15m": p_15m}
-                        signal_side = "hold"
-                    elif signal_side == "short" and not (p_1h < trend_short_1h and p_15m < trend_short_15m):
-                        if isinstance(extra, dict):
-                            extra["trend_veto"] = {"p_1h": p_1h, "p_15m": p_15m}
-                        signal_side = "hold"
-
-                # 2) Whale veto: güçlü ters whale varsa HOLD
-                if signal_side in ("long", "short") and whale_dir in ("long", "short"):
-                    if float(whale_score) >= whale_veto_thr and whale_dir != signal_side:
-                        if isinstance(extra, dict):
-                            extra["whale_veto"] = {"whale_dir": whale_dir, "whale_score": float(whale_score)}
-                        signal_side = "hold"
-
-                    # 3) Whale boost: aynı yönde güçlü whale varsa işaretle (sizing zaten trade_executor'da)
-                    if float(whale_score) >= whale_strong_thr and whale_dir == signal_side:
-                        if isinstance(extra, dict):
-                            extra["whale_boost"] = {"whale_dir": whale_dir, "whale_score": float(whale_score)}
-
-            except Exception:
-                pass
-
-            # ------------------------------
-            # Mikro filtre (1m) + model güveni (p_used tabanlı)
-            # ------------------------------
-            micro_conf_scale = 1.0
-            if signal_side == "long" and isinstance(p_1m, float) and p_1m < 0.30:
-                micro_conf_scale = 0.7
-            elif signal_side == "short" and isinstance(p_1m, float) and p_1m > 0.70:
-                micro_conf_scale = 0.7
-
-            # Model güvenini p_used'dan türet (0..1). 0.5'e yakınsa düşük güven.
-            base_conf = None
-            try:
-                base_conf = abs(float(p_used) - 0.5) * 2.0
-                if base_conf < 0.0:
-                    base_conf = 0.0
-                elif base_conf > 1.0:
-                    base_conf = 1.0
-            except Exception:
-                base_conf = float(model_conf_factor) if model_conf_factor is not None else 1.0
-
-            effective_model_conf = float(base_conf) * micro_conf_scale
-
-            # === SATURATION SNAPSHOT (auto) ===
-            prob_dbg = getattr(prob_stab, "_last_dbg", None)
-
-            try:
-                from datetime import datetime
-
-                _now = datetime.utcnow().timestamp()
-                _last = globals().get("_SATDBG_LAST_TS", 0) or 0
-
-                if (_now - float(_last)) > 60:
-                    globals()["_SATDBG_LAST_TS"] = _now
-
-                    # p_src_dbg: SATDBG kaynak etiketi
-                    if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                        p_src_dbg = "ensemble_p"
-                    else:
-                        if isinstance(extra, dict):
-                            p_src_dbg = extra.get("p_buy_source") or "unknown"
-                        else:
-                            p_src_dbg = "noextra"
-
-                    if system_logger:
-                        system_logger.info(
-                            "[SATDBG] p_used=%.6f p_src=%s "
-                            "raw=%r ema=%r stable=%r "
-                            "mcf=%.6f micro=%.3f eff=%.6f "
-                            "signal_side=%s prob_dbg=%s",
-                            float(p_used),
-                            p_src_dbg,
-                            extra.get("p_buy_raw") if isinstance(extra, dict) else None,
-                            extra.get("p_buy_ema") if isinstance(extra, dict) else None,
-                            extra.get("p_buy_stable") if isinstance(extra, dict) else None,
-                            float(model_conf_factor),
-                            float(micro_conf_scale),
-                            float(effective_model_conf),
-                            str(signal_side),
-                            prob_dbg,
-                        )
-
-            except Exception:
-                pass
-            # === /SATURATION SNAPSHOT ===
-
-            # ==============================
-            # p_used DEBUG SNAPSHOT (rate-limited)
-            # ==============================
-            try:
-                from datetime import datetime
-                _now = datetime.utcnow().timestamp()
-                _last = globals().get("_P_USED_DBG_LAST_TS", 0) or 0
-                _ok = (_now - float(_last)) > 60
-                if _ok:
-                    globals()["_P_USED_DBG_LAST_TS"] = _now
-                    if system_logger:
-                        system_logger.info(
-                            "[P_USED_DBG] p_used=%.6f src=%s p_buy_raw=%r p_buy_ema=%r stable=%r thr_buy=%r thr_sell=%r",
-                            float(p_used),
-                            (extra.get("p_buy_source") or extra.get("p_source") or extra.get("mode") or "unknown") if isinstance(extra, dict) else "unknown",
-                            (extra.get("p_buy_raw", None) if isinstance(extra, dict) else None),
-                            (extra.get("p_buy_ema", None) if isinstance(extra, dict) else None),
-                            (extra.get("p_buy_stable", None) if isinstance(extra, dict) else None),
-                            os.getenv("LONG_THRESHOLD"),
-                            os.getenv("SHORT_THRESHOLD"),
-                        )
-            except Exception:
-                pass
-
-            # ==============================
-            # ATR bazlı dinamik MCF_GAMMA
-            # ==============================
-            gamma = float(os.getenv("MCF_GAMMA", "0.6"))
-            try:
-                atr = None
-                if isinstance(extra, dict):
-                    atr = extra.get("atr")
-                atr = float(atr) if atr is not None else None
-
-                atr_lo = float(os.getenv("MCF_ATR_LO", "50"))
-                atr_hi = float(os.getenv("MCF_ATR_HI", "300"))
-                g_min  = float(os.getenv("MCF_GAMMA_MIN", "0.45"))
-                g_max  = float(os.getenv("MCF_GAMMA_MAX", "0.85"))
-
-                if atr is not None and atr_hi > atr_lo:
-                    t = (atr - atr_lo) / (atr_hi - atr_lo)
-                    if t < 0.0:
-                        t = 0.0
-                    elif t > 1.0:
-                        t = 1.0
-                    gamma = g_max - t * (g_max - g_min)  # atr ↑ -> gamma ↓
-            except Exception:
-                pass
-
-            # debug için extra'ya yaz
-            try:
-                if isinstance(extra, dict):
-                    extra["mcf_gamma"] = gamma
-            except Exception:
-                pass
-
-            # --- model_confidence_factor (normalized + compression + HOLD-safe) ---
-            mcf = None
-            try:
-                mcf = float(effective_model_conf)
-            except Exception:
-                mcf = None
-
-            if mcf is not None:
-                # 0..100 gelme ihtimaline karşı normalize
-                if mcf > 1.0 and mcf <= 100.0:
-                    mcf = mcf / 100.0
-
-                # 1) clamp 0..1
-                if mcf < 0.0:
-                    mcf = 0.0
-                elif mcf > 1.0:
-                    mcf = 1.0
-
-                # 2) compression (aşırı confidence'ı bastır) -> ATR'den gelen gamma kullanılır
-                mcf = 0.5 + (mcf - 0.5) * float(gamma)
-
-                # 3) tekrar clamp
-                if mcf < 0.0:
-                    mcf = 0.0
-                elif mcf > 1.0:
-                    mcf = 1.0
-
-            # HOLD guard: signal_side 'hold' ise yazma, varsa da temizle
-            if str(signal_side).lower() != "hold" and mcf is not None:
-                if isinstance(extra, dict):
-                    extra["model_confidence_factor"] = mcf
+                p_by_itv = _extract_p_by_itv(mtf_debug) if isinstance(mtf_debug, dict) else {}
+                vetoed, veto_reason = _trend_veto(signal_side, p_by_itv)
+                if vetoed:
+                    signal_side = "hold"
+                    extra.setdefault("veto_flags", []).append(veto_reason)
+            except Exception as e:
                 if system_logger:
-                    try:
-                        system_logger.info(
-                            "[MCF_DBG] eff=%r micro=%r mcf_final=%r gamma=%r sig=%s atr=%r",
-                            float(effective_model_conf),
-                            float(micro_conf_scale),
-                            mcf,
-                            float(gamma),
-                            str(signal_side),
-                            (extra.get("atr") if isinstance(extra, dict) else None),
-                        )
-                    except Exception:
-                        pass
-            else:
-                try:
-                    if isinstance(extra, dict):
-                        extra.pop("model_confidence_factor", None)
-                except Exception:
-                    pass
+                    system_logger.warning("[VETO] trend_veto error: %s", e)
 
-            # --- /model_confidence_factor ---
-
-            # ------------------------------
-            # Veto / Boost flag'lerini log için hazırla
-            # ------------------------------
-            veto_flags = ""
+            # Whale weights veto/boost -> renorm -> recompute ensemble
             try:
-                if isinstance(extra, dict):
-                    if "trend_veto" in extra:
-                        veto_flags += " trend_veto=1"
-                    if "whale_veto" in extra:
-                        veto_flags += " whale_veto=1"
-                    if "whale_boost" in extra:
-                        veto_flags += " whale_boost=1"
-            except Exception:
-                pass
+                if USE_MTF_ENS and isinstance(mtf_debug, dict) and signal_side in ("long", "short"):
+                    mtf_debug, whale_w_dbg = _apply_whale_to_short_weights(
+                        mtf_debug=mtf_debug,
+                        whale_dir=whale_dir,
+                        whale_score=float(whale_score),
+                        base_side=str(signal_side),
+                        veto_thr=float(os.getenv("WHALE_SHORT_VETO_THR", "0.70")),
+                        boost_thr=float(os.getenv("WHALE_SHORT_BOOST_THR", "0.60")),
+                        boost_max=float(os.getenv("WHALE_SHORT_BOOST_MAX", "1.25")),
+                    )
 
-            if system_logger:
-                whale_dir_dbg = whale_meta.get("direction") if isinstance(whale_meta, dict) else None
-                whale_score_dbg = whale_meta.get("score") if isinstance(whale_meta, dict) else None
+                    if isinstance(whale_w_dbg, dict) and whale_w_dbg.get("whale_applied"):
+                        extra["whale_weight_adjust"] = whale_w_dbg
+                        mtf_debug = _renorm_weights(mtf_debug)
+                        new_p = _recompute_ensemble_from_debug(mtf_debug)
+                        if new_p is not None:
+                            mtf_debug["ensemble_p"] = float(new_p)
+                            p_used = float(new_p)
+                            probs["p_used"] = float(p_used)
+                    extra["mtf_debug"] = mtf_debug
+            except Exception as e:
+                if system_logger:
+                    system_logger.warning("[WHALE][WEIGHT] apply/recompute error: %s", e)
 
-                # source: MTF ensemble gerçekten kullanıldıysa MTF yaz
-                signal_source = "MTF" if (USE_MTF_ENS and mtf_debug is not None) else "HYBRID"
-                # extra içinde varsa override et (ör: başka yerde set ediyorsan)
-                signal_source = str(extra.get("signal_source", signal_source))
-
-                try:
-                    p_used_f = float(p_used)
-                except Exception:
-                    p_used_f = 0.5
-
-                # --- SIGNAL SOURCE RESOLUTION ---
+            # Journal extras
+            try:
                 if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                    signal_source = "MTF"
-                elif isinstance(extra, dict):
-                    signal_source = extra.get("signal_source", "unknown")
-                else:
-                    signal_source = "noextra"
-
-                # MTF varsa ensemble_p'yi extra içine yaz (trade_journal / executor p_src önceliği için)
-                try:
-                    if isinstance(extra, dict) and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                        extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
-                except Exception:
-                    pass
-
-                system_logger.info(
-                    "[SIGNAL] source=%s p_used=%.4f signal=%s model_conf=%.3f eff_conf=%.3f "
-                    "p_1m=%s p_5m=%s p_15m=%s p_1h=%s whale_dir=%s whale_score=%s%s",
-                    signal_source,
-                    p_used_f,
-                    signal_side,
-                    float(model_conf_factor),
-                    float(effective_model_conf),
-                    f"{p_1m:.4f}" if isinstance(p_1m, float) else "None",
-                    f"{p_5m:.4f}" if isinstance(p_5m, float) else "None",
-                    f"{p_15m:.4f}" if isinstance(p_15m, float) else "None",
-                    f"{p_1h:.4f}" if isinstance(p_1h, float) else "None",
-                    whale_dir_dbg if whale_dir_dbg is not None else "None",
-                    f"{whale_score_dbg:.3f}" if isinstance(whale_score_dbg, (int, float)) else "None",
-                    veto_flags,
-                )
-            # extra içine source/ensemble_p yaz (journal/debug için)
-            if isinstance(extra, dict):
-                extra["signal_source"] = signal_source
-                if isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                    # MTF kullanıldıysa: p_src için ensemble_p yaz
-                    try:
-                        extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
-                    except Exception:
-                        extra["ensemble_p"] = None
+                    extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
                     extra["p_buy_source"] = "ensemble_p"
                     extra["signal_source"] = "MTF"
-                else:
-                    extra["ensemble_p"] = None
+            except Exception:
+                pass
 
             last_price = float(raw_df["close"].iloc[-1])
 
@@ -1185,6 +929,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 print("[LOOP ERROR]", e)
 
         await asyncio.sleep(LOOP_SLEEP_SECONDS)
+
 
 # ----------------------------------------------------------------------
 # Async main
@@ -1212,60 +957,31 @@ async def async_main() -> None:
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
 
-        if not (BINANCE_API_KEY and BINANCE_API_SECRET):
-            system_logger.warning(
-                "[BINANCE] API key/secret env'de yok. DRY_RUN modunda olduğundan emin ol."
-            )
-
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
         buy_thr=float(os.getenv("BUY_THRESHOLD", "0.60")),
         sell_thr=float(os.getenv("SELL_THRESHOLD", "0.40")),
     )
-    if system_logger:
-        system_logger.info(
-            "[MAIN] ProbStabilizer init | alpha=%.3f buy_thr=%.2f sell_thr=%.2f",
-            float(getattr(prob_stab, "alpha", 0.20)),
-            float(getattr(prob_stab, "buy_thr", 0.60)),
-            float(getattr(prob_stab, "sell_thr", 0.40)),
-        )
-    # -----------------------------
-    # WebSocket enable/disable
-    # -----------------------------
-    enable_ws = get_bool_env("ENABLE_WS", False)
-    ws = None
 
+    enable_ws = get_bool_env("ENABLE_WS", False)
     if enable_ws:
         symbol = os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT"))
         ws = BinanceWS(symbol=symbol)
         ws.run_background()
-
         if system_logger:
-            system_logger.info(
-                "[WS] ENABLE_WS=true -> websocket started. symbol=%s",
-                symbol,
-            )
+            system_logger.info("[WS] ENABLE_WS=true -> websocket started. symbol=%s", symbol)
     else:
         if system_logger:
             system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
 
-    # -----------------------------
-    # Trading objects
-    # -----------------------------
     trading_objects = create_trading_objects()
 
-    # -----------------------------
-    # Main bot loop
-    # -----------------------------
     try:
         await bot_loop(trading_objects, prob_stab)
     finally:
-            pass
+        pass
 
 
-# ----------------------------------------------------------------------
-# Sync main + signal handling
-# ----------------------------------------------------------------------
 def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1287,6 +1003,7 @@ def main() -> None:
         except Exception:
             pass
         loop.close()
+
 
 if __name__ == "__main__":
     main()
