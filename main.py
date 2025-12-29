@@ -192,7 +192,7 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         klines = r.json()
     except Exception as e:
         if logger:
-            logger.error("[DATA] LIVE(PUBLIC) klines fetch hatası: %s", e)
+            logger.error("[DATA] Public REST klines fetch hatası: %s", e)
         raise
 
     columns = [
@@ -221,32 +221,24 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         "taker_buy_base_volume",
         "taker_buy_quote_volume",
     ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]  # <-- ignore eklendi
 
     for c in float_cols:
-        df[c] = df[c].astype(float)
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
+
     for c in int_cols:
-        df[c] = df[c].astype(int)
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
 
-# ensure ignore column is numeric (LIVE / REST safety)
-if "ignore" in df.columns:
-    df["ignore"] = (
-        pd.to_numeric(df["ignore"], errors="coerce")
-          .fillna(0)
-          .astype(int)
-    )
+    # ekstra güvenlik: ignore garanti
+    if "ignore" in df.columns:
+        df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
 
-    # ensure ignore is numeric (LIVE safety)
-
-    # ensure ignore is numeric (LIVE safety)
     if logger:
         logger.info(
             "[DATA] LIVE(PUBLIC) mod: REST ile kline çekildi. symbol=%s interval=%s shape=%s",
             symbol, interval, df.shape
         )
     return df
-
-
 async def fetch_klines(
     client,
     symbol: str,
@@ -287,47 +279,47 @@ async def fetch_klines(
     # -----------------------
     # LIVE: CSV ASLA OKUMA
     # -----------------------
-    last_err = None
+    last_err: Optional[Exception] = None
+
+    columns = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_asset_volume",
+        "number_of_trades",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+        "ignore",
+    ]
+    float_cols = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_asset_volume",
+        "taker_buy_base_volume",
+        "taker_buy_quote_volume",
+    ]
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]  # <-- ignore eklendi
 
     # 1) client varsa async client ile çek
     if client is not None:
         try:
             klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
-
-            columns = [
-                "open_time",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "close_time",
-                "quote_asset_volume",
-                "number_of_trades",
-                "taker_buy_base_volume",
-                "taker_buy_quote_volume",
-                "ignore",
-            ]
             df = pd.DataFrame(klines, columns=columns)
 
-            float_cols = [
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "quote_asset_volume",
-                "taker_buy_base_volume",
-                "taker_buy_quote_volume",
-            ]
-            int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
-
             for c in float_cols:
-                df[c] = df[c].astype(float)
-            for c in int_cols:
-                df[c] = df[c].astype(int)
+                df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
 
-            # ensure ignore column is numeric (LIVE safety)
+            for c in int_cols:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+            # ekstra güvenlik
             if "ignore" in df.columns:
                 df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
 
@@ -343,16 +335,32 @@ async def fetch_klines(
             if logger:
                 logger.error("[DATA] LIVE(CLIENT) client.get_klines hatası: %s", e)
 
-    # 2) client yoksa veya client patladıysa public REST dene
+    # 2) client yoksa veya client patladıysa public REST
     try:
-        return _fetch_klines_public_rest(symbol, interval, limit, logger)
+        df = _fetch_klines_public_rest(symbol, interval, limit, logger)
+
+        # (garanti) tekrar cast — zarar vermez
+        for c in float_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
+
+        for c in int_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+        if "ignore" in df.columns:
+            df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
+
+        return df
+
     except Exception as e:
         last_err = e
         if logger:
             logger.error("[DATA] LIVE(PUBLIC) public REST de başarısız: %s", e)
 
-    # 3) LIVE modda fallback yok -> direkt fail
-    raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız (CSV fallback yok). last_err={last_err!r}")
+    raise RuntimeError(
+        f"DATA_MODE=LIVE fakat live fetch başarısız (CSV fallback yok). last_err={last_err!r}"
+    )
 
 # ----------------------------------------------------------------------
 # Trading objeleri kurulum
