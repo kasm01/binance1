@@ -115,7 +115,7 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
         "taker_buy_base_volume",
         "taker_buy_quote_volume",
     ]
-    int_cols = ["number_of_trades"]
+    int_cols = ["number_of_trades", "ignore"]
 
     for c in float_cols:
         if c in df.columns:
@@ -180,13 +180,6 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
 # ----------------------------------------------------------------------
 # Binance Kline fetch helper
 # ----------------------------------------------------------------------
-import os
-import time
-import logging
-from typing import Optional
-import pandas as pd
-
-# --- Public REST fallback (API key gerekmez) ---
 def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     import requests
 
@@ -199,7 +192,7 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         klines = r.json()
     except Exception as e:
         if logger:
-            logger.error("[DATA] Public REST klines fetch hatası: %s", e)
+            logger.error("[DATA] LIVE(PUBLIC) klines fetch hatası: %s", e)
         raise
 
     columns = [
@@ -228,15 +221,29 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         "taker_buy_base_volume",
         "taker_buy_quote_volume",
     ]
-    int_cols = ["open_time", "close_time", "number_of_trades"]
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
     for c in float_cols:
         df[c] = df[c].astype(float)
     for c in int_cols:
         df[c] = df[c].astype(int)
 
+# ensure ignore column is numeric (LIVE / REST safety)
+if "ignore" in df.columns:
+    df["ignore"] = (
+        pd.to_numeric(df["ignore"], errors="coerce")
+          .fillna(0)
+          .astype(int)
+    )
+
+    # ensure ignore is numeric (LIVE safety)
+
+    # ensure ignore is numeric (LIVE safety)
     if logger:
-        logger.info("[DATA] LIVE(PUBLIC) mod: REST ile kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
+        logger.info(
+            "[DATA] LIVE(PUBLIC) mod: REST ile kline çekildi. symbol=%s interval=%s shape=%s",
+            symbol, interval, df.shape
+        )
     return df
 
 
@@ -248,14 +255,17 @@ async def fetch_klines(
     logger: Optional[logging.Logger],
 ) -> pd.DataFrame:
     """
-    DATA_MODE=LIVE  -> (1) client varsa client.get_klines
+    DATA_MODE=LIVE  -> (1) client varsa await client.get_klines
                       (2) client yoksa public REST /api/v3/klines (API key gerekmez)
+                      (3) LIVE modda CSV fallback YOK (asla CSV okunmaz)
     DATA_MODE=OFFLINE -> CSV: data/offline_cache/{symbol}_{interval}_6m.csv
     default: OFFLINE
     """
     data_mode = str(os.getenv("DATA_MODE", "OFFLINE")).upper().strip()
 
-    # 1) OFFLINE modu: her koşulda CSV
+    # -----------------------
+    # OFFLINE: sadece CSV
+    # -----------------------
     if data_mode != "LIVE":
         csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
         if not os.path.exists(csv_path):
@@ -263,7 +273,7 @@ async def fetch_klines(
                 logger.error("[DATA] OFFLINE mod: CSV bulunamadı: %s", csv_path)
             raise RuntimeError(
                 f"Offline kline dosyası yok: {csv_path}. "
-                "DATA_MODE=LIVE yapın (public REST ile çekmeyi dener) veya offline cache oluşturun."
+                "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
             )
 
         df = pd.read_csv(csv_path, header=None)
@@ -274,11 +284,16 @@ async def fetch_klines(
             logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
         return df
 
-    # 2) LIVE modu
-    # 2.1 client varsa async client ile çek
+    # -----------------------
+    # LIVE: CSV ASLA OKUMA
+    # -----------------------
+    last_err = None
+
+    # 1) client varsa async client ile çek
     if client is not None:
         try:
             klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
+
             columns = [
                 "open_time",
                 "open",
@@ -305,45 +320,39 @@ async def fetch_klines(
                 "taker_buy_base_volume",
                 "taker_buy_quote_volume",
             ]
-            int_cols = ["open_time", "close_time", "number_of_trades"]
+            int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
             for c in float_cols:
                 df[c] = df[c].astype(float)
             for c in int_cols:
                 df[c] = df[c].astype(int)
 
+            # ensure ignore column is numeric (LIVE safety)
+            if "ignore" in df.columns:
+                df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
+
             if logger:
-                logger.info("[DATA] LIVE mod: client.get_klines ile çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
+                logger.info(
+                    "[DATA] LIVE(CLIENT) mod: client.get_klines ile çekildi. symbol=%s interval=%s shape=%s",
+                    symbol, interval, df.shape
+                )
             return df
 
         except Exception as e:
+            last_err = e
             if logger:
-                logger.error("[DATA] Binance client.get_klines hatası: %s", e)
-            # LIVE modda client patladıysa public REST dene
-            try:
-                return _fetch_klines_public_rest(symbol, interval, limit, logger)
-            except Exception:
-                # Son çare: OFFLINE fallback (istersen bunu kaldırırız)
-                pass
+                logger.error("[DATA] LIVE(CLIENT) client.get_klines hatası: %s", e)
 
-    # 2.2 client yoksa public REST ile çek (API key gerekmez)
+    # 2) client yoksa veya client patladıysa public REST dene
     try:
         return _fetch_klines_public_rest(symbol, interval, limit, logger)
     except Exception as e:
+        last_err = e
         if logger:
-            logger.error("[DATA] LIVE mod: public REST de başarısız. OFFLINE fallback denenecek. err=%s", e)
+            logger.error("[DATA] LIVE(PUBLIC) public REST de başarısız: %s", e)
 
-    # 3) LIVE başarısızsa OFFLINE fallback (opsiyonel)
-    csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
-    if os.path.exists(csv_path):
-        df = pd.read_csv(csv_path, header=None)
-        if len(df) > limit:
-            df = df.tail(limit).reset_index(drop=True)
-        if logger:
-            logger.warning("[DATA] FALLBACK OFFLINE: %s okundu. shape=%s", csv_path, df.shape)
-        return df
-
-    raise RuntimeError("DATA_MODE=LIVE fakat live fetch başarısız ve offline CSV de yok.")
+    # 3) LIVE modda fallback yok -> direkt fail
+    raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız (CSV fallback yok). last_err={last_err!r}")
 
 # ----------------------------------------------------------------------
 # Trading objeleri kurulum
