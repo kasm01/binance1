@@ -1,5 +1,5 @@
 {
-  "interval": "1m",
+  "interval": "30m",
   "symbol": "BTCUSDT",
   "feature_schema": [
     "open_time",
@@ -11,9 +11,9 @@
     "close_time",
     "quote_asset_volume",
     "number_of_trades",
-    "ignore",
     "taker_buy_base_volume",
     "taker_buy_quote_volume",
+    "ignore",
     "hl_range",
     "oc_change",
     "return_1",
@@ -26,10 +26,10 @@
     "dummy_extra"
   ],
   "feature_source": "offline_train_hybrid::build_features",
-  "n_samples": 50000,
+  "n_samples": 8641,
   "n_features": 22,
-  "best_auc": 0.47616513041091807,
-  "best_side": "short",
+  "best_auc": 0.5580646378405183,
+  "best_side": "long",
   "use_lstm_hybrid": true,
   "seq_len": 50,
   "meta_version": 2,
@@ -38,6 +38,6 @@
   "sgd_alpha": 0.0001,
   "sgd_max_iter": 80,
   "sgd_tol": 0.001,
-  "lstm_long_auc": 0.521127893306466,
-  "lstm_short_auc": 0.521127893306466
+  "lstm_long_auc": 0.5023688879426584,
+  "lstm_short_auc": 0.5023688879426584
 }

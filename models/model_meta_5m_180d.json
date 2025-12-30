@@ -61,6 +61,7 @@
       "n_test": 8640
     }
   ],
-  "use_lstm_hybrid": true,
-  "seq_len": 32
+  "use_lstm_hybrid": false,
+  "seq_len": 32,
+  "lstm_veto_reason": "lstm_auc_mean<0.50 (mean=0.0000)"
 }

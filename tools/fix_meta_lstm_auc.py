@@ -6,7 +6,8 @@ from datetime import datetime
 INTERVALS = ["1m", "5m", "15m", "1h"]
 
 LOG_DIR = Path("logs/training")
-MODELS_DIR = Path("models")
+from app_paths import MODELS_DIR_PATH as MODELS_DIR_STR
+MODELS_DIR_PATH = Path(MODELS_DIR_STR)
 
 # örnek satırlar:
 # Epoch 5: val_auc improved from 0.49506 to 0.50544, saving model to ...
@@ -60,7 +61,7 @@ def main():
 
     updated = 0
     for interval in INTERVALS:
-        meta_path = MODELS_DIR / f"model_meta_{interval}.json"
+        meta_path = MODELS_DIR_PATH / f"model_meta_{interval}.json"
         if not meta_path.exists():
             print(f"[SKIP] meta yok: {meta_path}")
             continue

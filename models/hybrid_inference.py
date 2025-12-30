@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+from app_paths import MODELS_DIR
+
 import json
+import re
 import logging
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -13,6 +16,17 @@ from joblib import load
 
 from models.sgd_helper_runtime import SGDHelperRuntime
 from models.hybrid_mtf import HybridMTF  # TEK KAYNAK: weight/log/ensemble/auc standardization
+
+
+def _env_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return int(default)
+    try:
+        return int(float(v))
+    except Exception:
+        return int(default)
+
 
 # ----------------------------------------------------------------------
 # TensorFlow / LSTM opsiyonel import
@@ -84,7 +98,7 @@ class HybridModel:
             "use_lstm_hybrid": False,
             "lstm_long_auc": 0.0,
             "lstm_short_auc": 0.0,
-            "seq_len": 32,
+            "seq_len": _env_int("LSTM_SEQ_LEN_DEFAULT", 50),
         }
         self.use_lstm_hybrid: bool = False
 
@@ -170,33 +184,75 @@ class HybridModel:
             return
 
         if not TENSORFLOW_AVAILABLE:
-            self._log_startup(logging.WARNING, "[HYBRID] TensorFlow not available, LSTM disabled.")
+            self._log_startup(
+                logging.WARNING,
+                "[HYBRID] TensorFlow not available, LSTM disabled."
+            )
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
             return
 
-        long_path = os.path.join(self.model_dir, f"lstm_long_{self.interval}.h5")
-        short_path = os.path.join(self.model_dir, f"lstm_short_{self.interval}.h5")
-        scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+        long_path = os.path.join(
+            self.model_dir,
+            f"lstm_long_{self.interval}.h5",
+        )
+        short_path = os.path.join(
+            self.model_dir,
+            f"lstm_short_{self.interval}.h5",
+        )
 
+        scaler_joblib = os.path.join(
+            self.model_dir,
+            f"lstm_scaler_{self.interval}.joblib",
+        )
+        scaler_pkl = os.path.join(
+            self.model_dir,
+            f"lstm_scaler_{self.interval}.pkl",
+        )
+
+        scaler_path = (
+            scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
+        )
+
+        # Fail-fast: scaler yoksa LSTM'i tamamen kapat
         if not os.path.exists(scaler_path):
-            scaler_path = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
+            self._log_startup(
+                logging.WARNING,
+                "[HYBRID] LSTM scaler not found for interval=%s. "
+                "Checked: %s , %s. Disabling LSTM.",
+                self.interval,
+                scaler_joblib,
+                scaler_pkl,
+            )
+            self.lstm_long = None
+            self.lstm_short = None
+            self.lstm_scaler = None
+            self.use_lstm_hybrid = False
+            self.meta["use_lstm_hybrid"] = False
+            return
 
         try:
             self.lstm_long = load_model(long_path)
             self.lstm_short = load_model(short_path)
             self.lstm_scaler = load(scaler_path)
 
-            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+            level = getattr(
+                logging,
+                self.hybrid_model_startup_log_level,
+                logging.INFO,
+            )
             self._log_startup(
                 level,
-                "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)",
+                "[HYBRID] LSTM models and scaler loaded for %s "
+                "(use_lstm_hybrid=True)",
                 self.interval,
             )
+
         except Exception as e:
             self._log_startup(
                 logging.WARNING,
-                "[HYBRID] Could not load LSTM models or scaler (%s): %s. Disabling LSTM.",
+                "[HYBRID] Could not load LSTM models or scaler (%s): %s. "
+                "Disabling LSTM.",
                 self.interval,
                 e,
             )
@@ -316,7 +372,11 @@ class HybridModel:
     # LSTM part
     # ------------------------------------------------------------------
     def _build_lstm_sequences(self, X: np.ndarray) -> np.ndarray:
-        seq_len = int(self.meta.get("seq_len", 32))
+        # Meta yoksa/env ile yönet
+        seq_len = int(self.meta.get("seq_len", _env_int("LSTM_SEQ_LEN_DEFAULT", 50)))
+        if seq_len <= 0:
+            seq_len = _env_int("LSTM_SEQ_LEN_DEFAULT", 50)
+
         if X.shape[0] < seq_len:
             raise ValueError("Not enough rows to build sequences")
 
