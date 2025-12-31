@@ -398,8 +398,38 @@ class HybridModel:
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
         try:
+            # Ensure LSTM scaler feature count matches training (drop time columns if present)
+
+            try:
+
+                if hasattr(self.lstm_scaler, 'n_features_in_') and X.shape[1] != int(self.lstm_scaler.n_features_in_):
+
+                    drop_idx = []
+
+                    # feature_schema usually matches X columns order
+
+                    schema = list(self.meta.get('feature_schema') or [])
+
+                    if schema and len(schema) == X.shape[1]:
+
+                        for col in ('open_time','close_time'):
+
+                            if col in schema:
+
+                                drop_idx.append(schema.index(col))
+
+                    if drop_idx:
+
+                        keep = [i for i in range(X.shape[1]) if i not in set(drop_idx)]
+
+                        X = X[:, keep]
+
+            except Exception:
+
+                pass
+
             X_scaled = self.lstm_scaler.transform(X)
-            seqs = self._build_lstm_sequences(X_scaled)
+seqs = self._build_lstm_sequences(X_scaled)
 
             p_long = self.lstm_long.predict(seqs, verbose=0).reshape(-1)
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
