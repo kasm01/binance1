@@ -196,6 +196,7 @@ class HybridModel:
         scaler_pkl = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
         scaler_path = scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
 
+        # Fail-fast: scaler yoksa LSTM'i tamamen kapat
         if not os.path.exists(scaler_path):
             self._log_startup(
                 logging.WARNING,
@@ -211,22 +212,49 @@ class HybridModel:
             self.meta["use_lstm_hybrid"] = False
             return
 
+        # Fail-fast: model dosyaları yoksa LSTM kapat
+        if not (os.path.exists(long_path) and os.path.exists(short_path)):
+            self._log_startup(
+                logging.WARNING,
+                "[HYBRID] LSTM model file missing (interval=%s). long=%s exists=%s | short=%s exists=%s. Disabling LSTM.",
+                self.interval,
+                long_path,
+                os.path.exists(long_path),
+                short_path,
+                os.path.exists(short_path),
+            )
+            self.lstm_long = None
+            self.lstm_short = None
+            self.lstm_scaler = None
+            self.use_lstm_hybrid = False
+            self.meta["use_lstm_hybrid"] = False
+            return
+
         try:
-            self.lstm_long = load_model(long_path)
-            self.lstm_short = load_model(short_path)
+            self.lstm_long = load_model(long_path, compile=False)
+            self.lstm_short = load_model(short_path, compile=False)
             self.lstm_scaler = load(scaler_path)
+
+            # KURAL: long/short input_shape aynı olmalı. Değilse hack yok -> LSTM disable.
+            li = tuple(getattr(self.lstm_long, "input_shape", ()) or ())
+            si = tuple(getattr(self.lstm_short, "input_shape", ()) or ())
+            if li and si and li != si:
+                self._log_startup(
+                    logging.WARNING,
+                    "[HYBRID] LSTM input_shape mismatch (interval=%s) long=%s short=%s -> disabling LSTM (no hacks).",
+                    self.interval,
+                    li,
+                    si,
+                )
+                self.lstm_long = None
+                self.lstm_short = None
+                self.lstm_scaler = None
+                self.use_lstm_hybrid = False
+                self.meta["use_lstm_hybrid"] = False
+                return
 
             level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
             self._log_startup(level, "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)", self.interval)
-
-            # --- startup: long/short input mismatch varsa logla (predict'te de fallback var) ---
-            try:
-                li = tuple(self.lstm_long.input_shape) if self.lstm_long is not None else None
-                si = tuple(self.lstm_short.input_shape) if self.lstm_short is not None else None
-                if li and si and li != si:
-                    self._log_startup(logging.WARNING, "[HYBRID] LSTM input_shape mismatch long=%s short=%s", li, si)
-            except Exception:
-                pass
 
         except Exception as e:
             self._log_startup(
@@ -304,8 +332,10 @@ class HybridModel:
             for c in missing:
                 out[c] = 0.0
 
+        # select & order (fazla kolonları ignore)
         out = out[schema].copy()
 
+        # numeric coerce
         for c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
@@ -320,64 +350,6 @@ class HybridModel:
         if not sch:
             return df
         return self._normalize_to_schema(df, sch)
-
-    # ------------------------------------------------------------------
-    # SGD part
-    # ------------------------------------------------------------------
-    def _predict_sgd_proba(self, X: np.ndarray) -> np.ndarray:
-        _disable = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
-        if _disable:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        expected = None
-        try:
-            expected = int(self.meta.get("n_features") or 0) or None
-        except Exception:
-            expected = None
-
-        if expected is not None and X.shape[1] != expected:
-            self._log_startup(
-                logging.WARNING,
-                "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
-                X.shape,
-                expected,
-            )
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        if self.sgd_model is None:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        try:
-            proba = self.sgd_model.predict_proba(X)
-        except Exception as e:
-            self._log_startup(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        try:
-            if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
-                p1 = proba[:, 1]
-            else:
-                p1 = np.asarray(proba, dtype=float).reshape(-1)
-        except Exception:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        try:
-            _center = str(os.getenv("SGD_CENTER", "1")).lower() in ("1", "true", "yes", "on")
-            _band = float(os.getenv("SGD_BAND", "0.10"))
-        except Exception:
-            _center, _band = True, 0.10
-
-        try:
-            p1 = np.asarray(p1, dtype=float)
-            p1 = np.clip(p1, 0.0, 1.0)
-            if _center:
-                p1 = p1 - (float(np.mean(p1)) - 0.5)
-            p1 = 0.5 + np.clip(p1 - 0.5, -abs(_band), abs(_band))
-            p1 = np.clip(p1, 0.0, 1.0)
-        except Exception:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        return p1.reshape(-1)
 
     # ------------------------------------------------------------------
     # LSTM part
@@ -408,35 +380,35 @@ class HybridModel:
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
         try:
-            # --- scaler feature mismatch: trim/pad ile hizala ---
-            try:
-                if hasattr(self.lstm_scaler, "n_features_in_"):
-                    need = int(getattr(self.lstm_scaler, "n_features_in_", 0) or 0)
-                    if need > 0 and X.shape[1] != need:
-                        if X.shape[1] > need:
-                            X = X[:, :need]
-                        else:
-                            X = np.pad(X, ((0, 0), (0, need - X.shape[1])), constant_values=0.0)
-            except Exception:
-                pass
+            # KURAL: LSTM input feature sayısı scaler ile aynı olmalı.
+            # Pad/trim YOK. Uyuşmazsa LSTM disable (sözleşme bozulmuş demektir).
+            need = None
+            if hasattr(self.lstm_scaler, "n_features_in_"):
+                try:
+                    need = int(getattr(self.lstm_scaler, "n_features_in_", 0) or 0) or None
+                except Exception:
+                    need = None
+
+            if need is not None and X.shape[1] != need:
+                self._log_startup(
+                    logging.WARNING,
+                    "[HYBRID] LSTM feature mismatch (interval=%s): X=%s scaler_need=%s -> disabling LSTM (no pad/trim).",
+                    self.interval,
+                    X.shape,
+                    need,
+                )
+                # disable for runtime to stop spam
+                self.lstm_long = None
+                self.lstm_short = None
+                self.lstm_scaler = None
+                self.use_lstm_hybrid = False
+                self.meta["use_lstm_hybrid"] = False
+                debug["lstm_used"] = False
+                debug["error"] = "feature_mismatch"
+                return np.full(X.shape[0], 0.5, dtype=float), debug
 
             X_scaled = self.lstm_scaler.transform(X)
             seqs = self._build_lstm_sequences(X_scaled)
-
-            # --- long/short input_shape mismatch: short=long (stabilize) ---
-            try:
-                li = tuple(self.lstm_long.input_shape) if self.lstm_long is not None else None
-                si = tuple(self.lstm_short.input_shape) if self.lstm_short is not None else None
-                if li and si and li != si:
-                    self._log_startup(
-                        logging.WARNING,
-                        "[HYBRID] LSTM shape mismatch long=%s short=%s -> using long as short",
-                        li,
-                        si,
-                    )
-                    self.lstm_short = self.lstm_long
-            except Exception:
-                pass
 
             p_long = self.lstm_long.predict(seqs, verbose=0).reshape(-1)
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
