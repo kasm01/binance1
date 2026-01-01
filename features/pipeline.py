@@ -1,8 +1,12 @@
+# features/pipeline.py
 from __future__ import annotations
 
-from typing import List, Dict
+from typing import List
 import numpy as np
 import pandas as pd
+
+# TEK SÖZLEŞME: schema normalize + alias mapping (single source of truth)
+from features.schema import normalize_to_schema, ALIASES as SCHEMA_ALIASES
 
 # === RAW kline kolonları (Binance 12) ===
 RAW_KLINE_COLS_12: List[str] = [
@@ -21,7 +25,7 @@ RAW_KLINE_COLS_12: List[str] = [
 ]
 
 # === Model meta'sında sık kullanılan şema (20) ===
-# Not: Senin logdaki meta örneğinde open_time/close_time yoktu ve dummy_extra vardı -> 20.
+# Not: Senin güncel meta (5m) sözleşmen: 20 feature (NO time cols) ✅
 FEATURE_SCHEMA_20: List[str] = [
     "open",
     "high",
@@ -30,9 +34,9 @@ FEATURE_SCHEMA_20: List[str] = [
     "volume",
     "quote_asset_volume",
     "number_of_trades",
+    "ignore",
     "taker_buy_base_volume",
     "taker_buy_quote_volume",
-    "ignore",
     "hl_range",
     "oc_change",
     "return_1",
@@ -48,13 +52,6 @@ FEATURE_SCHEMA_20: List[str] = [
 # Eğer bazı yerlerde timestamp'li 22’lik şema gerekiyorsa (opsiyonel)
 FEATURE_SCHEMA_22: List[str] = [
     "open_time",
-    *FEATURE_SCHEMA_20[:],  # open..dummy_extra
-    "close_time",
-]
-# Yukarıdaki satır open_time + (20 şema) + close_time -> 22 eder ama sırası karışabilir.
-# Eğer timestamp’li şemayı gerçekten kullanıyorsan aşağıdaki gibi net bir 22 tanımı daha güvenlidir:
-FEATURE_SCHEMA_22 = [
-    "open_time",
     "open",
     "high",
     "low",
@@ -63,9 +60,9 @@ FEATURE_SCHEMA_22 = [
     "close_time",
     "quote_asset_volume",
     "number_of_trades",
+    "ignore",
     "taker_buy_base_volume",
     "taker_buy_quote_volume",
-    "ignore",
     "hl_range",
     "oc_change",
     "return_1",
@@ -81,28 +78,21 @@ FEATURE_SCHEMA_22 = [
 # --- SGD safe schema (NO timestamps) ---
 SGD_SCHEMA_NO_TIME: List[str] = FEATURE_SCHEMA_20[:]  # SGD/LSTM genelde bunu bekliyor
 
-# Binance REST bazı isimleri farklı verebiliyor (senin logda da bu vardı)
-ALIASES: Dict[str, str] = {
-    "taker_buy_base_asset_volume": "taker_buy_base_volume",
-    "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
-    # bazı kodlarda "taker_buy_base_volume" yerine farklı isimler çıkarsa buraya eklenir
-}
-
 
 def _ensure_cols(df: pd.DataFrame) -> pd.DataFrame:
     """
-    - alias kolonlarını düzeltir
+    - alias kolonlarını düzeltir (tek yer: features/schema.py ALIASES)
     - temel numeric cast yapar
-    - LIVE'ta kritik kolonlar yoksa 0 ile tamamlar (özellikle taker/ignore)
+    - LIVE'ta kritik kolonlar yoksa 0 ile tamamlar
     """
     df = df.copy()
 
-    # Alias fix
-    for src, dst in ALIASES.items():
+    # Alias fix (tek kaynak)
+    for src, dst in SCHEMA_ALIASES.items():
         if src in df.columns and dst not in df.columns:
             df[dst] = df[src]
 
-    # RAW kline kolonlarını garantiye al (LIVE/PUBLIC her zaman 12 döndürür ama güvenlik)
+    # RAW kline kolonlarını garantiye al (LIVE/PUBLIC genelde 12 döner ama guard şart)
     for c in RAW_KLINE_COLS_12:
         if c not in df.columns:
             df[c] = 0
@@ -137,11 +127,11 @@ def _ensure_cols(df: pd.DataFrame) -> pd.DataFrame:
 def _engineer(df: pd.DataFrame) -> pd.DataFrame:
     """
     Engineer edilen kolonlar:
-    hl_range, oc_change, return_1/3/5, ma_5/10/20, vol_10, dummy_extra
+      hl_range, oc_change, return_1/3/5, ma_5/10/20, vol_10, dummy_extra
     """
     df = df.copy()
 
-    # close/open/high/low/volume numeric garanti
+    # numeric garanti
     for c in ("open", "high", "low", "close", "volume"):
         if c not in df.columns:
             df[c] = 0.0
@@ -172,41 +162,24 @@ def _engineer(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# (Opsiyonel) Eski isim; artık kullanılmıyor.
+# İstersen tamamen silebilirsin. Bırakmamın sebebi: eski import/call yapan kodlar varsa kırılmasın.
 def _align_to_schema(df_feat: pd.DataFrame, schema: List[str]) -> pd.DataFrame:
     """
-    Model meta'daki schema neyse:
-    - eksik kolonları 0 ile ekler
-    - fazlaları atar
-    - sıralamayı schema sırasına çeker
-    - numeric'e zorlar
+    DEPRECATED: Tek sözleşme normalize_to_schema'ya taşındı.
     """
-    df_feat = df_feat.copy()
-
-    for c in schema:
-        if c not in df_feat.columns:
-            df_feat[c] = 0.0
-
-    X = df_feat[schema].copy()
-
-    # her şeyi numeric'e zorla
-    for c in schema:
-        s = X[c]
-        if pd.api.types.is_datetime64_any_dtype(s):
-            X[c] = (s.astype("int64") / 1e9).astype(float)
-        else:
-            X[c] = pd.to_numeric(s, errors="coerce")
-
-    # inf/nan temizle
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.ffill().bfill().fillna(0.0)
-
-    return X
+    return normalize_to_schema(df_feat, schema)
 
 
 def make_matrix(df: pd.DataFrame, schema: List[str] | None = None) -> np.ndarray:
     """
-    Default schema: FEATURE_SCHEMA_20
-    (Model meta'nın beklediği şema çoğunlukla bu olduğu için mismatch'i çözer.)
+    TEK SÖZLEŞME:
+      df -> ensure -> engineer -> normalize_to_schema(schema) -> numpy
+
+    - eksik kolon: 0 ile doldur
+    - fazla kolon: ignore
+    - sıralama: schema sırası
+    - numeric cleanup: inf/nan ffill/bfill/fillna
     """
     if schema is None:
         schema = FEATURE_SCHEMA_20
@@ -214,11 +187,12 @@ def make_matrix(df: pd.DataFrame, schema: List[str] | None = None) -> np.ndarray
     df = _ensure_cols(df)
     df = _engineer(df)
 
-    X = _align_to_schema(df, schema)
-    return X.to_numpy(dtype=float, copy=False)
+    # KRİTİK KİLİT (single source of truth)
+    Xdf = normalize_to_schema(df, schema)
+
+    return Xdf.to_numpy(dtype=float, copy=False)
 
 
 def make_matrix_sgd(df: pd.DataFrame) -> np.ndarray:
     """SGD/LSTM için güvenli feature matrix: meta genelde 20 feature bekler."""
     return make_matrix(df, schema=SGD_SCHEMA_NO_TIME)
-

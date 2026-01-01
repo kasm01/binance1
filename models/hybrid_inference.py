@@ -541,8 +541,8 @@ class HybridMultiTFModel:
     - Ensemble ağırlıkları / logları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
     """
 
-    def __init__(self, model_dir: str, intervals: list[str], logger: Optional[logging.Logger] = None) -> None:
-        self.model_dir = model_dir
+    def __init__(self, model_dir: Optional[str], interval: str, logger: Optional[logging.Logger] = None) -> None:
+        self.model_dir = model_dir or MODELS_DIR
         self.intervals = intervals
         self.logger = logger or logging.getLogger("system")
 

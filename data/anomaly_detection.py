@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from core.logger import system_logger
+from features.schema import normalize_to_schema
 
 
 class AnomalyDetector:
