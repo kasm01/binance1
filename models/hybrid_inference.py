@@ -184,42 +184,23 @@ class HybridModel:
             return
 
         if not TENSORFLOW_AVAILABLE:
-            self._log_startup(
-                logging.WARNING,
-                "[HYBRID] TensorFlow not available, LSTM disabled."
-            )
+            self._log_startup(logging.WARNING, "[HYBRID] TensorFlow not available, LSTM disabled.")
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
             return
 
-        long_path = os.path.join(
-            self.model_dir,
-            f"lstm_long_{self.interval}.h5",
-        )
-        short_path = os.path.join(
-            self.model_dir,
-            f"lstm_short_{self.interval}.h5",
-        )
+        long_path = os.path.join(self.model_dir, f"lstm_long_{self.interval}.h5")
+        short_path = os.path.join(self.model_dir, f"lstm_short_{self.interval}.h5")
 
-        scaler_joblib = os.path.join(
-            self.model_dir,
-            f"lstm_scaler_{self.interval}.joblib",
-        )
-        scaler_pkl = os.path.join(
-            self.model_dir,
-            f"lstm_scaler_{self.interval}.pkl",
-        )
-
-        scaler_path = (
-            scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
-        )
+        scaler_joblib = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
+        scaler_pkl = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
+        scaler_path = scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
 
         # Fail-fast: scaler yoksa LSTM'i tamamen kapat
         if not os.path.exists(scaler_path):
             self._log_startup(
                 logging.WARNING,
-                "[HYBRID] LSTM scaler not found for interval=%s. "
-                "Checked: %s , %s. Disabling LSTM.",
+                "[HYBRID] LSTM scaler not found for interval=%s. Checked: %s , %s. Disabling LSTM.",
                 self.interval,
                 scaler_joblib,
                 scaler_pkl,
@@ -236,23 +217,13 @@ class HybridModel:
             self.lstm_short = load_model(short_path)
             self.lstm_scaler = load(scaler_path)
 
-            level = getattr(
-                logging,
-                self.hybrid_model_startup_log_level,
-                logging.INFO,
-            )
-            self._log_startup(
-                level,
-                "[HYBRID] LSTM models and scaler loaded for %s "
-                "(use_lstm_hybrid=True)",
-                self.interval,
-            )
+            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+            self._log_startup(level, "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)", self.interval)
 
         except Exception as e:
             self._log_startup(
                 logging.WARNING,
-                "[HYBRID] Could not load LSTM models or scaler (%s): %s. "
-                "Disabling LSTM.",
+                "[HYBRID] Could not load LSTM models or scaler (%s): %s. Disabling LSTM.",
                 self.interval,
                 e,
             )
@@ -298,17 +269,52 @@ class HybridModel:
             return sch
         return None
 
+    def _normalize_to_schema(self, df: pd.DataFrame, schema: list[str]) -> pd.DataFrame:
+        """
+        Tek kaynak sözleşme:
+          - alias fix
+          - eksik kolonları 0 ile doldur
+          - fazla kolonları ignore et
+          - schema sırasına göre seç/sırala
+          - numeric coerce + inf/nan temizle
+        """
+        out = df.copy()
+
+        aliases = {
+            "taker_buy_base_asset_volume": "taker_buy_base_volume",
+            "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
+            "taker_buy_base_volume": "taker_buy_base_asset_volume",
+            "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
+        }
+        for src, dst in aliases.items():
+            if src in out.columns and dst not in out.columns:
+                out[dst] = out[src]
+
+        missing = [c for c in schema if c not in out.columns]
+        if missing:
+            # bu log spam olmasın diye startup log'a atıyoruz
+            self._log_startup(logging.WARNING, "[HYBRID] feature_schema missing cols (filled with 0): %s", missing)
+            for c in missing:
+                out[c] = 0.0
+
+        # select & order (fazla kolonları ignore)
+        out = out[schema].copy()
+
+        # numeric coerce
+        for c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+        out = out.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
+        return out
+
     def _align_df_to_schema(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        GERİYE UYUMLU İSİM, ama davranış artık 'drop' değil 'normalize'.
+        """
         sch = self._get_feature_schema()
         if not sch:
             return df
-
-        keep = [c for c in sch if c in df.columns]
-        if len(keep) != len(sch):
-            missing = [c for c in sch if c not in df.columns]
-            self._log_startup(logging.WARNING, "[HYBRID] feature_schema missing cols: %s", missing)
-
-        return df[keep].copy()
+        return self._normalize_to_schema(df, sch)
 
     # ------------------------------------------------------------------
     # SGD part
@@ -372,7 +378,6 @@ class HybridModel:
     # LSTM part
     # ------------------------------------------------------------------
     def _build_lstm_sequences(self, X: np.ndarray) -> np.ndarray:
-        # Meta yoksa/env ile yönet
         seq_len = int(self.meta.get("seq_len", _env_int("LSTM_SEQ_LEN_DEFAULT", 50)))
         if seq_len <= 0:
             seq_len = _env_int("LSTM_SEQ_LEN_DEFAULT", 50)
@@ -398,38 +403,25 @@ class HybridModel:
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
         try:
-            # Ensure LSTM scaler feature count matches training (drop time columns if present)
-
+            # Eğer scaler feature sayısı farklıysa schema üzerinden (open_time/close_time) drop dene
             try:
-
-                if hasattr(self.lstm_scaler, 'n_features_in_') and X.shape[1] != int(self.lstm_scaler.n_features_in_):
-
-                    drop_idx = []
-
-                    # feature_schema usually matches X columns order
-
-                    schema = list(self.meta.get('feature_schema') or [])
-
-                    if schema and len(schema) == X.shape[1]:
-
-                        for col in ('open_time','close_time'):
-
-                            if col in schema:
-
-                                drop_idx.append(schema.index(col))
-
-                    if drop_idx:
-
-                        keep = [i for i in range(X.shape[1]) if i not in set(drop_idx)]
-
-                        X = X[:, keep]
-
+                if hasattr(self.lstm_scaler, "n_features_in_"):
+                    need = int(getattr(self.lstm_scaler, "n_features_in_", 0) or 0)
+                    if need > 0 and X.shape[1] != need:
+                        schema = list(self.meta.get("feature_schema") or [])
+                        drop_idx = []
+                        if schema and len(schema) == X.shape[1]:
+                            for col in ("open_time", "close_time"):
+                                if col in schema:
+                                    drop_idx.append(schema.index(col))
+                        if drop_idx and (X.shape[1] - len(drop_idx) == need):
+                            keep = [i for i in range(X.shape[1]) if i not in set(drop_idx)]
+                            X = X[:, keep]
             except Exception:
-
                 pass
 
             X_scaled = self.lstm_scaler.transform(X)
-seqs = self._build_lstm_sequences(X_scaled)
+            seqs = self._build_lstm_sequences(X_scaled)
 
             p_long = self.lstm_long.predict(seqs, verbose=0).reshape(-1)
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
@@ -454,6 +446,7 @@ seqs = self._build_lstm_sequences(X_scaled)
             self._log_startup(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -462,6 +455,7 @@ seqs = self._build_lstm_sequences(X_scaled)
 
         try:
             if isinstance(X, pd.DataFrame):
+                # KRİTİK: schema normalize burada
                 X_aligned = self._align_df_to_schema(X)
                 X_arr = self._to_numeric_matrix(X_aligned)
             else:
