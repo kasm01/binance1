@@ -6,7 +6,6 @@ import os
 from app_paths import MODELS_DIR
 
 import json
-import re
 import logging
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -47,7 +46,7 @@ class HybridModel:
     Hybrid scorer: combines SGD (online model) and LSTM models.
 
     - SGD: online_model_<interval>_best.joblib
-    - LSTM: lstm_long_<interval>.h5, lstm_short_<interval>.h5, lstm_scaler_<interval>.joblib
+    - LSTM: lstm_long_<interval>.h5, lstm_short_<interval>.h5, lstm_scaler_<interval>.joblib/.pkl
     - Meta: model_meta_<interval>.json
     """
 
@@ -63,7 +62,6 @@ class HybridModel:
         self.logger = logger or logging.getLogger("system")
 
         # --- runtime logging control (inference spam azaltma) ---
-        # HYBRID_MODEL_LOG_LEVEL=DEBUG/INFO/WARNING/ERROR/CRITICAL
         self.hybrid_model_log_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
         self.disable_hybrid_model_inference_log = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in (
             "1",
@@ -73,7 +71,6 @@ class HybridModel:
         )
 
         # --- startup logging control (load/init spam azaltma) ---
-        # HYBRID_MODEL_STARTUP_LOG_LEVEL=DEBUG/INFO/WARNING/ERROR/CRITICAL
         self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
         self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
             "1",
@@ -140,6 +137,9 @@ class HybridModel:
         level = getattr(logging, self.hybrid_model_log_level, logging.DEBUG)
         self._log(level, msg, *args)
 
+    # ------------------------------------------------------------------
+    # Loaders
+    # ------------------------------------------------------------------
     def _load_sgd_model(self) -> None:
         path = os.path.join(self.model_dir, f"online_model_{self.interval}_best.joblib")
         try:
@@ -196,7 +196,6 @@ class HybridModel:
         scaler_pkl = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
         scaler_path = scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
 
-        # Fail-fast: scaler yoksa LSTM'i tamamen kapat
         if not os.path.exists(scaler_path):
             self._log_startup(
                 logging.WARNING,
@@ -219,6 +218,15 @@ class HybridModel:
 
             level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
             self._log_startup(level, "[HYBRID] LSTM models and scaler loaded for %s (use_lstm_hybrid=True)", self.interval)
+
+            # --- startup: long/short input mismatch varsa logla (predict'te de fallback var) ---
+            try:
+                li = tuple(self.lstm_long.input_shape) if self.lstm_long is not None else None
+                si = tuple(self.lstm_short.input_shape) if self.lstm_short is not None else None
+                if li and si and li != si:
+                    self._log_startup(logging.WARNING, "[HYBRID] LSTM input_shape mismatch long=%s short=%s", li, si)
+            except Exception:
+                pass
 
         except Exception as e:
             self._log_startup(
@@ -292,15 +300,12 @@ class HybridModel:
 
         missing = [c for c in schema if c not in out.columns]
         if missing:
-            # bu log spam olmasın diye startup log'a atıyoruz
             self._log_startup(logging.WARNING, "[HYBRID] feature_schema missing cols (filled with 0): %s", missing)
             for c in missing:
                 out[c] = 0.0
 
-        # select & order (fazla kolonları ignore)
         out = out[schema].copy()
 
-        # numeric coerce
         for c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
@@ -309,7 +314,7 @@ class HybridModel:
 
     def _align_df_to_schema(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        GERİYE UYUMLU İSİM, ama davranış artık 'drop' değil 'normalize'.
+        Geriye uyumlu isim; davranış 'drop' değil 'normalize'.
         """
         sch = self._get_feature_schema()
         if not sch:
@@ -403,30 +408,41 @@ class HybridModel:
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
         try:
-            # Eğer scaler feature sayısı farklıysa schema üzerinden (open_time/close_time) drop dene
+            # --- scaler feature mismatch: trim/pad ile hizala ---
             try:
                 if hasattr(self.lstm_scaler, "n_features_in_"):
                     need = int(getattr(self.lstm_scaler, "n_features_in_", 0) or 0)
                     if need > 0 and X.shape[1] != need:
-                        schema = list(self.meta.get("feature_schema") or [])
-                        drop_idx = []
-                        if schema and len(schema) == X.shape[1]:
-                            for col in ("open_time", "close_time"):
-                                if col in schema:
-                                    drop_idx.append(schema.index(col))
-                        if drop_idx and (X.shape[1] - len(drop_idx) == need):
-                            keep = [i for i in range(X.shape[1]) if i not in set(drop_idx)]
-                            X = X[:, keep]
+                        if X.shape[1] > need:
+                            X = X[:, :need]
+                        else:
+                            X = np.pad(X, ((0, 0), (0, need - X.shape[1])), constant_values=0.0)
             except Exception:
                 pass
 
             X_scaled = self.lstm_scaler.transform(X)
             seqs = self._build_lstm_sequences(X_scaled)
 
+            # --- long/short input_shape mismatch: short=long (stabilize) ---
+            try:
+                li = tuple(self.lstm_long.input_shape) if self.lstm_long is not None else None
+                si = tuple(self.lstm_short.input_shape) if self.lstm_short is not None else None
+                if li and si and li != si:
+                    self._log_startup(
+                        logging.WARNING,
+                        "[HYBRID] LSTM shape mismatch long=%s short=%s -> using long as short",
+                        li,
+                        si,
+                    )
+                    self.lstm_short = self.lstm_long
+            except Exception:
+                pass
+
             p_long = self.lstm_long.predict(seqs, verbose=0).reshape(-1)
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
             p_lstm = 0.5 * (p_long + p_short)
 
+            # seq padding: ilk seq_len-1 satırı doldur
             if len(p_lstm) < X.shape[0]:
                 pad_len = X.shape[0] - len(p_lstm)
                 p_lstm = np.concatenate([np.full(pad_len, p_lstm[0]), p_lstm])
@@ -434,8 +450,8 @@ class HybridModel:
             debug.update(
                 {
                     "lstm_used": True,
-                    "p_long_mean": float(p_long.mean()),
-                    "p_short_mean": float(p_short.mean()),
+                    "p_long_mean": float(p_long.mean()) if len(p_long) else 0.0,
+                    "p_short_mean": float(p_short.mean()) if len(p_short) else 0.0,
                 }
             )
             return p_lstm, debug
@@ -446,7 +462,6 @@ class HybridModel:
             self._log_startup(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(X.shape[0], 0.5, dtype=float), debug
 
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -455,9 +470,8 @@ class HybridModel:
 
         try:
             if isinstance(X, pd.DataFrame):
-                # KRİTİK: schema normalize burada
-                X_aligned = self._align_df_to_schema(X)
-                X_arr = self._to_numeric_matrix(X_aligned)
+                X_norm = self._align_df_to_schema(X)  # normalize
+                X_arr = self._to_numeric_matrix(X_norm)
             else:
                 X_arr = self._to_numeric_matrix(X)
         except Exception as e:
@@ -493,7 +507,6 @@ class HybridModel:
             except Exception:
                 a = 0.6
             a = max(0.0, min(1.0, a))
-
             p_hybrid = a * p_lstm + (1.0 - a) * p_sgd
             mode = "lstm+sgd"
         else:
@@ -554,11 +567,6 @@ class HybridMultiTFModel:
 
     TEK KAYNAK:
     - Ensemble ağırlıkları / logları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
-
-    Bu sınıfın sorumluluğu:
-      1) interval modellerini yüklemek
-      2) X_dict'i HybridMTF.predict_mtf() formatına geçirmek
-      3) sonucu döndürmek
     """
 
     def __init__(self, model_dir: str, intervals: list[str], logger: Optional[logging.Logger] = None) -> None:
@@ -566,7 +574,6 @@ class HybridMultiTFModel:
         self.intervals = intervals
         self.logger = logger or logging.getLogger("system")
 
-        # startup log control (model load spam azaltma)
         self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
         self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
             "1",
@@ -578,7 +585,6 @@ class HybridMultiTFModel:
         self.models: Dict[str, HybridModel] = {}
         self._init_models()
 
-        # TEK KAYNAK: AUC priority + ensemble logic
         self.mtf = HybridMTF(
             models_by_interval=self.models,
             logger=self.logger,
@@ -613,11 +619,6 @@ class HybridMultiTFModel:
         standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Bu fonksiyon artık:
-        - weight/AUC hesaplamaz
-        - interval bazlı log basmaz
-        - ensemble hesaplamaz
-
         Hepsi HybridMTF içinde yapılır.
         """
         X_by_interval: Dict[str, Any] = dict(X_dict)
