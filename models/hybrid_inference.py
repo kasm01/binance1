@@ -14,7 +14,8 @@ import pandas as pd
 from joblib import load
 
 from models.sgd_helper_runtime import SGDHelperRuntime
-from models.hybrid_mtf import HybridMTF  # TEK KAYNAK: weight/log/ensemble/auc standardization
+# TEK KAYNAK: weight/log/ensemble/auc standardization
+from models.hybrid_mtf import HybridMTF
 
 
 def _env_int(name: str, default: int) -> int:
@@ -22,6 +23,19 @@ def _env_int(name: str, default: int) -> int:
     if v is None or str(v).strip() == "":
         return int(default)
     try:
+
+            # --- LSTM FEATURE SCHEMA KİLİDİ (ORDER + SIZE GUARANTEED) ---
+            lstm_schema = self.meta.get("lstm_feature_schema")
+            if isinstance(
+    X,
+    pd.DataFrame) and isinstance(
+        lstm_schema,
+         list) and lstm_schema:
+                Xdf = self._normalize_to_schema(X, lstm_schema)
+                X_num = self._to_numeric_matrix(Xdf)
+            else:
+                X_num = self._to_numeric_matrix(X)
+
         return int(float(v))
     except Exception:
         return int(default)
@@ -407,7 +421,7 @@ class HybridModel:
                 debug["error"] = "feature_mismatch"
                 return np.full(X.shape[0], 0.5, dtype=float), debug
 
-            X_scaled = self.lstm_scaler.transform(X)
+X_scaled = self.lstm_scaler.transform(X_num)
             seqs = self._build_lstm_sequences(X_scaled)
 
             p_long = self.lstm_long.predict(seqs, verbose=0).reshape(-1)

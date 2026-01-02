@@ -39,5 +39,28 @@
   "sgd_max_iter": 80,
   "sgd_tol": 0.001,
   "lstm_long_auc": 0.521127893306466,
-  "lstm_short_auc": 0.521127893306466
+  "lstm_short_auc": 0.521127893306466,
+  "lstm_feature_schema": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_asset_volume",
+    "number_of_trades",
+    "ignore",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "hl_range",
+    "oc_change",
+    "return_1",
+    "return_3",
+    "return_5",
+    "ma_5",
+    "ma_10",
+    "ma_20",
+    "vol_10",
+    "dummy_extra"
+  ],
+  "lstm_n_features": 20
 }
