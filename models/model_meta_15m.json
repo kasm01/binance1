@@ -28,18 +28,16 @@
   "feature_source": "offline_train_hybrid::build_features",
   "n_samples": 17280,
   "n_features": 22,
-  "best_auc": 0.5464374122124083,
+  "best_auc": 0.5070739038337562,
   "best_side": "long",
   "use_lstm_hybrid": true,
   "seq_len": 50,
   "meta_version": 2,
-  "label_horizon": 3,
-  "label_thr": 0.0005,
+  "label_horizon": 1,
+  "label_thr": 0.0,
   "sgd_alpha": 0.0001,
-  "sgd_max_iter": 80,
+  "sgd_max_iter": 50,
   "sgd_tol": 0.001,
-  "lstm_long_auc": 0.5039709330391008,
-  "lstm_short_auc": 0.5039709330391008,
   "lstm_feature_schema": [
     "open",
     "high",
@@ -62,5 +60,6 @@
     "vol_10",
     "dummy_extra"
   ],
-  "lstm_n_features": 20
+  "lstm_long_auc": 0.5009544169367629,
+  "lstm_short_auc": 0.5009544169367629
 }

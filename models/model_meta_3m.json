@@ -28,16 +28,14 @@
   "feature_source": "offline_train_hybrid::build_features",
   "n_samples": 50000,
   "n_features": 22,
-  "best_auc": 0.5343895752895753,
+  "best_auc": 0.5159713525336566,
   "best_side": "long",
   "use_lstm_hybrid": true,
   "seq_len": 50,
   "meta_version": 2,
-  "label_horizon": 3,
-  "label_thr": 0.0005,
+  "label_horizon": 1,
+  "label_thr": 0.0,
   "sgd_alpha": 0.0001,
-  "sgd_max_iter": 80,
-  "sgd_tol": 0.001,
-  "lstm_long_auc": 0.5173921184504489,
-  "lstm_short_auc": 0.5173921184504489
+  "sgd_max_iter": 50,
+  "sgd_tol": 0.001
 }
