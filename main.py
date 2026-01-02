@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import signal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import pandas as pd
 
@@ -29,6 +29,12 @@ from websocket.binance_ws import BinanceWS
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
 from core.model_utils import safe_p_buy
+
+# TEK SÖZLEŞME: schema normalize
+from features.schema import normalize_to_schema
+
+# Model path contract
+from app_paths import MODELS_DIR
 
 
 # ----------------------------------------------------------------------
@@ -156,6 +162,7 @@ def _renorm_weights(mtf_debug: dict):
     return mtf_debug
 
 
+
 def _trend_veto(signal_side: str, p_by_itv: dict):
     """
     Eşikler ENV'den okunur, yoksa defaultlar korunur.
@@ -265,55 +272,86 @@ DRY_RUN: bool = get_bool_env("DRY_RUN", True)
 
 
 # ----------------------------------------------------------------------
-# Basit feature engineering
+# Basit feature engineering (stabilized)
 # ----------------------------------------------------------------------
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Stabilize edilmiş FE:
+      - RAW 12 kolon yoksa ekler
+      - numeric coercion + inf/nan cleanup
+      - engineered kolonları garanti eder
+      - dummy_extra garanti
+    """
     df = raw_df.copy()
 
-    for col in ["open_time", "close_time"]:
-        if col not in df.columns:
-            continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            dt = pd.to_datetime(df[col], unit="ms", utc=True)
-        else:
-            dt = pd.to_datetime(df[col], utc=True)
-        df[col] = dt.astype("int64") / 1e9
+    # Binance kline columns guarantee
+    raw_cols_12 = [
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
+    ]
+    for c in raw_cols_12:
+        if c not in df.columns:
+            df[c] = 0
 
+    # open_time/close_time -> numeric seconds (float)
+    for col in ["open_time", "close_time"]:
+        if col in df.columns:
+            try:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    dt = pd.to_datetime(df[col], unit="ms", utc=True)
+                else:
+                    dt = pd.to_datetime(df[col], utc=True)
+                df[col] = (dt.astype("int64") / 1e9).astype(float)
+            except Exception:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
+
+    # coerce numeric
     float_cols = [
         "open", "high", "low", "close", "volume",
         "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
     ]
-    int_cols = ["number_of_trades", "ignore"]
+    int_like = ["number_of_trades", "ignore"]
 
     for c in float_cols:
-        if c in df.columns:
-            df[c] = df[c].astype(float)
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    for c in int_cols:
-        if c in df.columns:
-            df[c] = df[c].astype(float)
+    for c in int_like:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    # ensure ignore exists
     if "ignore" not in df.columns:
         df["ignore"] = 0.0
 
-    df["hl_range"] = df["high"] - df["low"]
-    df["oc_change"] = df["close"] - df["open"]
+    # engineered (numeric-safe)
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
 
-    df["return_1"] = df["close"].pct_change(1)
-    df["return_3"] = df["close"].pct_change(3)
-    df["return_5"] = df["close"].pct_change(5)
+    close = df["close"].astype(float)
 
-    df["ma_5"] = df["close"].rolling(5).mean()
-    df["ma_10"] = df["close"].rolling(10).mean()
-    df["ma_20"] = df["close"].rolling(20).mean()
+    df["hl_range"] = (df["high"] - df["low"]).astype(float)
+    df["oc_change"] = (df["close"] - df["open"]).astype(float)
 
-    df["vol_10"] = df["volume"].rolling(10).std()
+    df["return_1"] = close.pct_change(1)
+    df["return_3"] = close.pct_change(3)
+    df["return_5"] = close.pct_change(5)
+
+    df["ma_5"] = close.rolling(5).mean()
+    df["ma_10"] = close.rolling(10).mean()
+    df["ma_20"] = close.rolling(20).mean()
+
+    # IMPORTANT: pipeline ile uyumlu olacak şekilde mean
+    df["vol_10"] = df["volume"].astype(float).rolling(10).mean()
 
     if "dummy_extra" not in df.columns:
         df["dummy_extra"] = 0.0
 
+    # cleanup
+    df = df.replace([float("inf"), float("-inf")], pd.NA)
     df = df.ffill().bfill().fillna(0.0)
+
     return df
+
 
 
 # ----------------------------------------------------------------------
@@ -518,7 +556,8 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
-    hybrid_model = HybridModel(model_dir="models", interval=interval, logger=system_logger)
+    # MODELS_DIR contract
+    hybrid_model = HybridModel(model_dir=MODELS_DIR, interval=interval, logger=system_logger)
     try:
         if hasattr(hybrid_model, "use_lstm_hybrid"):
             hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
@@ -533,7 +572,7 @@ def create_trading_objects() -> Dict[str, Any]:
             except Exception:
                 mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
 
-            mtf_ensemble = HybridMultiTFModel(model_dir="models", intervals=mtf_intervals, logger=system_logger)
+            mtf_ensemble = HybridMultiTFModel(model_dir=MODELS_DIR, intervals=mtf_intervals, logger=system_logger)
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
         except Exception as e:
@@ -583,7 +622,7 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
     )
 
-    online_model = OnlineLearner(model_dir="models", base_model_name="online_model", interval=interval)
+    online_model = OnlineLearner(model_dir=MODELS_DIR, base_model_name="online_model", interval=interval)
 
     return {
         "symbol": symbol,
@@ -633,21 +672,52 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
     anomaly_detector = AnomalyDetector(logger=system_logger)
 
-    alias_map = {
-        "taker_buy_base_volume": "taker_buy_base_asset_volume",
-        "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
-    }
+    # --- TEK SÖZLEŞME: meta schema loader + normalize ---
+    import json
+    _schema_cache: Dict[str, Optional[List[str]]] = {}
 
-    feature_cols = [
-        "open_time", "open", "high", "low", "close", "volume", "close_time",
-        "quote_asset_volume", "number_of_trades", "taker_buy_base_volume",
-        "taker_buy_quote_volume", "ignore",
-        "hl_range", "oc_change", "return_1", "return_3", "return_5",
-        "ma_5", "ma_10", "ma_20", "vol_10", "dummy_extra",
-    ]
+    def _load_schema(itv: str) -> Optional[List[str]]:
+        if itv in _schema_cache:
+            return _schema_cache[itv]
+        try:
+            p = os.path.join(MODELS_DIR, f"model_meta_{itv}.json")
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f) or {}
+            sch = d.get("feature_schema")
+            if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
+                _schema_cache[itv] = sch
+                return sch
+        except Exception:
+            pass
+        _schema_cache[itv] = None
+        return None
+
+    def _fallback_schema() -> Optional[List[str]]:
+        meta = getattr(hybrid_model, "meta", {}) or {}
+        sch = meta.get("feature_schema")
+        if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
+            return sch
+        return None
+
+    def _schema_for(itv: str) -> Optional[List[str]]:
+        return _load_schema(itv) or _fallback_schema()
+
+    def _normalize_feat_df(feat_df: pd.DataFrame, itv: str) -> pd.DataFrame:
+        sch = _schema_for(itv)
+        if not sch:
+            if system_logger:
+                system_logger.warning("[SCHEMA] No feature_schema found for interval=%s. Using raw features.", itv)
+            return feat_df
+
+        def _log_missing(missing_cols):
+            if system_logger and missing_cols:
+                system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
+
+        return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
     while True:
         try:
+            # 1) main interval raw
             raw_df = await fetch_klines(
                 client=client,
                 symbol=symbol,
@@ -656,18 +726,20 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 logger=system_logger,
             )
 
+            # 2) features
             feat_df = build_features(raw_df)
 
-            for old_col, new_col in alias_map.items():
-                if old_col not in feat_df.columns and new_col in feat_df.columns:
-                    feat_df[old_col] = feat_df[new_col]
+            # 3) schema normalize (TEK KİLİT)
+            feat_df = _normalize_feat_df(feat_df, interval)
 
-            feat_df = anomaly_detector.filter_anomalies(feat_df)
+            # 4) anomaly filter (aynı schema ile)
+            sch_main = _schema_for(interval)
+            feat_df = anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
 
-            feature_cols_existing = [c for c in feature_cols if c in feat_df.columns]
-            X_live = feat_df[feature_cols_existing].tail(500)
+            # 5) model input: DAİMA schema sıralı DF
+            X_live = feat_df.tail(500)
 
-            # 1) Single-TF hibrit skor
+            # 6) Single-TF hibrit skor
             p_arr_single, debug_single = hybrid_model.predict_proba(X_live)
             p_single = float(p_arr_single[-1])
 
@@ -676,12 +748,12 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             best_auc = float(meta.get("best_auc", 0.5) or 0.5)
             best_side = meta.get("best_side", "long")
 
-            # 2) MTF verileri
+            # 7) MTF verileri
             mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
             if USE_MTF_ENS and mtf_ensemble is not None:
-                for itv in ["1m", "15m", "30m", "1h"]:  # ✅ 30m eklendi
+                for itv in ["1m", "15m", "30m", "1h"]:
                     try:
                         raw_df_itv = await fetch_klines(
                             client=client,
@@ -692,17 +764,21 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         )
                         feat_df_itv = build_features(raw_df_itv)
 
-                        for old_col, new_col in alias_map.items():
-                            if old_col not in feat_df_itv.columns and new_col in feat_df_itv.columns:
-                                feat_df_itv[old_col] = feat_df_itv[new_col]
+                        # schema normalize (TEK KİLİT)
+                        feat_df_itv = _normalize_feat_df(feat_df_itv, itv)
+
+                        # anomaly filter (itv schema ile)
+                        sch_itv = _schema_for(itv)
+                        feat_df_itv = anomaly_detector.filter_anomalies(feat_df_itv, schema=sch_itv)
 
                         mtf_feats[itv] = feat_df_itv
                         mtf_whale_raw[itv] = raw_df_itv
+
                     except Exception as e:
                         if system_logger:
                             system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
 
-            # 3) MTF ensemble skoru
+            # 8) MTF ensemble skoru
             p_used = p_single
             mtf_debug: Optional[Dict[str, Any]] = None
 
@@ -712,10 +788,11 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 try:
                     X_by_interval: Dict[str, pd.DataFrame] = {}
                     for itv, df_itv in mtf_feats.items():
-                        cols_itv = [c for c in feature_cols if c in df_itv.columns]
-                        if not cols_itv:
+                        sch_itv = _schema_for(itv)
+                        if not sch_itv:
                             continue
-                        X_by_interval[itv] = df_itv[cols_itv].tail(500)
+                        # df_itv zaten normalize ama garanti:
+                        X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
 
                     if X_by_interval:
                         p_ens, mtf_debug = mtf_ensemble.predict_proba_multi(
@@ -738,7 +815,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     p_used = p_single
                     mtf_debug = None
 
-            # 4) Whale meta
+            # 9) Whale meta
             whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
             whale_dir = "none"
             whale_score = 0.0
@@ -788,7 +865,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     if system_logger:
                         system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
 
-            # 5) ATR
+
+            # 10) ATR
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
             atr_value = compute_atr_from_klines(raw_df, period=atr_period)
 
@@ -796,8 +874,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             probs: Dict[str, Any] = {
                 "p_used": p_used,
                 "p_single": p_single,
-                "p_sgd_mean": float(debug_single.get("p_sgd_mean", 0.0)),
-                "p_lstm_mean": float(debug_single.get("p_lstm_mean", 0.5)),
+                "p_sgd_mean": float(debug_single.get("p_sgd_mean", 0.0)) if isinstance(debug_single, dict) else 0.0,
+                "p_lstm_mean": float(debug_single.get("p_lstm_mean", 0.5)) if isinstance(debug_single, dict) else 0.5,
             }
 
             extra: Dict[str, Any] = {
