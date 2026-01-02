@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+import json
 from typing import Any, Dict, Optional, List
 
 import pandas as pd
@@ -672,13 +673,16 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
     anomaly_detector = AnomalyDetector(logger=system_logger)
 
-    # --- TEK SÖZLEŞME: meta schema loader + normalize ---
-    import json
-    _schema_cache: Dict[str, Optional[List[str]]] = {}
+    # ------------------------------------------------------------------
+    # TEK SÖZLEŞME: meta schema loader + normalize
+    # ------------------------------------------------------------------
 
-    def _load_schema(itv: str) -> Optional[List[str]]:
+    _schema_cache: Dict[str, Optional[list[str]]] = {}
+
+    def _load_schema_from_disk(itv: str) -> Optional[list[str]]:
         if itv in _schema_cache:
             return _schema_cache[itv]
+
         try:
             p = os.path.join(MODELS_DIR, f"model_meta_{itv}.json")
             with open(p, "r", encoding="utf-8") as f:
@@ -689,30 +693,38 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 return sch
         except Exception:
             pass
+
         _schema_cache[itv] = None
         return None
 
-    def _fallback_schema() -> Optional[List[str]]:
+    def _fallback_schema_from_model() -> Optional[list[str]]:
         meta = getattr(hybrid_model, "meta", {}) or {}
         sch = meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
 
-    def _schema_for(itv: str) -> Optional[List[str]]:
-        return _load_schema(itv) or _fallback_schema()
+    def _schema_for(itv: str) -> Optional[list[str]]:
+        return _load_schema_from_disk(itv) or _fallback_schema_from_model()
 
     def _normalize_feat_df(feat_df: pd.DataFrame, itv: str) -> pd.DataFrame:
         sch = _schema_for(itv)
         if not sch:
             if system_logger:
-                system_logger.warning("[SCHEMA] No feature_schema found for interval=%s. Using raw features.", itv)
+                system_logger.warning(
+                    "[SCHEMA] No feature_schema for interval=%s (meta missing). Using raw features.",
+                    itv,
+                )
             return feat_df
 
         def _log_missing(missing_cols):
             if system_logger and missing_cols:
-                system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
+                system_logger.warning(
+                    "[SCHEMA] interval=%s missing cols (filled=0): %s",
+                    itv, missing_cols
+                )
 
+        # tek kilit: alias + missing fill + order + numeric cleanup
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
     while True:
@@ -726,7 +738,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 logger=system_logger,
             )
 
-            # 2) features
+            # 2) features (engineer)
             feat_df = build_features(raw_df)
 
             # 3) schema normalize (TEK KİLİT)
@@ -736,7 +748,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             sch_main = _schema_for(interval)
             feat_df = anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
 
-            # 5) model input: DAİMA schema sıralı DF
+            # 5) model input: DAİMA schema-sıralı DF
             X_live = feat_df.tail(500)
 
             # 6) Single-TF hibrit skor
@@ -762,6 +774,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                             limit=data_limit,
                             logger=system_logger,
                         )
+
                         feat_df_itv = build_features(raw_df_itv)
 
                         # schema normalize (TEK KİLİT)
@@ -791,7 +804,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         sch_itv = _schema_for(itv)
                         if not sch_itv:
                             continue
-                        # df_itv zaten normalize ama garanti:
+                        # df_itv normalde normalize, ama garanti:
                         X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
 
                     if X_by_interval:
