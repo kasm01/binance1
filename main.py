@@ -427,26 +427,6 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
 async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     data_mode = str(os.getenv("DATA_MODE", "OFFLINE")).upper().strip()
 
-    if data_mode != "LIVE":
-        csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
-        if not os.path.exists(csv_path):
-            if logger:
-                logger.error("[DATA] OFFLINE mod: CSV bulunamadı: %s", csv_path)
-            raise RuntimeError(
-                f"Offline kline dosyası yok: {csv_path}. "
-                "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
-            )
-
-        df = pd.read_csv(csv_path, header=None)
-        if len(df) > limit:
-            df = df.tail(limit).reset_index(drop=True)
-
-        if logger:
-            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
-        return df
-
-    last_err: Optional[Exception] = None
-
     columns = [
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "number_of_trades",
@@ -458,20 +438,99 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
     ]
     int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
+    def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Tek sözleşme:
+        - kolon isimleri Binance kline schema (12) olacak
+        - numeric coercion uygulanacak
+        - inf/nan temizlenecek
+        """
+        if df is None or df.empty:
+            return df
+
+        # 12 kolon fazlasını kırp (Binance formatı)
+        if df.shape[1] > 12:
+            df = df.iloc[:, :12].copy()
+
+        # Header yoksa (0..11) -> isimlendir
+        if list(df.columns) == list(range(len(df.columns))) and df.shape[1] == 12:
+            df = df.copy()
+            df.columns = columns
+
+        # Header varsa ama isimler farklıysa yine de mümkün olduğunca düzelt
+        # (örn: 'Open time' vs) -> burada sadece beklenen kolonlar yoksa fallback yapıyoruz.
+        if not set(columns).issubset(set(df.columns)) and df.shape[1] == 12:
+            # Kolonlar isimli ama farklı: pozisyona göre zorla map et
+            df = df.copy()
+            df.columns = columns
+
+        # Tip dönüşümü
+        for c in float_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        for c in int_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+        # int kolonları gerçekten int yap (güvenli)
+        for c in int_cols:
+            if c in df.columns:
+                try:
+                    df[c] = df[c].astype(int)
+                except Exception:
+                    df[c] = df[c].fillna(0).astype(int)
+
+        # inf/nan temizliği
+        df = df.replace([float("inf"), float("-inf")], pd.NA)
+        df = df.ffill().bfill().fillna(0)
+
+        return df
+
+    # -------------------------
+    # OFFLINE
+    # -------------------------
+    if data_mode != "LIVE":
+        csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
+        if not os.path.exists(csv_path):
+            if logger:
+                logger.error("[DATA] OFFLINE mod: CSV bulunamadı: %s", csv_path)
+            raise RuntimeError(
+                f"Offline kline dosyası yok: {csv_path}. "
+                "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
+            )
+
+        # low_memory=False -> mixed dtype warning azalır
+        df = pd.read_csv(csv_path, header=None, low_memory=False)
+
+        if len(df) > limit:
+            df = df.tail(limit).reset_index(drop=True)
+
+        df = _normalize_kline_df(df)
+
+        if logger:
+            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
+            if not {"open", "high", "low", "close"}.issubset(df.columns):
+                logger.warning("[DATA] OFFLINE normalize sonrası kolonlar eksik: cols=%s", list(df.columns))
+
+        return df
+
+    # -------------------------
+    # LIVE
+    # -------------------------
+    last_err: Optional[Exception] = None
+
     if client is not None:
         try:
             klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
             df = pd.DataFrame(klines, columns=columns)
-
-            for c in float_cols:
-                df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
-            for c in int_cols:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-            if "ignore" in df.columns:
-                df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
+            df = _normalize_kline_df(df)
 
             if logger:
-                logger.info("[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
+                logger.info(
+                    "[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s",
+                    symbol, interval, df.shape
+                )
             return df
 
         except Exception as e:
@@ -481,6 +540,7 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
 
     try:
         df = _fetch_klines_public_rest(symbol, interval, limit, logger)
+        df = _normalize_kline_df(df)
         return df
     except Exception as e:
         last_err = e

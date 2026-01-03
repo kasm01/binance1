@@ -28,16 +28,16 @@
   "feature_source": "offline_train_hybrid::build_features",
   "n_samples": 4320,
   "n_features": 22,
-  "best_auc": 0.5386507341120994,
+  "best_auc": 0.5425112521886715,
   "best_side": "long",
   "use_lstm_hybrid": true,
   "seq_len": 50,
   "meta_version": 2,
-  "label_horizon": 1,
-  "label_thr": 0.0,
-  "sgd_alpha": 0.0001,
-  "sgd_max_iter": 50,
-  "sgd_tol": 0.001,
+  "label_horizon": 3,
+  "label_thr": 0.0005,
+  "sgd_alpha": 1.0,
+  "sgd_max_iter": 20000,
+  "sgd_tol": 1e-05,
   "lstm_feature_schema": [
     "open",
     "high",
@@ -61,5 +61,22 @@
     "dummy_extra"
   ],
   "lstm_long_auc": 0.49090765338393416,
-  "lstm_short_auc": 0.49090765338393416
+  "lstm_short_auc": 0.49090765338393416,
+  "auc_used": 0.5425112521886715,
+  "auc_used_source": "sync_from_best_auc_after_tune",
+  "auc_history": [
+    {
+      "ts": "2026-01-03T09:50:05.005550+00:00",
+      "auc": 0.5386507341120994
+    }
+  ],
+  "sgd_val_auc": 0.5425112521886715,
+  "sgd_alpha_grid": {
+    "min": 0.0,
+    "max": 1.0,
+    "step": 0.05
+  },
+  "alpha_tuned": true,
+  "alpha_tuned_at": "2026-01-03T10:28:17.208555+00:00",
+  "best_auc_source": "tune_alpha_val_auc"
 }

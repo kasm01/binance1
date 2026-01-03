@@ -37,5 +37,7 @@
   "label_thr": 0.0,
   "sgd_alpha": 0.0001,
   "sgd_max_iter": 50,
-  "sgd_tol": 0.001
+  "sgd_tol": 0.001,
+  "auc_used": 0.5159713525336566,
+  "auc_used_source": "auto_fallback_from_existing_keys"
 }

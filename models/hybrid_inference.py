@@ -408,6 +408,7 @@ class HybridModel:
         seq_len = int(self.meta.get("seq_len", _env_int("LSTM_SEQ_LEN_DEFAULT", 50)))
         if seq_len <= 0:
             seq_len = _env_int("LSTM_SEQ_LEN_DEFAULT", 50)
+
         if X.shape[0] < seq_len:
             raise ValueError("Not enough rows to build sequences")
 
@@ -426,9 +427,9 @@ class HybridModel:
             and self.lstm_long is not None
             and self.lstm_short is not None
             and self.lstm_scaler is not None
-    ):
-        debug["lstm_used"] = False
-        return np.full(n, 0.5, dtype=float), debug
+        ):
+            debug["lstm_used"] = False
+            return np.full(n, 0.5, dtype=float), debug
 
         try:
             # --- LSTM FEATURE SCHEMA KİLİDİ (ORDER GUARANTEED) ---
@@ -454,6 +455,7 @@ class HybridModel:
                     X_num.shape,
                     need,
                 )
+
                 # runtime disable to stop repeated warnings
                 self.lstm_long = None
                 self.lstm_short = None
@@ -475,9 +477,11 @@ class HybridModel:
             p_lstm = 0.5 * (p_long + p_short)
 
             # seq padding: ilk seq_len-1 satırı doldur
-            if len(p_lstm) < n:
+            if len(p_lstm) < n and len(p_lstm) > 0:
                 pad_len = n - len(p_lstm)
                 p_lstm = np.concatenate([np.full(pad_len, float(p_lstm[0])), p_lstm])
+            elif len(p_lstm) == 0:
+                p_lstm = np.full(n, 0.5, dtype=float)
 
             debug.update(
                 {

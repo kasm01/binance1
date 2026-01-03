@@ -63,5 +63,7 @@
   ],
   "use_lstm_hybrid": false,
   "seq_len": 32,
-  "lstm_veto_reason": "lstm_auc_mean<0.50 (mean=0.0000)"
+  "lstm_veto_reason": "lstm_auc_mean<0.50 (mean=0.0000)",
+  "auc_used": 0.5,
+  "auc_used_source": "auto_fallback_from_existing_keys"
 }

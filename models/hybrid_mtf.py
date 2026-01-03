@@ -13,15 +13,16 @@ system_logger = logging.getLogger("system")
 
 class MultiTimeframeHybridEnsemble:
     """
-    Çoklu timeframe (1m, 5m, 15m, 1h) HybridModel ensemble sınıfı.
+    Çoklu timeframe HybridModel ensemble sınıfı.
 
-    - Her interval için ayrı bir model bekler (model.predict_proba(X) çağrılabilir olmalı).
-    - predict_mtf:
-        * Her intervalde model.predict_proba(X_itv) çağırır
-        * Son barın ([-1]) olasılığını alır
-        * Interval weight'i dışarıdan (HybridMTF) verilebilir
-        * Ağırlıklı ortalama ile ensemble p üretir
-        * Detayları mtf_debug içinde döner
+    - models_by_interval: { "1m": model, "5m": model, ... }
+      model.predict_proba(X) -> (proba_arr, debug) döndürmelidir.
+
+    predict_mtf:
+      - Her interval için model.predict_proba(X_itv) çağırır
+      - Son bar olasılığını alır
+      - weight_by_interval ile ağırlıklandırıp ensemble_p üretir
+      - per_interval detaylarını mtf_debug içinde döner
     """
 
     def __init__(
@@ -65,13 +66,13 @@ class MultiTimeframeHybridEnsemble:
         return wf
 
     def predict_mtf(
-                self,
+        self,
         X_by_interval: Dict[str, Any],
         weight_by_interval: Dict[str, float] | None = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Dönüş:
-            (ensemble_p, mtf_debug)
+        Returns:
+          (ensemble_p, mtf_debug)
         """
         per_interval: Dict[str, Any] = {}
         probs: list[float] = []
@@ -83,7 +84,6 @@ class MultiTimeframeHybridEnsemble:
         for itv, model in self.models_by_interval.items():
             X_itv = X_by_interval.get(itv)
 
-            # None / empty kontrolü (DataFrame için)
             if X_itv is None:
                 continue
             if isinstance(X_itv, pd.DataFrame) and X_itv.empty:
@@ -115,9 +115,7 @@ class MultiTimeframeHybridEnsemble:
                 continue
 
         if not probs:
-            self.logger.warning(
-                "[HYBRID-MTF] Hiç interval için geçerli prob üretilemedi, ensemble fallback."
-            )
+            self.logger.warning("[HYBRID-MTF] Hiç interval için geçerli prob üretilemedi, ensemble fallback.")
             return 0.5, {
                 "per_interval": per_interval,
                 "intervals_used": [],
@@ -150,25 +148,24 @@ class MultiTimeframeHybridEnsemble:
 
         return ensemble_p, mtf_debug
 
-
 class HybridMTF:
     """
     Stabil MTF ağırlıklandırma (tek kaynak):
 
     Tek eşik: auc_floor
-    - auc <= auc_floor  -> weight=0.0 (skip)
-    - auc_floor..auc_max_used lineer map:
-        weight = (auc - auc_floor) / (auc_max_used - auc_floor)
-    - auc >= auc_max_used -> weight=1.0
+      - auc <= auc_floor  -> weight=0.0 (skip)
+      - auc_floor..auc_max_used lineer map:
+            weight = (auc - auc_floor) / (auc_max_used - auc_floor)
+      - auc >= auc_max_used -> weight=1.0
 
     Otomatik kalibrasyon (opsiyonel):
-    - auc_max_used sabit yerine, son N gün AUC dağılımından percentile alınır
-    - auc_max_used bounds içinde kırpılır (örn. 0.56..0.70)
-    - AUC geçmişi yoksa fallback: self.auc_max
+      - auc_max_used sabit yerine, son N gün AUC dağılımından percentile alınır
+      - auc_max_used bounds içinde kırpılır (örn. 0.56..0.70)
+      - AUC geçmişi yoksa fallback: self.auc_max
 
     AUC standardizasyon:
-    - meta içinde hangi AUC alanı kullanılıyorsa auc_key_priority ile seçilir
-    - opsiyonel olarak seçilen AUC meta[standardize_auc_key] alanına yazılabilir
+      - meta içinde hangi AUC alanı kullanılıyorsa auc_key_priority ile seçilir
+      - opsiyonel olarak seçilen AUC meta[standardize_auc_key] alanına yazılabilir
     """
 
     def __init__(
@@ -231,9 +228,6 @@ class HybridMTF:
             return 0.5, "fallback"
 
         for key in self.auc_key_priority:
-            if key not in meta:
-                continue
-
             raw = meta.get(key, None)
             if raw is None:
                 continue
@@ -246,7 +240,7 @@ class HybridMTF:
             if not np.isfinite(v):
                 continue
 
-            return v, key
+            return float(v), str(key)
 
         return 0.5, "fallback"
 
@@ -320,7 +314,7 @@ class HybridMTF:
                     except Exception:
                         continue
                     ts = pd.to_datetime(ts_val, errors="coerce", utc=True) if ts_val is not None else None
-                    rows.append((ts if pd.notna(ts) else None, auc_f))
+                    rows.append((ts if (ts is not None and pd.notna(ts)) else None, auc_f))
 
                 if not rows:
                     return pd.Series(dtype=float)
@@ -419,9 +413,6 @@ class HybridMTF:
 
         return (auc - self.auc_floor) / denom
 
-    # --------------------------------------------------------------
-    # Weight hesaplama: skip + stabil map + floor + auto-calib auc_max
-    # --------------------------------------------------------------
     def _get_weight_for_interval(
         self,
         interval: str,
@@ -466,6 +457,7 @@ class HybridMTF:
         standardize_auc_key: str | None = "auc_used",
         standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
+        # NOTE: burası her loop'ta info spam olmasın istersen INFO->DEBUG yapabilirsin.
         self.logger.info(
             "[HYBRID-MTF] predict_mtf called | intervals=%s",
             list(self.models_by_interval.keys()),
@@ -476,42 +468,24 @@ class HybridMTF:
 
         for itv, model in self.models_by_interval.items():
             meta = getattr(model, "meta", {}) or {}
-            # --- AUC HISTORY SEED (ilk çalıştırma stabilitesi) ---
+
+            # --- AUC HISTORY SEED (tek ve temiz) ---
+            # History yoksa ve wf_auc_mean varsa 1 kayıt seed et
             if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
                 try:
-                    self.update_auc_history(
-                        interval=itv,
-                        auc_value=float(meta["wf_auc_mean"]),
-                    )
+                    self.update_auc_history(interval=itv, auc_value=float(meta["wf_auc_mean"]))
                     self.logger.info(
                         "[HYBRID-MTF] Interval=%s auc_history seed edildi (wf_auc_mean=%.4f)",
                         itv,
                         float(meta["wf_auc_mean"]),
                     )
                 except Exception as _e:
-                    self.logger.warning(
-                        "[HYBRID-MTF] Interval=%s auc_history seed edilemedi: %s",
-                        itv,
-                        _e,
-                    )
+                    self.logger.warning("[HYBRID-MTF] Interval=%s auc_history seed edilemedi: %s", itv, _e)
 
-
-            # AUC history yoksa ve wf_auc_mean varsa history bootstrap et
-            if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
-                try:
-                    self.update_auc_history(interval=itv, auc_value=float(meta["wf_auc_mean"]))
-                except Exception:
-                    pass
-
-            # Eğer auc_history yoksa ama wf_auc_mean varsa, otomatik history başlat
-            try:
-                if (not meta.get("auc_history")) and (meta.get("wf_auc_mean") is not None):
-                    self.update_auc_history(interval=itv, auc_value=float(meta["wf_auc_mean"]))
-            except Exception:
-                pass
-
+            # AUC seç (auc_used yoksa best_auc vb. ile fallback)
             auc_used, auc_key_used = self._pick_auc_from_meta(meta)
 
+            # İstenirse model.meta içine standardize et (runtime kalıcı; disk değil)
             self._maybe_standardize_auc(
                 model=model,
                 auc_value=auc_used,
@@ -519,16 +493,11 @@ class HybridMTF:
                 overwrite=standardize_overwrite,
             )
 
-            # Standardize yazdıysak, kalibrasyonda güncel meta'yı kullanmak için meta'yı tekrar alalım
+            # Kalibrasyon için güncel meta'yı tekrar al
             meta2 = getattr(model, "meta", {}) or {}
 
             auc_max_used = self._calibrate_auc_max(itv, meta2)
-
-            weight = self._get_weight_for_interval(
-                interval=itv,
-                auc_used=auc_used,
-                auc_max_used=auc_max_used,
-            )
+            weight = self._get_weight_for_interval(itv, auc_used, auc_max_used)
 
             weight_by_interval[itv] = float(weight)
 
@@ -541,13 +510,27 @@ class HybridMTF:
                 "has_auc_history": bool(meta2.get("auc_history") is not None),
             }
 
+        # Ensemble predict
         ensemble_p, mtf_debug = self._ensemble.predict_mtf(
             X_by_interval=X_by_interval,
             weight_by_interval=weight_by_interval,
         )
 
+        # Per-interval debug içine AUC/weight bilgisini enjekte et (kalıcı çözüm için önemli)
+        per_interval = mtf_debug.get("per_interval")
+        if isinstance(per_interval, dict):
+            for itv, info in per_interval.items():
+                if not isinstance(info, dict):
+                    continue
+                mi = meta_by_interval.get(itv) or {}
+                # debug alanına da ekleyelim (kolay görünür)
+                info["auc_used"] = mi.get("auc_used")
+                info["auc_key_used"] = mi.get("auc_key_used")
+                info["auc_max_used"] = mi.get("auc_max_used")
+
         mtf_debug["meta_by_interval"] = meta_by_interval
 
+        # global param debug
         mtf_debug["auc_floor"] = self.auc_floor
         mtf_debug["auc_max_default"] = self.auc_max
         mtf_debug["weight_floor"] = self.weight_floor
