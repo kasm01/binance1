@@ -84,13 +84,21 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
 
 def make_xy(df_raw: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, list]:
     feat = build_features(df_raw)
-    future_close = feat["close"].shift(-HORIZON)
-    ret = future_close / feat["close"] - 1.0
+
+    # --- enforce LSTM schema (order + missing fill) ---
+    for c in LSTM_FEATURE_SCHEMA:
+        if c not in feat.columns:
+            feat[c] = 0.0
+    feat = feat[LSTM_FEATURE_SCHEMA].copy()
+
+    future_close = df_raw["close"].shift(-HORIZON)  # label raw close üzerinden
+    ret = (future_close / df_raw["close"]) - 1.0
     y = (ret > float(LABEL_THR)).astype(int)
+
     m = y.notna()
-    X = feat.loc[m].select_dtypes(include=[np.number]).to_numpy(dtype=float)
+    X = feat.loc[m].to_numpy(dtype=float)
     y = y.loc[m].astype(int).to_numpy()
-    cols = list(feat.select_dtypes(include=[np.number]).columns)
+    cols = list(feat.columns)
     return X, y, cols
 
 def build_seqs(X: np.ndarray, y: np.ndarray, seq_len: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -187,25 +195,39 @@ def main():
     # meta update (varsa)
     meta_path = os.path.join(MODELS_DIR, f"model_meta_{INTERVAL}.json")
     meta: Dict[str, Any] = {}
+
     if os.path.exists(meta_path):
         try:
-            meta = json.load(open(meta_path, "r", encoding="utf-8")) or {}
-        except Exception:
-            meta = {
-        "lstm_feature_schema": list(LSTM_FEATURE_SCHEMA),
-    "lstm_feature_cols": lstm_feature_cols,
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f) or {}
+        except Exception as e:
+            log.warning("Meta load failed, will recreate: %s", e)
+            meta = {}
 
-}
-    meta.update({
-        "use_lstm_hybrid": True,
-        "seq_len": int(SEQ_LEN),
-        "lstm_long_auc": float(auc),
-        "lstm_short_auc": float(auc),
-    })
+    # LSTM sözleşmesini META'ya KİLİTLE
+    meta.update(
+        {
+            "use_lstm_hybrid": True,
+            "seq_len": int(SEQ_LEN),
+            "lstm_long_auc": float(auc),
+            "lstm_short_auc": float(auc),
+
+            # 🔒 KRİTİK: inference ile birebir aynı
+            "lstm_feature_schema": list(LSTM_FEATURE_SCHEMA),
+        }
+    )
+
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    log.info("Saved: %s %s %s | AUC=%.4f", long_path, short_path, scaler_path, auc)
+    log.info(
+        "Saved LSTM: %s %s | scaler=%s | auc=%.4f | n_features=%d",
+        long_path,
+        short_path,
+        scaler_path,
+        auc,
+        scaler.n_features_in_,
+    )
 
 if __name__ == "__main__":
     main()

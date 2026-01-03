@@ -417,7 +417,7 @@ class HybridModel:
     def _predict_lstm_proba(self, X: Union[np.ndarray, pd.DataFrame]) -> Tuple[np.ndarray, Dict[str, Any]]:
         debug: Dict[str, Any] = {}
 
-        n = X.shape[0] if hasattr(X, "shape") else 0
+        n = int(X.shape[0]) if hasattr(X, "shape") else 0
         if n <= 0:
             return np.array([], dtype=float), {"lstm_used": False, "error": "empty_X"}
 
@@ -426,12 +426,12 @@ class HybridModel:
             and self.lstm_long is not None
             and self.lstm_short is not None
             and self.lstm_scaler is not None
-        ):
-            debug["lstm_used"] = False
-            return np.full(n, 0.5, dtype=float), debug
+    ):
+        debug["lstm_used"] = False
+        return np.full(n, 0.5, dtype=float), debug
 
         try:
-            # --- LSTM FEATURE SCHEMA KİLİDİ (ORDER + SIZE GUARANTEED) ---
+            # --- LSTM FEATURE SCHEMA KİLİDİ (ORDER GUARANTEED) ---
             lstm_schema = self._get_lstm_feature_schema()
             if isinstance(X, pd.DataFrame) and isinstance(lstm_schema, list) and lstm_schema:
                 Xdf = self._normalize_to_schema(X, lstm_schema)
@@ -439,23 +439,33 @@ class HybridModel:
             else:
                 X_num = self._to_numeric_matrix(X)
 
-            # scaler mismatch trim/pad (nadir ama kalsın)
+            # --- scaler n_features_in_ kontrolü (NO trim/pad) ---
+            need = getattr(self.lstm_scaler, "n_features_in_", None)
             try:
-                need = int(getattr(self.lstm_scaler, "n_features_in_", 0) or 0)
-                if need > 0 and X_num.shape[1] != need:
-                    self._log_startup(
-                        logging.WARNING,
-                        "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s -> trim/pad fallback",
-                        self.interval,
-                        X_num.shape,
-                        need,
-                    )
-                    if X_num.shape[1] > need:
-                        X_num = X_num[:, :need]
-                    else:
-                        X_num = np.pad(X_num, ((0, 0), (0, need - X_num.shape[1])), constant_values=0.0)
+                need = int(need) if need is not None else None
             except Exception:
-                pass
+                need = None
+
+            if need is not None and need > 0 and X_num.shape[1] != need:
+                self._log_startup(
+                    logging.WARNING,
+                    "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s -> disabling LSTM (no pad/trim).",
+                    self.interval,
+                    X_num.shape,
+                    need,
+                )
+                # runtime disable to stop repeated warnings
+                self.lstm_long = None
+                self.lstm_short = None
+                self.lstm_scaler = None
+                self.use_lstm_hybrid = False
+                self.meta["use_lstm_hybrid"] = False
+
+                debug["lstm_used"] = False
+                debug["error"] = "lstm_feature_mismatch"
+                debug["need"] = need
+                debug["got"] = int(X_num.shape[1])
+                return np.full(n, 0.5, dtype=float), debug
 
             X_scaled = self.lstm_scaler.transform(X_num)
             seqs = self._build_lstm_sequences(X_scaled)
@@ -474,6 +484,8 @@ class HybridModel:
                     "lstm_used": True,
                     "p_long_mean": float(p_long.mean()) if len(p_long) else 0.0,
                     "p_short_mean": float(p_short.mean()) if len(p_short) else 0.0,
+                    "lstm_need_features": int(need) if need is not None else None,
+                    "lstm_got_features": int(X_num.shape[1]),
                 }
             )
             return p_lstm.astype(float), debug
