@@ -37,7 +37,7 @@ from features.schema import normalize_to_schema
 # Model path contract
 from app_paths import MODELS_DIR
 
-from utils.auc_history import seed_auc_history_if_missing
+from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
 
 # ----------------------------------------------------------------------
 # Global config / flags
@@ -626,14 +626,15 @@ def create_trading_objects() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # mtf_intervals: her durumda tanımlı kalsın
+    try:
+        mtf_intervals = list(MTF_INTERVALS)
+    except Exception:
+        mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
+
     mtf_ensemble = None
     if USE_MTF_ENS:
         try:
-            try:
-                mtf_intervals = list(MTF_INTERVALS)
-            except Exception:
-                mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
-
             mtf_ensemble = HybridMultiTFModel(
                 model_dir=MODELS_DIR,
                 intervals=mtf_intervals,
@@ -643,22 +644,35 @@ def create_trading_objects() -> Dict[str, Any]:
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
 
-            # ✅ AUC history bootstrap (kalıcı, meta dosyalarına yazar)
+            # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
             try:
-                from utils.auc_history import seed_auc_history_if_missing
+                from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
 
-                seed_auc_history_if_missing(
-                    intervals=list(mtf_intervals),
-                    logger=system_logger,
-                )
+                seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
+                append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
             except Exception as e:
                 if system_logger:
-                    system_logger.warning("[AUC-HIST] seed_auc_history_if_missing hata: %s", e)
+                    system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)
+
 
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
+
+    # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
+    # Not: seed -> meta'ya bir kere yazar, daily append -> günde 1 kez yazar.
+    # MTF aktif + mtf_ensemble hazırsa çalıştırıyoruz.
+    if USE_MTF_ENS and mtf_ensemble is not None:
+        try:
+            from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
+
+            seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
+            append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
+
+        except Exception as e:
+            if system_logger:
+                system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)
 
     whale_detector = None
     try:
