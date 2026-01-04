@@ -634,9 +634,27 @@ def create_trading_objects() -> Dict[str, Any]:
             except Exception:
                 mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
 
-            mtf_ensemble = HybridMultiTFModel(model_dir=MODELS_DIR, intervals=mtf_intervals, logger=system_logger)
+            mtf_ensemble = HybridMultiTFModel(
+                model_dir=MODELS_DIR,
+                intervals=mtf_intervals,
+                logger=system_logger,
+            )
+
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
+
+            # ✅ AUC history bootstrap (kalıcı, meta dosyalarına yazar)
+            try:
+                from utils.auc_history import seed_auc_history_if_missing
+
+                seed_auc_history_if_missing(
+                    intervals=list(mtf_intervals),
+                    logger=system_logger,
+                )
+            except Exception as e:
+                if system_logger:
+                    system_logger.warning("[AUC-HIST] seed_auc_history_if_missing hata: %s", e)
+
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
