@@ -107,6 +107,24 @@ LSTM_INTERVALS: List[str] = _env_csv_list("LSTM_INTERVALS", ["1m","3m","5m","15m
 # ------------------------------------------------------------
 def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = raw_df.copy()
+    # --- ROBUST NUMERIC COERCION (offline CSV -> safe) ---
+    # Binance kline kolonları string gelebiliyor, arithmetic öncesi float'a çevir.
+    num_cols = [
+        "open", "high", "low", "close", "volume",
+        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
+    ]
+    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
+
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    for c in int_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.replace([float("inf"), float("-inf")], pd.NA)
+    df = df.ffill().bfill().fillna(0.0)
 
     # Column name normalization (LIVE schema compatibility)
     if "taker_buy_base_asset_volume" in df.columns and "taker_buy_base_volume" not in df.columns:
