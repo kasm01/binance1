@@ -37,6 +37,7 @@ from features.schema import normalize_to_schema
 # Model path contract
 from app_paths import MODELS_DIR
 
+from utils.auc_history import seed_auc_history_if_missing
 
 # ----------------------------------------------------------------------
 # Global config / flags
