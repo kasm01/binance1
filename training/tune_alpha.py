@@ -7,10 +7,11 @@ from pathlib import Path
 PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
 import json
 import math
 import logging
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,6 +36,7 @@ def _env_str(name: str, default: str) -> str:
     v = os.getenv(name)
     return default if v is None or str(v).strip() == "" else str(v).strip()
 
+
 def _env_int(name: str, default: int) -> int:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
@@ -43,6 +45,7 @@ def _env_int(name: str, default: int) -> int:
         return int(float(v))
     except Exception:
         return int(default)
+
 
 def _env_float(name: str, default: float) -> float:
     v = os.getenv(name)
@@ -54,26 +57,27 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
-SYMBOL   = _env_str("SYMBOL", "BTCUSDT")
+SYMBOL = _env_str("SYMBOL", "BTCUSDT")
 INTERVAL = _env_str("INTERVAL", "5m")
 DATA_DIR = _env_str("DATA_DIR", "data/offline_cache")
 
 OFFLINE_MAX_BARS = _env_int("OFFLINE_MAX_BARS", 50000)
-LABEL_HORIZON    = _env_int("LABEL_HORIZON", 3)
-LABEL_THR        = _env_float("LABEL_THR", 0.0005)
+LABEL_HORIZON = _env_int("LABEL_HORIZON", 3)
+LABEL_THR = _env_float("LABEL_THR", 0.0005)
 
-ALPHA_MIN  = _env_float("ALPHA_MIN", 0.0)
-ALPHA_MAX  = _env_float("ALPHA_MAX", 1.0)
+ALPHA_MIN = _env_float("ALPHA_MIN", 0.0)
+ALPHA_MAX = _env_float("ALPHA_MAX", 1.0)
 ALPHA_STEP = _env_float("ALPHA_STEP", 0.05)
 
 SGD_MAX_ITER = _env_int("SGD_MAX_ITER", 20000)
-SGD_TOL      = _env_float("SGD_TOL", 1e-5)
-RANDOM_SEED  = _env_int("SEED", 42)
+SGD_TOL = _env_float("SGD_TOL", 1e-5)
+RANDOM_SEED = _env_int("SEED", 42)
 
 TRAIN_SPLIT = _env_float("TRAIN_SPLIT", 0.80)  # time split
 
 SAVE_MODEL = _env_int("SAVE_MODEL", 1)  # 0 => sadece rapor, yazmaz
-OVERWRITE  = _env_int("OVERWRITE", 1)
+OVERWRITE = _env_int("OVERWRITE", 1)
+PRINT_META_SUMMARY = _env_int("PRINT_META_SUMMARY", 1)  # 1 => her interval sonrası meta özet bas
 
 
 # -------------------------
@@ -85,14 +89,18 @@ COLUMNS = [
     "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
 ]
 
+
 def load_offline_csv(path: str, max_bars: int) -> pd.DataFrame:
-    df = pd.read_csv(path, header=None)
+    # low_memory=False => dtype kararsızlığını azaltır
+    df = pd.read_csv(path, header=None, low_memory=False)
     if df.shape[1] >= len(COLUMNS):
         df = df.iloc[:, :len(COLUMNS)]
     df.columns = COLUMNS[:df.shape[1]]
 
-    # numeric cast
-    float_cols = ["open", "high", "low", "close", "volume", "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume"]
+    float_cols = [
+        "open", "high", "low", "close", "volume",
+        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
+    ]
     int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
     for c in float_cols:
@@ -118,7 +126,6 @@ def resolve_build_features():
     Projede build_features nerede ise onu bulmaya çalışır.
     Öncelik: training/offline_train_hybrid.py -> main.py -> local fallback
     """
-    # 1) training.offline_train_hybrid
     try:
         from training.offline_train_hybrid import build_features as bf  # type: ignore
         log.info("Using build_features from training.offline_train_hybrid")
@@ -126,7 +133,6 @@ def resolve_build_features():
     except Exception:
         pass
 
-    # 2) main.build_features
     try:
         from main import build_features as bf  # type: ignore
         log.info("Using build_features from main.py")
@@ -134,7 +140,6 @@ def resolve_build_features():
     except Exception:
         pass
 
-    # 3) fallback (minimum)
     def _fallback_build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
         df = raw_df.copy()
         df["hl_range"] = df["high"] - df["low"]
@@ -153,7 +158,6 @@ def resolve_build_features():
     log.warning("build_features not found in project; using fallback builder (may reduce quality).")
     return _fallback_build_features
 
-
 # -------------------------
 # Labels + dataset
 # -------------------------
@@ -164,7 +168,6 @@ def make_xy(raw_df: pd.DataFrame, feature_schema: List[str], build_features_fn) 
     if feature_schema:
         feat_df = normalize_to_schema(feat_df, feature_schema)
 
-    # label: future close return
     if "close" not in feat_df.columns:
         raise ValueError("Feature DF missing 'close' column; cannot build labels.")
 
@@ -176,8 +179,11 @@ def make_xy(raw_df: pd.DataFrame, feature_schema: List[str], build_features_fn) 
     X_df = feat_df.loc[m]
     y_s = y.loc[m].astype(int)
 
-    # ensure numeric
-    X_df = X_df.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    X_df = (
+        X_df.apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
 
     X = X_df.to_numpy(dtype=float)
     yv = y_s.to_numpy(dtype=int)
@@ -190,7 +196,7 @@ def time_split(X: np.ndarray, y: np.ndarray, train_ratio: float) -> Tuple[np.nda
     if n < 2000:
         log.warning("Dataset small (n=%d). Alpha tuning still runs but AUC may be noisy.", n)
 
-    split = int(max(1, min(n - 1, math.floor(n * train_ratio))))
+    split = int(max(1, min(n - 1, math.floor(n * float(train_ratio)))))
     X_tr, y_tr = X[:split], y[:split]
     X_va, y_va = X[split:], y[split:]
     return X_tr, y_tr, X_va, y_va
@@ -209,29 +215,41 @@ def alpha_grid(a_min: float, a_max: float, a_step: float) -> List[float]:
     a_min = float(a_min)
     a_max = float(a_max)
     a_step = float(a_step)
+
     if a_step <= 0:
         return [max(a_min, 1e-6)]
-    vals = []
+
+    vals: List[float] = []
     x = a_min
-    # include end
     while x <= a_max + 1e-12:
         vals.append(float(round(x, 12)))
         x += a_step
-    # avoid all zeros -> include small epsilon as well
-    if all(v == 0.0 for v in vals):
-        vals.append(1e-6)
-    return vals
+
+    # SGDClassifier(learning_rate="optimal") alpha must be > 0
+    # 0.0 varsa otomatik çıkar (ve log spam olmasın diye burada halledelim)
+    vals2 = [v for v in vals if v > 0.0]
+    if not vals2:
+        vals2 = [1e-6]
+
+    return vals2
 
 
+# -------------------------
+# META helpers (kalıcı standart)
+# -------------------------
 def load_meta(interval: str) -> Tuple[Dict[str, Any], str]:
     meta_path = os.path.join(MODELS_DIR, f"model_meta_{interval}.json")
+    meta: Dict[str, Any] = {}
+
     if os.path.exists(meta_path):
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
-                return json.load(f) or {}, meta_path
-        except Exception:
-            return {}, meta_path
-    return {}, meta_path
+                meta = json.load(f) or {}
+        except Exception as e:
+            log.warning("Meta load failed (%s), will recreate: %s", meta_path, e)
+            meta = {}
+
+    return meta, meta_path
 
 
 def main() -> None:
@@ -249,20 +267,18 @@ def main() -> None:
     build_features_fn = resolve_build_features()
 
     raw_df = load_offline_csv(csv_path, OFFLINE_MAX_BARS)
-
     X, y = make_xy(raw_df, feature_schema, build_features_fn)
     X_tr, y_tr, X_va, y_va = time_split(X, y, TRAIN_SPLIT)
 
-    log.info("TUNE ALPHA %s | X_tr=%s X_va=%s | horizon=%d thr=%.6f", INTERVAL, X_tr.shape, X_va.shape, LABEL_HORIZON, LABEL_THR)
+    log.info(
+        "TUNE ALPHA %s | X_tr=%s X_va=%s | horizon=%d thr=%.6f",
+        INTERVAL, X_tr.shape, X_va.shape, LABEL_HORIZON, LABEL_THR
+    )
 
     grid = alpha_grid(ALPHA_MIN, ALPHA_MAX, ALPHA_STEP)
 
-    best = {
-        "alpha": None,
-        "auc": -1.0,
-        "pos_rate_train": float(np.mean(y_tr)) if len(y_tr) else 0.0,
-        "pos_rate_val": float(np.mean(y_va)) if len(y_va) else 0.0,
-    }
+    best_alpha: float = max(float(ALPHA_MIN), 1e-6)
+    best_val_auc: float = -1.0
 
     results: List[Dict[str, Any]] = []
 
@@ -291,12 +307,11 @@ def main() -> None:
 
         results.append({"alpha": float(a), "val_auc": float(auc)})
 
-        if auc > best["auc"]:
-            best["auc"] = float(auc)
-            best["alpha"] = float(a)
+        if float(auc) > float(best_val_auc):
+            best_val_auc = float(auc)
+            best_alpha = float(a)
 
     # retrain best on full data (train+val) for final save
-    best_alpha = float(best["alpha"]) if best["alpha"] is not None else 1e-4
     final_model = Pipeline(
         steps=[
             ("scaler", StandardScaler(with_mean=True, with_std=True)),
@@ -321,56 +336,87 @@ def main() -> None:
         else:
             log.info("Model exists and OVERWRITE=0, skipped save: %s", out_path)
 
-    # meta update
+    # -----------------------------
+    # META UPDATE (kalıcı standart)
+    # -----------------------------
     meta = meta if isinstance(meta, dict) else {}
-    meta.update({
-        "sgd_alpha": float(best_alpha),
-        "sgd_val_auc": float(best["auc"]),
-        "sgd_alpha_grid": {"min": float(ALPHA_MIN), "max": float(ALPHA_MAX), "step": float(ALPHA_STEP)},
-        "sgd_max_iter": int(SGD_MAX_ITER),
-        "sgd_tol": float(SGD_TOL),
-        "label_horizon": int(LABEL_HORIZON),
-        "label_thr": float(LABEL_THR),
-        "alpha_tuned": True,
-        "alpha_tuned_at": pd.Timestamp.utcnow().isoformat(),
-        # MTF standardization için kalıcı alan
-        "auc_used": float(meta.get("auc_used", meta.get("best_auc", 0.5)) or 0.5),
-        "auc_used_source": str(meta.get("auc_used_source", "auto_fallback_from_existing_keys")),
-    })
 
-    # best_auc'yi SGD açısından güncellemek istersen: val_auc daha iyi ise
+    meta.update(
+        {
+            # SGD tune sonuçları
+            "sgd_alpha": float(best_alpha),
+            "sgd_val_auc": float(best_val_auc),
+            "sgd_alpha_grid": {
+                "min": float(ALPHA_MIN),
+                "max": float(ALPHA_MAX),
+                "step": float(ALPHA_STEP),
+            },
+
+            # MTF standardizasyon için TEK ANAHTAR
+            "auc_used": float(best_val_auc),
+            "auc_used_source": "tune_alpha::best_val_auc",
+
+            # izlenebilirlik / koşullar
+            "label_horizon": int(LABEL_HORIZON),
+            "label_thr": float(LABEL_THR),
+            "sgd_max_iter": int(SGD_MAX_ITER),
+            "sgd_tol": float(SGD_TOL),
+
+            "alpha_tuned": True,
+            "alpha_tuned_at": pd.Timestamp.utcnow().isoformat(),
+        }
+    )
+
+    # best_auc istersen koru ama sadece daha iyi ise güncelle (geriye dönük uyumluluk)
     try:
         prev_best = float(meta.get("best_auc", 0.5) or 0.5)
     except Exception:
         prev_best = 0.5
 
-    if float(best["auc"]) > prev_best:
-        meta["best_auc"] = float(best["auc"])
-        meta["best_auc_source"] = "tune_alpha_val_auc"
-
-    # AUC_USED: en azından best_auc ile sync kalsın
-    try:
-        meta["auc_used"] = float(meta.get("best_auc", meta["auc_used"]))
-        meta["auc_used_source"] = "sync_from_best_auc_after_tune"
-    except Exception:
-        pass
+    if float(best_val_auc) > float(prev_best):
+        meta["best_auc"] = float(best_val_auc)
+        meta["best_auc_source"] = "tune_alpha::best_val_auc"
 
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    log.info(
+        "Meta updated: %s | sgd_alpha=%.6f sgd_val_auc=%.6f auc_used=%.6f",
+        meta_path,
+        float(best_alpha),
+        float(best_val_auc),
+        float(best_val_auc),
+    )
 
     # print summary (stdout)
     results_sorted = sorted(results, key=lambda r: r["val_auc"], reverse=True)
     topk = results_sorted[:10]
 
+    pos_rate_train = float(np.mean(y_tr)) if len(y_tr) else 0.0
+    pos_rate_val = float(np.mean(y_va)) if len(y_va) else 0.0
+
     print("=" * 80)
-    print("INTERVAL:", INTERVAL, "| best_alpha:", best_alpha, "| best_val_auc:", float(best["auc"]))
-    print("pos_rate_train:", best["pos_rate_train"], "| pos_rate_val:", best["pos_rate_val"])
+    print(f"INTERVAL: {INTERVAL} | best_alpha: {best_alpha} | best_val_auc: {best_val_auc}")
+    print(f"pos_rate_train: {pos_rate_train:.4f} | pos_rate_val: {pos_rate_val:.4f}")
     print("TOP10:")
     for r in topk:
         print("  alpha=%-10s val_auc=%.6f" % (r["alpha"], r["val_auc"]))
     print("Saved:", out_path if SAVE_MODEL else "(SAVE_MODEL=0)")
     print("Meta :", meta_path)
     print("=" * 80)
+    # ------------------------------------------------------------
+    # Optional: print meta AUC summary after each interval
+    # ------------------------------------------------------------
+    if int(PRINT_META_SUMMARY) == 1:
+        try:
+            import subprocess
+            script_path = os.path.join(PROJECT_ROOT, "training", "print_meta_auc_summary.py")
+
+            env = os.environ.copy()
+            env["INTERVALS"] = "1m,5m,15m,30m,1h"  # istersen burayı ENV'den de okuyabiliriz
+            subprocess.run([sys.executable, script_path], check=False, env=env)
+        except Exception as e:
+            log.warning("PRINT_META_SUMMARY failed: %s", e)
 
 
 if __name__ == "__main__":
