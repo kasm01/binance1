@@ -39,5 +39,13 @@
   "sgd_max_iter": 50,
   "sgd_tol": 0.001,
   "auc_used": 0.5159713525336566,
-  "auc_used_source": "auto_fallback_from_existing_keys"
+  "auc_used_source": "auto_fallback_from_existing_keys",
+  "auc_history": [
+    {
+      "ts": "2026-01-04T18:58:39.522010+00:00",
+      "auc": 0.5159713525336566
+    }
+  ],
+  "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
+  "auc_history_last_day": "2026-01-04"
 }

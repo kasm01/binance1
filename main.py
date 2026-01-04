@@ -48,7 +48,9 @@ SYMBOL = getattr(Settings, "SYMBOL", "BTCUSDT")
 system_logger: Optional[logging.Logger] = None
 
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
-MTF_INTERVALS = ["1m", "5m", "15m", "30m", "1h"]  # 30m eklendi
+
+# Default (env parse ile override edilecek)
+MTF_INTERVALS_DEFAULT = ["1m", "5m", "15m", "30m", "1h"]
 
 current_ws = None
 
@@ -69,6 +71,21 @@ def get_float_env(name: str, default: float) -> float:
         return float(str(v).strip())
     except Exception:
         return float(default)
+
+
+def parse_csv_env_list(name: str, default: List[str]) -> List[str]:
+    """
+    MTF_INTERVALS=1m,3m,5m,... gibi env'leri parse eder.
+    Boş/None ise default döner.
+    """
+    v = os.getenv(name)
+    if v is None:
+        return list(default)
+    s = str(v).strip()
+    if not s:
+        return list(default)
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    return parts if parts else list(default)
 
 
 # ---- helpers: EMA adaptive alpha ----
@@ -162,7 +179,6 @@ def _renorm_weights(mtf_debug: dict):
     else:
         mtf_debug["weights_norm"] = [0.0 for _ in w]
     return mtf_debug
-
 
 
 def _trend_veto(signal_side: str, p_by_itv: dict):
@@ -354,8 +370,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
-
 # ----------------------------------------------------------------------
 # ATR hesaplayıcı
 # ----------------------------------------------------------------------
@@ -459,9 +473,7 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
             df.columns = columns
 
         # Header varsa ama isimler farklıysa yine de mümkün olduğunca düzelt
-        # (örn: 'Open time' vs) -> burada sadece beklenen kolonlar yoksa fallback yapıyoruz.
         if not set(columns).issubset(set(df.columns)) and df.shape[1] == 12:
-            # Kolonlar isimli ama farklı: pozisyona göre zorla map et
             df = df.copy()
             df.columns = columns
 
@@ -606,9 +618,18 @@ def create_trading_objects() -> Dict[str, Any]:
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
-    enable_pg = os.getenv("ENABLE_PG_POS_LOG", "0")
-    enable_pg_flag = enable_pg not in ("0", "false", "False", "FALSE", "")
-    pg_dsn = os.getenv("PG_DSN") if enable_pg_flag else None
+    # ---- PG env (robust) ----
+    enable_pg = str(os.getenv("ENABLE_PG_POS_LOG", "0")).strip()
+    enable_pg_flag = enable_pg.lower() not in ("0", "false", "no", "off", "")
+    pg_dsn = (os.getenv("PG_DSN") or "").strip() if enable_pg_flag else None
+
+    if system_logger:
+        system_logger.info("[POS][ENV] ENABLE_PG_POS_LOG=%s enable_pg_flag=%s", enable_pg, enable_pg_flag)
+        system_logger.info("[POS][ENV] PG_DSN=%s", (pg_dsn if pg_dsn else "(empty)"))
+
+    if enable_pg_flag and not pg_dsn:
+        if system_logger:
+            system_logger.warning("[POS] ENABLE_PG_POS_LOG=1 ama PG_DSN boş. .env process'e yüklenmiyor olabilir.")
 
     position_manager = PositionManager(
         redis_url=redis_url,
@@ -626,11 +647,8 @@ def create_trading_objects() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # mtf_intervals: her durumda tanımlı kalsın
-    try:
-        mtf_intervals = list(MTF_INTERVALS)
-    except Exception:
-        mtf_intervals = ["1m", "5m", "15m", "30m", "1h"]
+    # mtf_intervals: env'den parse edelim (MTF_INTERVALS=1m,3m,5m,15m,30m,1h)
+    mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
     mtf_ensemble = None
     if USE_MTF_ENS:
@@ -645,34 +663,18 @@ def create_trading_objects() -> Dict[str, Any]:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
 
             # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
+            # Not: seed -> meta'ya bir kere yazar, daily append -> günde 1 kez yazar.
             try:
-                from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
-
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
                 append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
             except Exception as e:
                 if system_logger:
                     system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)
 
-
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
-
-    # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
-    # Not: seed -> meta'ya bir kere yazar, daily append -> günde 1 kez yazar.
-    # MTF aktif + mtf_ensemble hazırsa çalıştırıyoruz.
-    if USE_MTF_ENS and mtf_ensemble is not None:
-        try:
-            from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
-
-            seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
-            append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
-
-        except Exception as e:
-            if system_logger:
-                system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)
 
     whale_detector = None
     try:
@@ -727,6 +729,7 @@ def create_trading_objects() -> Dict[str, Any]:
         "trade_executor": trade_executor,
         "hybrid_model": hybrid_model,
         "mtf_ensemble": mtf_ensemble,
+        "mtf_intervals": mtf_intervals,
         "whale_detector": whale_detector,
         "tg_bot": tg_bot,
         "online_model": online_model,
@@ -757,6 +760,12 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     symbol = objs.get("symbol", os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT")))
     interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
     data_limit = int(os.getenv("DATA_LIMIT", "500"))
+
+    mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
+
+    # Debug throttling
+    mtf_debug_every = int(os.getenv("MTF_DEBUG_EVERY", "1"))  # 1 => her loop, 5 => 5'te bir
+    loop_i = 0
 
     if system_logger:
         system_logger.info(
@@ -821,6 +830,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
     while True:
+        loop_i += 1
         try:
             # 1) main interval raw
             raw_df = await fetch_klines(
@@ -858,7 +868,9 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
             if USE_MTF_ENS and mtf_ensemble is not None:
-                for itv in ["1m", "15m", "30m", "1h"]:
+                for itv in mtf_intervals:
+                    if itv == interval:
+                        continue
                     try:
                         raw_df_itv = await fetch_klines(
                             client=client,
@@ -888,8 +900,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             p_used = p_single
             mtf_debug: Optional[Dict[str, Any]] = None
 
-            p_1m = p_5m = p_15m = p_30m = p_1h = None
-
             if USE_MTF_ENS and mtf_ensemble is not None:
                 try:
                     X_by_interval: Dict[str, pd.DataFrame] = {}
@@ -897,7 +907,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         sch_itv = _schema_for(itv)
                         if not sch_itv:
                             continue
-                        # df_itv normalde normalize, ama garanti:
                         X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
 
                     if X_by_interval:
@@ -908,12 +917,34 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         )
                         p_used = float(p_ens)
 
-                        per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}
-                        p_1m = per_int.get("1m", {}).get("p_last")
-                        p_5m = per_int.get("5m", {}).get("p_last")
-                        p_15m = per_int.get("15m", {}).get("p_last")
-                        p_30m = per_int.get("30m", {}).get("p_last")
-                        p_1h = per_int.get("1h", {}).get("p_last")
+                        # --- MTF DEBUG SUMMARY (compact) --- (doğru yer: tahmin sonrası)
+                        try:
+                            if (mtf_debug_every <= 1) or (loop_i % mtf_debug_every == 0):
+                                if USE_MTF_ENS and (mtf_ensemble is not None) and isinstance(mtf_debug, dict):
+                                    per = mtf_debug.get("per_interval", {}) or {}
+                                    wnorm = mtf_debug.get("weights_norm", []) or []
+                                    used = mtf_debug.get("intervals_used", []) or []
+
+                                    rows = []
+                                    for itv2 in used:
+                                        d = per.get(itv2, {}) or {}
+                                        p_last = d.get("p_last", None)
+                                        auc_used = d.get("auc_used", None)
+                                        if (p_last is not None) and (auc_used is not None):
+                                            rows.append(f"{itv2}:p={float(p_last):.4f},auc={float(auc_used):.4f}")
+                                        else:
+                                            rows.append(f"{itv2}:p={p_last},auc={auc_used}")
+
+                                    if system_logger:
+                                        system_logger.info(
+                                            "[MTF] ensemble_p=%.4f | weights_norm=%s | %s",
+                                            float(mtf_debug.get("ensemble_p", p_used if p_used is not None else 0.5)),
+                                            str(wnorm),
+                                            " | ".join(rows),
+                                        )
+                        except Exception as _e:
+                            if system_logger:
+                                system_logger.debug("[MTF] debug summary failed: %s", _e)
 
                 except Exception as e:
                     if system_logger:
@@ -970,7 +1001,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 except Exception as e:
                     if system_logger:
                         system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
-
 
             # 10) ATR
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
@@ -1127,6 +1157,28 @@ async def async_main() -> None:
     setup_logger()
     system_logger = logging.getLogger("system")
 
+    # --- ENV FORCE LOAD (.env -> os.environ) ---
+    # Bazı projelerde load_environment_variables() .env'yi Settings'e alıp
+    # process env'e basmıyor olabilir. Bu blok PG_DSN/ENABLE_PG_POS_LOG gibi
+    # kritik değişkenleri garanti eder.
+    try:
+        from pathlib import Path
+        env_path = Path(__file__).resolve().parent / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and (os.getenv(k) is None):
+                    os.environ[k] = v
+    except Exception:
+        pass
+
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -1140,6 +1192,11 @@ async def async_main() -> None:
         system_logger.info("[MAIN] HYBRID_MODE=%s", HYBRID_MODE)
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
+
+        # Bu loglar, env artık okunuyor mu diye kanıt
+        system_logger.info("[ENV] ENABLE_PG_POS_LOG=%s", os.getenv("ENABLE_PG_POS_LOG"))
+        system_logger.info("[ENV] PG_DSN=%s", os.getenv("PG_DSN"))
+        system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
 
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
