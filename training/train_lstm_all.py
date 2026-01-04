@@ -183,7 +183,7 @@ def train_one_interval(itv: str) -> None:
     print(f"[{itv}] saved short={short_path}")
 
 def parse_intervals() -> List[str]:
-    v = os.getenv("MTF_INTERVALS", "1m,5m,15m,30m,1h")
+    v = os.getenv("MTF_INTERVALS", "1m,3m,5m,15m,30m,1h")
     itvs = [x.strip() for x in v.split(",") if x.strip()]
     return itvs
 
