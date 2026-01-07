@@ -9,6 +9,7 @@ from config import config
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
 
+from tg_bot.telegram_bot import TelegramBot
 logger = logging.getLogger("system")
 
 
@@ -45,6 +46,7 @@ class TradeExecutor:
         client: Optional[Any],
         risk_manager: RiskManager,
         position_manager: Optional[PositionManager] = None,
+        tg_bot: Optional[TelegramBot] = None,
         logger: Optional[logging.Logger] = None,
         dry_run: bool = True,
         # temel risk parametreleri
@@ -64,6 +66,9 @@ class TradeExecutor:
         self.client = client
         self.risk_manager = risk_manager
         self.position_manager = position_manager
+        self.tg_bot = tg_bot
+        self.last_snapshot: Dict[str, Any] = {}
+        self._tg_state: Dict[str, Any] = {'last_hold_ts': 0.0, 'last_sig': None, 'last_sig_ts': 0.0}
         self.logger = logger or logging.getLogger("system")
         self.dry_run = bool(dry_run)
 
@@ -580,6 +585,90 @@ class TradeExecutor:
         """Eski isimle alias."""
         return await self.open_position(*args, **kwargs)
 
+        # --------------------------------------------------
+        # Telegram notify helpers (throttled)
+        # --------------------------------------------------
+        def _tg_send(self, text: str) -> None:
+            try:
+                if self.tg_bot is None:
+                    return
+                # TelegramBot should expose send_message(text, parse_mode=...)
+                self.tg_bot.send_message(text)
+            except Exception:
+                pass
+
+        def _notify_telegram(
+            self,
+            signal_u: str,
+            symbol: str,
+            interval: str,
+            price: float,
+            probs: Dict[str, float],
+            extra: Dict[str, Any],
+        ) -> None:
+            """Telegram bildirimleri (spam kontrollü).
+
+            ENV:
+              TG_NOTIFY_TRADES=1
+              TG_NOTIFY_HOLD=0
+              HOLD_NOTIFY_EVERY_SEC=300
+              TG_DUPLICATE_SIGNAL_COOLDOWN_SEC=20
+            """
+            notify_trades = str(os.getenv("TG_NOTIFY_TRADES", "1")).lower() in ("1", "true", "yes", "on")
+            notify_hold = str(os.getenv("TG_NOTIFY_HOLD", "0")).lower() in ("1", "true", "yes", "on")
+            hold_every = int(os.getenv("HOLD_NOTIFY_EVERY_SEC", "300"))
+            dup_cd = int(os.getenv("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", "20"))
+
+            now = time.time()
+
+            if signal_u == "HOLD":
+                if not notify_hold:
+                    return
+                last = float(self._tg_state.get("last_hold_ts") or 0.0)
+                if (now - last) < float(hold_every):
+                    return
+                self._tg_state["last_hold_ts"] = now
+
+            if signal_u in ("BUY", "SELL"):
+                if not notify_trades:
+                    return
+                last_sig = self._tg_state.get("last_sig")
+                last_ts = float(self._tg_state.get("last_sig_ts") or 0.0)
+                if last_sig == signal_u and (now - last_ts) < float(dup_cd):
+                    return
+                self._tg_state["last_sig"] = signal_u
+                self._tg_state["last_sig_ts"] = now
+
+            # p seçimi (öncelik)
+            p_used = None
+            try:
+                if isinstance(extra, dict):
+                    p_used = extra.get("ensemble_p")
+                    if p_used is None:
+                        p_used = extra.get("p_buy_ema")
+                    if p_used is None:
+                        p_used = extra.get("p_buy_raw")
+                if p_used is None and isinstance(probs, dict):
+                    p_used = probs.get("p_used") or probs.get("p_single")
+            except Exception:
+                p_used = None
+
+            try:
+                p_txt = f"{float(p_used):.4f}" if p_used is not None else "?"
+            except Exception:
+                p_txt = "?"
+
+            whale_dir = str(extra.get("whale_dir", "none") or "none") if isinstance(extra, dict) else "none"
+            whale_score = float(extra.get("whale_score", 0.0) or 0.0) if isinstance(extra, dict) else 0.0
+            src = str(extra.get("signal_source", extra.get("p_buy_source", "")) or "") if isinstance(extra, dict) else ""
+
+            msg = (
+                f"📣 *{signal_u}*  {symbol} `{interval}`\n"
+                f"price=`{price}`  p=`{p_txt}` src=`{src}`\n"
+                f"🐋 whale=`{whale_dir}` score=`{whale_score:.2f}`  dry_run=`{self.dry_run}`"
+            )
+            self._tg_send(msg)
+
 
     async def execute_decision(
         self,
@@ -629,6 +718,26 @@ class TradeExecutor:
 
         side_norm = self._normalize_side(signal)
 
+
+        # snapshot for /signal
+        try:
+            extra0 = extra if isinstance(extra, dict) else {}
+            self.last_snapshot = {
+                'ts': datetime.utcnow().isoformat(),
+                'symbol': symbol,
+                'interval': interval,
+                'signal': str(signal).strip().upper(),
+                'signal_source': str(extra0.get('signal_source', extra0.get('p_buy_source', ''))),
+                'p_used': extra0.get('ensemble_p', probs.get('p_used') if isinstance(probs, dict) else None),
+                'p_single': probs.get('p_single') if isinstance(probs, dict) else None,
+                'p_buy_raw': extra0.get('p_buy_raw'),
+                'p_buy_ema': extra0.get('p_buy_ema'),
+                'whale_dir': extra0.get('whale_dir', 'none'),
+                'whale_score': extra0.get('whale_score', 0.0),
+                'extra': extra0,
+            }
+        except Exception:
+            pass
         # ✅ HOLD bug fix: mapping "HOLD" üretiyor; case-safe kontrol
         if str(signal).upper() == "HOLD":
             # HOLD journal (CSV) + return
@@ -699,6 +808,12 @@ class TradeExecutor:
 
         extra = extra or {}
 
+
+        # Telegram notify (throttled)
+        try:
+            self._notify_telegram(str(signal).strip().upper(), symbol, interval, float(price), probs, extra)
+        except Exception:
+            pass
         # --- HOLD decision journal (auto) ---
         # HOLD kararlarını CSV'ye yaz (BT sizing HOLD'ta tamamen skip)
         if signal == "HOLD":

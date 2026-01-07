@@ -743,7 +743,23 @@ def create_trading_objects() -> Dict[str, Any]:
         atr_sl_mult=atr_sl_mult,
         atr_tp_mult=atr_tp_mult,
         whale_risk_boost=whale_risk_boost,
-    )
+            tg_bot=tg_bot,
+)
+
+
+    # Telegram bot_data injections (commands rely on these)
+    try:
+        if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
+            tg_bot.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
+            tg_bot.dispatcher.bot_data["position_manager"] = position_manager  # type: ignore
+            tg_bot.dispatcher.bot_data["trade_executor"] = trade_executor  # type: ignore
+            tg_bot.dispatcher.bot_data["symbol"] = symbol  # type: ignore
+            tg_bot.dispatcher.bot_data["interval"] = interval  # type: ignore
+            if system_logger:
+                system_logger.info("[MAIN] Telegram bot_data injected: risk_manager/position_manager/trade_executor/symbol/interval")
+    except Exception as e:
+        if system_logger:
+            system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
 
     online_model = OnlineLearner(model_dir=MODELS_DIR, base_model_name="online_model", interval=interval)
 
