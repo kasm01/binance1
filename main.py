@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, Optional, List
 
 import pandas as pd
+import threading
 
 from config.load_env import load_environment_variables
 from config.settings import Settings
@@ -597,23 +598,48 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
+
     tg_bot = None
     try:
         tg_bot = TelegramBot()
-        if getattr(tg_bot, "dispatcher", None):
+
+        dispatcher = getattr(tg_bot, "dispatcher", None)
+        if dispatcher:
+            # RiskManager enjeksiyonu (/risk)
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
                 setattr(tg_bot, "risk_manager", risk_manager)
+
             if system_logger:
                 system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk aktif).")
+
+            # Polling'i arka planda başlat (main loop bloklanmasın)
+            def _tg_polling_worker():
+                try:
+                    if system_logger:
+                        system_logger.info("[MAIN] Telegram polling worker starting...")
+                    tg_bot.start_polling()
+                except Exception as e:
+                    if system_logger:
+                        system_logger.exception("[MAIN] Telegram polling worker crashed: %s", e)
+
+            threading.Thread(
+                target=_tg_polling_worker,
+                name="telegram-polling",
+                daemon=True,
+            ).start()
+
         else:
             if system_logger:
-                system_logger.warning("[MAIN] Telegram dispatcher yok (muhtemelen TELEGRAM_BOT_TOKEN yok).")
+                system_logger.warning(
+                    "[MAIN] Telegram dispatcher yok. TELEGRAM_BOT_TOKEN ayarlı değilse komutlar çalışmaz."
+                )
+
     except Exception as e:
         tg_bot = None
         if system_logger:
-            system_logger.warning("[MAIN] TelegramBot init/enjeksiyon hata: %s", e)
+            system_logger.exception("[MAIN] TelegramBot init/enjeksiyon hata: %s", e)
 
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")

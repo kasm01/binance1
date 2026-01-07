@@ -77,9 +77,16 @@ class TelegramBot:
             return
 
         system_logger.info("[TelegramBot] Telegram polling başlatılıyor...")
-        self.updater.start_polling()
-        self.updater.idle()
 
+        # Thread içinde signal kurmasın diye stop_signals boş veriyoruz
+        try:
+            self.updater.start_polling(stop_signals=[])
+        except TypeError:
+            # Eski sürümlerde stop_signals paramı yoksa fallback
+            self.updater.start_polling()
+
+        # !!! ÖNEMLİ: Thread içinde idle() çağırma (signal hatası verir)
+        # self.updater.idle()
     # ------------------------------------------------------------------
     # Basit mesaj gönderme helper'ı
     # ------------------------------------------------------------------
