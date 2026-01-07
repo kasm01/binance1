@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import json
+import time
 from typing import Any, Dict, Optional, List
 
 import pandas as pd
@@ -777,6 +778,10 @@ def _normalize_signal(sig: Any) -> str:
 async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     global system_logger
 
+    tg_bot = objs.get("tg_bot")  # TelegramBot instance (opsiyonel)
+    prev_signal_side: Optional[str] = None
+    prev_notif_ts: float = 0.0
+
     client = objs["client"]
     trade_executor = objs["trade_executor"]
     whale_detector = objs.get("whale_detector")
@@ -1149,6 +1154,67 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 pass
 
             last_price = float(raw_df["close"].iloc[-1])
+
+            # ----------------------------
+            # Telegram: status_snapshot + signal notifications
+            # ----------------------------
+            try:
+                enable_tg_snapshot = str(os.getenv("TELEGRAM_ENABLE_SNAPSHOT", "1")).strip().lower() not in ("0", "false", "no", "off", "")
+                enable_tg_notify = str(os.getenv("TELEGRAM_NOTIFY_SIGNALS", "1")).strip().lower() not in ("0", "false", "no", "off", "")
+                notify_cooldown_s = float(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S", "10"))
+
+                if tg_bot is not None and getattr(tg_bot, "dispatcher", None) and enable_tg_snapshot:
+                    # AUC kısa sözlük
+                    aucs: Dict[str, Any] = {}
+                    try:
+                        if isinstance(mtf_debug, dict):
+                            per = mtf_debug.get("per_interval", {}) or {}
+                            for itv2, d in per.items():
+                                if isinstance(d, dict) and ("auc_used" in d):
+                                    aucs[str(itv2)] = d.get("auc_used")
+                    except Exception:
+                        aucs = {}
+
+                    # Snapshot (commands.py /status bunu okuyacak)
+                    tg_bot.dispatcher.bot_data["status_snapshot"] = {
+                        "symbol": symbol,
+                        "signal": str(signal_side).upper() if signal_side else "N/A",
+                        "ensemble_p": float(p_used) if p_used is not None else None,
+                        "intervals": list(mtf_intervals) if isinstance(mtf_intervals, list) else [],
+                        "aucs": aucs,
+                        "last_price": float(last_price),
+                        "why": str(extra.get("signal_source", "")) if isinstance(extra, dict) else "",
+                    }
+
+                # Sinyal değişim bildirimi (rate-limited)
+                now_ts = time.time()
+                if enable_tg_notify and tg_bot is not None:
+                    sig_now = str(signal_side or "hold").lower()
+                    sig_prev = str(prev_signal_side or "hold").lower()
+
+                    if sig_now != sig_prev and (now_ts - prev_notif_ts) >= notify_cooldown_s:
+                        emoji = {"long": "✅", "short": "🟣", "hold": "⏸"}.get(sig_now, "❔")
+                        src = (extra.get("signal_source") if isinstance(extra, dict) else None) or "?"
+                        msg = (
+                            f"{emoji} *Signal Update*\n"
+                            f"• *Symbol:* `{symbol}`\n"
+                            f"• *From → To:* `{sig_prev.upper()}` → `{sig_now.upper()}`\n"
+                            f"• *p_used:* `{float(p_used):.4f}`\n"
+                            f"• *Price:* `{float(last_price):.4f}`\n"
+                            f"• *Source:* `{src}`"
+                        )
+                        # TelegramBot.send_message CHAT_ID ister (TELEGRAM_CHAT_ID)
+                        tg_bot.send_message(msg)
+                        prev_notif_ts = now_ts
+                        prev_signal_side = sig_now
+
+                    # ilk turda prev'i set et (bildirim spam olmasın)
+                    if prev_signal_side is None:
+                        prev_signal_side = sig_now
+
+            except Exception as _tg_e:
+                if system_logger:
+                    system_logger.debug("[TG] snapshot/notify block hata: %s", _tg_e)
 
             await trade_executor.execute_decision(
                 signal=signal_side,

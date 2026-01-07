@@ -209,18 +209,81 @@ def whoami_command(update: Update, context: CallbackContext) -> None:
 @rate_limit(0.8)
 def status_command(update: Update, context: CallbackContext) -> None:
     """
-    /status:
-      - Eğer context.bot_data["status_snapshot"] varsa onu gösterir (zengin).
-      - Yoksa PerformanceTracker özetini gösterir (mevcut davranış).
+    /status komutu: Anlık bot snapshot + performans özeti.
+    Snapshot main loop içinde dispatcher.bot_data['status_snapshot'] olarak set ediliyor.
     """
-    snap = context.bot_data.get("status_snapshot")
-    if isinstance(snap, dict) and snap:
-        msg = _fmt_status_from_snapshot(snap)
-        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-    else:
-        msg = _fmt_status_from_perf()
-        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    snap = None
+    try:
+        snap = context.bot_data.get("status_snapshot")  # type: ignore
+    except Exception:
+        snap = None
 
+    lines = ["📊 *Bot Durumu*"]
+
+    # 1) Snapshot (varsa)
+    if isinstance(snap, dict) and snap:
+        try:
+            symbol = snap.get("symbol", "N/A")
+            signal = snap.get("signal", "N/A")
+            p_used = snap.get("ensemble_p", None)
+            last_price = snap.get("last_price", None)
+            why = snap.get("why", "")
+
+            lines.append(f"• *Symbol:* `{symbol}`")
+            lines.append(f"• *Signal:* `{signal}`")
+
+            if p_used is not None:
+                try:
+                    lines.append(f"• *p_used:* `{float(p_used):.4f}`")
+                except Exception:
+                    lines.append(f"• *p_used:* `{p_used}`")
+
+            if last_price is not None:
+                try:
+                    lines.append(f"• *Price:* `{float(last_price):.4f}`")
+                except Exception:
+                    lines.append(f"• *Price:* `{last_price}`")
+
+            if why:
+                lines.append(f"• *Source:* `{why}`")
+
+            itvs = snap.get("intervals") or []
+            if isinstance(itvs, list) and itvs:
+                lines.append(f"• *MTF:* `{', '.join([str(x) for x in itvs])}`")
+
+            aucs = snap.get("aucs") or {}
+            if isinstance(aucs, dict) and aucs:
+                # kompakt AUC satırı
+                parts = []
+                for k in sorted(aucs.keys(), key=lambda x: str(x)):
+                    v = aucs.get(k)
+                    try:
+                        parts.append(f"{k}:{float(v):.3f}")
+                    except Exception:
+                        parts.append(f"{k}:{v}")
+                lines.append("• *AUC:* `" + " | ".join(parts) + "`")
+
+        except Exception as e:
+            lines.append(f"⚠️ Snapshot okunamadı: `{e}`")
+    else:
+        lines.append("• Snapshot: `henüz yok (ilk loop bekleniyor)`")
+
+    # 2) PerformanceTracker (fallback/ek bilgi)
+    try:
+        summary = performance_tracker.get_summary()
+        lines.append("")
+        lines.append("🧾 *Performans (tracker)*")
+        lines.append(f"• Toplam İşlem: `{summary.get('total_trades', 0)}`")
+        lines.append(f"• Başarılı: `{summary.get('successful_trades', 0)}`")
+        lines.append(f"• Başarısız: `{summary.get('failed_trades', 0)}`")
+        try:
+            lines.append(f"• Toplam PnL: `{float(summary.get('total_pnl', 0.0)):.4f}`")
+        except Exception:
+            lines.append(f"• Toplam PnL: `{summary.get('total_pnl')}`")
+    except Exception:
+        pass
+
+    update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
     system_logger.info("Telegram: /status command used")
 
 

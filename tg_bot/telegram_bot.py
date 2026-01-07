@@ -3,6 +3,7 @@
 from typing import Optional
 
 from telegram import Bot
+from telegram.parsemode import ParseMode
 from telegram.ext import Updater
 
 from core.logger import system_logger, error_logger
@@ -90,7 +91,7 @@ class TelegramBot:
     # ------------------------------------------------------------------
     # Basit mesaj gönderme helper'ı
     # ------------------------------------------------------------------
-    def send_message(self, message: str) -> None:
+    def send_message(self, message: str, *, parse_mode: Optional[str] = None) -> None:
         if not self.bot:
             error_logger.error(
                 "[TelegramBot] send_message çağrıldı ama bot initialize edilmemiş."
@@ -104,7 +105,8 @@ class TelegramBot:
             return
 
         try:
-            self.bot.send_message(chat_id=self.default_chat_id, text=message)
+            pm = parse_mode or ParseMode.MARKDOWN
+            self.bot.send_message(chat_id=self.default_chat_id, text=message, parse_mode=pm)
             system_logger.info("[TelegramBot] Mesaj gönderildi.")
         except Exception as e:
             error_logger.error(f"[TelegramBot] Mesaj gönderilemedi: {e}")
