@@ -653,8 +653,26 @@ def create_trading_objects() -> Dict[str, Any]:
     pg_dsn = (os.getenv("PG_DSN") or "").strip() if enable_pg_flag else None
 
     if system_logger:
-        system_logger.info("[POS][ENV] ENABLE_PG_POS_LOG=%s enable_pg_flag=%s", enable_pg, enable_pg_flag)
-        system_logger.info("[POS][ENV] PG_DSN=%s", (pg_dsn if pg_dsn else "(empty)"))
+        system_logger.info(
+            "[POS][ENV] ENABLE_PG_POS_LOG=%s enable_pg_flag=%s",
+            enable_pg,
+            enable_pg_flag,
+        )
+
+        # PG_DSN maskeli log
+        pg = (pg_dsn or "").strip()
+        masked = pg
+        if pg and "://" in pg and "@" in pg:
+            try:
+                import re
+                masked = re.sub(r":([^:@/]+)@", r":***@", pg)
+            except Exception:
+                masked = "***"
+
+        system_logger.info(
+            "[POS][ENV] PG_DSN=%s",
+            masked if masked else "(empty)",
+        )
 
     if enable_pg_flag and not pg_dsn:
         if system_logger:
@@ -1298,19 +1316,19 @@ async def async_main() -> None:
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
 
         system_logger.info("[ENV] ENABLE_PG_POS_LOG=%s", os.getenv("ENABLE_PG_POS_LOG"))
-        pg = os.getenv("PG_DSN") or ""
-masked = pg
-if "://" in pg and "@" in pg:
-    # postgresql://user:pass@host:port/db  -> pass mask
-    try:
-        import re
-        masked = re.sub(r":([^:@/]+)@", r":***@", pg)
-    except Exception:
-        masked = "******"
-system_logger.info("[ENV] PG_DSN=%s", masked if masked else "(empty)")
-        system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
 
-    # ... devamı aynı (prob_stab, ws, create_trading_objects, bot_loop)
+        pg = os.getenv("PG_DSN") or ""
+        masked = pg
+        if "://" in pg and "@" in pg:
+            # postgresql://user:pass@host:port/db  -> pass mask
+            try:
+                import re
+                masked = re.sub(r":([^:@/]+)@", r":***@", pg)
+            except Exception:
+                masked = "******"
+        system_logger.info("[ENV] PG_DSN=%s", masked if masked else "(empty)")
+
+        system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
 
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
