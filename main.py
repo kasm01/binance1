@@ -692,7 +692,8 @@ def create_trading_objects() -> Dict[str, Any]:
     )
 
     # --- Hybrid model registry (TEK INSTANCE / shared cache) ---
-    registry = ModelRegistry()
+    # Not: HybridModel ctor model_dir istediği için registry'ye MODELS_DIR veriyoruz.
+    registry = ModelRegistry(model_dir=MODELS_DIR, logger=system_logger)
 
     # MODELS_DIR contract (main interval hybrid) -> registry'den al (tek yükleme)
     hybrid_model = registry.get_hybrid(interval)
@@ -708,7 +709,12 @@ def create_trading_objects() -> Dict[str, Any]:
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
     # MTF için modelleri registry'den topla (tek instance'lar)
-    models_by_interval = {itv: registry.get_hybrid(itv) for itv in mtf_intervals}
+    models_by_interval = {}
+    for itv in mtf_intervals:
+        if itv == interval:
+            models_by_interval[itv] = hybrid_model   # aynı instance (tekrar get_hybrid çağırma)
+        else:
+            models_by_interval[itv] = registry.get_hybrid(itv)
 
     mtf_ensemble = None
     if USE_MTF_ENS:
