@@ -1258,47 +1258,31 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 # ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------
-async def async_main():
+async def async_main() -> None:
+    global system_logger
+    global BINANCE_API_KEY, BINANCE_API_SECRET
+    global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN
+
+    # 1) .env + Secret Manager -> os.environ
     load_environment_variables()
 
-    # Logger önce kurulsun
+    # 2) logger setup
     setup_logger()
     system_logger = logging.getLogger("system")
 
-    # Secret Manager / env sonrası Credentials refresh
+    # 3) Credentials class'ını ENV'den yeniden doldur (Secret Manager sonrası)
     try:
         Credentials.refresh_from_env()
     except Exception:
         pass
 
-    # Tek ve standart missing log
+    # 4) Missing log (debug amaçlı)
     try:
         Credentials.log_missing(prefix='[ENV]')
     except Exception:
         pass
 
-    # --- ENV FORCE LOAD (.env -> os.environ) ---
-    # Bazı projelerde load_environment_variables() .env'yi Settings'e alıp
-    # process env'e basmıyor olabilir. Bu blok PG_DSN/ENABLE_PG_POS_LOG gibi
-    # kritik değişkenleri garanti eder.
-    try:
-        from pathlib import Path
-        env_path = Path(__file__).resolve().parent / ".env"
-        if env_path.exists():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                if "=" not in s:
-                    continue
-                k, v = s.split("=", 1)
-                k = k.strip()
-                v = v.strip().strip('"').strip("'")
-                if k and (os.getenv(k) is None):
-                    os.environ[k] = v
-    except Exception:
-        pass
-
+    # 5) Env flag’leri artık güvenle okunabilir
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -1313,10 +1297,20 @@ async def async_main():
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
 
-        # Bu loglar, env artık okunuyor mu diye kanıt
         system_logger.info("[ENV] ENABLE_PG_POS_LOG=%s", os.getenv("ENABLE_PG_POS_LOG"))
-        system_logger.info("[ENV] PG_DSN=%s", os.getenv("PG_DSN"))
+        pg = os.getenv("PG_DSN") or ""
+masked = pg
+if "://" in pg and "@" in pg:
+    # postgresql://user:pass@host:port/db  -> pass mask
+    try:
+        import re
+        masked = re.sub(r":([^:@/]+)@", r":***@", pg)
+    except Exception:
+        masked = "******"
+system_logger.info("[ENV] PG_DSN=%s", masked if masked else "(empty)")
         system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
+
+    # ... devamı aynı (prob_stab, ws, create_trading_objects, bot_loop)
 
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
