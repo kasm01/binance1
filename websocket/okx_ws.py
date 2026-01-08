@@ -1,9 +1,13 @@
+# websocket/okx_ws.py
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 
 try:
@@ -11,19 +15,46 @@ try:
 except Exception:  # pragma: no cover
     websockets = None
 
-from monitoring.market_state import MarketState
+# MarketState opsiyonel: yoksa modül yine çalışsın
+try:
+    from monitoring.market_state import MarketState  # type: ignore
+except Exception:  # pragma: no cover
+    MarketState = None  # type: ignore
+
+
+logger = logging.getLogger("system")
+
+
+@dataclass
+class OKXTick:
+    ts: float                 # local receive timestamp (epoch seconds)
+    instId: str
+    last: Optional[float] = None
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    exch_ts: Optional[str] = None  # OKX payload "ts" (string ms) saklamak istersen
+    raw: Optional[Dict[str, Any]] = None
 
 
 class OKXWS:
     """
-    OKX Public WebSocket (v5) - izleme amaçlı.
-    Varsayılan: tickers channel.
+    OKX Public WebSocket (v5) - ticker-only izleme.
+
+    Özellikler:
+    - Background thread içinde çalışır (daemon)
+    - Otomatik reconnect + backoff
+    - Thread-safe last_tick saklar (get_last_tick())
+    - İsteğe bağlı MarketState.set_okx_ticker(...) günceller
 
     ENV:
       OKX_WS_ENABLE=1
       OKX_WS_URL=wss://ws.okx.com:8443/ws/v5/public
       OKX_WS_INST_ID=BTC-USDT
       OKX_WS_CHANNEL=tickers
+      OKX_WS_PING_INTERVAL_SEC=20
+      OKX_WS_PING_TIMEOUT_SEC=20
+      OKX_WS_RECONNECT_MAX_BACKOFF=30
+      OKX_STORE_EVERY_SEC=0         # 0 => her mesaj, >0 => throttling
     """
 
     def __init__(
@@ -31,26 +62,74 @@ class OKXWS:
         url: Optional[str] = None,
         inst_id: Optional[str] = None,
         channel: Optional[str] = None,
-        logger: Optional[logging.Logger] = None,
+        logger_: Optional[logging.Logger] = None,
+        store_every_sec: Optional[float] = None,
+        ping_interval_s: Optional[float] = None,
+        ping_timeout_s: Optional[float] = None,
+        reconnect_max_backoff_s: Optional[float] = None,
     ) -> None:
         self.url = url or os.getenv("OKX_WS_URL", "wss://ws.okx.com:8443/ws/v5/public")
         self.inst_id = inst_id or os.getenv("OKX_WS_INST_ID", "BTC-USDT")
         self.channel = channel or os.getenv("OKX_WS_CHANNEL", "tickers")
-        self.logger = logger or logging.getLogger("system")
+
+        self.logger = logger_ or logger
+
+        self.store_every_sec = float(
+            store_every_sec if store_every_sec is not None else (os.getenv("OKX_STORE_EVERY_SEC", "0") or "0")
+        )
+
+        self.ping_interval_s = float(
+            ping_interval_s if ping_interval_s is not None else (os.getenv("OKX_WS_PING_INTERVAL_SEC", "20") or "20")
+        )
+        self.ping_timeout_s = float(
+            ping_timeout_s if ping_timeout_s is not None else (os.getenv("OKX_WS_PING_TIMEOUT_SEC", "20") or "20")
+        )
+
+        self.reconnect_max_backoff_s = float(
+            reconnect_max_backoff_s if reconnect_max_backoff_s is not None else (os.getenv("OKX_WS_RECONNECT_MAX_BACKOFF", "30") or "30")
+        )
 
         self._thread: Optional[threading.Thread] = None
         self._stop_flag = threading.Event()
 
+        self._lock = threading.Lock()
+        self._last_tick: Optional[OKXTick] = None
+
+    # --------------------------
+    # Public API
+    # --------------------------
     def stop(self) -> None:
         self._stop_flag.set()
 
     def run_background(self) -> None:
+        """
+        Background thread başlatır. Zaten çalışıyorsa no-op.
+        """
         if self._thread and self._thread.is_alive():
+            return
+
+        if websockets is None:
+            self.logger.warning("[OKXWS] websockets paketi yok. 'pip install websockets' gerekli.")
             return
 
         self._stop_flag.clear()
         self._thread = threading.Thread(target=self._thread_main, name="okx-ws", daemon=True)
         self._thread.start()
+        self.logger.info("[OKXWS] background thread started. instId=%s channel=%s", self.inst_id, self.channel)
+
+    def get_last_tick(self) -> Optional[Dict[str, Any]]:
+        """
+        Thread-safe son tick'i dict olarak döner (Telegram snapshot için ideal).
+        """
+        with self._lock:
+            return asdict(self._last_tick) if self._last_tick else None
+
+    # --------------------------
+    # Internal
+    # --------------------------
+    def _set_last_tick(self, tick: OKXTick) -> None:
+        with self._lock:
+            self._last_tick = tick
 
     def _thread_main(self) -> None:
         try:
@@ -61,10 +140,6 @@ class OKXWS:
             self.logger.exception("[OKXWS] thread crashed: %s", e)
 
     async def _runner(self) -> None:
-        if websockets is None:
-            self.logger.warning("[OKXWS] websockets paketi yok. 'pip install websockets' gerekli.")
-            return
-
         backoff = 1.0
         while not self._stop_flag.is_set():
             try:
@@ -73,27 +148,23 @@ class OKXWS:
             except Exception as e:
                 self.logger.warning("[OKXWS] reconnect in %.1fs | err=%s", backoff, e)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 1.7, 30.0)
+                backoff = min(backoff * 1.7, self.reconnect_max_backoff_s)
 
     async def _connect_once(self) -> None:
         self.logger.info("[OKXWS] connecting url=%s instId=%s channel=%s", self.url, self.inst_id, self.channel)
 
-        async with websockets.connect(self.url, ping_interval=20, ping_timeout=20) as ws:
-            sub = {
-                "op": "subscribe",
-                "args": [{"channel": self.channel, "instId": self.inst_id}],
-            }
+        # websockets.connect ping_interval/ping_timeout verince lib otomatik ping atar
+        async with websockets.connect(self.url, ping_interval=self.ping_interval_s, ping_timeout=self.ping_timeout_s) as ws:
+            sub = {"op": "subscribe", "args": [{"channel": self.channel, "instId": self.inst_id}]}
             await ws.send(json.dumps(sub))
 
             last_store_ts = 0.0
-            store_every = float(os.getenv("OKX_STORE_EVERY_SEC", "0.0") or "0.0")  # 0 => her mesaj
 
             while not self._stop_flag.is_set():
                 raw = await ws.recv()
                 if raw is None:
                     continue
 
-                # OKX bazen "pong" / event mesajları döndürebilir
                 if isinstance(raw, (bytes, bytearray)):
                     try:
                         raw = raw.decode("utf-8", errors="ignore")
@@ -103,6 +174,8 @@ class OKXWS:
                 s = str(raw).strip()
                 if not s:
                     continue
+
+                # OKX bazen "pong" döner
                 if s.lower() == "pong":
                     continue
 
@@ -128,22 +201,49 @@ class OKXWS:
                     continue
 
                 now = time.time()
-                if store_every > 0 and (now - last_store_ts) < store_every:
+                if self.store_every_sec > 0 and (now - last_store_ts) < self.store_every_sec:
                     continue
 
-                # tickers: list[dict]
                 d0 = data[0] if isinstance(data[0], dict) else None
                 if not d0:
                     continue
 
-                # Normalize minimal fields
-                ticker = {
-                    "instId": d0.get("instId"),
-                    "last": d0.get("last"),
-                    "bidPx": d0.get("bidPx"),
-                    "askPx": d0.get("askPx"),
-                    "ts": d0.get("ts"),
-                    "raw": d0,
-                }
-                MarketState.set_okx_ticker(ticker=ticker, ts=now)
+                def _f(x: Any) -> Optional[float]:
+                    try:
+                        return float(x)
+                    except Exception:
+                        return None
+
+                inst = str(d0.get("instId") or self.inst_id)
+
+                tick = OKXTick(
+                    ts=now,
+                    instId=inst,
+                    last=_f(d0.get("last")),
+                    bid=_f(d0.get("bidPx")),
+                    ask=_f(d0.get("askPx")),
+                    exch_ts=d0.get("ts"),
+                    raw=d0,
+                )
+
+                # 1) thread-safe last_tick (Telegram snapshot / status için)
+                self._set_last_tick(tick)
+
+                # 2) opsiyonel MarketState store (senin mevcut akışın)
+                if MarketState is not None:
+                    try:
+                        MarketState.set_okx_ticker(
+                            ticker={
+                                "instId": tick.instId,
+                                "last": d0.get("last"),
+                                "bidPx": d0.get("bidPx"),
+                                "askPx": d0.get("askPx"),
+                                "ts": d0.get("ts"),
+                                "raw": d0,
+                            },
+                            ts=now,
+                        )
+                    except Exception:
+                        pass
+
                 last_store_ts = now

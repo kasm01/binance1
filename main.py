@@ -692,11 +692,13 @@ def create_trading_objects() -> Dict[str, Any]:
     )
 
     # --- Hybrid model registry (TEK INSTANCE / shared cache) ---
-    # Not: HybridModel ctor model_dir istediği için registry'ye MODELS_DIR veriyoruz.
-    registry = ModelRegistry(model_dir=MODELS_DIR, logger=system_logger)
+    registry = ModelRegistry(model_dir=MODELS_DIR)
+
+    # mtf_intervals: env'den parse edelim (MTF_INTERVALS=1m,3m,5m,15m,30m,1h)
+    mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
     # MODELS_DIR contract (main interval hybrid) -> registry'den al (tek yükleme)
-    hybrid_model = registry.get_hybrid(interval)
+    hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
     # HYBRID_MODE bayrağını modele uygula (varsa)
     try:
@@ -705,16 +707,11 @@ def create_trading_objects() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # mtf_intervals: env'den parse edelim (MTF_INTERVALS=1m,3m,5m,15m,30m,1h)
-    mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
-
     # MTF için modelleri registry'den topla (tek instance'lar)
-    models_by_interval = {}
-    for itv in mtf_intervals:
-        if itv == interval:
-            models_by_interval[itv] = hybrid_model   # aynı instance (tekrar get_hybrid çağırma)
-        else:
-            models_by_interval[itv] = registry.get_hybrid(itv)
+    models_by_interval = {
+        itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
+        for itv in mtf_intervals
+    }
 
     mtf_ensemble = None
     if USE_MTF_ENS:
@@ -723,14 +720,13 @@ def create_trading_objects() -> Dict[str, Any]:
                 model_dir=MODELS_DIR,
                 intervals=mtf_intervals,
                 logger=system_logger,
-                models_by_interval=models_by_interval,
+                models_by_interval=models_by_interval,   # <-- önemli
             )
 
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
 
             # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
-            # Not: seed -> meta'ya bir kere yazar, daily append -> günde 1 kez yazar.
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
                 append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
@@ -742,7 +738,6 @@ def create_trading_objects() -> Dict[str, Any]:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
-
     whale_detector = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
@@ -796,12 +791,46 @@ def create_trading_objects() -> Dict[str, Any]:
             tg_bot.dispatcher.bot_data["symbol"] = symbol  # type: ignore
             tg_bot.dispatcher.bot_data["interval"] = interval  # type: ignore
             if system_logger:
+                # --- BEGIN_OKXWS_BLOCK (ticker-only) ---
+                okx_ws = None
+                try:
+                    _okx_en = str(os.getenv("OKX_WS_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
+                except Exception:
+                    _okx_en = False
+
+                if _okx_en:
+                    try:
+                        okx_ws = OKXWS(logger_=system_logger)
+                        okx_ws.run_background()
+                        if system_logger:
+                            system_logger.info("[OKXWS] enabled: instId=%s channel=%s", getattr(okx_ws, "inst_id", None), getattr(okx_ws, "channel", None))
+                    except Exception as e:
+                        okx_ws = None
+                        if system_logger:
+                            system_logger.warning("[OKXWS] init/start failed: %s", e)
+                else:
+                    if system_logger:
+                        system_logger.info("[OKXWS] disabled (OKX_WS_ENABLE!=1)")
+
+                # Telegram bot_data içine koy (status komutu vs için)
+                try:
+                    # dispatcher erişimi bu scope'ta varsa:
+                    dispatcher.bot_data["okx_ws"] = okx_ws
+                except Exception:
+                    pass
+                # --- END_OKXWS_BLOCK ---
                 system_logger.info("[MAIN] Telegram bot_data injected: risk_manager/position_manager/trade_executor/symbol/interval")
     except Exception as e:
         if system_logger:
             system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
 
-    online_model = OnlineLearner(model_dir=MODELS_DIR, base_model_name="online_model", interval=interval)
+    # OnlineLearner -> registry (tek yükleme / shared cache)
+    online_model = registry.get_online(
+        interval=interval,
+        base_model_name="online_model",
+        n_classes=2,
+        load_existing=None,  # ENV ONLINE_LOAD_EXISTING ile kontrol edilsin
+    )
 
     return {
         "symbol": symbol,
