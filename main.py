@@ -1258,21 +1258,25 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 # ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------
-async def async_main() -> None:
-    global system_logger
-    global BINANCE_API_KEY, BINANCE_API_SECRET
-    global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN
-
+async def async_main():
     load_environment_variables()
+
+    # Logger önce kurulsun
     setup_logger()
     system_logger = logging.getLogger("system")
 
+    # Secret Manager / env sonrası Credentials refresh
+    try:
+        Credentials.refresh_from_env()
+    except Exception:
+        pass
 
-    # Credentials (env presence) - standard log
+    # Tek ve standart missing log
     try:
         Credentials.log_missing(prefix='[ENV]')
     except Exception:
         pass
+
     # --- ENV FORCE LOAD (.env -> os.environ) ---
     # Bazı projelerde load_environment_variables() .env'yi Settings'e alıp
     # process env'e basmıyor olabilir. Bu blok PG_DSN/ENABLE_PG_POS_LOG gibi

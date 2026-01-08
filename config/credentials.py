@@ -1,19 +1,11 @@
-import logging
-
-logger = logging.getLogger('system')
-
-
-# --- CREDENTIALS_NORMALIZED_BLOCK ---
-# NOTE: Bu blok sadece helper + alias standardizasyonu sağlar.
-# 'class Credentials' tanımı altta kalır.
-
 import os
 import logging
+from typing import Dict, Optional
 
 logger = logging.getLogger("system")
 
 
-def _env(name: str):
+def _env(name: str) -> Optional[str]:
     v = os.getenv(name)
     if v is None:
         return None
@@ -21,7 +13,7 @@ def _env(name: str):
     return s if s else None
 
 
-def _env_any(*names: str):
+def _env_any(*names: str) -> Optional[str]:
     for n in names:
         v = _env(n)
         if v is not None:
@@ -29,64 +21,101 @@ def _env_any(*names: str):
     return None
 
 
-def _log_missing(mapping: dict, prefix: str = "[CREDENTIALS]") -> None:
-    missing = []
-    for k, v in (mapping or {}).items():
-        if v is None or str(v).strip() == "":
-            missing.append(k)
+class Credentials:
+    """
+    Tek sözleşme:
+    - Her şey os.environ'dan okunur.
+    - refresh_from_env() çağrılınca class attribute'lar güncellenir.
+    - log_missing() getattr-safe, AttributeError üretmez.
+    """
 
-    if missing:
-        logger.warning("%s Missing environment variables: %s", prefix, missing)
-    else:
-        logger.info("%s All tracked environment variables are present.", prefix)
+    # --- Exchange keys ---
+    BINANCE_API_KEY: Optional[str] = None
+    BINANCE_API_SECRET: Optional[str] = None
 
+    OKX_API_KEY: Optional[str] = None
+    OKX_API_SECRET: Optional[str] = None
+    OKX_PASSPHRASE: Optional[str] = None
 
-def _apply_aliases_to_credentials() -> None:
-    # Bu fonksiyon, class Credentials tanımlandıktan sonra çağrılır.
-    try:
-        cls = Credentials  # noqa: F821
-    except Exception:
-        return
+    # --- Redis ---
+    REDIS_PASSWORD: Optional[str] = None
 
-    def set_if_missing(attr: str, value):
-        try:
-            if not hasattr(cls, attr):
-                setattr(cls, attr, value)
-        except Exception:
-            pass
+    # --- Onchain / Providers ---
+    ETHEREUM_API_KEY: Optional[str] = None   # alias: ETH_API_KEY
+    ALCHEMY_ETH_API_KEY: Optional[str] = None
+    INFURA_API_KEY: Optional[str] = None
+    POLYGON_API_KEY: Optional[str] = None
+    ARBITRUM_API_KEY: Optional[str] = None   # alias: ARBI_API_KEY
+    THE_GRAPH_API_KEY: Optional[str] = None  # alias: GRAPH_API_KEY
 
-    # Exchanges (Binance / OKX)
-    set_if_missing("BINANCE_API_KEY", _env_any("BINANCE_API_KEY"))
-    set_if_missing("BINANCE_API_SECRET", _env_any("BINANCE_API_SECRET"))
+    # --- Data providers ---
+    COINGLASS_API_KEY: Optional[str] = None
+    BSCSCAN_API_KEY: Optional[str] = None
+    CRYPTOQUANT_API_KEY: Optional[str] = None
+    COINMARKETCAP_API_KEY: Optional[str] = None
+    ETHERSCAN_API_KEY: Optional[str] = None
+    SANTIMENT_API_KEY: Optional[str] = None
 
-    set_if_missing("OKX_API_KEY", _env_any("OKX_API_KEY"))
-    set_if_missing("OKX_API_SECRET", _env_any("OKX_API_SECRET"))
-    set_if_missing("OKX_PASSPHRASE", _env_any("OKX_PASSPHRASE"))
+    # --- Telegram (opsiyonel) ---
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_ALLOWED_CHAT_IDS: Optional[str] = None
 
-    # Onchain / Providers
-    set_if_missing("ETHEREUM_API_KEY", _env_any("ETH_API_KEY", "ETHEREUM_API_KEY"))
-    set_if_missing("ALCHEMY_ETH_API_KEY", _env_any("ALCHEMY_ETH_API_KEY"))
-    set_if_missing("INFURA_API_KEY", _env_any("INFURA_API_KEY"))
-    set_if_missing("POLYGON_API_KEY", _env_any("POLYGON_API_KEY"))
-    set_if_missing("ARBITRUM_API_KEY", _env_any("ARBI_API_KEY", "ARBITRUM_API_KEY"))
-    set_if_missing("THE_GRAPH_API_KEY", _env_any("THE_GRAPH_API_KEY", "GRAPH_API_KEY"))
+    @staticmethod
+    def refresh_from_env() -> None:
+        """
+        os.environ -> Credentials.* alanlarını yeniden doldurur.
+        Secret Manager'dan env'e basma işi başka modülde yapılır;
+        bu fonksiyon sadece env'den okur.
+        """
+        cls = Credentials
 
-    set_if_missing("COINGLASS_API_KEY", _env_any("COINGLASS_API_KEY"))
-    set_if_missing("BSCSCAN_API_KEY", _env_any("BSCSCAN_API_KEY"))
-    set_if_missing("CRYPTOQUANT_API_KEY", _env_any("CRYPTOQUANT_API_KEY"))
-    set_if_missing("COINMARKETCAP_API_KEY", _env_any("COINMARKETCAP_API_KEY"))
-    set_if_missing("ETHERSCAN_API_KEY", _env_any("ETHERSCAN_API_KEY"))
-    set_if_missing("SANTIMENT_API_KEY", _env_any("SANTIMENT_API_KEY"))
+        # Exchange
+        cls.BINANCE_API_KEY = _env_any("BINANCE_API_KEY")
+        cls.BINANCE_API_SECRET = _env_any("BINANCE_API_SECRET")
 
-    # log_missing: AttributeError yemesin diye getattr-safe
-    def _safe_log_missing(prefix: str = "[CREDENTIALS]") -> None:
-        tracked = {
+        cls.OKX_API_KEY = _env_any("OKX_API_KEY")
+        cls.OKX_API_SECRET = _env_any("OKX_API_SECRET")
+        cls.OKX_PASSPHRASE = _env_any("OKX_PASSPHRASE")
+
+        # Redis
+        cls.REDIS_PASSWORD = _env_any("REDIS_PASSWORD")
+
+        # Onchain/providers
+        cls.ETHEREUM_API_KEY = _env_any("ETH_API_KEY", "ETHEREUM_API_KEY")
+        cls.ALCHEMY_ETH_API_KEY = _env_any("ALCHEMY_ETH_API_KEY")
+        cls.INFURA_API_KEY = _env_any("INFURA_API_KEY")
+        cls.POLYGON_API_KEY = _env_any("POLYGON_API_KEY")
+        cls.ARBITRUM_API_KEY = _env_any("ARBI_API_KEY", "ARBITRUM_API_KEY")
+        cls.THE_GRAPH_API_KEY = _env_any("THE_GRAPH_API_KEY", "GRAPH_API_KEY")
+
+        # Data providers
+        cls.COINGLASS_API_KEY = _env_any("COINGLASS_API_KEY")
+        cls.BSCSCAN_API_KEY = _env_any("BSCSCAN_API_KEY")
+        cls.CRYPTOQUANT_API_KEY = _env_any("CRYPTOQUANT_API_KEY")
+        cls.COINMARKETCAP_API_KEY = _env_any("COINMARKETCAP_API_KEY")
+        cls.ETHERSCAN_API_KEY = _env_any("ETHERSCAN_API_KEY")
+        cls.SANTIMENT_API_KEY = _env_any("SANTIMENT_API_KEY")
+
+        # Telegram
+        cls.TELEGRAM_BOT_TOKEN = _env_any("TELEGRAM_BOT_TOKEN")
+        cls.TELEGRAM_ALLOWED_CHAT_IDS = _env_any("TELEGRAM_ALLOWED_CHAT_IDS")
+
+    @staticmethod
+    def log_missing(prefix: str = "[CREDENTIALS]") -> None:
+        cls = Credentials
+
+        tracked: Dict[str, Optional[str]] = {
+            # Exchange
             "BINANCE_API_KEY": getattr(cls, "BINANCE_API_KEY", None),
             "BINANCE_API_SECRET": getattr(cls, "BINANCE_API_SECRET", None),
             "OKX_API_KEY": getattr(cls, "OKX_API_KEY", None),
             "OKX_API_SECRET": getattr(cls, "OKX_API_SECRET", None),
             "OKX_PASSPHRASE": getattr(cls, "OKX_PASSPHRASE", None),
 
+            # Redis
+            "REDIS_PASSWORD": getattr(cls, "REDIS_PASSWORD", None),
+
+            # Onchain/providers
             "ETH_API_KEY": getattr(cls, "ETHEREUM_API_KEY", None),
             "ALCHEMY_ETH_API_KEY": getattr(cls, "ALCHEMY_ETH_API_KEY", None),
             "INFURA_API_KEY": getattr(cls, "INFURA_API_KEY", None),
@@ -94,65 +123,25 @@ def _apply_aliases_to_credentials() -> None:
             "ARBI_API_KEY": getattr(cls, "ARBITRUM_API_KEY", None),
             "THE_GRAPH_API_KEY": getattr(cls, "THE_GRAPH_API_KEY", None),
 
+            # Providers
             "COINGLASS_API_KEY": getattr(cls, "COINGLASS_API_KEY", None),
             "BSCSCAN_API_KEY": getattr(cls, "BSCSCAN_API_KEY", None),
             "CRYPTOQUANT_API_KEY": getattr(cls, "CRYPTOQUANT_API_KEY", None),
             "COINMARKETCAP_API_KEY": getattr(cls, "COINMARKETCAP_API_KEY", None),
             "ETHERSCAN_API_KEY": getattr(cls, "ETHERSCAN_API_KEY", None),
             "SANTIMENT_API_KEY": getattr(cls, "SANTIMENT_API_KEY", None),
+
+            # Telegram
+            "TELEGRAM_BOT_TOKEN": getattr(cls, "TELEGRAM_BOT_TOKEN", None),
+            "TELEGRAM_ALLOWED_CHAT_IDS": getattr(cls, "TELEGRAM_ALLOWED_CHAT_IDS", None),
         }
-        _log_missing(tracked, prefix=prefix)
 
-    # Class üzerinde varsa ezmeyelim (ama yoksa ekleyelim)
-    if not hasattr(cls, "log_missing"):
-        try:
-            cls.log_missing = staticmethod(_safe_log_missing)  # type: ignore
-        except Exception:
-            pass
-
-
-# Class tanımı aşağıda gelecek, import sırasında otomatik uygulansın:
-# (Dosya en sonuna gelince tekrar çağıracağız.)
-
-
-class Credentials:
-    SANTIMENT_API_KEY = _env_any('SANTIMENT_API_KEY')
-    ETHERSCAN_API_KEY = _env_any('ETHERSCAN_API_KEY')
-    COINMARKETCAP_API_KEY = _env_any('COINMARKETCAP_API_KEY')
-    CRYPTOQUANT_API_KEY = _env_any('CRYPTOQUANT_API_KEY')
-    BSCSCAN_API_KEY = _env_any('BSCSCAN_API_KEY')
-    ALCHEMY_ETH_API_KEY = _env_any('ALCHEMY_ETH_API_KEY')
-    OKX_PASSPHRASE = _env_any('OKX_PASSPHRASE')
-    OKX_API_SECRET = _env_any('OKX_API_SECRET')
-    OKX_API_KEY = _env_any('OKX_API_KEY')
-    BINANCE_API_SECRET = _env_any('BINANCE_API_SECRET')
-    @staticmethod
-    def log_missing(prefix: str = '[CREDENTIALS]') -> None:
-        tracked = {
-            'BINANCE_API_KEY': getattr(Credentials, 'BINANCE_API_KEY', None),
-            'BINANCE_API_SECRET': getattr(Credentials, 'BINANCE_API_SECRET', None),
-            'OKX_API_KEY': getattr(Credentials, 'OKX_API_KEY', None),
-            'OKX_API_SECRET': getattr(Credentials, 'OKX_API_SECRET', None),
-            'OKX_PASSPHRASE': getattr(Credentials, 'OKX_PASSPHRASE', None),
-
-            'ETH_API_KEY': getattr(Credentials, 'ETHEREUM_API_KEY', None),
-            'ALCHEMY_ETH_API_KEY': getattr(Credentials, 'ALCHEMY_ETH_API_KEY', None),
-            'INFURA_API_KEY': getattr(Credentials, 'INFURA_API_KEY', None),
-            'POLYGON_API_KEY': getattr(Credentials, 'POLYGON_API_KEY', None),
-            'ARBI_API_KEY': getattr(Credentials, 'ARBITRUM_API_KEY', None),
-            'THE_GRAPH_API_KEY': getattr(Credentials, 'THE_GRAPH_API_KEY', None),
-
-            'COINGLASS_API_KEY': getattr(Credentials, 'COINGLASS_API_KEY', None),
-            'BSCSCAN_API_KEY': getattr(Credentials, 'BSCSCAN_API_KEY', None),
-            'CRYPTOQUANT_API_KEY': getattr(Credentials, 'CRYPTOQUANT_API_KEY', None),
-            'COINMARKETCAP_API_KEY': getattr(Credentials, 'COINMARKETCAP_API_KEY', None),
-            'ETHERSCAN_API_KEY': getattr(Credentials, 'ETHERSCAN_API_KEY', None),
-            'SANTIMENT_API_KEY': getattr(Credentials, 'SANTIMENT_API_KEY', None),
-        }
-        _log_missing(tracked, prefix=prefix)
-
-                missing.append(key)
-
+        missing = [k for k, v in tracked.items() if v is None or str(v).strip() == ""]
         if missing:
-            print(f"[WARNING] Missing critical credentials: {missing}")
+            logger.warning("%s Missing environment variables: %s", prefix, missing)
+        else:
+            logger.info("%s All tracked environment variables are present.", prefix)
 
+
+# Import sırasında env'den oku (ilk state)
+Credentials.refresh_from_env()

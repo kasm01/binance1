@@ -80,6 +80,10 @@
     {
       "ts": "2026-01-07T17:44:59.923450+00:00",
       "auc": 0.5774844849756384
+    },
+    {
+      "ts": "2026-01-08T09:29:33.174537+00:00",
+      "auc": 0.5774844849756384
     }
   ],
   "sgd_val_auc": 0.5774844849756384,
@@ -91,6 +95,6 @@
   "alpha_tuned": true,
   "alpha_tuned_at": "2026-01-03T10:28:08.720406+00:00",
   "best_auc_source": "tune_alpha_val_auc",
-  "auc_history_last_day": "2026-01-07",
+  "auc_history_last_day": "2026-01-08",
   "auc_history_daily_source": "append_auc_used_once_per_day::auc_used"
 }

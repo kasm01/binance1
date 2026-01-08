@@ -52,10 +52,14 @@
     {
       "ts": "2026-01-07T17:44:59.923450+00:00",
       "auc": 0.5159713525336566
+    },
+    {
+      "ts": "2026-01-08T09:29:33.174537+00:00",
+      "auc": 0.5159713525336566
     }
   ],
   "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
-  "auc_history_last_day": "2026-01-07",
+  "auc_history_last_day": "2026-01-08",
   "auc_history_daily_source": "append_auc_used_once_per_day::auc_used",
   "lstm_feature_schema": [
     "open_time",
