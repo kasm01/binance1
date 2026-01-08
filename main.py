@@ -12,6 +12,7 @@ import threading
 from config.load_env import load_environment_variables
 from config.settings import Settings
 
+from config.credentials import Credentials
 from core.logger import setup_logger
 from core.binance_client import create_binance_client
 from core.position_manager import PositionManager
@@ -29,6 +30,7 @@ from tg_bot.telegram_bot import TelegramBot
 # WebSocket
 from websocket.binance_ws import BinanceWS
 
+from websocket.okx_ws import OKXWS
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
 from core.model_utils import safe_p_buy
@@ -1265,6 +1267,12 @@ async def async_main() -> None:
     setup_logger()
     system_logger = logging.getLogger("system")
 
+
+    # Credentials (env presence) - standard log
+    try:
+        Credentials.log_missing(prefix='[ENV]')
+    except Exception:
+        pass
     # --- ENV FORCE LOAD (.env -> os.environ) ---
     # Bazı projelerde load_environment_variables() .env'yi Settings'e alıp
     # process env'e basmıyor olabilir. Bu blok PG_DSN/ENABLE_PG_POS_LOG gibi
