@@ -1,6 +1,10 @@
 import asyncio
 import logging
 import os
+
+# TensorFlow / XLA C++ loglarını azalt (TF import edilmeden ÖNCE olmalı)
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import signal
 import json
 import time
@@ -24,13 +28,14 @@ from data.online_learning import OnlineLearner
 from data.whale_detector import MultiTimeframeWhaleDetector
 
 from models.hybrid_inference import HybridModel, HybridMultiTFModel
+from models.model_registry import ModelRegistry
 
 from tg_bot.telegram_bot import TelegramBot
 
 # WebSocket
 from websocket.binance_ws import BinanceWS
-
 from websocket.okx_ws import OKXWS
+
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
 from core.model_utils import safe_p_buy
@@ -686,8 +691,13 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
-    # MODELS_DIR contract
-    hybrid_model = HybridModel(model_dir=MODELS_DIR, interval=interval, logger=system_logger)
+    # --- Hybrid model registry (TEK INSTANCE / shared cache) ---
+    registry = ModelRegistry()
+
+    # MODELS_DIR contract (main interval hybrid) -> registry'den al (tek yükleme)
+    hybrid_model = registry.get_hybrid(interval)
+
+    # HYBRID_MODE bayrağını modele uygula (varsa)
     try:
         if hasattr(hybrid_model, "use_lstm_hybrid"):
             hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
@@ -697,6 +707,9 @@ def create_trading_objects() -> Dict[str, Any]:
     # mtf_intervals: env'den parse edelim (MTF_INTERVALS=1m,3m,5m,15m,30m,1h)
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
+    # MTF için modelleri registry'den topla (tek instance'lar)
+    models_by_interval = {itv: registry.get_hybrid(itv) for itv in mtf_intervals}
+
     mtf_ensemble = None
     if USE_MTF_ENS:
         try:
@@ -704,6 +717,7 @@ def create_trading_objects() -> Dict[str, Any]:
                 model_dir=MODELS_DIR,
                 intervals=mtf_intervals,
                 logger=system_logger,
+                models_by_interval=models_by_interval,
             )
 
             if system_logger:

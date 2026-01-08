@@ -582,7 +582,13 @@ class HybridMultiTFModel:
     - Ensemble ağırlıkları / logları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
     """
 
-    def __init__(self, model_dir: Optional[str], intervals: list[str], logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        model_dir: Optional[str],
+        intervals: list[str],
+        logger: Optional[logging.Logger] = None,
+        models_by_interval: Optional[Dict[str, "HybridModel"]] = None,  # <-- NEW
+    ) -> None:
         self.model_dir = model_dir or MODELS_DIR
         self.intervals = list(intervals)
         self.logger = logger or logging.getLogger("system")
@@ -595,15 +601,42 @@ class HybridMultiTFModel:
             "on",
         )
 
-        self.models: Dict[str, HybridModel] = {}
-        self._init_models()
+        # NEW: dışarıdan hazır model verilirse tekrar yükleme yapma
+        if models_by_interval:
+            # sadece istenen interval'ları al (fazla varsa ignore et)
+            self.models: Dict[str, HybridModel] = {
+                itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval
+            }
 
+            missing = [itv for itv in self.intervals if itv not in self.models]
+            if missing:
+                # eksik varsa fallback olarak sadece eksikleri yükle
+                for itv in missing:
+                    self.models[itv] = HybridModel(
+                        interval=itv,
+                        model_dir=self.model_dir,
+                        logger=self.logger,
+                        startup_log_level=self.hybrid_model_startup_log_level,
+                        disable_startup_log=self.disable_hybrid_model_startup_log,
+                    )
+        else:
+            # eski davranış: hepsini burada yükle
+            self.models: Dict[str, HybridModel] = {}
+            for itv in self.intervals:
+                self.models[itv] = HybridModel(
+                    interval=itv,
+                    model_dir=self.model_dir,
+                    logger=self.logger,
+                    startup_log_level=self.hybrid_model_startup_log_level,
+                    disable_startup_log=self.disable_hybrid_model_startup_log,
+                )
+
+        # Ensemble/weight/AUC standardizasyonu tek yer: HybridMTF
         self.mtf = HybridMTF(
             models_by_interval=self.models,
             logger=self.logger,
             auc_key_priority=("auc_used", "wf_auc_mean", "val_auc", "best_auc", "auc", "oof_auc"),
         )
-
     def _log(self, level: int, msg: str, *args: Any) -> None:
         if self.logger:
             self.logger.log(level, msg, *args)
