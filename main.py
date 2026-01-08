@@ -97,6 +97,64 @@ def parse_csv_env_list(name: str, default: List[str]) -> List[str]:
     return parts if parts else list(default)
 
 
+# -------------------------
+# NEW: SYMBOLS parser
+# -------------------------
+def parse_symbols_env() -> List[str]:
+    default_symbol = os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")
+    syms = parse_csv_env_list("SYMBOLS", [default_symbol])
+    out: List[str] = []
+    for s in syms:
+        s2 = str(s).strip().upper()
+        if s2:
+            out.append(s2)
+    return out or [str(default_symbol).strip().upper()]
+
+
+def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
+    """
+    Light scanner score (hızlı):
+      - volume spike (z-score)
+      - range/price (volatility proxy)
+      - kısa momentum
+    """
+    try:
+        if raw_df is None or raw_df.empty or len(raw_df) < 50:
+            return 0.0
+
+        df = raw_df.copy()
+        for c in ["open", "high", "low", "close", "volume"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
+
+        vol = df["volume"].values
+        if len(vol) < 30:
+            return 0.0
+
+        v_last = float(vol[-1])
+        v_mean = float(pd.Series(vol).rolling(20).mean().iloc[-1])
+        v_std = float(pd.Series(vol).rolling(20).std().iloc[-1])
+        v_z = (v_last - v_mean) / (v_std + 1e-9)
+
+        hl = (df["high"] - df["low"]).values
+        hl_mean = float(pd.Series(hl).rolling(20).mean().iloc[-1])
+
+        close = df["close"].values
+        if len(close) < 6:
+            return 0.0
+        r1 = (float(close[-1]) / (float(close[-2]) + 1e-9) - 1.0)
+        r5 = (float(close[-1]) / (float(close[-6]) + 1e-9) - 1.0)
+
+        score = 0.0
+        score += max(0.0, v_z) * 2.0
+        score += abs(r1) * 50.0
+        score += abs(r5) * 20.0
+        score += (hl_mean / (float(close[-1]) + 1e-9)) * 100.0
+        return float(max(0.0, score))
+    except Exception:
+        return 0.0
+
+
 # ---- helpers: EMA adaptive alpha ----
 def _compute_adaptive_alpha(atr_value: float) -> float:
     a_min = float(os.getenv("EMA_ALPHA_MIN", "0.05"))
@@ -117,7 +175,6 @@ def _compute_adaptive_alpha(atr_value: float) -> float:
     alpha = a_min + (a_max - a_min) * (x / 2.0)
     alpha = max(a_min, min(a_max, alpha))
     return float(alpha)
-
 
 # ----------------------------------------------------------------------
 # NEW: Whale short-layer weights veto/boost + renorm + trend veto
@@ -311,7 +368,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = raw_df.copy()
 
-    # Binance kline columns guarantee
     raw_cols_12 = [
         "open_time", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "number_of_trades",
@@ -321,7 +377,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = 0
 
-    # open_time/close_time -> numeric seconds (float)
     for col in ["open_time", "close_time"]:
         if col in df.columns:
             try:
@@ -333,7 +388,6 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
 
-    # coerce numeric
     float_cols = [
         "open", "high", "low", "close", "volume",
         "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
@@ -346,11 +400,9 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     for c in int_like:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # ensure ignore exists
     if "ignore" not in df.columns:
         df["ignore"] = 0.0
 
-    # engineered (numeric-safe)
     for c in ("open", "high", "low", "close", "volume"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
 
@@ -367,21 +419,16 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     df["ma_10"] = close.rolling(10).mean()
     df["ma_20"] = close.rolling(20).mean()
 
-    # IMPORTANT: pipeline ile uyumlu olacak şekilde mean
     df["vol_10"] = df["volume"].astype(float).rolling(10).mean()
 
     if "dummy_extra" not in df.columns:
         df["dummy_extra"] = 0.0
 
-    # cleanup
     df = df.replace([float("inf"), float("-inf")], pd.NA)
     df = df.ffill().bfill().fillna(0.0)
 
     return df
 
-# ----------------------------------------------------------------------
-# ATR hesaplayıcı
-# ----------------------------------------------------------------------
 def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     if df is None or len(df) < period + 2:
         return 0.0
@@ -400,9 +447,6 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     return float(atr)
 
 
-# ----------------------------------------------------------------------
-# Binance Kline fetch helper
-# ----------------------------------------------------------------------
 def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     import requests
 
@@ -463,30 +507,20 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
     int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
 
     def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Tek sözleşme:
-        - kolon isimleri Binance kline schema (12) olacak
-        - numeric coercion uygulanacak
-        - inf/nan temizlenecek
-        """
         if df is None or df.empty:
             return df
 
-        # 12 kolon fazlasını kırp (Binance formatı)
         if df.shape[1] > 12:
             df = df.iloc[:, :12].copy()
 
-        # Header yoksa (0..11) -> isimlendir
         if list(df.columns) == list(range(len(df.columns))) and df.shape[1] == 12:
             df = df.copy()
             df.columns = columns
 
-        # Header varsa ama isimler farklıysa yine de mümkün olduğunca düzelt
         if not set(columns).issubset(set(df.columns)) and df.shape[1] == 12:
             df = df.copy()
             df.columns = columns
 
-        # Tip dönüşümü
         for c in float_cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -495,7 +529,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-        # int kolonları gerçekten int yap (güvenli)
         for c in int_cols:
             if c in df.columns:
                 try:
@@ -503,15 +536,11 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
                 except Exception:
                     df[c] = df[c].fillna(0).astype(int)
 
-        # inf/nan temizliği
         df = df.replace([float("inf"), float("-inf")], pd.NA)
         df = df.ffill().bfill().fillna(0)
 
         return df
 
-    # -------------------------
-    # OFFLINE
-    # -------------------------
     if data_mode != "LIVE":
         csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
         if not os.path.exists(csv_path):
@@ -522,7 +551,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
                 "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
             )
 
-        # low_memory=False -> mixed dtype warning azalır
         df = pd.read_csv(csv_path, header=None, low_memory=False)
 
         if len(df) > limit:
@@ -537,9 +565,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
 
         return df
 
-    # -------------------------
-    # LIVE
-    # -------------------------
     last_err: Optional[Exception] = None
 
     if client is not None:
@@ -572,9 +597,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
     raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
 
 
-# ----------------------------------------------------------------------
-# Trading objeleri kurulum
-# ----------------------------------------------------------------------
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
@@ -606,14 +628,12 @@ def create_trading_objects() -> Dict[str, Any]:
         logger=system_logger,
     )
 
-
     tg_bot = None
     try:
         tg_bot = TelegramBot()
 
         dispatcher = getattr(tg_bot, "dispatcher", None)
         if dispatcher:
-            # RiskManager enjeksiyonu (/risk)
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
@@ -622,7 +642,6 @@ def create_trading_objects() -> Dict[str, Any]:
             if system_logger:
                 system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk aktif).")
 
-            # Polling'i arka planda başlat (main loop bloklanmasın)
             def _tg_polling_worker():
                 try:
                     if system_logger:
@@ -652,7 +671,6 @@ def create_trading_objects() -> Dict[str, Any]:
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
-    # ---- PG env (robust) ----
     enable_pg = str(os.getenv("ENABLE_PG_POS_LOG", "0")).strip()
     enable_pg_flag = enable_pg.lower() not in ("0", "false", "no", "off", "")
     pg_dsn = (os.getenv("PG_DSN") or "").strip() if enable_pg_flag else None
@@ -664,7 +682,6 @@ def create_trading_objects() -> Dict[str, Any]:
             enable_pg_flag,
         )
 
-        # PG_DSN maskeli log
         pg = (pg_dsn or "").strip()
         masked = pg
         if pg and "://" in pg and "@" in pg:
@@ -674,10 +691,7 @@ def create_trading_objects() -> Dict[str, Any]:
             except Exception:
                 masked = "***"
 
-        system_logger.info(
-            "[POS][ENV] PG_DSN=%s",
-            masked if masked else "(empty)",
-        )
+        system_logger.info("[POS][ENV] PG_DSN=%s", masked if masked else "(empty)")
 
     if enable_pg_flag and not pg_dsn:
         if system_logger:
@@ -691,23 +705,18 @@ def create_trading_objects() -> Dict[str, Any]:
         pg_dsn=pg_dsn,
     )
 
-    # --- Hybrid model registry (TEK INSTANCE / shared cache) ---
     registry = ModelRegistry(model_dir=MODELS_DIR)
 
-    # mtf_intervals: env'den parse edelim (MTF_INTERVALS=1m,3m,5m,15m,30m,1h)
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
-    # MODELS_DIR contract (main interval hybrid) -> registry'den al (tek yükleme)
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
-    # HYBRID_MODE bayrağını modele uygula (varsa)
     try:
         if hasattr(hybrid_model, "use_lstm_hybrid"):
             hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
     except Exception:
         pass
 
-    # MTF için modelleri registry'den topla (tek instance'lar)
     models_by_interval = {
         itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
         for itv in mtf_intervals
@@ -720,13 +729,12 @@ def create_trading_objects() -> Dict[str, Any]:
                 model_dir=MODELS_DIR,
                 intervals=mtf_intervals,
                 logger=system_logger,
-                models_by_interval=models_by_interval,   # <-- önemli
+                models_by_interval=models_by_interval,
             )
 
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
 
-            # --- AUC HISTORY BOOTSTRAP + DAILY APPEND (kalıcı) ---
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
                 append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
@@ -738,6 +746,7 @@ def create_trading_objects() -> Dict[str, Any]:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
+
     whale_detector = None
     try:
         whale_detector = MultiTimeframeWhaleDetector()
@@ -778,11 +787,9 @@ def create_trading_objects() -> Dict[str, Any]:
         atr_sl_mult=atr_sl_mult,
         atr_tp_mult=atr_tp_mult,
         whale_risk_boost=whale_risk_boost,
-            tg_bot=tg_bot,
-)
+        tg_bot=tg_bot,
+    )
 
-
-    # Telegram bot_data injections (commands rely on these)
     try:
         if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
             tg_bot.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
@@ -790,8 +797,8 @@ def create_trading_objects() -> Dict[str, Any]:
             tg_bot.dispatcher.bot_data["trade_executor"] = trade_executor  # type: ignore
             tg_bot.dispatcher.bot_data["symbol"] = symbol  # type: ignore
             tg_bot.dispatcher.bot_data["interval"] = interval  # type: ignore
+
             if system_logger:
-                # --- BEGIN_OKXWS_BLOCK (ticker-only) ---
                 okx_ws = None
                 try:
                     _okx_en = str(os.getenv("OKX_WS_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
@@ -803,7 +810,11 @@ def create_trading_objects() -> Dict[str, Any]:
                         okx_ws = OKXWS(logger_=system_logger)
                         okx_ws.run_background()
                         if system_logger:
-                            system_logger.info("[OKXWS] enabled: instId=%s channel=%s", getattr(okx_ws, "inst_id", None), getattr(okx_ws, "channel", None))
+                            system_logger.info(
+                                "[OKXWS] enabled: instId=%s channel=%s",
+                                getattr(okx_ws, "inst_id", None),
+                                getattr(okx_ws, "channel", None),
+                            )
                     except Exception as e:
                         okx_ws = None
                         if system_logger:
@@ -812,24 +823,21 @@ def create_trading_objects() -> Dict[str, Any]:
                     if system_logger:
                         system_logger.info("[OKXWS] disabled (OKX_WS_ENABLE!=1)")
 
-                # Telegram bot_data içine koy (status komutu vs için)
                 try:
-                    # dispatcher erişimi bu scope'ta varsa:
                     dispatcher.bot_data["okx_ws"] = okx_ws
                 except Exception:
                     pass
-                # --- END_OKXWS_BLOCK ---
+
                 system_logger.info("[MAIN] Telegram bot_data injected: risk_manager/position_manager/trade_executor/symbol/interval")
     except Exception as e:
         if system_logger:
             system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
 
-    # OnlineLearner -> registry (tek yükleme / shared cache)
     online_model = registry.get_online(
         interval=interval,
         base_model_name="online_model",
         n_classes=2,
-        load_existing=None,  # ENV ONLINE_LOAD_EXISTING ile kontrol edilsin
+        load_existing=None,
     )
 
     return {
@@ -856,14 +864,13 @@ def _normalize_signal(sig: Any) -> str:
         return "short"
     return "hold"
 
-
 # ----------------------------------------------------------------------
 # Ana trading loop
 # ----------------------------------------------------------------------
 async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
     global system_logger
 
-    tg_bot = objs.get("tg_bot")  # TelegramBot instance (opsiyonel)
+    tg_bot = objs.get("tg_bot")
     prev_signal_side: Optional[str] = None
     prev_notif_ts: float = 0.0
 
@@ -879,8 +886,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
     mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
-    # Debug throttling
-    mtf_debug_every = int(os.getenv("MTF_DEBUG_EVERY", "1"))  # 1 => her loop, 5 => 5'te bir
+    mtf_debug_every = int(os.getenv("MTF_DEBUG_EVERY", "1"))
     loop_i = 0
 
     if system_logger:
@@ -890,10 +896,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
         )
 
     anomaly_detector = AnomalyDetector(logger=system_logger)
-
-    # ------------------------------------------------------------------
-    # TEK SÖZLEŞME: meta schema loader + normalize
-    # ------------------------------------------------------------------
 
     _schema_cache: Dict[str, Optional[list[str]]] = {}
 
@@ -942,13 +944,11 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     itv, missing_cols
                 )
 
-        # tek kilit: alias + missing fill + order + numeric cleanup
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
     while True:
         loop_i += 1
         try:
-            # 1) main interval raw
             raw_df = await fetch_klines(
                 client=client,
                 symbol=symbol,
@@ -957,20 +957,14 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 logger=system_logger,
             )
 
-            # 2) features (engineer)
             feat_df = build_features(raw_df)
-
-            # 3) schema normalize (TEK KİLİT)
             feat_df = _normalize_feat_df(feat_df, interval)
 
-            # 4) anomaly filter (aynı schema ile)
             sch_main = _schema_for(interval)
             feat_df = anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
 
-            # 5) model input: DAİMA schema-sıralı DF
             X_live = feat_df.tail(500)
 
-            # 6) Single-TF hibrit skor
             p_arr_single, debug_single = hybrid_model.predict_proba(X_live)
             p_single = float(p_arr_single[-1])
 
@@ -979,7 +973,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             best_auc = float(meta.get("best_auc", 0.5) or 0.5)
             best_side = meta.get("best_side", "long")
 
-            # 7) MTF verileri
             mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
             mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
@@ -997,11 +990,8 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         )
 
                         feat_df_itv = build_features(raw_df_itv)
-
-                        # schema normalize (TEK KİLİT)
                         feat_df_itv = _normalize_feat_df(feat_df_itv, itv)
 
-                        # anomaly filter (itv schema ile)
                         sch_itv = _schema_for(itv)
                         feat_df_itv = anomaly_detector.filter_anomalies(feat_df_itv, schema=sch_itv)
 
@@ -1012,7 +1002,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         if system_logger:
                             system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
 
-            # 8) MTF ensemble skoru
             p_used = p_single
             mtf_debug: Optional[Dict[str, Any]] = None
 
@@ -1033,7 +1022,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         )
                         p_used = float(p_ens)
 
-                        # --- MTF DEBUG SUMMARY (compact) --- (doğru yer: tahmin sonrası)
                         try:
                             if (mtf_debug_every <= 1) or (loop_i % mtf_debug_every == 0):
                                 if USE_MTF_ENS and (mtf_ensemble is not None) and isinstance(mtf_debug, dict):
@@ -1068,7 +1056,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     p_used = p_single
                     mtf_debug = None
 
-            # 9) Whale meta
             whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
             whale_dir = "none"
             whale_score = 0.0
@@ -1110,7 +1097,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                                 "meta": ws.meta,
                             }
                         )
-
                     whale_dir = str(whale_meta.get("direction", "none") or "none")
                     whale_score = float(whale_meta.get("score", 0.0) or 0.0)
 
@@ -1118,11 +1104,9 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     if system_logger:
                         system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
 
-            # 10) ATR
             atr_period = int(os.getenv("ATR_PERIOD", "14"))
             atr_value = compute_atr_from_klines(raw_df, period=atr_period)
 
-            # probs + extra
             probs: Dict[str, Any] = {
                 "p_used": p_used,
                 "p_single": p_single,
@@ -1142,7 +1126,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 "whale_score": float(whale_score),
             }
 
-            # Signal decision
             signal_side: Optional[str] = None
             use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", False)
             ema_whale_only = get_bool_env("EMA_WHALE_ONLY", False)
@@ -1192,7 +1175,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
             else:
                 extra["signal_source"] = "EMA"
 
-            # Trend veto (ENV configurable)
             try:
                 p_by_itv = _extract_p_by_itv(mtf_debug) if isinstance(mtf_debug, dict) else {}
                 vetoed, veto_reason = _trend_veto(signal_side, p_by_itv)
@@ -1203,7 +1185,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 if system_logger:
                     system_logger.warning("[VETO] trend_veto error: %s", e)
 
-            # Whale weights veto/boost -> renorm -> recompute ensemble
             try:
                 if USE_MTF_ENS and isinstance(mtf_debug, dict) and signal_side in ("long", "short"):
                     mtf_debug, whale_w_dbg = _apply_whale_to_short_weights(
@@ -1229,7 +1210,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 if system_logger:
                     system_logger.warning("[WHALE][WEIGHT] apply/recompute error: %s", e)
 
-            # Journal extras
             try:
                 if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
                     extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
@@ -1240,16 +1220,12 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
             last_price = float(raw_df["close"].iloc[-1])
 
-            # ----------------------------
-            # Telegram: status_snapshot + signal notifications
-            # ----------------------------
             try:
                 enable_tg_snapshot = str(os.getenv("TELEGRAM_ENABLE_SNAPSHOT", "1")).strip().lower() not in ("0", "false", "no", "off", "")
                 enable_tg_notify = str(os.getenv("TELEGRAM_NOTIFY_SIGNALS", "1")).strip().lower() not in ("0", "false", "no", "off", "")
                 notify_cooldown_s = float(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S", "10"))
 
                 if tg_bot is not None and getattr(tg_bot, "dispatcher", None) and enable_tg_snapshot:
-                    # AUC kısa sözlük
                     aucs: Dict[str, Any] = {}
                     try:
                         if isinstance(mtf_debug, dict):
@@ -1260,7 +1236,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                     except Exception:
                         aucs = {}
 
-                    # Snapshot (commands.py /status bunu okuyacak)
                     tg_bot.dispatcher.bot_data["status_snapshot"] = {
                         "symbol": symbol,
                         "signal": str(signal_side).upper() if signal_side else "N/A",
@@ -1271,7 +1246,6 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         "why": str(extra.get("signal_source", "")) if isinstance(extra, dict) else "",
                     }
 
-                # Sinyal değişim bildirimi (rate-limited)
                 now_ts = time.time()
                 if enable_tg_notify and tg_bot is not None:
                     sig_now = str(signal_side or "hold").lower()
@@ -1288,12 +1262,10 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                             f"• *Price:* `{float(last_price):.4f}`\n"
                             f"• *Source:* `{src}`"
                         )
-                        # TelegramBot.send_message CHAT_ID ister (TELEGRAM_CHAT_ID)
                         tg_bot.send_message(msg)
                         prev_notif_ts = now_ts
                         prev_signal_side = sig_now
 
-                    # ilk turda prev'i set et (bildirim spam olmasın)
                     if prev_signal_side is None:
                         prev_signal_side = sig_now
 
@@ -1321,6 +1293,75 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
         await asyncio.sleep(LOOP_SLEEP_SECONDS)
 
+# ----------------------------------------------------------------------
+# NEW: Scanner loop (light) -> then run heavy bot_loop on selected symbol
+# ----------------------------------------------------------------------
+async def scanner_loop(trading_objects: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
+    global system_logger
+
+    symbols = parse_symbols_env()
+    scan_interval = os.getenv("SCAN_INTERVAL", "1m").strip()
+    scan_limit = int(os.getenv("SCAN_LIMIT", "200"))
+    scan_every = float(os.getenv("SCAN_EVERY_SEC", "15"))
+    topk = int(os.getenv("SCAN_TOPK", "3"))
+    conc = int(os.getenv("SCAN_CONCURRENCY", "4"))
+
+    sem = asyncio.Semaphore(max(1, conc))
+
+    async def _scan_one(sym: str) -> Dict[str, Any]:
+        async with sem:
+            try:
+                df = await fetch_klines(
+                    client=trading_objects["client"],
+                    symbol=sym,
+                    interval=scan_interval,
+                    limit=scan_limit,
+                    logger=system_logger,
+                )
+                score = _light_score_from_klines(df)
+                last_px = None
+                try:
+                    last_px = float(pd.to_numeric(df["close"].iloc[-1], errors="coerce"))
+                except Exception:
+                    last_px = None
+                return {"symbol": sym, "score": float(score), "last": last_px}
+            except Exception as e:
+                if system_logger:
+                    system_logger.debug("[SCAN] %s failed: %s", sym, e)
+                return {"symbol": sym, "score": 0.0, "last": None}
+
+    if system_logger:
+        system_logger.info(
+            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d",
+            len(symbols), scan_interval, topk, scan_every, conc
+        )
+
+    # NOTE: Heavy loop: bir sembol üzerinde çalışacak (eski davranış)
+    # Multi sembol heavy'ye geçmek için bot_loop'u run_once'a bölmek gerekir.
+    # Şimdilik: en yüksek skorlu sembolü seçip objs["symbol"] override ederek bot_loop'a sokuyoruz.
+
+    while True:
+        rows = await asyncio.gather(*[_scan_one(s) for s in symbols])
+        rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
+
+        chosen = [r["symbol"] for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
+        pick = (chosen[0] if chosen else (symbols[0] if symbols else None))
+
+        if system_logger:
+            system_logger.info(
+                "[SCAN] pick=%s | top=%s | scores=%s",
+                pick,
+                chosen[:topk],
+                [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
+            )
+
+        if pick:
+            trading_objects["symbol"] = pick
+
+        # Heavy loop'u bir kez başlatıyoruz ve içeride sürekli döner.
+        # Bu yüzden scanner->heavy switch'i "ilk seferde" yapıyoruz.
+        await bot_loop(trading_objects, prob_stab)
+
 
 # ----------------------------------------------------------------------
 # Async main
@@ -1330,26 +1371,21 @@ async def async_main() -> None:
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN
 
-    # 1) .env + Secret Manager -> os.environ
     load_environment_variables()
 
-    # 2) logger setup
     setup_logger()
     system_logger = logging.getLogger("system")
 
-    # 3) Credentials class'ını ENV'den yeniden doldur (Secret Manager sonrası)
     try:
         Credentials.refresh_from_env()
     except Exception:
         pass
 
-    # 4) Missing log (debug amaçlı)
     try:
         Credentials.log_missing(prefix='[ENV]')
     except Exception:
         pass
 
-    # 5) Env flag’leri artık güvenle okunabilir
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -1369,15 +1405,15 @@ async def async_main() -> None:
         pg = os.getenv("PG_DSN") or ""
         masked = pg
         if "://" in pg and "@" in pg:
-            # postgresql://user:pass@host:port/db  -> pass mask
             try:
                 import re
                 masked = re.sub(r":([^:@/]+)@", r":***@", pg)
             except Exception:
                 masked = "******"
         system_logger.info("[ENV] PG_DSN=%s", masked if masked else "(empty)")
-
         system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
+        system_logger.info("[ENV] SYMBOLS=%s", os.getenv("SYMBOLS"))
+        system_logger.info("[ENV] SCAN_ENABLE=%s", os.getenv("SCAN_ENABLE"))
 
     prob_stab = ProbStabilizer(
         alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
@@ -1397,6 +1433,11 @@ async def async_main() -> None:
             system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
 
     trading_objects = create_trading_objects()
+
+    scan_enable = get_bool_env("SCAN_ENABLE", False)
+    if scan_enable:
+        await scanner_loop(trading_objects, prob_stab)
+        return
 
     try:
         await bot_loop(trading_objects, prob_stab)
