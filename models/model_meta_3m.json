@@ -1,6 +1,6 @@
 {
   "interval": "3m",
-  "symbol": "BTCUSDT",
+  "symbol": "XRPUSDT",
   "feature_schema": [
     "open_time",
     "open",
@@ -28,7 +28,7 @@
   "feature_source": "offline_train_hybrid::build_features",
   "n_samples": 50000,
   "n_features": 22,
-  "best_auc": 0.5159713525336566,
+  "best_auc": 0.5046221207098558,
   "best_side": "long",
   "use_lstm_hybrid": true,
   "seq_len": 50,
@@ -38,54 +38,12 @@
   "sgd_alpha": 0.0001,
   "sgd_max_iter": 50,
   "sgd_tol": 0.001,
-  "auc_used": 0.5159713525336566,
-  "auc_used_source": "auto_fallback_from_existing_keys",
   "auc_history": [
     {
-      "ts": "2026-01-04T18:58:39.522010+00:00",
-      "auc": 0.5159713525336566
-    },
-    {
-      "ts": "2026-01-05T08:25:29.092950+00:00",
-      "auc": 0.5159713525336566
-    },
-    {
-      "ts": "2026-01-07T17:44:59.923450+00:00",
-      "auc": 0.5159713525336566
-    },
-    {
-      "ts": "2026-01-08T09:29:33.174537+00:00",
-      "auc": 0.5159713525336566
+      "ts": "2026-01-09T13:21:46.860098+00:00",
+      "auc": 0.5046221207098558
     }
   ],
   "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
-  "auc_history_last_day": "2026-01-08",
-  "auc_history_daily_source": "append_auc_used_once_per_day::auc_used",
-  "lstm_feature_schema": [
-    "open_time",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "close_time",
-    "quote_asset_volume",
-    "number_of_trades",
-    "taker_buy_base_volume",
-    "taker_buy_quote_volume",
-    "ignore",
-    "hl_range",
-    "oc_change",
-    "return_1",
-    "return_3",
-    "return_5",
-    "ma_5",
-    "ma_10",
-    "ma_20",
-    "vol_10",
-    "dummy_extra"
-  ],
-  "lstm_long_auc": 0.601218581199646,
-  "lstm_short_auc": 0.6021442413330078,
-  "lstm_trained_at": "2026-01-05T10:57:20.592610+00:00"
+  "auc_history_last_day": "2026-01-09"
 }
