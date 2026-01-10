@@ -23,7 +23,7 @@ try:
 except Exception:
     _CFG = None
 
-from main import build_features, build_labels
+from training.offline_train_hybrid import build_features, build_labels
 
 logger = logging.getLogger("lstm_train")
 logging.basicConfig(
