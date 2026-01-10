@@ -8,7 +8,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import signal
 import json
 import time
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 
 import pandas as pd
 import threading
@@ -24,10 +24,9 @@ from core.risk_manager import RiskManager
 from core.trade_executor import TradeExecutor
 
 from data.anomaly_detection import AnomalyDetector
-from data.online_learning import OnlineLearner
 from data.whale_detector import MultiTimeframeWhaleDetector
 
-from models.hybrid_inference import HybridModel, HybridMultiTFModel
+from models.hybrid_inference import HybridMultiTFModel
 from models.model_registry import ModelRegistry
 
 from tg_bot.telegram_bot import TelegramBot
@@ -36,9 +35,8 @@ from tg_bot.telegram_bot import TelegramBot
 from websocket.binance_ws import BinanceWS
 from websocket.okx_ws import OKXWS
 
-# NEW: p_buy stabilization + safe proba
+# p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
-from core.model_utils import safe_p_buy
 
 # TEK SÖZLEŞME: schema normalize
 from features.schema import normalize_to_schema
@@ -48,7 +46,12 @@ from app_paths import MODELS_DIR
 
 from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
 
-from scanner.light_scanner import LightScanner
+# Optional: project light scanner (varsa)
+try:
+    from scanner.light_scanner import LightScanner  # type: ignore
+except Exception:
+    LightScanner = None  # type: ignore
+
 
 # ----------------------------------------------------------------------
 # Global config / flags
@@ -61,9 +64,7 @@ system_logger: Optional[logging.Logger] = None
 LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
 
 # Default (env parse ile override edilecek)
-MTF_INTERVALS_DEFAULT = ["1m", "5m", "15m", "30m", "1h"]
-
-current_ws = None
+MTF_INTERVALS_DEFAULT = ["1m", "3m", "5m", "15m", "30m", "1h"]
 
 
 def get_bool_env(name: str, default: bool = False) -> bool:
@@ -99,9 +100,6 @@ def parse_csv_env_list(name: str, default: List[str]) -> List[str]:
     return parts if parts else list(default)
 
 
-# -------------------------
-# NEW: SYMBOLS parser
-# -------------------------
 def parse_symbols_env() -> List[str]:
     default_symbol = os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")
     syms = parse_csv_env_list("SYMBOLS", [default_symbol])
@@ -178,8 +176,9 @@ def _compute_adaptive_alpha(atr_value: float) -> float:
     alpha = max(a_min, min(a_max, alpha))
     return float(alpha)
 
+
 # ----------------------------------------------------------------------
-# NEW: Whale short-layer weights veto/boost + renorm + trend veto
+# Whale short-layer weights veto/boost + renorm + trend veto
 # ----------------------------------------------------------------------
 def _apply_whale_to_short_weights(
     mtf_debug: dict,
@@ -283,7 +282,6 @@ def _trend_veto(signal_side: str, p_by_itv: dict):
         return False, "OK"
 
     return False, "HOLD"
-
 
 def _extract_p_by_itv(mtf_debug: dict) -> Dict[str, Optional[float]]:
     p_by_itv: Dict[str, Optional[float]] = {}
@@ -430,6 +428,7 @@ def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = df.ffill().bfill().fillna(0.0)
 
     return df
+
 
 def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     if df is None or len(df) < period + 2:
@@ -711,14 +710,10 @@ def create_trading_objects() -> Dict[str, Any]:
 
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
+    # Base interval model (tek interval kararları için)
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
-    try:
-        if hasattr(hybrid_model, "use_lstm_hybrid"):
-            hybrid_model.use_lstm_hybrid = bool(HYBRID_MODE)
-    except Exception:
-        pass
-
+    # MTF için tüm interval modelleri
     models_by_interval = {
         itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
         for itv in mtf_intervals
@@ -791,7 +786,7 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
         tg_bot=tg_bot,
     )
-
+    # Telegram bot_data inject (opsiyonel)
     try:
         if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
             tg_bot.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
@@ -826,7 +821,7 @@ def create_trading_objects() -> Dict[str, Any]:
                         system_logger.info("[OKXWS] disabled (OKX_WS_ENABLE!=1)")
 
                 try:
-                    dispatcher.bot_data["okx_ws"] = okx_ws
+                    tg_bot.dispatcher.bot_data["okx_ws"] = okx_ws  # type: ignore
                 except Exception:
                     pass
 
@@ -834,13 +829,6 @@ def create_trading_objects() -> Dict[str, Any]:
     except Exception as e:
         if system_logger:
             system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
-
-    online_model = registry.get_online(
-        interval=interval,
-        base_model_name="online_model",
-        n_classes=2,
-        load_existing=None,
-    )
 
     return {
         "symbol": symbol,
@@ -854,7 +842,8 @@ def create_trading_objects() -> Dict[str, Any]:
         "mtf_intervals": mtf_intervals,
         "whale_detector": whale_detector,
         "tg_bot": tg_bot,
-        "online_model": online_model,
+        "registry": registry,
+        "models_by_interval": models_by_interval,
     }
 
 
@@ -866,44 +855,50 @@ def _normalize_signal(sig: Any) -> str:
         return "short"
     return "hold"
 
+
 # ----------------------------------------------------------------------
-# Ana trading loop
+# Heavy engine (tek tur inference + trade)
 # ----------------------------------------------------------------------
-async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
-    global system_logger
+class HeavyEngine:
+    def __init__(self, objs: Dict[str, Any]):
+        self.objs = objs
+        self.client = objs["client"]
+        self.trade_executor = objs["trade_executor"]
+        self.hybrid_model = objs["hybrid_model"]
+        self.mtf_ensemble = objs.get("mtf_ensemble")
+        self.whale_detector = objs.get("whale_detector")
+        self.tg_bot = objs.get("tg_bot")
+        self.interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
+        self.data_limit = int(os.getenv("DATA_LIMIT", "500"))
+        self.mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
-    tg_bot = objs.get("tg_bot")
-    prev_signal_side: Optional[str] = None
-    prev_notif_ts: float = 0.0
+        self.anomaly_detector = AnomalyDetector(logger=system_logger)
 
-    client = objs["client"]
-    trade_executor = objs["trade_executor"]
-    whale_detector = objs.get("whale_detector")
-    hybrid_model = objs["hybrid_model"]
-    mtf_ensemble = objs.get("mtf_ensemble")
+        # schema cache
+        self._schema_cache: Dict[str, Optional[List[str]]] = {}
 
-    symbol = objs.get("symbol", os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT")))
-    interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
-    data_limit = int(os.getenv("DATA_LIMIT", "500"))
+        # per-symbol EMA stabilizer (pariteler karışmasın)
+        self._prob_stab_by_symbol: Dict[str, ProbStabilizer] = {}
 
-    mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
+        # telegram notify state (per symbol)
+        self._prev_signal: Dict[str, str] = {}
+        self._prev_notif_ts: Dict[str, float] = {}
 
-    mtf_debug_every = int(os.getenv("MTF_DEBUG_EVERY", "1"))
-    loop_i = 0
+    def _get_prob_stab(self, symbol: str) -> ProbStabilizer:
+        if symbol in self._prob_stab_by_symbol:
+            return self._prob_stab_by_symbol[symbol]
 
-    if system_logger:
-        system_logger.info(
-            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
-            symbol, interval, TRAINING_MODE, HYBRID_MODE, USE_MTF_ENS
+        ps = ProbStabilizer(
+            alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
+            buy_thr=float(os.getenv("BUY_THRESHOLD", "0.60")),
+            sell_thr=float(os.getenv("SELL_THRESHOLD", "0.40")),
         )
+        self._prob_stab_by_symbol[symbol] = ps
+        return ps
 
-    anomaly_detector = AnomalyDetector(logger=system_logger)
-
-    _schema_cache: Dict[str, Optional[list[str]]] = {}
-
-    def _load_schema_from_disk(itv: str) -> Optional[list[str]]:
-        if itv in _schema_cache:
-            return _schema_cache[itv]
+    def _load_schema_from_disk(self, itv: str) -> Optional[List[str]]:
+        if itv in self._schema_cache:
+            return self._schema_cache[itv]
 
         try:
             p = os.path.join(MODELS_DIR, f"model_meta_{itv}.json")
@@ -911,26 +906,26 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                 d = json.load(f) or {}
             sch = d.get("feature_schema")
             if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
-                _schema_cache[itv] = sch
+                self._schema_cache[itv] = sch
                 return sch
         except Exception:
             pass
 
-        _schema_cache[itv] = None
+        self._schema_cache[itv] = None
         return None
 
-    def _fallback_schema_from_model() -> Optional[list[str]]:
-        meta = getattr(hybrid_model, "meta", {}) or {}
+    def _fallback_schema_from_model(self) -> Optional[List[str]]:
+        meta = getattr(self.hybrid_model, "meta", {}) or {}
         sch = meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
 
-    def _schema_for(itv: str) -> Optional[list[str]]:
-        return _load_schema_from_disk(itv) or _fallback_schema_from_model()
+    def _schema_for(self, itv: str) -> Optional[List[str]]:
+        return self._load_schema_from_disk(itv) or self._fallback_schema_from_model()
 
-    def _normalize_feat_df(feat_df: pd.DataFrame, itv: str) -> pd.DataFrame:
-        sch = _schema_for(itv)
+    def _normalize_feat_df(self, feat_df: pd.DataFrame, itv: str) -> pd.DataFrame:
+        sch = self._schema_for(itv)
         if not sch:
             if system_logger:
                 system_logger.warning(
@@ -948,345 +943,384 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
-    while True:
-        loop_i += 1
-        try:
-            raw_df = await fetch_klines(
-                client=client,
-                symbol=symbol,
-                interval=interval,
-                limit=data_limit,
-                logger=system_logger,
-            )
+    async def run_once(self, symbol: str) -> Dict[str, Any]:
+        """
+        Tek tur: data çek → FE → anomaly → single + MTF → whale/trend veto → EMA opsiyonel → execute_decision.
+        Dönen dict scanner seçiminde kullanılabilir.
+        """
+        global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS
 
-            feat_df = build_features(raw_df)
-            feat_df = _normalize_feat_df(feat_df, interval)
+        interval = self.interval
+        raw_df = await fetch_klines(
+            client=self.client,
+            symbol=symbol,
+            interval=interval,
+            limit=self.data_limit,
+            logger=system_logger,
+        )
 
-            sch_main = _schema_for(interval)
-            feat_df = anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
+        feat_df = build_features(raw_df)
+        feat_df = self._normalize_feat_df(feat_df, interval)
 
-            X_live = feat_df.tail(500)
+        sch_main = self._schema_for(interval)
+        feat_df = self.anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
 
-            p_arr_single, debug_single = hybrid_model.predict_proba(X_live)
-            p_single = float(p_arr_single[-1])
+        X_live = feat_df.tail(500)
 
-            meta = getattr(hybrid_model, "meta", {}) or {}
-            model_conf_factor = float(meta.get("confidence_factor", 1.0) or 1.0)
-            best_auc = float(meta.get("best_auc", 0.5) or 0.5)
-            best_side = meta.get("best_side", "long")
+        p_arr_single, debug_single = self.hybrid_model.predict_proba(X_live)
+        p_single = float(p_arr_single[-1])
 
-            mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
-            mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
+        meta = getattr(self.hybrid_model, "meta", {}) or {}
+        model_conf_factor = float(meta.get("confidence_factor", 1.0) or 1.0)
+        best_auc = float(meta.get("best_auc", 0.5) or 0.5)
+        best_side = meta.get("best_side", "long")
 
-            if USE_MTF_ENS and mtf_ensemble is not None:
-                for itv in mtf_intervals:
-                    if itv == interval:
-                        continue
-                    try:
-                        raw_df_itv = await fetch_klines(
-                            client=client,
-                            symbol=symbol,
-                            interval=itv,
-                            limit=data_limit,
-                            logger=system_logger,
-                        )
+        mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
+        mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
-                        feat_df_itv = build_features(raw_df_itv)
-                        feat_df_itv = _normalize_feat_df(feat_df_itv, itv)
-
-                        sch_itv = _schema_for(itv)
-                        feat_df_itv = anomaly_detector.filter_anomalies(feat_df_itv, schema=sch_itv)
-
-                        mtf_feats[itv] = feat_df_itv
-                        mtf_whale_raw[itv] = raw_df_itv
-
-                    except Exception as e:
-                        if system_logger:
-                            system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
-
-            p_used = p_single
-            mtf_debug: Optional[Dict[str, Any]] = None
-
-            if USE_MTF_ENS and mtf_ensemble is not None:
+        # Full MTF (sadece heavy aşamada)
+        if USE_MTF_ENS and self.mtf_ensemble is not None:
+            for itv in self.mtf_intervals:
+                if itv == interval:
+                    continue
                 try:
-                    X_by_interval: Dict[str, pd.DataFrame] = {}
-                    for itv, df_itv in mtf_feats.items():
-                        sch_itv = _schema_for(itv)
-                        if not sch_itv:
-                            continue
-                        X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
-
-                    if X_by_interval:
-                        p_ens, mtf_debug = mtf_ensemble.predict_proba_multi(
-                            X_dict=X_by_interval,
-                            standardize_auc_key="auc_used",
-                            standardize_overwrite=False,
-                        )
-                        p_used = float(p_ens)
-
-                        try:
-                            if (mtf_debug_every <= 1) or (loop_i % mtf_debug_every == 0):
-                                if USE_MTF_ENS and (mtf_ensemble is not None) and isinstance(mtf_debug, dict):
-                                    per = mtf_debug.get("per_interval", {}) or {}
-                                    wnorm = mtf_debug.get("weights_norm", []) or []
-                                    used = mtf_debug.get("intervals_used", []) or []
-
-                                    rows = []
-                                    for itv2 in used:
-                                        d = per.get(itv2, {}) or {}
-                                        p_last = d.get("p_last", None)
-                                        auc_used = d.get("auc_used", None)
-                                        if (p_last is not None) and (auc_used is not None):
-                                            rows.append(f"{itv2}:p={float(p_last):.4f},auc={float(auc_used):.4f}")
-                                        else:
-                                            rows.append(f"{itv2}:p={p_last},auc={auc_used}")
-
-                                    if system_logger:
-                                        system_logger.info(
-                                            "[MTF] ensemble_p=%.4f | weights_norm=%s | %s",
-                                            float(mtf_debug.get("ensemble_p", p_used if p_used is not None else 0.5)),
-                                            str(wnorm),
-                                            " | ".join(rows),
-                                        )
-                        except Exception as _e:
-                            if system_logger:
-                                system_logger.debug("[MTF] debug summary failed: %s", _e)
-
-                except Exception as e:
-                    if system_logger:
-                        system_logger.warning("[MTF] Ensemble hesaplanırken hata: %s", e)
-                    p_used = p_single
-                    mtf_debug = None
-
-            whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
-            whale_dir = "none"
-            whale_score = 0.0
-
-            if whale_detector is not None:
-                try:
-                    if hasattr(whale_detector, "analyze_multiple_timeframes"):
-                        whale_signals = whale_detector.analyze_multiple_timeframes(mtf_whale_raw)
-                        best_tf = None
-                        best_score = 0.0
-
-                        for tf, sig in whale_signals.items():
-                            whale_meta["per_tf"][tf] = {
-                                "direction": sig.direction,
-                                "score": sig.score,
-                                "reason": sig.reason,
-                            }
-                            if sig.direction != "none" and sig.score > best_score:
-                                best_score = sig.score
-                                best_tf = tf
-
-                        if best_tf is not None:
-                            best_sig = whale_signals[best_tf]
-                            whale_meta.update(
-                                {
-                                    "direction": best_sig.direction,
-                                    "score": best_sig.score,
-                                    "best_tf": best_tf,
-                                    "best_reason": best_sig.reason,
-                                }
-                            )
-                    elif hasattr(whale_detector, "from_klines"):
-                        ws = whale_detector.from_klines(raw_df)
-                        whale_meta.update(
-                            {
-                                "direction": ws.direction,
-                                "score": ws.score,
-                                "reason": ws.reason,
-                                "meta": ws.meta,
-                            }
-                        )
-                    whale_dir = str(whale_meta.get("direction", "none") or "none")
-                    whale_score = float(whale_meta.get("score", 0.0) or 0.0)
-
-                except Exception as e:
-                    if system_logger:
-                        system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
-
-            atr_period = int(os.getenv("ATR_PERIOD", "14"))
-            atr_value = compute_atr_from_klines(raw_df, period=atr_period)
-
-            probs: Dict[str, Any] = {
-                "p_used": p_used,
-                "p_single": p_single,
-                "p_sgd_mean": float(debug_single.get("p_sgd_mean", 0.0)) if isinstance(debug_single, dict) else 0.0,
-                "p_lstm_mean": float(debug_single.get("p_lstm_mean", 0.5)) if isinstance(debug_single, dict) else 0.5,
-            }
-
-            extra: Dict[str, Any] = {
-                "model_confidence_factor": model_conf_factor,
-                "best_auc": best_auc,
-                "best_side": best_side,
-                "mtf_debug": mtf_debug,
-                "whale_meta": whale_meta,
-                "atr": atr_value,
-                "p_buy_source": (debug_single.get("mode") if isinstance(debug_single, dict) else "unknown"),
-                "whale_dir": whale_dir,
-                "whale_score": float(whale_score),
-            }
-
-            signal_side: Optional[str] = None
-            use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", False)
-            ema_whale_only = get_bool_env("EMA_WHALE_ONLY", False)
-            ema_whale_thr = float(os.getenv("EMA_WHALE_THR", "0.50"))
-
-            try:
-                alpha_dyn = _compute_adaptive_alpha(atr_value)
-                if hasattr(prob_stab, "set_alpha"):
-                    prob_stab.set_alpha(alpha_dyn)
-                else:
-                    prob_stab.alpha = float(alpha_dyn)
-
-                whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
-                extra["ema_whale_on"] = bool(whale_on)
-
-                p_buy_raw = float(p_used)
-                p_buy_ema = prob_stab.update(p_buy_raw)
-                sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
-
-                probs["p_buy_raw"] = float(p_buy_raw)
-                probs["p_buy_ema"] = float(p_buy_ema)
-
-                extra["p_buy_raw"] = float(p_buy_raw)
-                extra["p_buy_ema"] = float(p_buy_ema)
-                extra["ema_alpha"] = float(getattr(prob_stab, "alpha", alpha_dyn))
-                extra["ema_whale_only"] = bool(ema_whale_only)
-                extra["ema_whale_thr"] = float(ema_whale_thr)
-
-                if use_ema_signal and (not ema_whale_only or whale_on):
-                    signal_side = sig_from_ema
-
-            except Exception as e:
-                if system_logger:
-                    system_logger.warning("[ONLINE] EMA block hata: %s", e)
-                signal_side = None
-
-            if signal_side is None:
-                long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
-                short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
-                if p_used >= long_thr:
-                    signal_side = "long"
-                elif p_used <= short_thr:
-                    signal_side = "short"
-                else:
-                    signal_side = "hold"
-                extra["signal_source"] = "HYBRID"
-            else:
-                extra["signal_source"] = "EMA"
-
-            try:
-                p_by_itv = _extract_p_by_itv(mtf_debug) if isinstance(mtf_debug, dict) else {}
-                vetoed, veto_reason = _trend_veto(signal_side, p_by_itv)
-                if vetoed:
-                    signal_side = "hold"
-                    extra.setdefault("veto_flags", []).append(veto_reason)
-            except Exception as e:
-                if system_logger:
-                    system_logger.warning("[VETO] trend_veto error: %s", e)
-
-            try:
-                if USE_MTF_ENS and isinstance(mtf_debug, dict) and signal_side in ("long", "short"):
-                    mtf_debug, whale_w_dbg = _apply_whale_to_short_weights(
-                        mtf_debug=mtf_debug,
-                        whale_dir=whale_dir,
-                        whale_score=float(whale_score),
-                        base_side=str(signal_side),
-                        veto_thr=float(os.getenv("WHALE_SHORT_VETO_THR", "0.70")),
-                        boost_thr=float(os.getenv("WHALE_SHORT_BOOST_THR", "0.60")),
-                        boost_max=float(os.getenv("WHALE_SHORT_BOOST_MAX", "1.25")),
+                    raw_df_itv = await fetch_klines(
+                        client=self.client,
+                        symbol=symbol,
+                        interval=itv,
+                        limit=self.data_limit,
+                        logger=system_logger,
                     )
 
-                    if isinstance(whale_w_dbg, dict) and whale_w_dbg.get("whale_applied"):
-                        extra["whale_weight_adjust"] = whale_w_dbg
-                        mtf_debug = _renorm_weights(mtf_debug)
-                        new_p = _recompute_ensemble_from_debug(mtf_debug)
-                        if new_p is not None:
-                            mtf_debug["ensemble_p"] = float(new_p)
-                            p_used = float(new_p)
-                            probs["p_used"] = float(p_used)
-                    extra["mtf_debug"] = mtf_debug
-            except Exception as e:
-                if system_logger:
-                    system_logger.warning("[WHALE][WEIGHT] apply/recompute error: %s", e)
+                    feat_df_itv = build_features(raw_df_itv)
+                    feat_df_itv = self._normalize_feat_df(feat_df_itv, itv)
 
+                    sch_itv = self._schema_for(itv)
+                    feat_df_itv = self.anomaly_detector.filter_anomalies(feat_df_itv, schema=sch_itv)
+
+                    mtf_feats[itv] = feat_df_itv
+                    mtf_whale_raw[itv] = raw_df_itv
+
+                except Exception as e:
+                    if system_logger:
+                        system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
+
+        p_used = p_single
+        mtf_debug: Optional[Dict[str, Any]] = None
+
+        if USE_MTF_ENS and self.mtf_ensemble is not None:
             try:
-                if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                    extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
-                    extra["p_buy_source"] = "ensemble_p"
-                    extra["signal_source"] = "MTF"
-            except Exception:
-                pass
+                X_by_interval: Dict[str, pd.DataFrame] = {}
+                for itv, df_itv in mtf_feats.items():
+                    sch_itv = self._schema_for(itv)
+                    if not sch_itv:
+                        continue
+                    X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
 
-            last_price = float(raw_df["close"].iloc[-1])
+                if X_by_interval:
+                    p_ens, mtf_debug = self.mtf_ensemble.predict_proba_multi(
+                        X_dict=X_by_interval,
+                        standardize_auc_key="auc_used",
+                        standardize_overwrite=False,
+                    )
+                    p_used = float(p_ens)
 
-            try:
-                enable_tg_snapshot = str(os.getenv("TELEGRAM_ENABLE_SNAPSHOT", "1")).strip().lower() not in ("0", "false", "no", "off", "")
-                enable_tg_notify = str(os.getenv("TELEGRAM_NOTIFY_SIGNALS", "1")).strip().lower() not in ("0", "false", "no", "off", "")
-                notify_cooldown_s = float(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S", "10"))
-
-                if tg_bot is not None and getattr(tg_bot, "dispatcher", None) and enable_tg_snapshot:
-                    aucs: Dict[str, Any] = {}
+                    # kısa debug
                     try:
                         if isinstance(mtf_debug, dict):
                             per = mtf_debug.get("per_interval", {}) or {}
-                            for itv2, d in per.items():
-                                if isinstance(d, dict) and ("auc_used" in d):
-                                    aucs[str(itv2)] = d.get("auc_used")
-                    except Exception:
-                        aucs = {}
+                            wnorm = mtf_debug.get("weights_norm", []) or []
+                            used = mtf_debug.get("intervals_used", []) or []
 
-                    tg_bot.dispatcher.bot_data["status_snapshot"] = {
-                        "symbol": symbol,
-                        "signal": str(signal_side).upper() if signal_side else "N/A",
-                        "ensemble_p": float(p_used) if p_used is not None else None,
-                        "intervals": list(mtf_intervals) if isinstance(mtf_intervals, list) else [],
-                        "aucs": aucs,
-                        "last_price": float(last_price),
-                        "why": str(extra.get("signal_source", "")) if isinstance(extra, dict) else "",
-                    }
+                            rows = []
+                            for itv2 in used:
+                                d = per.get(itv2, {}) or {}
+                                p_last = d.get("p_last", None)
+                                auc_used = d.get("auc_used", None)
+                                if (p_last is not None) and (auc_used is not None):
+                                    rows.append(f"{itv2}:p={float(p_last):.4f},auc={float(auc_used):.4f}")
+                                else:
+                                    rows.append(f"{itv2}:p={p_last},auc={auc_used}")
 
-                now_ts = time.time()
-                if enable_tg_notify and tg_bot is not None:
-                    sig_now = str(signal_side or "hold").lower()
-                    sig_prev = str(prev_signal_side or "hold").lower()
+                            if system_logger:
+                                system_logger.info(
+                                    "[MTF] %s ensemble_p=%.4f | weights_norm=%s | %s",
+                                    symbol,
+                                    float(mtf_debug.get("ensemble_p", p_used if p_used is not None else 0.5)),
+                                    str(wnorm),
+                                    " | ".join(rows),
+                                )
+                    except Exception as _e:
+                        if system_logger:
+                            system_logger.debug("[MTF] debug summary failed: %s", _e)
 
-                    if sig_now != sig_prev and (now_ts - prev_notif_ts) >= notify_cooldown_s:
-                        emoji = {"long": "✅", "short": "🟣", "hold": "⏸"}.get(sig_now, "❔")
-                        src = (extra.get("signal_source") if isinstance(extra, dict) else None) or "?"
-                        msg = (
-                            f"{emoji} *Signal Update*\n"
-                            f"• *Symbol:* `{symbol}`\n"
-                            f"• *From → To:* `{sig_prev.upper()}` → `{sig_now.upper()}`\n"
-                            f"• *p_used:* `{float(p_used):.4f}`\n"
-                            f"• *Price:* `{float(last_price):.4f}`\n"
-                            f"• *Source:* `{src}`"
-                        )
-                        tg_bot.send_message(msg)
-                        prev_notif_ts = now_ts
-                        prev_signal_side = sig_now
-
-                    if prev_signal_side is None:
-                        prev_signal_side = sig_now
-
-            except Exception as _tg_e:
+            except Exception as e:
                 if system_logger:
-                    system_logger.debug("[TG] snapshot/notify block hata: %s", _tg_e)
+                    system_logger.warning("[MTF] Ensemble hesaplanırken hata: %s", e)
+                p_used = p_single
+                mtf_debug = None
 
-            await trade_executor.execute_decision(
-                signal=signal_side,
-                symbol=symbol,
-                price=last_price,
-                size=None,
-                interval=interval,
-                training_mode=TRAINING_MODE,
-                hybrid_mode=HYBRID_MODE,
-                probs=probs,
-                extra=extra,
-            )
+        whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
+        whale_dir = "none"
+        whale_score = 0.0
 
+        if self.whale_detector is not None:
+            try:
+                if hasattr(self.whale_detector, "analyze_multiple_timeframes"):
+                    whale_signals = self.whale_detector.analyze_multiple_timeframes(mtf_whale_raw)
+                    best_tf = None
+                    best_score = 0.0
+
+                    for tf, sig in whale_signals.items():
+                        whale_meta["per_tf"][tf] = {
+                            "direction": sig.direction,
+                            "score": sig.score,
+                            "reason": sig.reason,
+                        }
+                        if sig.direction != "none" and sig.score > best_score:
+                            best_score = sig.score
+                            best_tf = tf
+
+                    if best_tf is not None:
+                        best_sig = whale_signals[best_tf]
+                        whale_meta.update(
+                            {
+                                "direction": best_sig.direction,
+                                "score": best_sig.score,
+                                "best_tf": best_tf,
+                                "best_reason": best_sig.reason,
+                            }
+                        )
+                elif hasattr(self.whale_detector, "from_klines"):
+                    ws = self.whale_detector.from_klines(raw_df)
+                    whale_meta.update(
+                        {
+                            "direction": ws.direction,
+                            "score": ws.score,
+                            "reason": ws.reason,
+                            "meta": ws.meta,
+                        }
+                    )
+                whale_dir = str(whale_meta.get("direction", "none") or "none")
+                whale_score = float(whale_meta.get("score", 0.0) or 0.0)
+
+            except Exception as e:
+                if system_logger:
+                    system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
+
+        atr_period = int(os.getenv("ATR_PERIOD", "14"))
+        atr_value = compute_atr_from_klines(raw_df, period=atr_period)
+
+        probs: Dict[str, Any] = {
+            "p_used": p_used,
+            "p_single": p_single,
+            "p_sgd_mean": float(debug_single.get("p_sgd_mean", 0.0)) if isinstance(debug_single, dict) else 0.0,
+            "p_lstm_mean": float(debug_single.get("p_lstm_mean", 0.5)) if isinstance(debug_single, dict) else 0.5,
+        }
+
+        extra: Dict[str, Any] = {
+            "model_confidence_factor": model_conf_factor,
+            "best_auc": best_auc,
+            "best_side": best_side,
+            "mtf_debug": mtf_debug,
+            "whale_meta": whale_meta,
+            "atr": atr_value,
+            "p_buy_source": (debug_single.get("mode") if isinstance(debug_single, dict) else "unknown"),
+            "whale_dir": whale_dir,
+            "whale_score": float(whale_score),
+        }
+
+        # Signal: EMA veya threshold
+        signal_side: Optional[str] = None
+        use_ema_signal = get_bool_env("USE_PBUY_STABILIZER_SIGNAL", False)
+        ema_whale_only = get_bool_env("EMA_WHALE_ONLY", False)
+        ema_whale_thr = float(os.getenv("EMA_WHALE_THR", "0.50"))
+
+        prob_stab = self._get_prob_stab(symbol)
+
+        try:
+            alpha_dyn = _compute_adaptive_alpha(atr_value)
+            if hasattr(prob_stab, "set_alpha"):
+                prob_stab.set_alpha(alpha_dyn)
+            else:
+                prob_stab.alpha = float(alpha_dyn)
+
+            whale_on = (whale_dir != "none") and (whale_score >= ema_whale_thr)
+            extra["ema_whale_on"] = bool(whale_on)
+
+            p_buy_raw = float(p_used)
+            p_buy_ema = prob_stab.update(p_buy_raw)
+            sig_from_ema = _normalize_signal(prob_stab.signal(p_buy_ema))
+
+            probs["p_buy_raw"] = float(p_buy_raw)
+            probs["p_buy_ema"] = float(p_buy_ema)
+
+            extra["p_buy_raw"] = float(p_buy_raw)
+            extra["p_buy_ema"] = float(p_buy_ema)
+            extra["ema_alpha"] = float(getattr(prob_stab, "alpha", alpha_dyn))
+            extra["ema_whale_only"] = bool(ema_whale_only)
+            extra["ema_whale_thr"] = float(ema_whale_thr)
+
+            if use_ema_signal and (not ema_whale_only or whale_on):
+                signal_side = sig_from_ema
+
+        except Exception as e:
+            if system_logger:
+                system_logger.warning("[ONLINE] EMA block hata: %s", e)
+            signal_side = None
+
+        if signal_side is None:
+            long_thr = float(os.getenv("LONG_THRESHOLD", "0.60"))
+            short_thr = float(os.getenv("SHORT_THRESHOLD", "0.40"))
+            if p_used >= long_thr:
+                signal_side = "long"
+            elif p_used <= short_thr:
+                signal_side = "short"
+            else:
+                signal_side = "hold"
+            extra["signal_source"] = "HYBRID"
+        else:
+            extra["signal_source"] = "EMA"
+
+        # Trend veto
+        try:
+            p_by_itv = _extract_p_by_itv(mtf_debug) if isinstance(mtf_debug, dict) else {}
+            vetoed, veto_reason = _trend_veto(signal_side, p_by_itv)
+            if vetoed:
+                signal_side = "hold"
+                extra.setdefault("veto_flags", []).append(veto_reason)
+        except Exception as e:
+            if system_logger:
+                system_logger.warning("[VETO] trend_veto error: %s", e)
+
+        # Whale weight adjust (MTF varsa)
+        try:
+            if USE_MTF_ENS and isinstance(mtf_debug, dict) and signal_side in ("long", "short"):
+                mtf_debug, whale_w_dbg = _apply_whale_to_short_weights(
+                    mtf_debug=mtf_debug,
+                    whale_dir=whale_dir,
+                    whale_score=float(whale_score),
+                    base_side=str(signal_side),
+                    veto_thr=float(os.getenv("WHALE_SHORT_VETO_THR", "0.70")),
+                    boost_thr=float(os.getenv("WHALE_SHORT_BOOST_THR", "0.60")),
+                    boost_max=float(os.getenv("WHALE_SHORT_BOOST_MAX", "1.25")),
+                )
+
+                if isinstance(whale_w_dbg, dict) and whale_w_dbg.get("whale_applied"):
+                    extra["whale_weight_adjust"] = whale_w_dbg
+                    mtf_debug = _renorm_weights(mtf_debug)
+                    new_p = _recompute_ensemble_from_debug(mtf_debug)
+                    if new_p is not None:
+                        mtf_debug["ensemble_p"] = float(new_p)
+                        p_used = float(new_p)
+                        probs["p_used"] = float(p_used)
+                extra["mtf_debug"] = mtf_debug
+        except Exception as e:
+            if system_logger:
+                system_logger.warning("[WHALE][WEIGHT] apply/recompute error: %s", e)
+
+        # ensemble_p varsa override log
+        try:
+            if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
+                extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
+                extra["p_buy_source"] = "ensemble_p"
+                extra["signal_source"] = "MTF"
+        except Exception:
+            pass
+
+        last_price = float(raw_df["close"].iloc[-1])
+
+        # Telegram snapshot/notify (per-symbol)
+        try:
+            enable_tg_snapshot = str(os.getenv("TELEGRAM_ENABLE_SNAPSHOT", "1")).strip().lower() not in ("0", "false", "no", "off", "")
+            enable_tg_notify = str(os.getenv("TELEGRAM_NOTIFY_SIGNALS", "1")).strip().lower() not in ("0", "false", "no", "off", "")
+            notify_cooldown_s = float(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S", "10"))
+
+            if self.tg_bot is not None and getattr(self.tg_bot, "dispatcher", None) and enable_tg_snapshot:
+                aucs: Dict[str, Any] = {}
+                try:
+                    if isinstance(mtf_debug, dict):
+                        per = mtf_debug.get("per_interval", {}) or {}
+                        for itv2, d in per.items():
+                            if isinstance(d, dict) and ("auc_used" in d):
+                                aucs[str(itv2)] = d.get("auc_used")
+                except Exception:
+                    aucs = {}
+
+                self.tg_bot.dispatcher.bot_data["status_snapshot"] = {
+                    "symbol": symbol,
+                    "signal": str(signal_side).upper() if signal_side else "N/A",
+                    "ensemble_p": float(p_used) if p_used is not None else None,
+                    "intervals": list(self.mtf_intervals) if isinstance(self.mtf_intervals, list) else [],
+                    "aucs": aucs,
+                    "last_price": float(last_price),
+                    "why": str(extra.get("signal_source", "")) if isinstance(extra, dict) else "",
+                }
+
+            now_ts = time.time()
+            if enable_tg_notify and self.tg_bot is not None:
+                sig_now = str(signal_side or "hold").lower()
+                sig_prev = str(self._prev_signal.get(symbol, "hold") or "hold").lower()
+                prev_ts = float(self._prev_notif_ts.get(symbol, 0.0))
+
+                if sig_now != sig_prev and (now_ts - prev_ts) >= notify_cooldown_s:
+                    emoji = {"long": "✅", "short": "🟣", "hold": "⏸"}.get(sig_now, "❔")
+                    src = (extra.get("signal_source") if isinstance(extra, dict) else None) or "?"
+                    msg = (
+                        f"{emoji} *Signal Update*\n"
+                        f"• *Symbol:* `{symbol}`\n"
+                        f"• *From → To:* `{sig_prev.upper()}` → `{sig_now.upper()}`\n"
+                        f"• *p_used:* `{float(p_used):.4f}`\n"
+                        f"• *Price:* `{float(last_price):.4f}`\n"
+                        f"• *Source:* `{src}`"
+                    )
+                    self.tg_bot.send_message(msg)
+                    self._prev_notif_ts[symbol] = now_ts
+                    self._prev_signal[symbol] = sig_now
+
+                if symbol not in self._prev_signal:
+                    self._prev_signal[symbol] = sig_now
+
+        except Exception as _tg_e:
+            if system_logger:
+                system_logger.debug("[TG] snapshot/notify block hata: %s", _tg_e)
+
+        # Trade execute
+        await self.trade_executor.execute_decision(
+            signal=signal_side,
+            symbol=symbol,
+            price=last_price,
+            size=None,
+            interval=interval,
+            training_mode=TRAINING_MODE,
+            hybrid_mode=HYBRID_MODE,
+            probs=probs,
+            extra=extra,
+        )
+
+        return {
+            "symbol": symbol,
+            "signal": signal_side,
+            "p_used": float(p_used),
+            "p_single": float(p_single),
+            "price": float(last_price),
+            "extra": extra,
+        }
+
+
+# ----------------------------------------------------------------------
+# Non-scan mode: tek symbol heavy loop
+# ----------------------------------------------------------------------
+async def bot_loop_single_symbol(engine: HeavyEngine, symbol: str) -> None:
+    if system_logger:
+        system_logger.info(
+            "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
+            symbol, engine.interval, TRAINING_MODE, HYBRID_MODE, USE_MTF_ENS
+        )
+
+    while True:
+        try:
+            await engine.run_once(symbol)
         except Exception as e:
             if system_logger:
                 system_logger.exception("[LOOP ERROR] %s", e)
@@ -1295,13 +1329,14 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
 
         await asyncio.sleep(LOOP_SLEEP_SECONDS)
 
-# ----------------------------------------------------------------------
-# NEW: Scanner loop (light) -> then run heavy bot_loop on selected symbol
-# ----------------------------------------------------------------------
-async def scanner_loop(trading_objects: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
-    global system_logger
 
+# ----------------------------------------------------------------------
+# Scanner → Candidates → Heavy Full MTF (sadece adaylar)
+# ----------------------------------------------------------------------
+async def scanner_loop(engine: HeavyEngine) -> None:
     symbols = parse_symbols_env()
+
+    # Light scan config
     scan_interval = os.getenv("SCAN_INTERVAL", "1m").strip()
     scan_limit = int(os.getenv("SCAN_LIMIT", "200"))
     scan_every = float(os.getenv("SCAN_EVERY_SEC", "15"))
@@ -1310,27 +1345,52 @@ async def scanner_loop(trading_objects: Dict[str, Any], prob_stab: ProbStabilize
 
     sem = asyncio.Semaphore(max(1, conc))
 
+    # optional project LightScanner
+    light_scanner = None
+    if LightScanner is not None:
+        try:
+            light_scanner = LightScanner()  # type: ignore
+        except Exception:
+            light_scanner = None
+
     async def _scan_one(sym: str) -> Dict[str, Any]:
         async with sem:
             try:
                 df = await fetch_klines(
-                    client=trading_objects["client"],
+                    client=engine.client,
                     symbol=sym,
                     interval=scan_interval,
                     limit=scan_limit,
                     logger=system_logger,
                 )
-                score = _light_score_from_klines(df)
+                if light_scanner is not None and hasattr(light_scanner, "score"):
+                    try:
+                        out = light_scanner.score(df)  # type: ignore
+                        # out dict olabilir
+                        if isinstance(out, dict):
+                            score = float(out.get("score", 0.0) or 0.0)
+                            reason = out.get("reason")
+                        else:
+                            score = float(out)
+                            reason = None
+                    except Exception:
+                        score = _light_score_from_klines(df)
+                        reason = None
+                else:
+                    score = _light_score_from_klines(df)
+                    reason = None
+
                 last_px = None
                 try:
                     last_px = float(pd.to_numeric(df["close"].iloc[-1], errors="coerce"))
                 except Exception:
                     last_px = None
-                return {"symbol": sym, "score": float(score), "last": last_px}
+
+                return {"symbol": sym, "score": float(score), "reason": reason, "last": last_px}
             except Exception as e:
                 if system_logger:
                     system_logger.debug("[SCAN] %s failed: %s", sym, e)
-                return {"symbol": sym, "score": 0.0, "last": None}
+                return {"symbol": sym, "score": 0.0, "reason": None, "last": None}
 
     if system_logger:
         system_logger.info(
@@ -1338,31 +1398,87 @@ async def scanner_loop(trading_objects: Dict[str, Any], prob_stab: ProbStabilize
             len(symbols), scan_interval, topk, scan_every, conc
         )
 
-    # NOTE: Heavy loop: bir sembol üzerinde çalışacak (eski davranış)
-    # Multi sembol heavy'ye geçmek için bot_loop'u run_once'a bölmek gerekir.
-    # Şimdilik: en yüksek skorlu sembolü seçip objs["symbol"] override ederek bot_loop'a sokuyoruz.
-
     while True:
+        t0 = time.time()
         rows = await asyncio.gather(*[_scan_one(s) for s in symbols])
         rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
 
-        chosen = [r["symbol"] for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
-        pick = (chosen[0] if chosen else (symbols[0] if symbols else None))
+        candidates = [r for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
+        if not candidates:
+            # fallback: en az 1 aday
+            candidates = rows[:1] if rows else []
+
+        cand_syms = [c["symbol"] for c in candidates]
+        pick = cand_syms[0] if cand_syms else (symbols[0] if symbols else None)
 
         if system_logger:
             system_logger.info(
-                "[SCAN] pick=%s | top=%s | scores=%s",
+                "[SCAN] pick=%s | candidates=%s | scores(top10)=%s",
                 pick,
-                chosen[:topk],
+                cand_syms,
                 [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
             )
 
-        if pick:
-            trading_objects["symbol"] = pick
+        # Heavy: sadece adaylarda çalış
+        heavy_results: List[Dict[str, Any]] = []
+        for sym in cand_syms:
+            try:
+                res = await engine.run_once(sym)
+                heavy_results.append(res)
+            except Exception as e:
+                if system_logger:
+                    system_logger.warning("[HEAVY] %s run_once failed: %s", sym, e)
 
-        # Heavy loop'u bir kez başlatıyoruz ve içeride sürekli döner.
-        # Bu yüzden scanner->heavy switch'i "ilk seferde" yapıyoruz.
-        await bot_loop(trading_objects, prob_stab)
+        # Kararı tek adaydan çıkar: önce "tradeable" sinyal olanlar, yoksa pick
+        def is_tradeable(r: Dict[str, Any]) -> bool:
+            s = str(r.get("signal", "hold")).lower()
+            return s in ("long", "short")
+
+        tradeables = [r for r in heavy_results if is_tradeable(r)]
+        chosen: Optional[Dict[str, Any]] = None
+
+        if tradeables:
+            # long için en yüksek p_used, short için en düşük p_used (en uzak)
+            best_long = None
+            best_short = None
+            for r in tradeables:
+                s = str(r.get("signal")).lower()
+                p = float(r.get("p_used", 0.5))
+                if s == "long":
+                    if best_long is None or p > float(best_long.get("p_used", 0.5)):
+                        best_long = r
+                elif s == "short":
+                    if best_short is None or p < float(best_short.get("p_used", 0.5)):
+                        best_short = r
+
+            # long vs short kıyas: 0.5'ten uzaklık
+            cand = []
+            if best_long is not None:
+                cand.append((abs(float(best_long["p_used"]) - 0.5), best_long))
+            if best_short is not None:
+                cand.append((abs(float(best_short["p_used"]) - 0.5), best_short))
+            cand.sort(key=lambda x: x[0], reverse=True)
+            chosen = cand[0][1] if cand else tradeables[0]
+        else:
+            # hepsi hold olduysa: yalnızca pick'i "monitor" etmiş oluruz (trade/hold zaten engine.run_once içinde yapıldı)
+            # burada ekstra bir şey yapmıyoruz.
+            chosen = None
+
+        # İstersen seçilen sonucu logla
+        if system_logger and chosen is not None:
+            system_logger.info(
+                "[SCAN->HEAVY] chosen=%s signal=%s p=%.4f price=%.4f | candidates=%s",
+                chosen.get("symbol"),
+                chosen.get("signal"),
+                float(chosen.get("p_used", 0.5)),
+                float(chosen.get("price", 0.0)),
+                cand_syms,
+            )
+
+        # scan döngüsünü sabitle
+        dt = time.time() - t0
+        sleep_s = max(0.0, scan_every - dt)
+        await asyncio.sleep(sleep_s)
 
 
 # ----------------------------------------------------------------------
@@ -1417,12 +1533,6 @@ async def async_main() -> None:
         system_logger.info("[ENV] SYMBOLS=%s", os.getenv("SYMBOLS"))
         system_logger.info("[ENV] SCAN_ENABLE=%s", os.getenv("SCAN_ENABLE"))
 
-    prob_stab = ProbStabilizer(
-        alpha=float(os.getenv("PBUY_EMA_ALPHA", "0.20")),
-        buy_thr=float(os.getenv("BUY_THRESHOLD", "0.60")),
-        sell_thr=float(os.getenv("SELL_THRESHOLD", "0.40")),
-    )
-
     enable_ws = get_bool_env("ENABLE_WS", False)
     if enable_ws:
         symbol = os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT"))
@@ -1435,17 +1545,16 @@ async def async_main() -> None:
             system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
 
     trading_objects = create_trading_objects()
+    engine = HeavyEngine(trading_objects)
 
     scan_enable = get_bool_env("SCAN_ENABLE", False)
     if scan_enable:
-        await scanner_loop(trading_objects, prob_stab)
+        await scanner_loop(engine)
         return
 
-    try:
-        await bot_loop(trading_objects, prob_stab)
-    finally:
-        pass
-
+    # scan kapalıysa tek symbol üzerinde eski davranış
+    symbol = str(trading_objects.get("symbol") or os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")).upper()
+    await bot_loop_single_symbol(engine, symbol)
 
 def main() -> None:
     loop = asyncio.new_event_loop()
