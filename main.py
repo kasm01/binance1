@@ -48,6 +48,8 @@ from app_paths import MODELS_DIR
 
 from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
 
+from scanner.light_scanner import LightScanner
+
 # ----------------------------------------------------------------------
 # Global config / flags
 # ----------------------------------------------------------------------

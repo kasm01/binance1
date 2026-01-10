@@ -42,8 +42,13 @@
     {
       "ts": "2026-01-09T13:21:46.860800+00:00",
       "auc": 0.5064462485845415
+    },
+    {
+      "ts": "2026-01-10T18:16:46.700050+00:00",
+      "auc": 0.5064462485845415
     }
   ],
   "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
-  "auc_history_last_day": "2026-01-09"
+  "auc_history_last_day": "2026-01-10",
+  "auc_history_daily_source": "append_auc_used_once_per_day::auc_used"
 }
