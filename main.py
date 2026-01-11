@@ -181,6 +181,7 @@ def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
     except Exception:
         return 0.0
 
+
 # ---- helpers: EMA adaptive alpha ----
 def _compute_adaptive_alpha(atr_value: float) -> float:
     a_min = float(os.getenv("EMA_ALPHA_MIN", "0.05"))
@@ -201,175 +202,6 @@ def _compute_adaptive_alpha(atr_value: float) -> float:
     alpha = a_min + (a_max - a_min) * (x / 2.0)
     alpha = max(a_min, min(a_max, alpha))
     return float(alpha)
-
-
-# ----------------------------------------------------------------------
-# Whale short-layer weights veto/boost + renorm + trend veto
-# ----------------------------------------------------------------------
-def _apply_whale_to_short_weights(
-    mtf_debug: dict,
-    whale_dir: str,
-    whale_score: float,
-    base_side: str,
-    veto_thr: float = 0.70,
-    boost_thr: float = 0.60,
-    boost_max: float = 1.25,
-):
-    if not isinstance(mtf_debug, dict):
-        return mtf_debug, {"whale_applied": False}
-
-    intervals = mtf_debug.get("intervals_used") or []
-    w_raw = mtf_debug.get("weights_raw") or []
-    if not intervals or not w_raw or len(intervals) != len(w_raw):
-        return mtf_debug, {"whale_applied": False, "reason": "no_weights"}
-
-    short_set = {"1m", "3m", "5m"}
-
-    if whale_dir not in ("long", "short") or whale_score <= 0:
-        return mtf_debug, {"whale_applied": False}
-
-    aligned = (whale_dir == base_side)
-    opp = not aligned
-
-    if opp and whale_score >= veto_thr:
-        w2 = []
-        for itv, w in zip(intervals, w_raw):
-            if itv in short_set:
-                w2.append(0.0)
-            else:
-                w2.append(float(w))
-        mtf_debug["weights_raw"] = w2
-        return mtf_debug, {
-            "whale_applied": True,
-            "mode": "VETO_SHORT_LAYERS",
-            "whale_score": float(whale_score),
-        }
-
-    if aligned and whale_score >= boost_thr:
-        mult = min(boost_max, 1.0 + (whale_score - boost_thr))
-        w2 = []
-        for itv, w in zip(intervals, w_raw):
-            if itv in short_set:
-                w2.append(float(w) * mult)
-            else:
-                w2.append(float(w))
-        mtf_debug["weights_raw"] = w2
-        return mtf_debug, {
-            "whale_applied": True,
-            "mode": "BOOST_SHORT_LAYERS",
-            "mult": float(mult),
-            "whale_score": float(whale_score),
-        }
-
-    return mtf_debug, {"whale_applied": False}
-
-
-def _renorm_weights(mtf_debug: dict):
-    w = mtf_debug.get("weights_raw") or []
-    s = float(sum(w)) if w else 0.0
-    if s > 0:
-        mtf_debug["weights_norm"] = [float(x) / s for x in w]
-    else:
-        mtf_debug["weights_norm"] = [0.0 for _ in w]
-    return mtf_debug
-
-
-def _trend_veto(signal_side: str, p_by_itv: dict):
-    """
-    Eşikler ENV'den okunur, yoksa defaultlar korunur.
-    ENV isimleri:
-      TREND_VETO_LONG_15M, TREND_VETO_LONG_30M, TREND_VETO_LONG_1H
-      TREND_VETO_SHORT_15M, TREND_VETO_SHORT_30M, TREND_VETO_SHORT_1H
-    """
-    veto_long_15m = get_float_env("TREND_VETO_LONG_15M", 0.48)
-    veto_long_30m = get_float_env("TREND_VETO_LONG_30M", 0.48)
-    veto_long_1h = get_float_env("TREND_VETO_LONG_1H", 0.47)
-
-    veto_short_15m = get_float_env("TREND_VETO_SHORT_15M", 0.52)
-    veto_short_30m = get_float_env("TREND_VETO_SHORT_30M", 0.52)
-    veto_short_1h = get_float_env("TREND_VETO_SHORT_1H", 0.53)
-
-    p15 = p_by_itv.get("15m")
-    p30 = p_by_itv.get("30m")
-    p1h = p_by_itv.get("1h")
-
-    if signal_side == "long":
-        if (p15 is not None and p15 < veto_long_15m) or \
-           (p30 is not None and p30 < veto_long_30m) or \
-           (p1h is not None and p1h < veto_long_1h):
-            return True, f"TREND_VETO_LONG p15={p15} p30={p30} p1h={p1h}"
-        return False, "OK"
-
-    if signal_side == "short":
-        if (p15 is not None and p15 > veto_short_15m) or \
-           (p30 is not None and p30 > veto_short_30m) or \
-           (p1h is not None and p1h > veto_short_1h):
-            return True, f"TREND_VETO_SHORT p15={p15} p30={p30} p1h={p1h}"
-        return False, "OK"
-
-    return False, "HOLD"
-
-
-def _extract_p_by_itv(mtf_debug: dict) -> Dict[str, Optional[float]]:
-    p_by_itv: Dict[str, Optional[float]] = {}
-    if not isinstance(mtf_debug, dict):
-        return p_by_itv
-
-    itvs = mtf_debug.get("intervals_used") or []
-    per = mtf_debug.get("per_interval") if isinstance(mtf_debug.get("per_interval"), dict) else {}
-
-    for itv in itvs:
-        p_last = None
-        try:
-            if isinstance(per, dict) and isinstance(per.get(itv), dict):
-                p_last = per.get(itv, {}).get("p_last")
-            elif isinstance(mtf_debug.get(itv), dict):
-                p_last = mtf_debug.get(itv, {}).get("p_last")
-        except Exception:
-            p_last = None
-
-        if p_last is None:
-            p_by_itv[itv] = None
-        else:
-            try:
-                p_by_itv[itv] = float(p_last)
-            except Exception:
-                p_by_itv[itv] = None
-
-    return p_by_itv
-
-
-def _recompute_ensemble_from_debug(mtf_debug: dict) -> Optional[float]:
-    if not isinstance(mtf_debug, dict):
-        return None
-
-    intervals = mtf_debug.get("intervals_used") or []
-    w_norm = mtf_debug.get("weights_norm") or []
-    if not intervals or not w_norm or len(intervals) != len(w_norm):
-        return None
-
-    p_by_itv = _extract_p_by_itv(mtf_debug)
-
-    num = 0.0
-    den = 0.0
-    for itv, w in zip(intervals, w_norm):
-        p = p_by_itv.get(itv)
-        if p is None:
-            continue
-        try:
-            wf = float(w)
-            pf = float(p)
-        except Exception:
-            continue
-        if wf <= 0:
-            continue
-        num += wf * pf
-        den += wf
-
-    if den <= 1e-12:
-        return None
-
-    return float(num / den)
 
 
 # Global env flag’ler (async_main içinde tekrar güncellenecek)
@@ -629,6 +461,8 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
 class ShutdownManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._done = False
+
         self._tg_bot: Optional[TelegramBot] = None
         self._binance_ws: Optional[BinanceWS] = None
         self._okx_ws: Optional[OKXWS] = None
@@ -662,10 +496,13 @@ class ShutdownManager:
 
     async def shutdown(self, reason: str = "unknown") -> None:
         log = system_logger
-        if log:
-            log.info("[SHUTDOWN] starting cleanup | reason=%s", reason)
 
+        # idempotent
         with self._lock:
+            if self._done:
+                return
+            self._done = True
+
             tg_bot = self._tg_bot
             bws = self._binance_ws
             okx = self._okx_ws
@@ -673,11 +510,13 @@ class ShutdownManager:
             pm = self._position_manager
             te = self._trade_executor
 
+        if log:
+            log.info("[SHUTDOWN] starting cleanup | reason=%s", reason)
+
         # 1) WS stop (Binance)
         try:
-            if bws is not None:
-                if hasattr(bws, "stop"):
-                    bws.stop(timeout=5.0)  # type: ignore
+            if bws is not None and hasattr(bws, "stop"):
+                bws.stop(timeout=5.0)  # type: ignore
                 if log:
                     log.info("[SHUTDOWN] BinanceWS stopped.")
         except Exception as e:
@@ -686,9 +525,8 @@ class ShutdownManager:
 
         # 2) WS stop (OKX)
         try:
-            if okx is not None:
-                if hasattr(okx, "stop"):
-                    okx.stop(timeout=5.0)  # type: ignore
+            if okx is not None and hasattr(okx, "stop"):
+                okx.stop(timeout=5.0)  # type: ignore
                 if log:
                     log.info("[SHUTDOWN] OKXWS stopped.")
         except Exception as e:
@@ -697,41 +535,40 @@ class ShutdownManager:
 
         # 3) Telegram stop
         try:
-            if tg_bot is not None:
-                if hasattr(tg_bot, "stop_polling"):
-                    tg_bot.stop_polling()  # type: ignore
+            if tg_bot is not None and hasattr(tg_bot, "stop_polling"):
+                tg_bot.stop_polling()  # type: ignore
                 if log:
                     log.info("[SHUTDOWN] Telegram polling stopped.")
         except Exception as e:
             if log:
                 log.warning("[SHUTDOWN] Telegram stop failed: %s", e)
 
-        # 4) TradeExecutor finalize (varsa)
+        # 4) TradeExecutor finalize (shutdown/close/stop/finalize/flush)
         try:
             if te is not None:
                 for m in ("shutdown", "close", "stop", "finalize", "flush"):
                     if hasattr(te, m):
-                        out = getattr(te, m)()
+                        out = getattr(te, m)(reason) if m == "shutdown" else getattr(te, m)()
                         if asyncio.iscoroutine(out):
                             await out
                         break
                 if log:
-                    log.info("[SHUTDOWN] TradeExecutor finalized (best-effort).")
+                    log.info("[SHUTDOWN] TradeExecutor finalized.")
         except Exception as e:
             if log:
                 log.warning("[SHUTDOWN] TradeExecutor finalize failed: %s", e)
 
-        # 5) PositionManager close (varsa)
+        # 5) PositionManager close/shutdown
         try:
             if pm is not None:
-                for m in ("close", "shutdown", "stop"):
+                for m in ("shutdown", "close", "stop"):
                     if hasattr(pm, m):
-                        out = getattr(pm, m)()
+                        out = getattr(pm, m)(reason) if m == "shutdown" else getattr(pm, m)()
                         if asyncio.iscoroutine(out):
                             await out
                         break
                 if log:
-                    log.info("[SHUTDOWN] PositionManager closed (best-effort).")
+                    log.info("[SHUTDOWN] PositionManager closed.")
         except Exception as e:
             if log:
                 log.warning("[SHUTDOWN] PositionManager close failed: %s", e)
@@ -1279,112 +1116,14 @@ class HeavyEngine:
         else:
             extra["signal_source"] = "EMA"
 
-        try:
-            p_by_itv = _extract_p_by_itv(mtf_debug) if isinstance(mtf_debug, dict) else {}
-            vetoed, veto_reason = _trend_veto(signal_side, p_by_itv)
-            if vetoed:
-                signal_side = "hold"
-                extra.setdefault("veto_flags", []).append(veto_reason)
-        except Exception as e:
-            if system_logger:
-                system_logger.warning("[VETO] trend_veto error: %s", e)
-
-        try:
-            if USE_MTF_ENS and isinstance(mtf_debug, dict) and signal_side in ("long", "short"):
-                mtf_debug, whale_w_dbg = _apply_whale_to_short_weights(
-                    mtf_debug=mtf_debug,
-                    whale_dir=whale_dir,
-                    whale_score=float(whale_score),
-                    base_side=str(signal_side),
-                    veto_thr=float(os.getenv("WHALE_SHORT_VETO_THR", "0.70")),
-                    boost_thr=float(os.getenv("WHALE_SHORT_BOOST_THR", "0.60")),
-                    boost_max=float(os.getenv("WHALE_SHORT_BOOST_MAX", "1.25")),
-                )
-
-                if isinstance(whale_w_dbg, dict) and whale_w_dbg.get("whale_applied"):
-                    extra["whale_weight_adjust"] = whale_w_dbg
-                    mtf_debug = _renorm_weights(mtf_debug)
-                    new_p = _recompute_ensemble_from_debug(mtf_debug)
-                    if new_p is not None:
-                        mtf_debug["ensemble_p"] = float(new_p)
-                        p_used = float(new_p)
-                        probs["p_used"] = float(p_used)
-                extra["mtf_debug"] = mtf_debug
-        except Exception as e:
-            if system_logger:
-                system_logger.warning("[WHALE][WEIGHT] apply/recompute error: %s", e)
-
-        try:
-            if USE_MTF_ENS and isinstance(mtf_debug, dict) and (mtf_debug.get("ensemble_p") is not None):
-                extra["ensemble_p"] = float(mtf_debug.get("ensemble_p"))
-                extra["p_buy_source"] = "ensemble_p"
-                extra["signal_source"] = "MTF"
-        except Exception:
-            pass
-
         last_price = 0.0
         try:
             if "close" in raw_df.columns and len(raw_df) > 0:
                 last_price = float(pd.to_numeric(raw_df["close"].iloc[-1], errors="coerce"))
-                if not (last_price == last_price):  # NaN check
+                if not (last_price == last_price):
                     last_price = 0.0
         except Exception:
             last_price = 0.0
-
-        # Telegram snapshot/notify (per-symbol)
-        try:
-            enable_tg_snapshot = str(os.getenv("TELEGRAM_ENABLE_SNAPSHOT", "1")).strip().lower() not in ("0", "false", "no", "off", "")
-            enable_tg_notify = str(os.getenv("TELEGRAM_NOTIFY_SIGNALS", "1")).strip().lower() not in ("0", "false", "no", "off", "")
-            notify_cooldown_s = float(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S", "10"))
-
-            if self.tg_bot is not None and getattr(self.tg_bot, "dispatcher", None) and enable_tg_snapshot:
-                aucs: Dict[str, Any] = {}
-                try:
-                    if isinstance(mtf_debug, dict):
-                        per = mtf_debug.get("per_interval", {}) or {}
-                        for itv2, d in per.items():
-                            if isinstance(d, dict) and ("auc_used" in d):
-                                aucs[str(itv2)] = d.get("auc_used")
-                except Exception:
-                    aucs = {}
-
-                self.tg_bot.dispatcher.bot_data["status_snapshot"] = {
-                    "symbol": symbol,
-                    "signal": str(signal_side).upper() if signal_side else "N/A",
-                    "ensemble_p": float(p_used) if p_used is not None else None,
-                    "intervals": list(self.mtf_intervals) if isinstance(self.mtf_intervals, list) else [],
-                    "aucs": aucs,
-                    "last_price": float(last_price),
-                    "why": str(extra.get("signal_source", "")) if isinstance(extra, dict) else "",
-                }
-
-            now_ts = time.time()
-            if enable_tg_notify and self.tg_bot is not None:
-                sig_now = str(signal_side or "hold").lower()
-                sig_prev = str(self._prev_signal.get(symbol, "hold") or "hold").lower()
-                prev_ts = float(self._prev_notif_ts.get(symbol, 0.0))
-
-                if sig_now != sig_prev and (now_ts - prev_ts) >= notify_cooldown_s:
-                    emoji = {"long": "✅", "short": "🟣", "hold": "⏸"}.get(sig_now, "❔")
-                    src = (extra.get("signal_source") if isinstance(extra, dict) else None) or "?"
-                    msg = (
-                        f"{emoji} *Signal Update*\n"
-                        f"• *Symbol:* `{symbol}`\n"
-                        f"• *From → To:* `{sig_prev.upper()}` → `{sig_now.upper()}`\n"
-                        f"• *p_used:* `{float(p_used):.4f}`\n"
-                        f"• *Price:* `{float(last_price):.4f}`\n"
-                        f"• *Source:* `{src}`"
-                    )
-                    self.tg_bot.send_message(msg)
-                    self._prev_notif_ts[symbol] = now_ts
-                    self._prev_signal[symbol] = sig_now
-
-                if symbol not in self._prev_signal:
-                    self._prev_signal[symbol] = sig_now
-
-        except Exception as _tg_e:
-            if system_logger:
-                system_logger.debug("[TG] snapshot/notify block hata: %s", _tg_e)
 
         await self.trade_executor.execute_decision(
             signal=signal_side,
@@ -1444,9 +1183,6 @@ async def scanner_loop(engine: HeavyEngine) -> None:
     topk = int(os.getenv("SCAN_TOPK", "3"))
     conc = int(os.getenv("SCAN_CONCURRENCY", "4"))
 
-    cooldown_s = float(os.getenv("SCAN_PICK_COOLDOWN_SEC", "0"))
-    recent_keep = int(os.getenv("SCAN_PICK_RECENT_KEEP", "5"))
-
     err_backoff_base = float(os.getenv("SCAN_ERR_BACKOFF_SEC", "2.0"))
     err_backoff_max = float(os.getenv("SCAN_ERR_BACKOFF_MAX_SEC", "30.0"))
     scan_failures = 0
@@ -1459,9 +1195,6 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             light_scanner = LightScanner()  # type: ignore
         except Exception:
             light_scanner = None
-
-    last_pick_ts_by_symbol: Dict[str, float] = {}
-    recent_picks: List[str] = []
 
     async def _scan_one(sym: str) -> Dict[str, Any]:
         async with sem:
@@ -1504,8 +1237,8 @@ async def scanner_loop(engine: HeavyEngine) -> None:
 
     if system_logger:
         system_logger.info(
-            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d cooldown_s=%.1f",
-            len(symbols), scan_interval, topk, scan_every, conc, cooldown_s
+            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d",
+            len(symbols), scan_interval, topk, scan_every, conc
         )
 
     while True:
@@ -1520,99 +1253,31 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     rows.append(r)
 
             rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
-
             candidates = [r for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
             if not candidates:
                 candidates = rows[:1] if rows else []
 
             cand_syms = [c["symbol"] for c in candidates]
 
-            if cooldown_s > 0 and cand_syms:
-                now = time.time()
-                filtered = []
-                for s in cand_syms:
-                    last_ts = float(last_pick_ts_by_symbol.get(s, 0.0))
-                    if (now - last_ts) >= cooldown_s:
-                        filtered.append(s)
-                if filtered:
-                    cand_syms = filtered
-
-            if cand_syms and recent_keep > 0 and len(cand_syms) > 1:
-                cand_syms_sorted = []
-                for s in cand_syms:
-                    if s not in recent_picks:
-                        cand_syms_sorted.append(s)
-                cand_syms = cand_syms_sorted or cand_syms
-
-            pick = cand_syms[0] if cand_syms else (symbols[0] if symbols else None)
-
             if system_logger:
                 system_logger.info(
-                    "[SCAN] pick=%s | candidates=%s | scores(top10)=%s",
-                    pick,
+                    "[SCAN] candidates=%s | scores(top10)=%s",
                     cand_syms,
                     [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
                 )
 
-            heavy_results: List[Dict[str, Any]] = []
             for sym in cand_syms:
                 try:
-                    res = await engine.run_once(sym)
-                    heavy_results.append(res)
+                    await engine.run_once(sym)
                 except Exception as e:
                     if system_logger:
                         system_logger.warning("[HEAVY] %s run_once failed: %s", sym, e)
 
-            def is_tradeable(r: Dict[str, Any]) -> bool:
-                s = str(r.get("signal", "hold")).lower()
-                return s in ("long", "short")
-
-            tradeables = [r for r in heavy_results if is_tradeable(r)]
-            chosen: Optional[Dict[str, Any]] = None
-
-            if tradeables:
-                best_long = None
-                best_short = None
-                for r in tradeables:
-                    s = str(r.get("signal")).lower()
-                    p = float(r.get("p_used", 0.5))
-                    if s == "long":
-                        if best_long is None or p > float(best_long.get("p_used", 0.5)):
-                            best_long = r
-                    elif s == "short":
-                        if best_short is None or p < float(best_short.get("p_used", 0.5)):
-                            best_short = r
-
-                cand = []
-                if best_long is not None:
-                    cand.append((abs(float(best_long["p_used"]) - 0.5), best_long))
-                if best_short is not None:
-                    cand.append((abs(float(best_short["p_used"]) - 0.5), best_short))
-                cand.sort(key=lambda x: x[0], reverse=True)
-                chosen = cand[0][1] if cand else tradeables[0]
-
-            if system_logger and chosen is not None:
-                system_logger.info(
-                    "[SCAN->HEAVY] chosen=%s signal=%s p=%.4f price=%.4f | candidates=%s",
-                    chosen.get("symbol"),
-                    chosen.get("signal"),
-                    float(chosen.get("p_used", 0.5)),
-                    float(chosen.get("price", 0.0)),
-                    cand_syms,
-                )
-
-            if pick:
-                now = time.time()
-                last_pick_ts_by_symbol[str(pick)] = now
-                recent_picks.append(str(pick))
-                if recent_keep > 0 and len(recent_picks) > recent_keep:
-                    recent_picks = recent_picks[-recent_keep:]
-
-            scan_failures = 0
-
             dt = time.time() - t0
             sleep_s = max(0.0, scan_every - dt)
             await asyncio.sleep(_sleep_jitter(sleep_s, 0.10))
+
+            scan_failures = 0
 
         except asyncio.CancelledError:
             raise
@@ -1660,21 +1325,6 @@ async def async_main() -> None:
         system_logger.info("[MAIN] HYBRID_MODE=%s", HYBRID_MODE)
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
-
-        system_logger.info("[ENV] ENABLE_PG_POS_LOG=%s", os.getenv("ENABLE_PG_POS_LOG"))
-
-        pg = os.getenv("PG_DSN") or ""
-        masked = pg
-        if "://" in pg and "@" in pg:
-            try:
-                import re
-                masked = re.sub(r":([^:@/]+)@", r":***@", pg)
-            except Exception:
-                masked = "******"
-        system_logger.info("[ENV] PG_DSN=%s", masked if masked else "(empty)")
-        system_logger.info("[ENV] MTF_INTERVALS=%s", os.getenv("MTF_INTERVALS"))
-        system_logger.info("[ENV] SYMBOLS=%s", os.getenv("SYMBOLS"))
-        system_logger.info("[ENV] SCAN_ENABLE=%s", os.getenv("SCAN_ENABLE"))
 
     # ENABLE_WS -> BinanceWS create & register for shutdown
     enable_ws = get_bool_env("ENABLE_WS", False)
@@ -1743,20 +1393,17 @@ def main() -> None:
         except Exception:
             pass
 
-        # cancel pending
         for t in pending:
             try:
                 t.cancel()
             except Exception:
                 pass
 
-        # ensure all tasks cancelled
         try:
             await asyncio.gather(*pending, return_exceptions=True)
         except Exception:
             pass
 
-        # also if main_task cancelled, await it
         try:
             await asyncio.gather(main_task, return_exceptions=True)
         except Exception:
@@ -1772,10 +1419,18 @@ def main() -> None:
 
         for task in pending:
             task.cancel()
+
         try:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         except Exception:
             pass
+
+        # Son güvenlik: shutdown bir daha çağrılsa bile idempotent
+        try:
+            loop.run_until_complete(_shutdown_mgr.shutdown(reason="loop_finally"))
+        except Exception:
+            pass
+
         loop.close()
 
 

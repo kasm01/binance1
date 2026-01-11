@@ -4,34 +4,29 @@ core.position_manager
 - Açık pozisyon state'ini Redis üzerinde tutar
 - İsteğe bağlı olarak Postgres'te 'positions' tablosuna loglar
 - TradeExecutor ile entegre çalışmak üzere tasarlandı
+
+Tek tip shutdown kontratı:
+  - close()  (idempotent)
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 try:
     import redis  # type: ignore
-except ImportError:  # Redis yoksa graceful degrade
+except ImportError:
     redis = None  # type: ignore
 
 try:
     import psycopg2  # type: ignore
-except ImportError:  # Postgres client yoksa graceful degrade
+except ImportError:
     psycopg2 = None  # type: ignore
 
 
 class PositionManager:
-    """
-    PositionManager:
-      - Redis üzerinde symbol bazlı tek açık pozisyon tutar
-      - İsteğe bağlı Postgres logging yapar
-      - TradeExecutor, RiskManager vs. ile entegre kullanılmak üzere yazıldı
-    """
-
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379/0",
@@ -43,20 +38,21 @@ class PositionManager:
     ) -> None:
         self.logger = logger or logging.getLogger("PositionManager")
 
-        # -----------------------------------------------------
-        # Redis tarafı
-        # -----------------------------------------------------
         self.redis_url = redis_url
-        self.redis_db = redis_db
-        # prefix: örn "BTCUSDT:5m" veya "positions"
-        self.redis_key_prefix = redis_key_prefix.rstrip(":")
+        self.redis_db = int(redis_db)
+        self.redis_key_prefix = str(redis_key_prefix).rstrip(":")
 
         self.redis_client: Optional["redis.Redis"] = None
+        self.enable_pg = bool(enable_pg)
+        self.pg_dsn = pg_dsn
+        self.pg_conn: Optional["psycopg2.extensions.connection"] = None
 
+        self._closed = False
+        self._local_positions: Dict[str, Dict[str, Any]] = {}
+
+        # Redis init
         if redis is None:
-            self.logger.warning(
-                "[POS] redis paketi yüklü değil; in-memory pozisyon tutulacak."
-            )
+            self.logger.warning("[POS] redis paketi yok; in-memory fallback kullanılacak.")
         else:
             try:
                 self.redis_client = redis.Redis.from_url(
@@ -64,64 +60,32 @@ class PositionManager:
                     db=self.redis_db,
                     decode_responses=True,
                 )
-                # basit ping
                 self.redis_client.ping()
-                self.logger.info(
-                    "[POS] Redis'e bağlanıldı (%s)", self.redis_url
-                )
+                self.logger.info("[POS] Redis OK (%s)", self.redis_url)
             except Exception as e:
-                self.logger.error(
-                    "[POS] Redis bağlantı hatası (%s): %s",
-                    self.redis_url,
-                    e,
-                )
+                self.logger.error("[POS] Redis bağlantı hatası (%s): %s", self.redis_url, e)
                 self.redis_client = None
 
-        # -----------------------------------------------------
-        # Postgres tarafı
-        # -----------------------------------------------------
-        self.enable_pg = bool(enable_pg)
-        self.pg_dsn = pg_dsn
-        self.pg_conn: Optional["psycopg2.extensions.connection"] = None
-
+        # Postgres init
         if self.enable_pg and self.pg_dsn and psycopg2 is not None:
             try:
                 self.pg_conn = psycopg2.connect(self.pg_dsn)
                 self.pg_conn.autocommit = True
                 self._ensure_pg_schema()
-                self.logger.info(
-                    "[POS] Postgres'e bağlanıldı ve şema kontrol edildi."
-                )
+                self.logger.info("[POS] Postgres OK + schema checked.")
             except Exception as e:
                 self.logger.error("[POS] Postgres bağlantı hatası: %s", e)
                 self.enable_pg = False
+                self.pg_conn = None
         else:
-            self.logger.info(
-                "[POS] PG_DSN yok veya ENABLE_PG_POS_LOG=0; Postgres logging pasif."
-            )
+            self.logger.info("[POS] Postgres logging pasif (ENABLE_PG_POS_LOG=0 veya PG_DSN yok).")
 
-        # Eğer Redis yoksa en azından in-memory fallback
-        self._local_positions: Dict[str, Dict[str, Any]] = {}
-
-    # ---------------------------------------------------------
-    #  Dahili yardımcılar
-    # ---------------------------------------------------------
     def _redis_key(self, symbol: str) -> str:
-        """
-        Redis key: <redis_key_prefix>:<symbol>
-        Örn: "BTCUSDT:5m:BTCUSDT" değil, prefix'i mantıklı ver:
-          redis_key_prefix="BTCUSDT:5m" => "BTCUSDT:5m:BTCUSDT" olur.
-        Eğer genel kullanacaksan: prefix="positions" => "positions:BTCUSDT"
-        """
-        return f"{self.redis_key_prefix}:{symbol}"
+        return f"{self.redis_key_prefix}:{str(symbol).upper()}"
 
     def _ensure_pg_schema(self) -> None:
-        """
-        Postgres'te 'positions' tablosu yoksa oluşturur.
-        """
         if not self.pg_conn:
             return
-
         try:
             with self.pg_conn.cursor() as cur:
                 cur.execute(
@@ -146,21 +110,17 @@ class PositionManager:
                 )
             self.pg_conn.commit()
         except Exception as e:
-            if self.logger:
-                self.logger.error("[POS] PG şema oluşturma hatası: %s", e)
+            self.logger.error("[POS] PG şema oluşturma hatası: %s", e)
 
-    # ---------------------------------------------------------
-    #  Temel CRUD: get / set / clear
-    # ---------------------------------------------------------
+    # -------------------------
+    # CRUD
+    # -------------------------
     def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Belirli bir sembol için tek açık pozisyonu döndürür.
-        Redis yoksa in-memory dict'ten okur.
-        """
-        # Önce Redis
+        sym = str(symbol).upper()
+
         if self.redis_client is not None:
             try:
-                key = self._redis_key(symbol)
+                key = self._redis_key(sym)
                 data = self.redis_client.get(key)
                 if not data:
                     return None
@@ -168,25 +128,20 @@ class PositionManager:
             except Exception as e:
                 self.logger.error("[POS] Redis get_position hata: %s", e)
 
-        # Fallback: in-memory
-        return self._local_positions.get(symbol)
+        return self._local_positions.get(sym)
 
     def set_position(self, symbol: str, position: Dict[str, Any]) -> None:
-        """
-        Pozisyonu Redis'e yazar, opsiyonel olarak Postgres'e upsert eder.
-        """
-        # Redis
+        sym = str(symbol).upper()
+
         if self.redis_client is not None:
             try:
-                key = self._redis_key(symbol)
+                key = self._redis_key(sym)
                 self.redis_client.set(key, json.dumps(position))
             except Exception as e:
                 self.logger.error("[POS] Redis set_position hata: %s", e)
         else:
-            # fallback in-memory
-            self._local_positions[symbol] = position
+            self._local_positions[sym] = position
 
-        # Postgres
         if self.enable_pg and self.pg_conn is not None:
             try:
                 self._upsert_position_pg(position)
@@ -194,33 +149,27 @@ class PositionManager:
                 self.logger.error("[POS] PG upsert hata: %s", e)
 
     def clear_position(self, symbol: str) -> None:
-        """
-        Belirtilen sembol için açık pozisyonu siler (Redis + Postgres).
-        """
-        # Redis
+        sym = str(symbol).upper()
+
         if self.redis_client is not None:
             try:
-                key = self._redis_key(symbol)
+                key = self._redis_key(sym)
                 self.redis_client.delete(key)
             except Exception as e:
                 self.logger.error("[POS] Redis clear_position hata: %s", e)
         else:
-            self._local_positions.pop(symbol, None)
+            self._local_positions.pop(sym, None)
 
-        # Postgres
         if self.enable_pg and self.pg_conn is not None:
             try:
-                self._delete_position_pg(symbol)
+                self._delete_position_pg(sym)
             except Exception as e:
                 self.logger.error("[POS] PG delete hata: %s", e)
 
-    # ---------------------------------------------------------
-    #  Listeleme / sayma
-    # ---------------------------------------------------------
+    # -------------------------
+    # List / Count
+    # -------------------------
     def list_symbols(self) -> List[str]:
-        """
-        Redis'te kayıtlı tüm sembolleri döndürür.
-        """
         if self.redis_client is None:
             return list(self._local_positions.keys())
 
@@ -229,12 +178,10 @@ class PositionManager:
             keys = self.redis_client.keys(pattern)
             symbols: List[str] = []
             for k in keys:
-                # k: "<prefix>:<symbol>"
                 parts = k.split(":", 1)
                 if len(parts) == 2:
                     symbols.append(parts[1])
                 else:
-                    # çok segmentli prefix varsa son parçayı sembol say
                     symbols.append(k.split(":")[-1])
             return symbols
         except Exception as e:
@@ -242,30 +189,20 @@ class PositionManager:
             return []
 
     def list_positions(self) -> List[Dict[str, Any]]:
-        """
-        Tüm açık pozisyonları (dict listesi olarak) döndürür.
-        """
-        symbols = self.list_symbols()
-        result: List[Dict[str, Any]] = []
-        for sym in symbols:
+        out: List[Dict[str, Any]] = []
+        for sym in self.list_symbols():
             pos = self.get_position(sym)
             if pos:
-                result.append(pos)
-        return result
+                out.append(pos)
+        return out
 
     def count_open_positions(self) -> int:
-        """
-        Açık pozisyon sayısı. RiskManager için faydalı.
-        """
         return len(self.list_symbols())
 
-    # ---------------------------------------------------------
-    #  Postgres yardımcıları
-    # ---------------------------------------------------------
+    # -------------------------
+    # Postgres helpers
+    # -------------------------
     def _upsert_position_pg(self, pos: Dict[str, Any]) -> None:
-        """
-        positions tablosuna upsert.
-        """
         if not self.pg_conn:
             return
 
@@ -322,47 +259,55 @@ class PositionManager:
             cur.execute(query, payload)
 
     def _delete_position_pg(self, symbol: str) -> None:
-        """
-        positions tablosundan ilgili sembol kaydını siler.
-        """
         if not self.pg_conn:
             return
-
         with self.pg_conn.cursor() as cur:
             cur.execute("DELETE FROM positions WHERE symbol = %s;", (symbol,))
 
-    # ---------------------------------------------------------
-    #  Temizlik
-    # ---------------------------------------------------------
+    # -------------------------
+    # Unified shutdown contract
+    # -------------------------
     def close(self) -> None:
-        """
-        Postgres bağlantısını kapatmak için opsiyonel çağrı.
-        """
+        """Idempotent close()."""
+        if self._closed:
+            return
+        self._closed = True
+
         try:
             if self.pg_conn is not None:
-                self.pg_conn.close()
-        except Exception as e:
-            self.logger.error("[POS] PG bağlantı kapatma hatası: %s", e)
+                try:
+                    self.pg_conn.close()
+                except Exception as e:
+                    self.logger.error("[POS] PG close hata: %s", e)
         finally:
             self.pg_conn = None
-# === BT_COMPAT_OPEN_POSITION ===
-# TradeExecutor(backtest) open_position / execute_trade bekliyorsa kırılmasın diye
-def _bt_open_position_compat(self, symbol: str, side: str, qty: float, entry_price=None, **kwargs):
-    """
-    Backtest uyumluluğu:
-      - Var olan bir open_* metoduna delegasyon dener
-      - Yoksa minimum state'i saklayan basit bir fallback üretir
-    """
-    # Olası mevcut metod isimleri
-    candidates = ("open_position", "execute_trade", "open_trade", "open", "open_new_position")
 
+        # Redis client close (optional)
+        try:
+            if self.redis_client is not None:
+                close_fn = getattr(self.redis_client, "close", None)
+                if callable(close_fn):
+                    close_fn()
+        except Exception:
+            pass
+        finally:
+            self.redis_client = None
+
+    def __del__(self) -> None:
+        # güvenli: interpreter shutdown sırasında exception yut
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+# === BT_COMPAT_OPEN_POSITION ===
+def _bt_open_position_compat(self, symbol: str, side: str, qty: float, entry_price=None, **kwargs):
+    candidates = ("open_position", "execute_trade", "open_trade", "open", "open_new_position")
     for name in candidates:
         fn = getattr(self, name, None)
-        # kendimizi çağırmayalım
         if not callable(fn) or fn is _bt_open_position_compat:
             continue
-
-        # farklı imzaları tolere et
         for call in (
             lambda: fn(symbol=symbol, side=side, qty=qty, entry_price=entry_price, **kwargs),
             lambda: fn(symbol=symbol, side=side, qty=qty, price=entry_price, **kwargs),
@@ -375,38 +320,30 @@ def _bt_open_position_compat(self, symbol: str, side: str, qty: float, entry_pri
             except TypeError:
                 continue
             except Exception:
-                # gerçek hatayı yutmayalım; bir sonraki adaya geç
                 continue
 
-    # Fallback: minimum bir pozisyon state’i
     pos = {
         "symbol": symbol,
         "side": str(side).lower(),
         "qty": float(qty),
         "entry_price": None if entry_price is None else float(entry_price),
     }
-
-    # yaygın attribute isimleri
     if hasattr(self, "current_position"):
         setattr(self, "current_position", pos)
     elif hasattr(self, "position"):
         setattr(self, "position", pos)
     else:
         setattr(self, "current_position", pos)
-
     return pos
 
 
 def _bt_execute_trade_compat(self, *args, **kwargs):
-    # execute_trade -> open_position alias
     return _bt_open_position_compat(self, *args, **kwargs)
 
 
 try:
-    # Bu dosyada PositionManager class’ı zaten tanımlı olmalı
     PositionManager  # type: ignore[name-defined]
 except NameError:
-    # class adı farklıysa burada dokunmuyoruz
     pass
 else:
     if not hasattr(PositionManager, "open_position"):
