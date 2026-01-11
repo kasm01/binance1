@@ -1,7 +1,4 @@
-# core/binance_client.py
-
 import logging
-import os
 from typing import Optional, Any
 
 logger = logging.getLogger("system")
@@ -10,13 +7,46 @@ HAS_BINANCE = False
 BINANCE_IMPORT_ERROR: Optional[Exception] = None
 
 try:
-    # python-binance paketi bu isimle import edilir
     from binance.client import Client  # type: ignore
     from binance.enums import *  # type: ignore
     HAS_BINANCE = True
 except Exception as e:  # ImportError dahil her şey
     HAS_BINANCE = False
     BINANCE_IMPORT_ERROR = e
+
+
+def _attach_close(client: Any, log: logging.Logger) -> Any:
+    """
+    python-binance Client objesine best-effort close() ekler.
+    Amaç: requests.Session kapanışı (HTTP connection pool cleanup).
+    """
+
+    def _close():
+        # python-binance: client.session (requests.Session) genelde vardır
+        try:
+            sess = getattr(client, "session", None)
+            if sess is not None and hasattr(sess, "close"):
+                sess.close()
+                log.info("[BINANCE_CLIENT] session closed.")
+        except Exception as e:
+            log.debug("[BINANCE_CLIENT] session close failed: %s", e)
+
+        # bazen ek adapterler vs. olabilir
+        try:
+            if hasattr(client, "_session") and getattr(client, "_session") is not None:
+                s2 = getattr(client, "_session")
+                if hasattr(s2, "close"):
+                    s2.close()
+        except Exception:
+            pass
+
+    try:
+        setattr(client, "close", _close)
+    except Exception:
+        # setattr olmayabilir ama çoğu durumda olur
+        pass
+
+    return client
 
 
 def create_binance_client(
@@ -45,22 +75,22 @@ def create_binance_client(
             )
             return None
 
-        # Gerçek trade modunda bu paketin kurulu olması şart
         raise RuntimeError("python-binance package not installed or failed to import")
 
     if not api_key or not api_secret:
-        # Key yoksa gerçek client kurmayalım
         log.warning(
             "[BINANCE_CLIENT] API key/secret boş. DRY_RUN=%s, client=None ile devam.",
             dry_run,
         )
         return None
 
-    # Buraya geldiysek python-binance var ve key/secret var
     client = Client(api_key, api_secret, testnet=testnet)
+    client = _attach_close(client, log)
+
     log.info(
         "[BINANCE_CLIENT] Binance Client oluşturuldu (testnet=%s, dry_run=%s)",
         testnet,
         dry_run,
     )
     return client
+

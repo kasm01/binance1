@@ -1,8 +1,7 @@
-# websocket/binance_ws.py
-
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 import websocket  # websocket-client paketi
@@ -48,14 +47,19 @@ def create_ws_app(symbol: Optional[str] = None) -> websocket.WebSocketApp:
     )
 
 
-def start_ws_in_thread(symbol: Optional[str] = None) -> websocket.WebSocketApp:
+def start_ws_in_thread(symbol: Optional[str] = None) -> tuple[websocket.WebSocketApp, threading.Thread]:
     ws_app = create_ws_app(symbol)
 
-    t = threading.Thread(target=ws_app.run_forever, daemon=True)
+    # ping_interval/ping_timeout, reconnect vb. run_forever paramlarıyla yönetilebilir
+    t = threading.Thread(
+        target=lambda: ws_app.run_forever(ping_interval=20, ping_timeout=20),
+        daemon=True,
+        name="binance-ws",
+    )
     t.start()
 
     system_logger.info("[WebSocket] WebSocket thread started.")
-    return ws_app
+    return ws_app, t
 
 
 class BinanceWS:
@@ -65,11 +69,39 @@ class BinanceWS:
     Kullanım:
         ws = BinanceWS(symbol="BTCUSDT")
         ws.run_background()
+        ...
+        ws.stop()
     """
 
     def __init__(self, symbol: Optional[str] = None) -> None:
         self.symbol = symbol
         self.ws_app: Optional[websocket.WebSocketApp] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop_flag = threading.Event()
 
     def run_background(self) -> None:
-        self.ws_app = start_ws_in_thread(self.symbol)
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_flag.clear()
+        self.ws_app, self._thread = start_ws_in_thread(self.symbol)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """
+        WS'i kapatır ve thread'i best-effort join eder.
+        """
+        self._stop_flag.set()
+
+        if self.ws_app is not None:
+            try:
+                # websocket-client: close() thread-safe çağrılabilir
+                self.ws_app.close()
+            except Exception as e:
+                system_logger.debug("[WebSocket] close() failed: %s", e)
+
+        # thread join (daemon zaten ama clean çıkış için iyi)
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=timeout)
+
+        system_logger.info("[WebSocket] stop requested.")

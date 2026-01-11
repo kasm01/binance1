@@ -8,7 +8,7 @@ from typing import Tuple, List, Optional
 import numpy as np
 import pandas as pd
 import joblib
-
+import tempfile
 from sklearn.preprocessing import StandardScaler
 
 import tensorflow as tf
@@ -291,11 +291,25 @@ def prepare_data(
     if len(X) <= window + 5:
         raise ValueError(f"[DATA] Yetersiz örnek: N={len(X)} window={window} (sequence üretilemez)")
 
+    # hedef dağılımı (kalite kontrol)
+    try:
+        pos = float((y > 0.5).mean())
+        logger.info("[DATA] y positive ratio=%.4f (pos=%d / n=%d)", pos, int((y > 0.5).sum()), int(len(y)))
+    except Exception:
+        pass
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X).astype(np.float32)
 
     X_seq, y_seq = make_lstm_dataset(X_scaled, y, window)
     logger.info("[DATA] LSTM seq dataset: X_seq shape=%s, y_seq shape=%s (window=%d)", X_seq.shape, y_seq.shape, window)
+
+    # ekstra güvenlik
+    if X_seq.shape[0] != y_seq.shape[0]:
+        n = min(X_seq.shape[0], y_seq.shape[0])
+        logger.warning("[DATA] X_seq/y_seq mismatch -> truncating to n=%d", n)
+        X_seq = X_seq[:n]
+        y_seq = y_seq[:n]
 
     return X_seq, y_seq, scaler
 
@@ -346,18 +360,31 @@ def _atomic_joblib_dump(obj, path: Path) -> None:
 
 
 def _atomic_model_save(model: tf.keras.Model, path: Path) -> None:
-    tmp = Path(str(path) + ".tmp")
+    """
+    HDF5 (.h5) olarak atomik kaydet:
+      - tmp dosyası da .h5 ile bitsin ki Keras SavedModel klasörü üretmesin
+      - sonra os.replace ile atomik rename
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Aynı dizinde, .h5 uzantılı geçici dosya
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp.h5", dir=str(path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
     try:
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        model.save(tmp)
-        tmp.replace(path)
+        # HDF5 zorla (SavedModel'e kaymasın)
+        tf.keras.models.save_model(model, str(tmp_path), save_format="h5")
+        # atomik replace
+        os.replace(str(tmp_path), str(path))
     finally:
+        # bir şekilde kaldıysa temizle
         try:
-            if tmp.exists():
-                tmp.unlink()
+            if tmp_path.exists():
+                tmp_path.unlink()
         except Exception:
             pass
-
 
 def _save_scalers(models_dir: Path, interval: str, scaler: StandardScaler) -> None:
     """
@@ -391,29 +418,13 @@ def _save_scalers(models_dir: Path, interval: str, scaler: StandardScaler) -> No
 
 
 def _save_models(models_dir: Path, interval: str, model: tf.keras.Model) -> None:
-    """
-    Hybrid tarafında hem long hem short isimleri var.
-    Aynı modeli iki isimle kaydediyoruz (uyumluluk).
-    Atomik + doğrulamalı.
-    """
     long_path = models_dir / f"lstm_long_{interval}.h5"
     short_path = models_dir / f"lstm_short_{interval}.h5"
 
     try:
-        models_dir.mkdir(parents=True, exist_ok=True)
-        if model is None:
-            raise ValueError("model is None")
-
         _atomic_model_save(model, long_path)
         _atomic_model_save(model, short_path)
-
-        ok1 = long_path.exists() and long_path.stat().st_size > 0
-        ok2 = short_path.exists() and short_path.stat().st_size > 0
-        if not (ok1 and ok2):
-            logger.warning("[SAVE] Model doğrulama FAIL | long_ok=%s short_ok=%s | %s | %s", ok1, ok2, long_path, short_path)
-        else:
-            logger.info("[SAVE] Models saved: %s and %s", long_path, short_path)
-
+        logger.info("[SAVE] Models saved: %s and %s", long_path, short_path)
     except Exception as e:
         logger.exception("[SAVE] Model save failed | interval=%s | err=%s", interval, e)
         raise
@@ -445,7 +456,7 @@ def main() -> None:
     symbol = str(symbol).strip().upper()
 
     # INTERVAL öncelik: CLI -> env -> fallback
-    interval = str(args.interval or os.getenv("INTERVAL", "5m")).strip()
+    interval = str(args.interval or os.getenv("INTERVAL", "5m")).strip().lower()
 
     # Horizon / thr / window
     horizon = int(args.horizon if args.horizon is not None else _env_int("LSTM_HORIZON", 1))
@@ -456,18 +467,28 @@ def main() -> None:
     else:
         window_size = _interval_seq_len(interval, default=50)
 
+    if window_size < 2:
+        raise ValueError(f"[ARGS] window_size too small: {window_size}")
+
     # Train params (CLI -> env -> default)
     batch_size = int(args.batch if args.batch is not None else _env_int("LSTM_BATCH", 64))
     patience = int(args.patience if args.patience is not None else _env_int("LSTM_PATIENCE", 5))
+
     val_split = float(args.val_split if args.val_split is not None else _env_float("LSTM_VAL_SPLIT", 0.2))
+    # güvenli aralık
+    if val_split < 0.05:
+        val_split = 0.05
+    if val_split > 0.40:
+        val_split = 0.40
+
     epochs = int(args.epochs if args.epochs is not None else _env_int("LSTM_EPOCHS", 20))
 
     # Veri limiti
     limit_rows = int(args.limit_rows if args.limit_rows is not None else _env_int("LSTM_LIMIT_ROWS", 20000))
 
     logger.info(
-        "[START] LSTM training | symbol=%s interval=%s horizon=%d window=%d thr=%.8f batch=%d epochs=%d val_split=%.3f limit_rows=%d",
-        symbol, interval, horizon, window_size, thr, batch_size, epochs, val_split, limit_rows,
+        "[START] LSTM training | symbol=%s interval=%s horizon=%d window=%d thr=%.8f batch=%d epochs=%d val_split=%.3f limit_rows=%d pid=%d",
+        symbol, interval, horizon, window_size, thr, batch_size, epochs, val_split, limit_rows, os.getpid()
     )
 
     X_seq, y_seq, scaler = prepare_data(
@@ -500,7 +521,7 @@ def main() -> None:
     models_dir = Path("models")
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Checkpoint (best auc)
+    # Checkpoint (best auc) - PID'li
     ckpt_path = models_dir / f"lstm_{interval}_best_tmp_{os.getpid()}.h5"
     cbs = [
         callbacks.EarlyStopping(
@@ -550,6 +571,7 @@ def main() -> None:
         logger.info("[LOAD] Best checkpoint yok, son modeli kullanıyorum.")
         best_model = model
 
+    logger.info("[SAVE] Writing final artifacts for interval=%s", interval)
     _save_models(models_dir, interval, best_model)
     _save_scalers(models_dir, interval, scaler)
 

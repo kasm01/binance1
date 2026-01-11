@@ -1,4 +1,3 @@
-# websocket/okx_ws.py
 from __future__ import annotations
 
 import asyncio
@@ -27,12 +26,12 @@ logger = logging.getLogger("system")
 
 @dataclass
 class OKXTick:
-    ts: float                 # local receive timestamp (epoch seconds)
+    ts: float
     instId: str
     last: Optional[float] = None
     bid: Optional[float] = None
     ask: Optional[float] = None
-    exch_ts: Optional[str] = None  # OKX payload "ts" (string ms) saklamak istersen
+    exch_ts: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
 
 
@@ -95,11 +94,37 @@ class OKXWS:
         self._lock = threading.Lock()
         self._last_tick: Optional[OKXTick] = None
 
+        # shutdown cleanup için
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws = None  # websockets client protocol
+
     # --------------------------
     # Public API
     # --------------------------
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> None:
+        """
+        Stop flag set + aktif websocket varsa kapat + thread join.
+        """
         self._stop_flag.set()
+
+        # ws.close() coroutine olduğundan, loop varsa thread-safe schedule edelim
+        loop = self._loop
+        ws = self._ws
+        if loop is not None and ws is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(ws.close(), loop)  # type: ignore
+                try:
+                    fut.result(timeout=timeout)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=timeout)
+
+        self.logger.info("[OKXWS] stop requested.")
 
     def run_background(self) -> None:
         """
@@ -132,12 +157,23 @@ class OKXWS:
             self._last_tick = tick
 
     def _thread_main(self) -> None:
+        loop = None
         try:
             loop = asyncio.new_event_loop()
+            self._loop = loop
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._runner())
         except Exception as e:
             self.logger.exception("[OKXWS] thread crashed: %s", e)
+        finally:
+            try:
+                if loop is not None:
+                    loop.stop()
+                    loop.close()
+            except Exception:
+                pass
+            self._loop = None
+            self._ws = None
 
     async def _runner(self) -> None:
         backoff = 1.0
@@ -146,6 +182,8 @@ class OKXWS:
                 await self._connect_once()
                 backoff = 1.0
             except Exception as e:
+                if self._stop_flag.is_set():
+                    break
                 self.logger.warning("[OKXWS] reconnect in %.1fs | err=%s", backoff, e)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.7, self.reconnect_max_backoff_s)
@@ -153,8 +191,9 @@ class OKXWS:
     async def _connect_once(self) -> None:
         self.logger.info("[OKXWS] connecting url=%s instId=%s channel=%s", self.url, self.inst_id, self.channel)
 
-        # websockets.connect ping_interval/ping_timeout verince lib otomatik ping atar
         async with websockets.connect(self.url, ping_interval=self.ping_interval_s, ping_timeout=self.ping_timeout_s) as ws:
+            self._ws = ws
+
             sub = {"op": "subscribe", "args": [{"channel": self.channel, "instId": self.inst_id}]}
             await ws.send(json.dumps(sub))
 
@@ -229,7 +268,7 @@ class OKXWS:
                 # 1) thread-safe last_tick (Telegram snapshot / status için)
                 self._set_last_tick(tick)
 
-                # 2) opsiyonel MarketState store (senin mevcut akışın)
+                # 2) opsiyonel MarketState store
                 if MarketState is not None:
                     try:
                         MarketState.set_okx_ticker(
@@ -247,3 +286,5 @@ class OKXWS:
                         pass
 
                 last_store_ts = now
+
+        self._ws = None

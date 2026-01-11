@@ -8,7 +8,8 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import signal
 import json
 import time
-from typing import Any, Dict, Optional, List, Tuple
+import random
+from typing import Any, Dict, Optional, List
 
 import pandas as pd
 import threading
@@ -66,6 +67,9 @@ LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
 # Default (env parse ile override edilecek)
 MTF_INTERVALS_DEFAULT = ["1m", "3m", "5m", "15m", "30m", "1h"]
 
+# Graceful shutdown flag (async loop + threads için)
+SHUTDOWN_EVENT = asyncio.Event()
+
 
 def get_bool_env(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -83,6 +87,16 @@ def get_float_env(name: str, default: float) -> float:
         return float(str(v).strip())
     except Exception:
         return float(default)
+
+
+def get_int_env(name: str, default: int) -> int:
+    try:
+        v = os.getenv(name, None)
+        if v is None or str(v).strip() == "":
+            return int(default)
+        return int(float(str(v).strip()))
+    except Exception:
+        return int(default)
 
 
 def parse_csv_env_list(name: str, default: List[str]) -> List[str]:
@@ -111,6 +125,16 @@ def parse_symbols_env() -> List[str]:
     return out or [str(default_symbol).strip().upper()]
 
 
+def _sleep_jitter(base_s: float, jitter_ratio: float = 0.15) -> float:
+    """
+    base_s üzerine küçük random jitter ekle (thundering herd azaltır).
+    """
+    if base_s <= 0:
+        return 0.0
+    j = base_s * float(jitter_ratio)
+    return max(0.0, base_s + random.uniform(-j, j))
+
+
 def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
     """
     Light scanner score (hızlı):
@@ -127,6 +151,9 @@ def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
 
+        if "volume" not in df.columns or "close" not in df.columns:
+            return 0.0
+
         vol = df["volume"].values
         if len(vol) < 30:
             return 0.0
@@ -135,6 +162,9 @@ def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
         v_mean = float(pd.Series(vol).rolling(20).mean().iloc[-1])
         v_std = float(pd.Series(vol).rolling(20).std().iloc[-1])
         v_z = (v_last - v_mean) / (v_std + 1e-9)
+
+        if not {"high", "low"}.issubset(df.columns):
+            return 0.0
 
         hl = (df["high"] - df["low"]).values
         hl_mean = float(pd.Series(hl).rolling(20).mean().iloc[-1])
@@ -282,6 +312,7 @@ def _trend_veto(signal_side: str, p_by_itv: dict):
         return False, "OK"
 
     return False, "HOLD"
+
 
 def _extract_p_by_itv(mtf_debug: dict) -> Dict[str, Optional[float]]:
     p_by_itv: Dict[str, Optional[float]] = {}
@@ -434,6 +465,9 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     if df is None or len(df) < period + 2:
         return 0.0
 
+    if not {"high", "low", "close"}.issubset(df.columns):
+        return 0.0
+
     high = df["high"].astype(float)
     low = df["low"].astype(float)
     close = df["close"].astype(float)
@@ -552,12 +586,25 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
                 "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
             )
 
-        df = pd.read_csv(csv_path, header=None, low_memory=False)
+        # Bazı cache dosyalarında header var, bazılarında yok olabiliyor.
+        # Önce normal oku; kolonlar tutmazsa header=None fallback.
+        df = None
+        try:
+            df_try = pd.read_csv(csv_path, low_memory=False)
+            df_try = _normalize_kline_df(df_try)
+            if df_try is not None and not df_try.empty and {"open", "high", "low", "close"}.issubset(df_try.columns):
+                df = df_try
+        except Exception:
+            df = None
+
+        if df is None:
+            df = pd.read_csv(csv_path, header=None, low_memory=False)
+            if len(df) > limit:
+                df = df.tail(limit).reset_index(drop=True)
+            df = _normalize_kline_df(df)
 
         if len(df) > limit:
             df = df.tail(limit).reset_index(drop=True)
-
-        df = _normalize_kline_df(df)
 
         if logger:
             logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
@@ -786,6 +833,7 @@ def create_trading_objects() -> Dict[str, Any]:
         whale_risk_boost=whale_risk_boost,
         tg_bot=tg_bot,
     )
+
     # Telegram bot_data inject (opsiyonel)
     try:
         if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
@@ -950,6 +998,17 @@ class HeavyEngine:
         """
         global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS
 
+        # graceful shutdown: erken çık
+        if SHUTDOWN_EVENT.is_set():
+            return {
+                "symbol": symbol,
+                "signal": "hold",
+                "p_used": 0.5,
+                "p_single": 0.5,
+                "price": 0.0,
+                "extra": {"shutdown": True},
+            }
+
         interval = self.interval
         raw_df = await fetch_klines(
             client=self.client,
@@ -981,6 +1040,8 @@ class HeavyEngine:
         # Full MTF (sadece heavy aşamada)
         if USE_MTF_ENS and self.mtf_ensemble is not None:
             for itv in self.mtf_intervals:
+                if SHUTDOWN_EVENT.is_set():
+                    break
                 if itv == interval:
                     continue
                 try:
@@ -1008,7 +1069,7 @@ class HeavyEngine:
         p_used = p_single
         mtf_debug: Optional[Dict[str, Any]] = None
 
-        if USE_MTF_ENS and self.mtf_ensemble is not None:
+        if USE_MTF_ENS and self.mtf_ensemble is not None and (not SHUTDOWN_EVENT.is_set()):
             try:
                 X_by_interval: Dict[str, pd.DataFrame] = {}
                 for itv, df_itv in mtf_feats.items():
@@ -1064,7 +1125,7 @@ class HeavyEngine:
         whale_dir = "none"
         whale_score = 0.0
 
-        if self.whale_detector is not None:
+        if self.whale_detector is not None and (not SHUTDOWN_EVENT.is_set()):
             try:
                 if hasattr(self.whale_detector, "analyze_multiple_timeframes"):
                     whale_signals = self.whale_detector.analyze_multiple_timeframes(mtf_whale_raw)
@@ -1228,7 +1289,15 @@ class HeavyEngine:
         except Exception:
             pass
 
-        last_price = float(raw_df["close"].iloc[-1])
+        # last_price güvenli al
+        last_price = None
+        try:
+            if "close" in raw_df.columns and len(raw_df) > 0:
+                last_price = float(pd.to_numeric(raw_df["close"].iloc[-1], errors="coerce"))
+        except Exception:
+            last_price = None
+        if last_price is None:
+            last_price = 0.0
 
         # Telegram snapshot/notify (per-symbol)
         try:
@@ -1285,11 +1354,22 @@ class HeavyEngine:
             if system_logger:
                 system_logger.debug("[TG] snapshot/notify block hata: %s", _tg_e)
 
+        # shutdown sırasında trade tetikleme
+        if SHUTDOWN_EVENT.is_set():
+            return {
+                "symbol": symbol,
+                "signal": "hold",
+                "p_used": float(p_used),
+                "p_single": float(p_single),
+                "price": float(last_price),
+                "extra": {**extra, "shutdown": True},
+            }
+
         # Trade execute
         await self.trade_executor.execute_decision(
             signal=signal_side,
             symbol=symbol,
-            price=last_price,
+            price=float(last_price),
             size=None,
             interval=interval,
             training_mode=TRAINING_MODE,
@@ -1318,7 +1398,7 @@ async def bot_loop_single_symbol(engine: HeavyEngine, symbol: str) -> None:
             symbol, engine.interval, TRAINING_MODE, HYBRID_MODE, USE_MTF_ENS
         )
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         try:
             await engine.run_once(symbol)
         except Exception as e:
@@ -1327,7 +1407,12 @@ async def bot_loop_single_symbol(engine: HeavyEngine, symbol: str) -> None:
             else:
                 print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(LOOP_SLEEP_SECONDS)
+        # shutdown-aware sleep + jitter
+        sleep_s = _sleep_jitter(float(LOOP_SLEEP_SECONDS), 0.10)
+        try:
+            await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=sleep_s)
+        except asyncio.TimeoutError:
+            pass
 
 
 # ----------------------------------------------------------------------
@@ -1343,6 +1428,15 @@ async def scanner_loop(engine: HeavyEngine) -> None:
     topk = int(os.getenv("SCAN_TOPK", "3"))
     conc = int(os.getenv("SCAN_CONCURRENCY", "4"))
 
+    # anti-sticky: aynı sembolü sürekli seçmeyi azalt
+    cooldown_s = float(os.getenv("SCAN_PICK_COOLDOWN_SEC", "0"))  # 0 => kapalı
+    recent_keep = int(os.getenv("SCAN_PICK_RECENT_KEEP", "5"))
+
+    # scan/backoff
+    err_backoff_base = float(os.getenv("SCAN_ERR_BACKOFF_SEC", "2.0"))
+    err_backoff_max = float(os.getenv("SCAN_ERR_BACKOFF_MAX_SEC", "30.0"))
+    scan_failures = 0
+
     sem = asyncio.Semaphore(max(1, conc))
 
     # optional project LightScanner
@@ -1352,6 +1446,10 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             light_scanner = LightScanner()  # type: ignore
         except Exception:
             light_scanner = None
+
+    # pick state
+    last_pick_ts_by_symbol: Dict[str, float] = {}
+    recent_picks: List[str] = []
 
     async def _scan_one(sym: str) -> Dict[str, Any]:
         async with sem:
@@ -1366,7 +1464,6 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 if light_scanner is not None and hasattr(light_scanner, "score"):
                     try:
                         out = light_scanner.score(df)  # type: ignore
-                        # out dict olabilir
                         if isinstance(out, dict):
                             score = float(out.get("score", 0.0) or 0.0)
                             reason = out.get("reason")
@@ -1382,7 +1479,8 @@ async def scanner_loop(engine: HeavyEngine) -> None:
 
                 last_px = None
                 try:
-                    last_px = float(pd.to_numeric(df["close"].iloc[-1], errors="coerce"))
+                    if "close" in df.columns and len(df) > 0:
+                        last_px = float(pd.to_numeric(df["close"].iloc[-1], errors="coerce"))
                 except Exception:
                     last_px = None
 
@@ -1390,95 +1488,143 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             except Exception as e:
                 if system_logger:
                     system_logger.debug("[SCAN] %s failed: %s", sym, e)
-                return {"symbol": sym, "score": 0.0, "reason": None, "last": None}
+                return {"symbol": sym, "score": 0.0, "reason": None, "last": None, "err": str(e)}
 
     if system_logger:
         system_logger.info(
-            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d",
-            len(symbols), scan_interval, topk, scan_every, conc
+            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d cooldown_s=%.1f",
+            len(symbols), scan_interval, topk, scan_every, conc, cooldown_s
         )
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         t0 = time.time()
-        rows = await asyncio.gather(*[_scan_one(s) for s in symbols])
-        rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
+        try:
+            results = await asyncio.gather(*[_scan_one(s) for s in symbols], return_exceptions=True)
+            rows: List[Dict[str, Any]] = []
+            for r in results:
+                if isinstance(r, Exception):
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
 
-        candidates = [r for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
-        if not candidates:
-            # fallback: en az 1 aday
-            candidates = rows[:1] if rows else []
+            rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
 
-        cand_syms = [c["symbol"] for c in candidates]
-        pick = cand_syms[0] if cand_syms else (symbols[0] if symbols else None)
+            candidates = [r for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
+            if not candidates:
+                candidates = rows[:1] if rows else []
 
-        if system_logger:
-            system_logger.info(
-                "[SCAN] pick=%s | candidates=%s | scores(top10)=%s",
-                pick,
-                cand_syms,
-                [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
-            )
+            cand_syms = [c["symbol"] for c in candidates]
 
-        # Heavy: sadece adaylarda çalış
-        heavy_results: List[Dict[str, Any]] = []
-        for sym in cand_syms:
+            # cooldown filtre (çok yapışmayı engelle)
+            if cooldown_s > 0 and cand_syms:
+                now = time.time()
+                filtered = []
+                for s in cand_syms:
+                    last_ts = float(last_pick_ts_by_symbol.get(s, 0.0))
+                    if (now - last_ts) >= cooldown_s:
+                        filtered.append(s)
+                if filtered:
+                    cand_syms = filtered
+
+            # recent picks çeşitlilik
+            if cand_syms and recent_keep > 0 and len(cand_syms) > 1:
+                cand_syms_sorted = []
+                for s in cand_syms:
+                    if s not in recent_picks:
+                        cand_syms_sorted.append(s)
+                cand_syms = cand_syms_sorted or cand_syms
+
+            pick = cand_syms[0] if cand_syms else (symbols[0] if symbols else None)
+
+            if system_logger:
+                system_logger.info(
+                    "[SCAN] pick=%s | candidates=%s | scores(top10)=%s",
+                    pick,
+                    cand_syms,
+                    [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
+                )
+
+            # Heavy: sadece adaylarda çalış
+            heavy_results: List[Dict[str, Any]] = []
+            for sym in cand_syms:
+                if SHUTDOWN_EVENT.is_set():
+                    break
+                try:
+                    res = await engine.run_once(sym)
+                    heavy_results.append(res)
+                except Exception as e:
+                    if system_logger:
+                        system_logger.warning("[HEAVY] %s run_once failed: %s", sym, e)
+
+            # Kararı tek adaydan çıkar: önce "tradeable" sinyal olanlar, yoksa pick
+            def is_tradeable(r: Dict[str, Any]) -> bool:
+                s = str(r.get("signal", "hold")).lower()
+                return s in ("long", "short")
+
+            tradeables = [r for r in heavy_results if is_tradeable(r)]
+            chosen: Optional[Dict[str, Any]] = None
+
+            if tradeables:
+                best_long = None
+                best_short = None
+                for r in tradeables:
+                    s = str(r.get("signal")).lower()
+                    p = float(r.get("p_used", 0.5))
+                    if s == "long":
+                        if best_long is None or p > float(best_long.get("p_used", 0.5)):
+                            best_long = r
+                    elif s == "short":
+                        if best_short is None or p < float(best_short.get("p_used", 0.5)):
+                            best_short = r
+
+                cand = []
+                if best_long is not None:
+                    cand.append((abs(float(best_long["p_used"]) - 0.5), best_long))
+                if best_short is not None:
+                    cand.append((abs(float(best_short["p_used"]) - 0.5), best_short))
+                cand.sort(key=lambda x: x[0], reverse=True)
+                chosen = cand[0][1] if cand else tradeables[0]
+
+            if system_logger and chosen is not None:
+                system_logger.info(
+                    "[SCAN->HEAVY] chosen=%s signal=%s p=%.4f price=%.4f | candidates=%s",
+                    chosen.get("symbol"),
+                    chosen.get("signal"),
+                    float(chosen.get("p_used", 0.5)),
+                    float(chosen.get("price", 0.0)),
+                    cand_syms,
+                )
+
+            # pick history
+            if pick:
+                now = time.time()
+                last_pick_ts_by_symbol[str(pick)] = now
+                recent_picks.append(str(pick))
+                if recent_keep > 0 and len(recent_picks) > recent_keep:
+                    recent_picks = recent_picks[-recent_keep:]
+
+            # hata backoff sıfırla
+            scan_failures = 0
+
+            # scan döngüsünü sabitle (shutdown-aware)
+            dt = time.time() - t0
+            sleep_s = max(0.0, scan_every - dt)
+            sleep_s = _sleep_jitter(sleep_s, 0.10)
             try:
-                res = await engine.run_once(sym)
-                heavy_results.append(res)
-            except Exception as e:
-                if system_logger:
-                    system_logger.warning("[HEAVY] %s run_once failed: %s", sym, e)
+                await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=sleep_s)
+            except asyncio.TimeoutError:
+                pass
 
-        # Kararı tek adaydan çıkar: önce "tradeable" sinyal olanlar, yoksa pick
-        def is_tradeable(r: Dict[str, Any]) -> bool:
-            s = str(r.get("signal", "hold")).lower()
-            return s in ("long", "short")
-
-        tradeables = [r for r in heavy_results if is_tradeable(r)]
-        chosen: Optional[Dict[str, Any]] = None
-
-        if tradeables:
-            # long için en yüksek p_used, short için en düşük p_used (en uzak)
-            best_long = None
-            best_short = None
-            for r in tradeables:
-                s = str(r.get("signal")).lower()
-                p = float(r.get("p_used", 0.5))
-                if s == "long":
-                    if best_long is None or p > float(best_long.get("p_used", 0.5)):
-                        best_long = r
-                elif s == "short":
-                    if best_short is None or p < float(best_short.get("p_used", 0.5)):
-                        best_short = r
-
-            # long vs short kıyas: 0.5'ten uzaklık
-            cand = []
-            if best_long is not None:
-                cand.append((abs(float(best_long["p_used"]) - 0.5), best_long))
-            if best_short is not None:
-                cand.append((abs(float(best_short["p_used"]) - 0.5), best_short))
-            cand.sort(key=lambda x: x[0], reverse=True)
-            chosen = cand[0][1] if cand else tradeables[0]
-        else:
-            # hepsi hold olduysa: yalnızca pick'i "monitor" etmiş oluruz (trade/hold zaten engine.run_once içinde yapıldı)
-            # burada ekstra bir şey yapmıyoruz.
-            chosen = None
-
-        # İstersen seçilen sonucu logla
-        if system_logger and chosen is not None:
-            system_logger.info(
-                "[SCAN->HEAVY] chosen=%s signal=%s p=%.4f price=%.4f | candidates=%s",
-                chosen.get("symbol"),
-                chosen.get("signal"),
-                float(chosen.get("p_used", 0.5)),
-                float(chosen.get("price", 0.0)),
-                cand_syms,
-            )
-
-        # scan döngüsünü sabitle
-        dt = time.time() - t0
-        sleep_s = max(0.0, scan_every - dt)
-        await asyncio.sleep(sleep_s)
+        except Exception as e:
+            scan_failures += 1
+            backoff = min(err_backoff_max, err_backoff_base * (2 ** max(0, scan_failures - 1)))
+            if system_logger:
+                system_logger.exception("[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d", e, backoff, scan_failures)
+            sleep_s = _sleep_jitter(backoff, 0.20)
+            try:
+                await asyncio.wait_for(SHUTDOWN_EVENT.wait(), timeout=sleep_s)
+            except asyncio.TimeoutError:
+                pass
 
 
 # ----------------------------------------------------------------------
@@ -1493,6 +1639,23 @@ async def async_main() -> None:
 
     setup_logger()
     system_logger = logging.getLogger("system")
+
+    # graceful shutdown: async sinyal handler
+    loop = asyncio.get_running_loop()
+
+    def _request_shutdown(sig_name: str):
+        if system_logger:
+            system_logger.warning("[SHUTDOWN] signal=%s received -> stopping...", sig_name)
+        try:
+            SHUTDOWN_EVENT.set()
+        except Exception:
+            pass
+
+    for _sig, _name in [(signal.SIGINT, "SIGINT"), (signal.SIGTERM, "SIGTERM")]:
+        try:
+            loop.add_signal_handler(_sig, lambda n=_name: _request_shutdown(n))
+        except NotImplementedError:
+            pass
 
     try:
         Credentials.refresh_from_env()
@@ -1534,12 +1697,18 @@ async def async_main() -> None:
         system_logger.info("[ENV] SCAN_ENABLE=%s", os.getenv("SCAN_ENABLE"))
 
     enable_ws = get_bool_env("ENABLE_WS", False)
+    ws = None
     if enable_ws:
         symbol = os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT"))
-        ws = BinanceWS(symbol=symbol)
-        ws.run_background()
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=true -> websocket started. symbol=%s", symbol)
+        try:
+            ws = BinanceWS(symbol=symbol)
+            ws.run_background()
+            if system_logger:
+                system_logger.info("[WS] ENABLE_WS=true -> websocket started. symbol=%s", symbol)
+        except Exception as e:
+            ws = None
+            if system_logger:
+                system_logger.warning("[WS] start failed: %s", e)
     else:
         if system_logger:
             system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
@@ -1548,34 +1717,71 @@ async def async_main() -> None:
     engine = HeavyEngine(trading_objects)
 
     scan_enable = get_bool_env("SCAN_ENABLE", False)
-    if scan_enable:
-        await scanner_loop(engine)
-        return
 
-    # scan kapalıysa tek symbol üzerinde eski davranış
-    symbol = str(trading_objects.get("symbol") or os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")).upper()
-    await bot_loop_single_symbol(engine, symbol)
+    try:
+        if scan_enable:
+            await scanner_loop(engine)
+            return
+
+        # scan kapalıysa tek symbol üzerinde eski davranış
+        symbol = str(trading_objects.get("symbol") or os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")).upper()
+        await bot_loop_single_symbol(engine, symbol)
+
+    finally:
+        # best-effort stop hooks (sınıflarda varsa)
+        try:
+            tg_bot = trading_objects.get("tg_bot")
+            if tg_bot is not None and hasattr(tg_bot, "stop_polling"):
+                tg_bot.stop_polling()  # type: ignore
+        except Exception:
+            pass
+
+        try:
+            if ws is not None and hasattr(ws, "stop"):
+                ws.stop()  # type: ignore
+        except Exception:
+            pass
+
+        try:
+            client = trading_objects.get("client")
+            if client is not None and hasattr(client, "close"):
+                maybe = client.close()
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+        except Exception:
+            pass
+
+        if system_logger:
+            system_logger.info("[SHUTDOWN] async_main exiting.")
+
 
 def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, loop.stop)
-        except NotImplementedError:
-            pass
-
     try:
         loop.run_until_complete(async_main())
     finally:
-        pending = asyncio.all_tasks(loop=loop)
+        # kapanış sinyali yoksa bile garanti set edelim
+        try:
+            if not SHUTDOWN_EVENT.is_set():
+                SHUTDOWN_EVENT.set()
+        except Exception:
+            pass
+
+        try:
+            pending = asyncio.all_tasks(loop=loop)
+        except TypeError:
+            pending = asyncio.all_tasks()
+
         for task in pending:
             task.cancel()
+
         try:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         except Exception:
             pass
+
         loop.close()
 
 
