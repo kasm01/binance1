@@ -31,6 +31,7 @@ from models.hybrid_inference import HybridMultiTFModel
 from models.model_registry import ModelRegistry
 
 from tg_bot.telegram_bot import TelegramBot
+from functools import lru_cache
 
 # WebSocket
 from websocket.binance_ws import BinanceWS

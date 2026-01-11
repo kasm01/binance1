@@ -6,7 +6,8 @@ core.position_manager
 - TradeExecutor ile entegre çalışmak üzere tasarlandı
 
 Tek tip shutdown kontratı:
-  - close()  (idempotent)
+  - close()    (idempotent)
+  - shutdown() (idempotent wrapper, reason alır)
 """
 
 from __future__ import annotations
@@ -264,15 +265,28 @@ class PositionManager:
         with self.pg_conn.cursor() as cur:
             cur.execute("DELETE FROM positions WHERE symbol = %s;", (symbol,))
 
-    # -------------------------
-    # Unified shutdown contract
-    # -------------------------
+    # ---------------------------------------------------------
+    #  Shutdown contract (deterministic)
+    # ---------------------------------------------------------
+    def shutdown(self, reason: str = "unknown") -> None:
+        """
+        Tek tip kapanış kontratı.
+        main.ShutdownManager -> pm.shutdown(...) çağırabilir.
+        """
+        try:
+            if getattr(self, "logger", None):
+                self.logger.info("[POS] shutdown requested | reason=%s", reason)
+        except Exception:
+            pass
+        self.close()
+
     def close(self) -> None:
         """Idempotent close()."""
         if self._closed:
             return
         self._closed = True
 
+        # --- PG close ---
         try:
             if self.pg_conn is not None:
                 try:
@@ -282,10 +296,11 @@ class PositionManager:
         finally:
             self.pg_conn = None
 
-        # Redis client close (optional)
+        # --- Redis close (best-effort) ---
         try:
             if self.redis_client is not None:
-                close_fn = getattr(self.redis_client, "close", None)
+                rc = self.redis_client
+                close_fn = getattr(rc, "close", None)
                 if callable(close_fn):
                     close_fn()
         except Exception:
@@ -351,3 +366,4 @@ else:
     if not hasattr(PositionManager, "execute_trade"):
         PositionManager.execute_trade = _bt_execute_trade_compat  # type: ignore[attr-defined]
 # === /BT_COMPAT_OPEN_POSITION ===
+

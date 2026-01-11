@@ -22,7 +22,8 @@ class TradeExecutor:
       - DRY_RUN modunda gerçek emir atmadan simüle eder
 
     Tek tip shutdown kontratı:
-      - close() (idempotent)
+      - close() (sync, idempotent)
+      - shutdown() (async, idempotent)  <-- main.ShutdownManager bunu çağırabilir
     """
 
     def __init__(
@@ -79,19 +80,62 @@ class TradeExecutor:
     # unified shutdown contract
     # -------------------------
     def close(self) -> None:
-        """Idempotent close(). (main ayrıca PM'yi de kapatacağı için double-close safe)"""
+        """
+        Sync close (idempotent).
+        main ayrıca client / ws / pm kapatacağı için double-close safe.
+        """
         if self._closed:
             return
         self._closed = True
 
-        # Eğer client kapatılacaksa main zaten yapıyor; burada dokunmuyoruz.
-        # PositionManager'ı kapatmayı dene (sahiplik sende olmayabilir -> safe).
+        # Client kapanışını main yönetsin (ownership net)
+        # PositionManager kapanışını best-effort dene (ownership sende olmayabilir)
         try:
             pm = self.position_manager
             if pm is not None and hasattr(pm, "close"):
                 pm.close()
         except Exception:
             pass
+
+    # ---------------------------------------------------------
+    #  Shutdown contract (deterministic) - ASYNC
+    # ---------------------------------------------------------
+    async def shutdown(self, reason: str = "unknown") -> None:
+        """
+        Tek tip kapanış kontratı (async).
+        main.ShutdownManager -> te.shutdown(...) çağırabilir.
+        Amaç: idempotent + hızlı best-effort kapanış.
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+
+        try:
+            if getattr(self, "logger", None):
+                self.logger.info("[EXEC] shutdown requested | reason=%s", reason)
+        except Exception:
+            pass
+
+        # TradeExecutor tarafında ağır kaynak yok; yine de PM'yi best-effort kapat.
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm is not None:
+                if hasattr(pm, "shutdown"):
+                    out = pm.shutdown(reason)  # type: ignore
+                    if asyncio.iscoroutine(out):
+                        await out
+                elif hasattr(pm, "close"):
+                    out = pm.close()  # type: ignore
+                    if asyncio.iscoroutine(out):
+                        await out
+        except Exception:
+            pass
+
+        return
+
+    async def aclose(self) -> None:
+        """Async alias (close is sync; async kapanış gerekiyorsa bunu çağır)."""
+        return await self.shutdown(reason="close")
 
     # -------------------------
     # helpers
@@ -516,7 +560,6 @@ class TradeExecutor:
                         p_src = k
                         break
 
-                # clamp
                 try:
                     if p_val is not None:
                         pv = float(p_val)
