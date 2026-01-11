@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from typing import Optional
 
 import websocket  # websocket-client paketi
@@ -50,12 +49,12 @@ def create_ws_app(symbol: Optional[str] = None) -> websocket.WebSocketApp:
 def start_ws_in_thread(symbol: Optional[str] = None) -> tuple[websocket.WebSocketApp, threading.Thread]:
     ws_app = create_ws_app(symbol)
 
-    # ping_interval/ping_timeout, reconnect vb. run_forever paramlarıyla yönetilebilir
-    t = threading.Thread(
-        target=lambda: ws_app.run_forever(ping_interval=20, ping_timeout=20),
-        daemon=True,
-        name="binance-ws",
-    )
+    def _run():
+        # ping/pong & reconnect davranışları lib’e bağlıdır; burada basic loop
+        # ping_interval/timeout vermezsen bazı ortamlarda bağlantı daha uzun yaşar.
+        ws_app.run_forever(ping_interval=20, ping_timeout=10)
+
+    t = threading.Thread(target=_run, daemon=True, name="binance-ws")
     t.start()
 
     system_logger.info("[WebSocket] WebSocket thread started.")
@@ -77,31 +76,26 @@ class BinanceWS:
         self.symbol = symbol
         self.ws_app: Optional[websocket.WebSocketApp] = None
         self._thread: Optional[threading.Thread] = None
-        self._stop_flag = threading.Event()
 
     def run_background(self) -> None:
         if self._thread and self._thread.is_alive():
             return
-
-        self._stop_flag.clear()
         self.ws_app, self._thread = start_ws_in_thread(self.symbol)
 
     def stop(self, timeout: float = 5.0) -> None:
         """
-        WS'i kapatır ve thread'i best-effort join eder.
+        websocket-client için en doğru kapatma: ws_app.close().
+        Thread join best-effort.
         """
-        self._stop_flag.set()
-
-        if self.ws_app is not None:
-            try:
-                # websocket-client: close() thread-safe çağrılabilir
+        try:
+            if self.ws_app is not None:
                 self.ws_app.close()
-            except Exception as e:
-                system_logger.debug("[WebSocket] close() failed: %s", e)
+        except Exception as e:
+            system_logger.warning("[WebSocket] close failed: %s", e)
 
-        # thread join (daemon zaten ama clean çıkış için iyi)
-        t = self._thread
-        if t is not None and t.is_alive():
-            t.join(timeout=timeout)
+        try:
+            if self._thread is not None:
+                self._thread.join(timeout=timeout)
+        except Exception:
+            pass
 
-        system_logger.info("[WebSocket] stop requested.")

@@ -29,7 +29,6 @@ class TelegramBot:
 
         self.bot: Bot = Bot(token=self.token)
 
-        # python-telegram-bot v13
         self.updater: Updater = Updater(token=self.token, use_context=True)
         self.dispatcher = self.updater.dispatcher
 
@@ -37,9 +36,6 @@ class TelegramBot:
 
         system_logger.info("[TelegramBot] Telegram bot başarıyla initialize edildi.")
 
-    # ------------------------------------------------------------------
-    # RiskManager enjeksiyonu (/risk komutu için)
-    # ------------------------------------------------------------------
     def set_risk_manager(self, risk_manager: RiskManager) -> None:
         if not self.dispatcher:
             system_logger.warning("[TelegramBot] set_risk_manager çağrıldı ama dispatcher yok.")
@@ -48,9 +44,6 @@ class TelegramBot:
         self.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
         system_logger.info("[TelegramBot] RiskManager instance dispatcher.bot_data['risk_manager'] içine set edildi.")
 
-    # ------------------------------------------------------------------
-    # Polling başlatma
-    # ------------------------------------------------------------------
     def start_polling(self) -> None:
         if not self.updater:
             system_logger.warning("[TelegramBot] Updater yok, muhtemelen TELEGRAM_BOT_TOKEN ayarlı değil.")
@@ -63,36 +56,20 @@ class TelegramBot:
         except TypeError:
             self.updater.start_polling()
 
-        # Thread içinde idle() çağırma
+        # Thread içinde idle() çağırma.
 
-    # ------------------------------------------------------------------
-    # Polling durdurma (shutdown cleanup)
-    # ------------------------------------------------------------------
     def stop_polling(self) -> None:
         """
-        main.py shutdown sırasında çağrılabilir.
+        Graceful stop: polling thread’i dursa bile safe.
         """
         if not self.updater:
             return
-
         try:
-            # v13: updater.stop() polling threadlerini durdurur
             self.updater.stop()
+            system_logger.info("[TelegramBot] Telegram polling durduruldu.")
         except Exception as e:
-            system_logger.debug("[TelegramBot] updater.stop() failed: %s", e)
+            system_logger.warning("[TelegramBot] stop_polling hata: %s", e)
 
-        try:
-            # dispatcher.stop() bazı sürümlerde var
-            if self.dispatcher and hasattr(self.dispatcher, "stop"):
-                self.dispatcher.stop()  # type: ignore
-        except Exception:
-            pass
-
-        system_logger.info("[TelegramBot] Telegram polling stopped.")
-
-    # ------------------------------------------------------------------
-    # Basit mesaj gönderme helper'ı
-    # ------------------------------------------------------------------
     def send_message(self, message: str, *, parse_mode: Optional[str] = None) -> None:
         if not self.bot:
             error_logger.error("[TelegramBot] send_message çağrıldı ama bot initialize edilmemiş.")
