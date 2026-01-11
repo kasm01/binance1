@@ -303,6 +303,99 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     return float(atr)
 
 
+# ----------------------------------------------------------------------
+# OFFLINE LRU cache helpers (raw + normalized_tail)
+# ----------------------------------------------------------------------
+from functools import lru_cache
+
+_KLINE_COLUMNS = [
+    "open_time", "open", "high", "low", "close", "volume",
+    "close_time", "quote_asset_volume", "number_of_trades",
+    "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
+]
+_KLINE_FLOAT_COLS = [
+    "open", "high", "low", "close", "volume",
+    "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
+]
+_KLINE_INT_COLS = ["open_time", "close_time", "number_of_trades", "ignore"]
+
+
+def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    12 kolon kline DF normalize:
+      - header yoksa kolonları set eder
+      - numeric cast + inf/nan temizliği
+    """
+    if df is None or df.empty:
+        return df
+
+    if df.shape[1] > 12:
+        df = df.iloc[:, :12].copy()
+
+    # header yoksa
+    if list(df.columns) == list(range(len(df.columns))) and df.shape[1] == 12:
+        df = df.copy()
+        df.columns = _KLINE_COLUMNS
+
+    # farklı header ama 12 kolon ise yine set et
+    if not set(_KLINE_COLUMNS).issubset(set(df.columns)) and df.shape[1] == 12:
+        df = df.copy()
+        df.columns = _KLINE_COLUMNS
+
+    for c in _KLINE_FLOAT_COLS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    for c in _KLINE_INT_COLS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    for c in _KLINE_INT_COLS:
+        if c in df.columns:
+            try:
+                df[c] = df[c].astype(int)
+            except Exception:
+                df[c] = df[c].fillna(0).astype(int)
+
+    df = df.replace([float("inf"), float("-inf")], pd.NA)
+    df = df.ffill().bfill().fillna(0)
+
+    return df
+
+
+@lru_cache(maxsize=128)
+def _read_offline_csv_cached(path: str, mtime: float) -> pd.DataFrame:
+    """
+    Raw CSV cache.
+    Key: (path, mtime)
+    """
+    try:
+        return pd.read_csv(path, low_memory=False)
+    except Exception:
+        return pd.read_csv(path, header=None, low_memory=False)
+
+
+@lru_cache(maxsize=256)
+def _offline_klines_tail_cached(path: str, mtime: float, limit: int) -> pd.DataFrame:
+    """
+    Normalized + tail(limit) cache.
+    Key: (path, mtime, limit)
+    """
+    df_raw = _read_offline_csv_cached(path, mtime)
+    df = _normalize_kline_df(df_raw.copy())
+
+    lim = int(limit)
+    if lim > 0 and len(df) > lim:
+        df = df.tail(lim).reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
+
+    return df
+
+
+# ----------------------------------------------------------------------
+# LIVE fallback: Public REST
+# ----------------------------------------------------------------------
 def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     import requests
 
@@ -318,82 +411,23 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
             logger.error("[DATA] Public REST klines fetch hatası: %s", e)
         raise
 
-    columns = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
-    ]
-    df = pd.DataFrame(klines, columns=columns)
-
-    float_cols = [
-        "open", "high", "low", "close", "volume",
-        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
-    ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
-
-    for c in float_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
-
-    for c in int_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-
-    if "ignore" in df.columns:
-        df["ignore"] = pd.to_numeric(df["ignore"], errors="coerce").fillna(0).astype(int)
+    df = pd.DataFrame(klines, columns=_KLINE_COLUMNS)
+    df = _normalize_kline_df(df)
 
     if logger:
         logger.info("[DATA] LIVE(PUBLIC) REST kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
     return df
 
 
+# ----------------------------------------------------------------------
+# fetch_klines (OFFLINE cached + LIVE client/rest)
+# ----------------------------------------------------------------------
 async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     data_mode = str(os.getenv("DATA_MODE", "OFFLINE")).upper().strip()
 
-    columns = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
-    ]
-    float_cols = [
-        "open", "high", "low", "close", "volume",
-        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
-    ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
-
-    def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
-            return df
-
-        if df.shape[1] > 12:
-            df = df.iloc[:, :12].copy()
-
-        if list(df.columns) == list(range(len(df.columns))) and df.shape[1] == 12:
-            df = df.copy()
-            df.columns = columns
-
-        if not set(columns).issubset(set(df.columns)) and df.shape[1] == 12:
-            df = df.copy()
-            df.columns = columns
-
-        for c in float_cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-
-        for c in int_cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-        for c in int_cols:
-            if c in df.columns:
-                try:
-                    df[c] = df[c].astype(int)
-                except Exception:
-                    df[c] = df[c].fillna(0).astype(int)
-
-        df = df.replace([float("inf"), float("-inf")], pd.NA)
-        df = df.ffill().bfill().fillna(0)
-
-        return df
-
+    # -------------------------
+    # OFFLINE (LRU cached)
+    # -------------------------
     if data_mode != "LIVE":
         csv_path = f"data/offline_cache/{symbol}_{interval}_6m.csv"
         if not os.path.exists(csv_path):
@@ -404,35 +438,30 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
                 "DATA_MODE=LIVE yapın (public REST ile çeker) veya offline cache oluşturun."
             )
 
-        df = None
         try:
-            df_try = pd.read_csv(csv_path, low_memory=False)
-            df_try = _normalize_kline_df(df_try)
-            if df_try is not None and not df_try.empty and {"open", "high", "low", "close"}.issubset(df_try.columns):
-                df = df_try
+            mtime = float(os.path.getmtime(csv_path))
         except Exception:
-            df = None
+            mtime = 0.0
 
-        if df is None:
-            df = pd.read_csv(csv_path, header=None, low_memory=False)
-            df = _normalize_kline_df(df)
-
-        if len(df) > limit:
-            df = df.tail(limit).reset_index(drop=True)
+        # ✅ normalize + tail(limit) cached
+        df = _offline_klines_tail_cached(csv_path, mtime, int(limit)).copy()
 
         if logger:
-            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi. shape=%s", csv_path, df.shape)
+            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi(CACHED_TAIL). shape=%s", csv_path, df.shape)
             if not {"open", "high", "low", "close"}.issubset(df.columns):
                 logger.warning("[DATA] OFFLINE normalize sonrası kolonlar eksik: cols=%s", list(df.columns))
 
         return df
 
+    # -------------------------
+    # LIVE (client -> fallback rest)
+    # -------------------------
     last_err: Optional[Exception] = None
 
     if client is not None:
         try:
             klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            df = pd.DataFrame(klines, columns=columns)
+            df = pd.DataFrame(klines, columns=_KLINE_COLUMNS)
             df = _normalize_kline_df(df)
 
             if logger:
