@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Optional, Dict, Any, List, Tuple
 
+import os
 import numpy as np
 import pandas as pd
 
@@ -30,26 +31,11 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def _clip01(x: float) -> float:
-    return float(max(0.0, min(1.0, x)))
-
-
-def _linear_slope(y: np.ndarray) -> float:
-    """
-    Basit slope: y ~ a*x + b (least squares).
-    Return a (slope). y length < 3 => 0
-    """
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     try:
-        n = int(len(y))
-        if n < 3:
-            return 0.0
-        x = np.arange(n, dtype=float)
-        x = x - x.mean()
-        y = y.astype(float) - float(y.mean())
-        denom = float((x * x).sum()) + 1e-12
-        return float((x * y).sum() / denom)
+        return float(max(lo, min(hi, float(x))))
     except Exception:
-        return 0.0
+        return float(lo)
 
 
 def _ensure_cols_numeric(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
@@ -60,60 +46,112 @@ def _ensure_cols_numeric(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return out
 
 
-def _hour_utc_from_market_meta(market_meta: Optional[Dict[str, Any]]) -> Optional[int]:
+def _extract_ts_seconds_from_df(df: pd.DataFrame) -> Optional[float]:
     """
-    Time-of-day filter için UTC hour üretir.
-    Beklenen alanlar:
-      - market_meta["hour_utc"] (0..23) veya
-      - market_meta["ts_ms"] (epoch ms) veya market_meta["ts"] (epoch seconds)
+    open_time saniye veya ms olabilir. Saniyeye normalize etmeye çalışır.
     """
-    if not market_meta:
+    if df is None or df.empty:
         return None
-    h = market_meta.get("hour_utc", None)
-    if h is not None:
-        try:
-            hh = int(h)
-            if 0 <= hh <= 23:
-                return hh
-        except Exception:
-            pass
+    if "open_time" not in df.columns:
+        return None
+    t = _safe_float(df["open_time"].iloc[-1], default=np.nan)
+    if not (t == t):
+        return None
+    # ms ise genelde 1e12 civarı
+    if t > 3e10:
+        return float(t / 1000.0)
+    return float(t)
 
-    ts_ms = market_meta.get("ts_ms", None)
-    if ts_ms is not None:
-        try:
-            ts_ms = float(ts_ms)
-            dt = pd.to_datetime(ts_ms, unit="ms", utc=True)
-            return int(dt.hour)
-        except Exception:
-            pass
 
-    ts = market_meta.get("ts", None)
-    if ts is not None:
-        try:
-            ts = float(ts)
-            dt = pd.to_datetime(ts, unit="s", utc=True)
-            return int(dt.hour)
-        except Exception:
-            pass
+def _hour_utc_from_ts(ts_sec: Optional[float]) -> Optional[int]:
+    if ts_sec is None:
+        return None
+    try:
+        # pandas kullanmadan basit UTC hour
+        dt = pd.to_datetime(ts_sec, unit="s", utc=True)
+        return int(dt.hour)
+    except Exception:
+        return None
 
-    return None
+
+def _parse_hours_list(s: str) -> List[int]:
+    """
+    "0,1,2,23" gibi -> [0,1,2,23]
+    """
+    out: List[int] = []
+    for p in str(s).split(","):
+        p = p.strip()
+        if not p:
+            continue
+        try:
+            h = int(float(p))
+            if 0 <= h <= 23:
+                out.append(h)
+        except Exception:
+            continue
+    return sorted(list(set(out)))
+
+
+def _time_of_day_multiplier(
+    hour_utc: Optional[int],
+    *,
+    low_liq_hours: Optional[List[int]] = None,
+    low_liq_mult: float = 1.25,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Düşük likidite saatlerinde threshold'ları yükseltmek için çarpan döner.
+    """
+    if low_liq_hours is None:
+        # Varsayılan: Asya açılışı öncesi + gün kapanışı civarı (kabaca)
+        low_liq_hours = [0, 1, 2, 3, 22, 23]
+
+    low = False
+    if hour_utc is not None and hour_utc in set(low_liq_hours):
+        low = True
+
+    mult = float(low_liq_mult) if low else 1.0
+    meta = {
+        "hour_utc": hour_utc,
+        "low_liq_hours": list(low_liq_hours),
+        "tod_low_liq": bool(low),
+        "tod_mult": float(mult),
+    }
+    return float(mult), meta
+
+
+def _obi_to_unit(obi: float) -> float:
+    """
+    OBI normalize:
+      - OBI [0..1] ise => (obi-0.5)*2 -> [-1..1]
+      - OBI [-1..1] ise aynen
+    return: unit in [-1..1]
+    """
+    v = float(obi)
+    if v < -1.2 or v > 1.2:
+        # çok uç değer => clamp
+        return float(max(-1.0, min(1.0, v)))
+    if 0.0 <= v <= 1.0:
+        return float((v - 0.5) * 2.0)
+    return float(max(-1.0, min(1.0, v)))
 
 
 # ---------------------------------------------------------
-# FEATURE ENGINE: Whale analizi için ortak hesaplayıcı
+# FEATURE ENGINE
 # ---------------------------------------------------------
 class WhaleFeatureEngine:
     """
     Whale analizi için gerekli proxy metrikleri hesaplar.
 
     Üretilen kolonlar:
-      - body, dir, impact
+      - body, dir
       - vol_ema, vol_ratio, vol_z
       - body_strength, dir_mom
       - taker_buy, taker_sell (proxy)
-      - flow, flow_ratio, flow_z
-      - cvd, cvd_slope
-      - cvd_delta_k, cvd_break_z
+      - flow = taker_buy - taker_sell
+      - flow_ratio = taker_buy / (volume + eps)
+      - cvd = cumsum(flow)
+      - cvd_slope_last (son N)
+      - flow_z (son bar ani kırılma)
       - atr_proxy, vol_regime
       - ma_fast, ma_slow, ma_slope
       - vwap, vwap_dev
@@ -126,8 +164,7 @@ class WhaleFeatureEngine:
         body_strength_window: int = 20,
         dir_mom_window: int = 10,
         cvd_slope_window: int = 30,
-        cvd_break_k: int = 5,
-        cvd_break_z_window: int = 60,
+        flow_z_window: int = 60,
         ma_fast: int = 20,
         ma_slow: int = 50,
         atr_window: int = 14,
@@ -138,8 +175,7 @@ class WhaleFeatureEngine:
         self.body_strength_window = int(body_strength_window)
         self.dir_mom_window = int(dir_mom_window)
         self.cvd_slope_window = int(cvd_slope_window)
-        self.cvd_break_k = int(cvd_break_k)
-        self.cvd_break_z_window = int(cvd_break_z_window)
+        self.flow_z_window = int(flow_z_window)
         self.ma_fast = int(ma_fast)
         self.ma_slow = int(ma_slow)
         self.atr_window = int(atr_window)
@@ -151,12 +187,14 @@ class WhaleFeatureEngine:
 
         out = df.copy()
 
+        # Core numeric
         out = _ensure_cols_numeric(out, ["open", "high", "low", "close", "volume", "taker_buy_base_volume"])
 
+        # Candle body / dir
         out["body"] = out["close"] - out["open"]
         out["dir"] = np.where(out["body"] > 0, 1, np.where(out["body"] < 0, -1, 0))
-        out["impact"] = out["body"].abs() / (out["close"].abs() + 1e-9)
 
+        # Volume ratio + Z
         vol = out["volume"].astype(float)
         out["vol_ema"] = vol.ewm(span=self.vol_ema_span, adjust=False).mean()
         out["vol_ratio"] = vol / (out["vol_ema"] + 1e-9)
@@ -165,11 +203,14 @@ class WhaleFeatureEngine:
         v_std = vol.rolling(self.vol_z_window).std()
         out["vol_z"] = (vol - v_mean) / (v_std + 1e-9)
 
-        body_abs = out["body"].abs().astype(float)
+        # Body strength
+        body_abs = np.abs(out["body"].astype(float))
         out["body_strength"] = body_abs / (body_abs.rolling(self.body_strength_window).mean() + 1e-9)
+
+        # Direction momentum
         out["dir_mom"] = out["dir"].rolling(self.dir_mom_window).sum()
 
-        # Aggressive flow proxy
+        # Aggressive flow proxy (taker_buy - taker_sell)
         if "taker_buy_base_volume" in out.columns:
             taker_buy = out["taker_buy_base_volume"].astype(float)
             taker_sell = (out["volume"].astype(float) - taker_buy).clip(lower=0.0)
@@ -182,61 +223,65 @@ class WhaleFeatureEngine:
         out["flow"] = (taker_buy - taker_sell).astype(float)
         out["flow_ratio"] = taker_buy / (out["volume"].astype(float) + 1e-9)
 
-        flow = out["flow"].astype(float)
-        f_mean = flow.rolling(self.cvd_break_z_window).mean()
-        f_std = flow.rolling(self.cvd_break_z_window).std()
-        out["flow_z"] = (flow - f_mean) / (f_std + 1e-9)
-
+        # CVD
         out["cvd"] = out["flow"].cumsum()
 
+        # CVD slope (sadece last için, hızlı)
+        n = int(self.cvd_slope_window)
         cvd_vals = out["cvd"].astype(float).values
-        n = self.cvd_slope_window
-        if len(out) >= n:
-            slopes = np.zeros(len(out), dtype=float)
-            for i in range(len(out)):
-                j0 = max(0, i - n + 1)
-                slopes[i] = _linear_slope(cvd_vals[j0 : i + 1])
-            out["cvd_slope"] = slopes
+        if len(cvd_vals) >= 3:
+            j0 = max(0, len(cvd_vals) - n)
+            y = cvd_vals[j0:]
+            if len(y) >= 3:
+                x = np.arange(len(y), dtype=float)
+                x = x - x.mean()
+                y = y - float(np.mean(y))
+                denom = float((x * x).sum()) + 1e-12
+                slope = float((x * y).sum() / denom)
+            else:
+                slope = 0.0
         else:
-            out["cvd_slope"] = 0.0
+            slope = 0.0
+        out["cvd_slope_last"] = float(slope)
 
-        k = max(1, self.cvd_break_k)
-        out["cvd_delta_k"] = out["cvd"] - out["cvd"].shift(k)
-        d = out["cvd_delta_k"].astype(float)
-        d_mean = d.rolling(self.cvd_break_z_window).mean()
-        d_std = d.rolling(self.cvd_break_z_window).std()
-        out["cvd_break_z"] = (d - d_mean) / (d_std + 1e-9)
+        # Flow z-score (ani kırılma)
+        flow = out["flow"].astype(float)
+        f_mean = flow.rolling(self.flow_z_window).mean()
+        f_std = flow.rolling(self.flow_z_window).std()
+        out["flow_z"] = (flow - f_mean) / (f_std + 1e-9)
 
-        # ATR proxy + vol regime
+        # ATR proxy + volatility regime
         if {"high", "low", "close"}.issubset(out.columns):
             high = out["high"].astype(float)
             low = out["low"].astype(float)
             close = out["close"].astype(float)
             prev_close = close.shift(1)
-            tr = pd.concat(
-                [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
-                axis=1,
-            ).max(axis=1)
+            tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
             out["atr_proxy"] = tr.rolling(self.atr_window).mean().fillna(0.0)
             out["vol_regime"] = out["atr_proxy"] / (close.abs() + 1e-9)
         else:
             out["atr_proxy"] = 0.0
             out["vol_regime"] = 0.0
 
-        # Trend regime proxy
+        # Trend regime proxy: MA slope
         close = out["close"].astype(float)
         out["ma_fast"] = close.rolling(self.ma_fast).mean()
         out["ma_slow"] = close.rolling(self.ma_slow).mean()
-        kk = max(3, int(self.ma_fast / 4))
-        out["ma_slope"] = (out["ma_fast"] - out["ma_fast"].shift(kk)) / (kk + 1e-9)
+        k = max(3, int(self.ma_fast / 4))
+        out["ma_slope"] = (out["ma_fast"] - out["ma_fast"].shift(k)) / (k + 1e-9)
 
         # VWAP + deviation
-        # typical price * vol rolling / vol rolling
-        tp = (out["high"].astype(float) + out["low"].astype(float) + out["close"].astype(float)) / 3.0
-        pv = tp * vol
-        vwap = pv.rolling(self.vwap_window).sum() / (vol.rolling(self.vwap_window).sum() + 1e-9)
-        out["vwap"] = vwap.fillna(method="ffill").fillna(0.0)
-        out["vwap_dev"] = (out["close"].astype(float) - out["vwap"].astype(float)) / (out["vwap"].abs() + 1e-9)
+        # vwap = sum(tp*vol)/sum(vol), tp=(h+l+c)/3
+        if {"high", "low", "close", "volume"}.issubset(out.columns):
+            tp = (out["high"].astype(float) + out["low"].astype(float) + out["close"].astype(float)) / 3.0
+            pv = tp * out["volume"].astype(float)
+            sum_pv = pv.rolling(self.vwap_window).sum()
+            sum_v = out["volume"].astype(float).rolling(self.vwap_window).sum()
+            out["vwap"] = (sum_pv / (sum_v + 1e-9)).fillna(0.0)
+            out["vwap_dev"] = (out["close"].astype(float) - out["vwap"].astype(float)) / (out["vwap"].abs() + 1e-9)
+        else:
+            out["vwap"] = 0.0
+            out["vwap_dev"] = 0.0
 
         out = out.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
         return out
@@ -248,45 +293,42 @@ class WhaleDetector:
     """
     Asıl whale dedektörü (tek timeframe).
 
-    Eklenenler:
-      - OBI: market_meta["obi"] varsa flow ile birlikte score’a ek
-      - Spread shock: spread z-score (rolling) ile ani açılma veto/penalty
-      - VWAP deviation: continuation/fakeout ayrımı
-      - Time-of-day: düşük likidite saatlerinde eşikleri yükselt
+    Eklenen güçlendirmeler:
+      ✅ Order-book imbalance (OBI): market_meta["obi"] varsa score’a katkı
+      ✅ Spread shock: market_meta["spread_z"] / ["spread_zscore"] ile veto/penalty
+      ✅ VWAP deviation: flow yönü ile vwap_dev uyumu continuation/fakeout ayrımı
+      ✅ Time-of-day filter: düşük likidite saatlerinde threshold yükselt
+
+    Not:
+      - spread_z hesaplamasını main/WS tarafında tutmak daha mantıklı.
+        (burada sadece "gelirse uygula" mantığı var)
     """
 
     def __init__(
         self,
         window: int = 80,
-        # spike thresholds (base)
+        # spike thresholds
         volume_zscore_thr: float = 1.5,
         flow_z_thr: float = 1.8,
-        cvd_break_z_thr: float = 1.8,
         body_strength_thr: float = 1.2,
-        impact_thr: float = 0.0012,  # ~0.12%
         # cvd
         cvd_slope_min_abs: float = 0.0,
         # regime
         trend_ma_slope_thr: float = 0.0,
         vol_regime_thr: float = 0.003,
-        range_penalty: float = 0.70,
         # tradeability
-        max_spread_pct: float = 0.0015,
+        max_spread_pct: float = 0.0015,   # 0.15%
         min_liq_score: float = 0.0,
-        hard_veto_untradeable: bool = False,
-        # spread shock
-        spread_z_window: int = 40,
-        spread_z_thr: float = 2.2,
-        hard_veto_spread_shock: bool = True,
-        # OBI usage
-        obi_weight: float = 0.12,          # score bonus/penalty scale
-        obi_align_thr: float = 0.15,       # |obi| < thr => ignore
-        # VWAP deviation
-        vwap_dev_thr: float = 0.0012,      # 0.12% deviation
+        # spread shock z
+        spread_z_veto_thr: float = 2.2,
+        spread_z_penalty_thr: float = 1.6,
+        # OBI
+        obi_weight: float = 0.10,
+        # VWAP
         vwap_weight: float = 0.10,
-        # time-of-day
-        tod_low_liq_hours_utc: Optional[List[int]] = None,
-        tod_thr_multiplier: float = 1.15,  # low-liq hours => eşikler * multiplier
+        vwap_dev_thr: float = 0.0015,     # 0.15% dev eşiği
+        # TOD (time-of-day)
+        low_liq_mult: float = 1.25,
         # cooldown/decay
         cooldown_bars: int = 10,
         decay_halflife_bars: int = 25,
@@ -295,40 +337,42 @@ class WhaleDetector:
 
         self.volume_zscore_thr = float(volume_zscore_thr)
         self.flow_z_thr = float(flow_z_thr)
-        self.cvd_break_z_thr = float(cvd_break_z_thr)
         self.body_strength_thr = float(body_strength_thr)
-        self.impact_thr = float(impact_thr)
 
         self.cvd_slope_min_abs = float(cvd_slope_min_abs)
 
         self.trend_ma_slope_thr = float(trend_ma_slope_thr)
         self.vol_regime_thr = float(vol_regime_thr)
-        self.range_penalty = float(range_penalty)
 
         self.max_spread_pct = float(max_spread_pct)
         self.min_liq_score = float(min_liq_score)
-        self.hard_veto_untradeable = bool(hard_veto_untradeable)
 
-        self.spread_z_window = int(spread_z_window)
-        self.spread_z_thr = float(spread_z_thr)
-        self.hard_veto_spread_shock = bool(hard_veto_spread_shock)
+        self.spread_z_veto_thr = float(spread_z_veto_thr)
+        self.spread_z_penalty_thr = float(spread_z_penalty_thr)
 
         self.obi_weight = float(obi_weight)
-        self.obi_align_thr = float(obi_align_thr)
 
-        self.vwap_dev_thr = float(vwap_dev_thr)
         self.vwap_weight = float(vwap_weight)
+        self.vwap_dev_thr = float(vwap_dev_thr)
 
-        self.tod_low_liq_hours_utc = tod_low_liq_hours_utc or [0, 1, 2, 3, 4, 5]
-        self.tod_thr_multiplier = float(tod_thr_multiplier)
+        self.low_liq_mult = float(low_liq_mult)
 
         self.cooldown_bars = int(cooldown_bars)
         self.decay_halflife_bars = int(decay_halflife_bars)
 
         self.fe = WhaleFeatureEngine()
 
-        # state keyed by (symbol, interval)
+        # state keyed by (symbol, interval) if given; else "default"
         self._state: Dict[str, Dict[str, Any]] = {}
+
+        # env override: low liquidity hours
+        self._env_low_liq_hours = None
+        try:
+            s = os.getenv("WHALE_LOW_LIQ_HOURS", "").strip()
+            if s:
+                self._env_low_liq_hours = _parse_hours_list(s)
+        except Exception:
+            self._env_low_liq_hours = None
 
     def _key(self, symbol: Optional[str], interval: Optional[str]) -> str:
         s = (symbol or "default").upper()
@@ -346,6 +390,7 @@ class WhaleDetector:
         else:
             score = base_score
 
+        # decay: event sonrası tekrar sinyalde "persist" gibi davranmasın diye penalty
         if bars_since > 0 and self.decay_halflife_bars > 0:
             decay = float(0.5 ** (bars_since / float(self.decay_halflife_bars)))
             persist_penalty = max(0.35, min(1.0, 1.0 - (1.0 - decay) * 0.6))
@@ -358,38 +403,12 @@ class WhaleDetector:
             "bars_since_event": int(bars_since),
             "persist_penalty": float(persist_penalty),
         }
-        return float(_clip01(score)), meta
+        return float(_clamp(score)), meta
 
     def _mark_event(self, key: str, bar_index: int) -> None:
         st = self._state.get(key) or {}
         st["last_event_bar"] = int(bar_index)
         self._state[key] = st
-
-    # ---- spread shock state ----
-    def _update_spread_stats(self, key: str, spread_pct: float) -> float:
-        """
-        Rolling spread z-score hesaplar (state içinde).
-        Return: spread_z (float)
-        """
-        st = self._state.get(key) or {}
-        arr = st.get("spread_hist", None)
-        if not isinstance(arr, list):
-            arr = []
-        arr.append(float(spread_pct))
-        # cap
-        cap = max(10, self.spread_z_window)
-        if len(arr) > cap:
-            arr = arr[-cap:]
-        st["spread_hist"] = arr
-        self._state[key] = st
-
-        if len(arr) < 10:
-            return 0.0
-        a = np.array(arr, dtype=float)
-        mu = float(a.mean())
-        sd = float(a.std()) + 1e-12
-        z = (float(spread_pct) - mu) / sd
-        return float(z)
 
     def from_klines(
         self,
@@ -402,13 +421,6 @@ class WhaleDetector:
         if df is None or len(df) < max(10, self.window):
             return WhaleSignal("none", 0.0, "not_enough_data", {})
 
-        key = self._key(symbol, interval)
-
-        # time-of-day multiplier
-        hour_utc = _hour_utc_from_market_meta(market_meta)
-        low_liq = (hour_utc in set(self.tod_low_liq_hours_utc)) if hour_utc is not None else False
-        thr_mul = self.tod_thr_multiplier if low_liq else 1.0
-
         tail = df.tail(self.window).copy()
         feat = self.fe.compute(tail)
         if feat is None or feat.empty:
@@ -417,225 +429,237 @@ class WhaleDetector:
         last = feat.iloc[-1]
         bar_index = len(df) - 1
 
+        # -------------------------
+        # Time-of-day filter (threshold multipliers)
+        # -------------------------
+        mmeta = market_meta or {}
+        hour_utc = None
+        if "hour_utc" in mmeta:
+            hour_utc = int(_safe_float(mmeta.get("hour_utc"), default=-1))
+            hour_utc = hour_utc if 0 <= hour_utc <= 23 else None
+        else:
+            ts_sec = _extract_ts_seconds_from_df(df)
+            hour_utc = _hour_utc_from_ts(ts_sec)
+
+        tod_mult, tod_meta = _time_of_day_multiplier(
+            hour_utc,
+            low_liq_hours=self._env_low_liq_hours,
+            low_liq_mult=self.low_liq_mult,
+        )
+
+        # TOD uygulanan efektif eşikler
+        vol_thr_eff = float(self.volume_zscore_thr * tod_mult)
+        flow_thr_eff = float(self.flow_z_thr * tod_mult)
+        body_thr_eff = float(self.body_strength_thr)  # body'i şişirmiyoruz (isteğe bağlı)
+
+        # -------------------------
+        # Core features
+        # -------------------------
         vol_z = _safe_float(last.get("vol_z", 0.0))
         flow_z = _safe_float(last.get("flow_z", 0.0))
-        cvd_break_z = _safe_float(last.get("cvd_break_z", 0.0))
         body_strength = _safe_float(last.get("body_strength", 0.0))
-        impact = _safe_float(last.get("impact", 0.0))
-        cvd_slope = _safe_float(last.get("cvd_slope", 0.0))
+        cvd_slope = _safe_float(last.get("cvd_slope_last", 0.0))
         ma_slope = _safe_float(last.get("ma_slope", 0.0))
         vol_regime = _safe_float(last.get("vol_regime", 0.0))
+        flow = _safe_float(last.get("flow", 0.0))
+        vwap_dev = _safe_float(last.get("vwap_dev", 0.0))
         dir_raw = int(_safe_float(last.get("dir", 0.0), 0.0))
 
-        flow = _safe_float(last.get("flow", 0.0))
-        flow_sign = 1 if flow > 0 else (-1 if flow < 0 else 0)
-
-        vwap_dev = _safe_float(last.get("vwap_dev", 0.0))
-
-        # Tradeability + spread shock
-        mm = market_meta or {}
-        spread_pct = _safe_float(mm.get("spread_pct", 0.0), 0.0)
-        liq_score = _safe_float(mm.get("liq_score", 0.0), 0.0)
+        # -------------------------
+        # Tradeability (spread/liquidity)
+        # -------------------------
+        spread_pct = _safe_float(mmeta.get("spread_pct", 0.0), 0.0)
+        liq_score = _safe_float(mmeta.get("liq_score", 0.0), 0.0)
         spread_ok = (spread_pct <= self.max_spread_pct) if spread_pct > 0 else True
         liq_ok = (liq_score >= self.min_liq_score) if self.min_liq_score > 0 else True
-        tradeable_ok = bool(spread_ok and liq_ok)
 
-        spread_z = 0.0
-        spread_shock = False
-        if spread_pct and spread_pct > 0:
-            spread_z = self._update_spread_stats(key, spread_pct)
-            spread_shock = (spread_z >= self.spread_z_thr)
+        # Spread shock z-score (ani açılma)
+        spread_z = None
+        if "spread_z" in mmeta:
+            spread_z = _safe_float(mmeta.get("spread_z"), default=np.nan)
+        elif "spread_zscore" in mmeta:
+            spread_z = _safe_float(mmeta.get("spread_zscore"), default=np.nan)
+        elif "spread_z_score" in mmeta:
+            spread_z = _safe_float(mmeta.get("spread_z_score"), default=np.nan)
 
-        if self.hard_veto_untradeable and not tradeable_ok:
-            return WhaleSignal("none", 0.0, "untradeable_veto", {"tradeable_ok": False, "spread_pct": spread_pct, "liq_score": liq_score})
+        spread_shock_veto = False
+        spread_shock_penalty = False
+        if spread_z is not None and (spread_z == spread_z):
+            if spread_z >= self.spread_z_veto_thr:
+                spread_shock_veto = True
+            elif spread_z >= self.spread_z_penalty_thr:
+                spread_shock_penalty = True
 
-        if self.hard_veto_spread_shock and spread_shock:
-            return WhaleSignal("none", 0.0, "spread_shock_veto", {"spread_pct": spread_pct, "spread_z": spread_z, "hour_utc": hour_utc, "low_liq": low_liq})
+        tradeable_ok = bool(spread_ok and liq_ok and (not spread_shock_veto))
 
-        # thresholds (with time-of-day multiplier)
-        vol_thr = self.volume_zscore_thr * thr_mul
-        flow_thr = self.flow_z_thr * thr_mul
-        cvd_thr = self.cvd_break_z_thr * thr_mul
-        body_thr = self.body_strength_thr * thr_mul
-        impact_thr = self.impact_thr * thr_mul
+        # -------------------------
+        # Spike gates (TOD 적용)
+        # -------------------------
+        has_vol_spike = vol_z >= vol_thr_eff
+        has_flow_break = flow_z >= flow_thr_eff
+        has_body_strength = body_strength >= body_thr_eff
+
+        # Regime
+        trendish = abs(ma_slope) > self.trend_ma_slope_thr if self.trend_ma_slope_thr > 0 else (abs(ma_slope) > 0.0)
+        high_vol = vol_regime >= self.vol_regime_thr
+
+        # Direction candidate: flow sign öncelik
+        flow_sign = 1 if flow > 0 else (-1 if flow < 0 else 0)
+        if flow_sign != 0:
+            dir_candidate: Direction = "long" if flow_sign > 0 else "short"
+        elif cvd_slope != 0:
+            dir_candidate = "long" if cvd_slope > 0 else "short"
+        else:
+            dir_candidate = "none"
+
+        # CVD slope strength
+        cvd_ok = abs(cvd_slope) >= self.cvd_slope_min_abs if self.cvd_slope_min_abs > 0 else True
 
         meta: Dict[str, Any] = {
             "vol_z": float(vol_z),
             "flow_z": float(flow_z),
-            "cvd_break_z": float(cvd_break_z),
             "body_strength": float(body_strength),
-            "impact": float(impact),
             "cvd_slope": float(cvd_slope),
             "ma_slope": float(ma_slope),
             "vol_regime": float(vol_regime),
+            "trendish": bool(trendish),
+            "high_vol": bool(high_vol),
             "dir_raw": int(dir_raw),
             "flow": float(flow),
-            "flow_sign": int(flow_sign),
             "flow_ratio": float(_safe_float(last.get("flow_ratio", 0.0))),
             "vwap_dev": float(vwap_dev),
             "spread_pct": float(spread_pct),
-            "spread_z": float(spread_z),
-            "spread_shock": bool(spread_shock),
             "liq_score": float(liq_score),
+            "spread_z": float(spread_z) if (spread_z is not None and spread_z == spread_z) else None,
+            "spread_shock_veto": bool(spread_shock_veto),
+            "spread_shock_penalty": bool(spread_shock_penalty),
             "tradeable_ok": bool(tradeable_ok),
-            "hour_utc": hour_utc,
-            "low_liq_hours": bool(low_liq),
-            "thr_multiplier": float(thr_mul),
+            "tod": tod_meta,
+            "thr_eff": {"vol_z": float(vol_thr_eff), "flow_z": float(flow_thr_eff), "body_strength": float(body_thr_eff)},
         }
-        if market_meta:
-            meta["market_meta"] = market_meta
 
-        # Spike gates
-        has_vol_spike = vol_z >= vol_thr
-        has_flow_spike = abs(flow_z) >= flow_thr
-        has_cvd_break = abs(cvd_break_z) >= cvd_thr
-        has_body_strength = body_strength >= body_thr
-        has_impact = impact >= impact_thr
-
-        # Regime
-        trendish = abs(ma_slope) > (self.trend_ma_slope_thr if self.trend_ma_slope_thr > 0 else 0.0)
-        high_vol = vol_regime >= self.vol_regime_thr
-        meta["trendish"] = bool(trendish)
-        meta["high_vol"] = bool(high_vol)
-
+        # -------------------------
         # Pre-filter
-        if not (has_vol_spike or has_flow_spike):
+        # -------------------------
+        if not (has_vol_spike or has_flow_break):
             return WhaleSignal("none", 0.0, "no_spike", meta)
 
-        # Absorption / fakeout: flow sign ↔ candle dir ters
-        absorption = False
-        if flow_sign != 0 and dir_raw != 0:
-            if (flow_sign > 0 and dir_raw < 0) or (flow_sign < 0 and dir_raw > 0):
-                absorption = True
-        meta["absorption_flag"] = bool(absorption)
+        # Signature: (flow_break + cvd_ok) veya (vol_spike + body_strength)
+        signature_a = bool(has_flow_break and cvd_ok)
+        signature_b = bool(has_vol_spike and has_body_strength)
 
-        # Direction proposal
-        if has_flow_spike and flow_sign != 0:
-            dir_candidate = "long" if flow_sign > 0 else "short"
-        elif abs(cvd_slope) > 0:
-            dir_candidate = "long" if cvd_slope > 0 else "short"
-        else:
-            dir_candidate = "long" if dir_raw > 0 else ("short" if dir_raw < 0 else "none")
-
-        # Signature:
-        signature_a = bool(has_flow_spike and has_cvd_break and (abs(cvd_slope) >= self.cvd_slope_min_abs))
-        signature_b = bool(has_vol_spike and has_body_strength and has_impact)
         if not (signature_a or signature_b):
             return WhaleSignal("none", 0.0, "weak_signature", meta)
 
-        # Score components
-        vol_comp = _clip01((vol_z - vol_thr) / 2.0) if has_vol_spike else 0.0
-        flow_comp = _clip01((abs(flow_z) - flow_thr) / 2.0) if has_flow_spike else 0.0
-        cvd_comp = _clip01(abs(cvd_break_z) / (cvd_thr * 2.0)) if has_cvd_break else 0.0
-        impact_comp = _clip01(impact / (impact_thr * 2.0)) if impact_thr > 0 else 0.0
-        body_comp = _clip01((body_strength - 1.0) / 2.0) if has_body_strength else 0.0
-        slope_comp = _clip01(abs(cvd_slope) / (abs(cvd_slope) + 1.0))
+        # -------------------------
+        # Score compose (base)
+        # -------------------------
+        vol_comp = _clamp(vol_z / 3.0)
+        flow_comp = _clamp(flow_z / 4.0)
+        body_comp = _clamp((body_strength - 1.0) / 2.0)
+        slope_comp = _clamp(abs(cvd_slope) / (abs(cvd_slope) + 1.0))
 
-        base_score = (
-            0.33 * max(vol_comp, flow_comp)
-            + 0.25 * cvd_comp
-            + 0.14 * impact_comp
-            + 0.14 * body_comp
-            + 0.14 * slope_comp
-        )
+        base_score = 0.0
+        base_score += 0.35 * max(vol_comp, flow_comp)
+        base_score += 0.25 * slope_comp
+        base_score += 0.20 * body_comp
 
-        # VWAP deviation logic
-        # - long continuation: vwap_dev > +thr
-        # - short continuation: vwap_dev < -thr
-        vwap_ok = False
-        if dir_candidate == "long" and vwap_dev >= self.vwap_dev_thr:
-            vwap_ok = True
-        elif dir_candidate == "short" and vwap_dev <= -self.vwap_dev_thr:
-            vwap_ok = True
-
-        if vwap_ok:
-            base_score = min(1.0, base_score + self.vwap_weight * _clip01(abs(vwap_dev) / (self.vwap_dev_thr * 2.0)))
-            meta["vwap_confirm"] = True
-        else:
-            # ters sapma = fakeout olasılığı
-            if dir_candidate == "long" and vwap_dev <= -self.vwap_dev_thr:
-                base_score *= 0.80
-                meta["vwap_conflict"] = True
-            elif dir_candidate == "short" and vwap_dev >= self.vwap_dev_thr:
-                base_score *= 0.80
-                meta["vwap_conflict"] = True
-            else:
-                meta["vwap_conflict"] = False
-            meta["vwap_confirm"] = False
-
-        # OBI integration (market_meta["obi"] expected in [-1..+1])
-        obi = _safe_float(mm.get("obi", 0.0), 0.0)
-        meta["obi"] = float(obi)
-        obi_used = False
-        if abs(obi) >= self.obi_align_thr and flow_sign != 0 and self.obi_weight > 0:
-            obi_used = True
-            # aligned if sign(obi) matches direction candidate
-            if dir_candidate == "long":
-                aligned = obi > 0
-            elif dir_candidate == "short":
-                aligned = obi < 0
-            else:
-                aligned = False
-
-            mag = _clip01(abs(obi))
-            if aligned:
-                base_score = min(1.0, base_score + self.obi_weight * mag)
-                meta["obi_aligned"] = True
-            else:
-                base_score *= (1.0 - min(0.25, self.obi_weight) * mag)
-                meta["obi_aligned"] = False
-        meta["obi_used"] = bool(obi_used)
-
-        # Absorption penalty
-        if absorption:
-            base_score *= 0.55
-
-        # Regime handling
+        # Regime bonus: trend + high_vol => continuation ihtimali artar
         if trendish and high_vol:
-            base_score = min(1.0, base_score + 0.08)
+            base_score += 0.10
             meta["regime_bonus"] = True
         else:
-            base_score *= self.range_penalty * (0.80 if absorption else 1.0)
             meta["regime_bonus"] = False
-            meta["range_penalty"] = True
 
-        # Spread shock soft penalty (hard veto zaten yukarıda)
-        if spread_shock:
+        # -------------------------
+        # OBI contribution (market_meta["obi"])
+        # -------------------------
+        obi_raw = mmeta.get("obi", None)
+        if obi_raw is not None:
+            obi_unit = _obi_to_unit(_safe_float(obi_raw, default=0.0))  # [-1..1]
+            # yön uyumu
+            if dir_candidate == "long":
+                obi_align = max(0.0, obi_unit)
+            elif dir_candidate == "short":
+                obi_align = max(0.0, -obi_unit)
+            else:
+                obi_align = 0.0
+
+            base_score += float(self.obi_weight) * _clamp(obi_align)
+            meta["obi"] = float(_safe_float(obi_raw, default=0.0))
+            meta["obi_unit"] = float(obi_unit)
+            meta["obi_align"] = float(obi_align)
+        else:
+            meta["obi"] = None
+
+        # -------------------------
+        # VWAP deviation contribution (continuation/fakeout)
+        # -------------------------
+        # long continuation: close > vwap (vwap_dev positive)
+        # short continuation: close < vwap (vwap_dev negative)
+        vwap_bonus = 0.0
+        if dir_candidate in ("long", "short"):
+            if dir_candidate == "long":
+                # vwap_dev >= thr -> continuation bonus
+                if vwap_dev >= self.vwap_dev_thr:
+                    vwap_bonus = _clamp((vwap_dev - self.vwap_dev_thr) / (5.0 * self.vwap_dev_thr + 1e-9))
+                # vwap_dev çok negatifse fakeout penalty
+                elif vwap_dev <= -self.vwap_dev_thr:
+                    vwap_bonus = -0.60 * _clamp((abs(vwap_dev) - self.vwap_dev_thr) / (5.0 * self.vwap_dev_thr + 1e-9))
+            else:
+                if vwap_dev <= -self.vwap_dev_thr:
+                    vwap_bonus = _clamp((abs(vwap_dev) - self.vwap_dev_thr) / (5.0 * self.vwap_dev_thr + 1e-9))
+                elif vwap_dev >= self.vwap_dev_thr:
+                    vwap_bonus = -0.60 * _clamp((vwap_dev - self.vwap_dev_thr) / (5.0 * self.vwap_dev_thr + 1e-9))
+
+        base_score += float(self.vwap_weight) * float(vwap_bonus)
+        meta["vwap_bonus_raw"] = float(vwap_bonus)
+
+        base_score = float(_clamp(base_score))
+
+        # -------------------------
+        # Spread shock penalty (veto zaten tradeable_ok içinde)
+        # -------------------------
+        if spread_shock_penalty:
             base_score *= 0.65
-            meta["spread_shock_penalty"] = True
+            meta["spread_shock_penalty_applied"] = True
         else:
-            meta["spread_shock_penalty"] = False
+            meta["spread_shock_penalty_applied"] = False
 
-        # Tradeability soft penalty
+        # -------------------------
+        # Tradeability penalty/veto
+        # -------------------------
         if not tradeable_ok:
-            base_score *= 0.70
-            meta["untradeable_soft_penalty"] = True
+            base_score *= 0.20
+            meta["tradeability_penalty"] = True
         else:
-            meta["untradeable_soft_penalty"] = False
+            meta["tradeability_penalty"] = False
 
-        base_score = _clip01(base_score)
-
+        # -------------------------
         # Cooldown & decay
+        # -------------------------
+        key = self._key(symbol, interval)
         score, cd_meta = self._apply_cooldown_decay(key, base_score, bar_index)
         meta.update(cd_meta)
 
+        # Final direction
         direction: Direction = "none"
         if dir_candidate in ("long", "short") and score > 0.0:
-            direction = dir_candidate  # type: ignore[assignment]
+            direction = dir_candidate
 
         reason = "cvd_flow_signature" if signature_a else "volume_body_signature"
-        if absorption:
-            reason += "_absorption"
-        if spread_shock:
-            reason += "_spreadshock"
+        if spread_shock_veto:
+            reason += "_spreadshock_veto"
+        elif spread_shock_penalty:
+            reason += "_spreadshock_penalty"
         if not tradeable_ok:
-            reason += "_untradeable"
-        if low_liq:
+            reason += "_untradeable_penalty"
+        if meta.get("tod", {}).get("tod_low_liq"):
             reason += "_tod_lowliq"
         if meta.get("cooldown_active"):
             reason += "_cooldown"
 
-        # Mark event
+        # Event mark (güçlü sinyal)
         if direction != "none" and score >= 0.55 and tradeable_ok and not meta.get("cooldown_active"):
             self._mark_event(key, bar_index)
             meta["event_marked"] = True
@@ -644,8 +668,9 @@ class WhaleDetector:
 
         return WhaleSignal(direction, float(score), reason, meta)
 
+
 # ---------------------------------------------------------
-# MTF Whale Detector (aggregator + optional cross-exchange confirm)
+# MTF Whale Detector
 # ---------------------------------------------------------
 class MultiTimeframeWhaleDetector:
     """
@@ -663,25 +688,27 @@ class MultiTimeframeWhaleDetector:
         base_window: int = 80,
         volume_zscore_thr: float = 1.5,
         flow_z_thr: float = 1.8,
-        cvd_break_z_thr: float = 1.8,
     ) -> None:
         self.timeframes: List[str] = timeframes or ["1m", "3m", "5m", "15m", "30m", "1h"]
 
         self.detectors: Dict[str, WhaleDetector] = {}
         for tf in self.timeframes:
-            w = base_window + 40 if tf.endswith("h") else base_window
+            w = base_window
+            if tf.endswith("h"):
+                w = base_window + 40
+            elif tf.endswith("m"):
+                w = base_window
+
             self.detectors[tf] = WhaleDetector(
                 window=w,
                 volume_zscore_thr=volume_zscore_thr,
                 flow_z_thr=flow_z_thr,
-                cvd_break_z_thr=cvd_break_z_thr,
             )
 
         self.base_detector = WhaleDetector(
             window=base_window,
             volume_zscore_thr=volume_zscore_thr,
             flow_z_thr=flow_z_thr,
-            cvd_break_z_thr=cvd_break_z_thr,
         )
 
     def from_klines(self, df: pd.DataFrame, interval: Optional[str] = None) -> WhaleSignal:
@@ -697,6 +724,11 @@ class MultiTimeframeWhaleDetector:
         market_meta_by_tf: Optional[Dict[str, Dict[str, Any]]] = None,
         symbol: Optional[str] = None,
     ) -> Dict[str, WhaleSignal]:
+        """
+        dfs: {"1m": df_1m, "5m": df_5m, ...} (Binance)
+        okx_dfs (ops): aynı TF'ler için OKX df'leri (cross-confirm)
+        market_meta_by_tf (ops): {"1m": {"spread_pct":..,"liq_score":..,"obi":..,"spread_z":..}, ...}
+        """
         signals: Dict[str, WhaleSignal] = {}
 
         for tf, df in dfs.items():
@@ -709,7 +741,7 @@ class MultiTimeframeWhaleDetector:
 
             sig = det.from_klines(df, symbol=symbol, interval=tf, market_meta=mmeta)
 
-            # Cross-exchange confirm (OKX)
+            # Cross-exchange confirmation bonus (opsiyonel)
             if okx_dfs is not None and tf in okx_dfs and okx_dfs[tf] is not None and len(okx_dfs[tf]) >= 10:
                 try:
                     okx_sig = det.from_klines(
@@ -720,23 +752,19 @@ class MultiTimeframeWhaleDetector:
                     )
                     aligned = (sig.direction != "none") and (sig.direction == okx_sig.direction) and (okx_sig.score >= 0.45)
                     if aligned:
-                        boosted = min(1.0, float(sig.score) + 0.10 * max(0.0, okx_sig.score))
+                        boosted = min(1.0, float(sig.score) + 0.10)
                         sig = WhaleSignal(
                             sig.direction,
                             boosted,
                             sig.reason + "_xex_confirm",
-                            {**sig.meta, "xex_confirm": True, "okx_score": float(okx_sig.score), "okx_dir": okx_sig.direction},
+                            {**sig.meta, "xex_confirm": True, "okx_score": okx_sig.score},
                         )
                     else:
-                        if okx_sig.direction in ("long", "short") and sig.direction in ("long", "short") and okx_sig.direction != sig.direction and okx_sig.score >= 0.45:
-                            penal = float(sig.score) * 0.70
-                        else:
-                            penal = float(sig.score) * 0.92
                         sig = WhaleSignal(
                             sig.direction,
-                            penal,
+                            float(sig.score) * 0.92,
                             sig.reason,
-                            {**sig.meta, "xex_confirm": False, "okx_score": float(okx_sig.score), "okx_dir": okx_sig.direction},
+                            {**sig.meta, "xex_confirm": False, "okx_score": okx_sig.score},
                         )
                 except Exception:
                     sig = WhaleSignal(sig.direction, sig.score, sig.reason, {**sig.meta, "xex_confirm": None})
@@ -753,6 +781,9 @@ class MultiTimeframeWhaleDetector:
         market_meta_by_tf: Optional[Dict[str, Dict[str, Any]]] = None,
         symbol: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Çoklu TF sinyallerinden tek aggregated whale_meta üretir.
+        """
         signals = self.analyze_multiple_timeframes(
             dfs,
             okx_dfs=okx_dfs,
@@ -775,7 +806,7 @@ class MultiTimeframeWhaleDetector:
 
         for tf, sig in signals.items():
             w = float(tf_weights.get(tf, 1.0))
-            s = _clip01(float(sig.score))
+            s = _clamp(float(sig.score))
 
             if sig.direction == "long":
                 long_score += s * w
@@ -800,10 +831,12 @@ class MultiTimeframeWhaleDetector:
                 agg_dir = "short"
                 agg_score_raw = short_score / (long_score + short_score + 1e-9)
 
-            agg_score = float(_clip01((agg_score_raw - 0.5) * 2.0))
+            # 0.5->0, 1.0->1 ölçeğine map
+            agg_score = float(_clamp((agg_score_raw - 0.5) * 2.0))
 
         return {
             "direction": agg_dir,
             "score": float(agg_score),
             "per_tf": per_tf_meta,
         }
+

@@ -204,6 +204,33 @@ def _adaptive_scan_params(base_every: float, base_topk: int, vol_score: float) -
     return {"scan_every": every, "topk": topk, "vol_score": v}
 
 
+def _quick_vol_regime(df: pd.DataFrame, window: int = 60) -> float:
+    """
+    Çok hızlı vol rejimi proxy:
+      vol_regime ~= mean(TrueRange)/close
+    FAST scan için candidates adaptif ayarına yardımcı.
+    """
+    try:
+        if df is None or df.empty or len(df) < max(10, window):
+            return 0.0
+        d = df.tail(window).copy()
+        for c in ("high", "low", "close"):
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0).astype(float)
+        if not {"high", "low", "close"}.issubset(d.columns):
+            return 0.0
+        high = d["high"].astype(float)
+        low = d["low"].astype(float)
+        close = d["close"].astype(float)
+        prev_close = close.shift(1)
+        tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        atr = float(tr.mean())
+        last_close = float(close.iloc[-1]) if len(close) else 0.0
+        if last_close <= 0:
+            return 0.0
+        return float(atr / (abs(last_close) + 1e-9))
+    except Exception:
+        return 0.0
 def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
     """
     Light scanner score (hızlı):
@@ -284,6 +311,8 @@ HYBRID_MODE: bool = get_bool_env("HYBRID_MODE", True)
 TRAINING_MODE: bool = get_bool_env("TRAINING_MODE", False)
 USE_MTF_ENS: bool = get_bool_env("USE_MTF_ENS", False)
 DRY_RUN: bool = get_bool_env("DRY_RUN", True)
+
+
 # ----------------------------------------------------------------------
 # Basit feature engineering (stabilized)
 # ----------------------------------------------------------------------
@@ -370,7 +399,6 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(period).mean().iloc[-1]
     return float(atr)
-
 
 # ----------------------------------------------------------------------
 # OFFLINE LRU cache helpers (raw + normalized_tail)
@@ -484,6 +512,8 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
     if logger:
         logger.info("[DATA] LIVE(PUBLIC) REST kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
     return df
+
+
 # ----------------------------------------------------------------------
 # fetch_klines (OFFLINE cached + LIVE client/rest)
 # ----------------------------------------------------------------------
@@ -548,8 +578,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
             logger.error("[DATA] LIVE(PUBLIC) REST de başarısız: %s", e)
 
     raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
-
-
 # ----------------------------------------------------------------------
 # Shutdown manager (ws stop + tg stop + http close + pm/te close)
 # ----------------------------------------------------------------------
@@ -685,6 +713,7 @@ class ShutdownManager:
 
 
 _shutdown_mgr = ShutdownManager()
+
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
@@ -933,8 +962,6 @@ def create_trading_objects() -> Dict[str, Any]:
         "models_by_interval": models_by_interval,
         "okx_ws": okx_ws,
     }
-
-
 def _normalize_signal(sig: Any) -> str:
     s = str(sig).strip().lower()
     if s in ("buy", "long"):
@@ -1020,6 +1047,7 @@ class HeavyEngine:
                 system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
 
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
+
     async def run_once(self, symbol: str) -> Dict[str, Any]:
         global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS
 
@@ -1113,7 +1141,7 @@ class HeavyEngine:
 
         timer.mark("mtf_ensemble")
 
-        # Whale: sadece detector çağrısı (asıl güçlendirme data/whale_detector.py içine taşınacak)
+        # Whale: main.py sadece çağırır (asıl logic güçlendirme data/whale_detector.py içinde)
         whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
         whale_dir = "none"
         whale_score = 0.0
@@ -1261,8 +1289,6 @@ class HeavyEngine:
             "price": float(last_price),
             "extra": extra,
         }
-
-
 # ----------------------------------------------------------------------
 # Non-scan mode: tek symbol heavy loop
 # ----------------------------------------------------------------------
@@ -1299,16 +1325,32 @@ async def scanner_loop(engine: HeavyEngine) -> None:
     topk = int(os.getenv("SCAN_TOPK", "3"))
     conc = int(os.getenv("SCAN_CONCURRENCY", "4"))
 
-    # FAST mode overrides (agresif hız)
-    fast_mode = get_bool_env("SCAN_FAST_MODE", False)
-    warm_cache = get_bool_env("SCAN_FAST_WARM_CACHE", False)
-    adaptive = get_bool_env("SCAN_ADAPTIVE", False)
+    # Backward compatible flags (eski isimler)
+    legacy_fast_mode = get_bool_env("SCAN_FAST_MODE", False)
 
-    if fast_mode:
-        scan_every = get_float_env("SCAN_FAST_EVERY_SEC", max(2.0, scan_every * 0.5))
-        scan_limit = get_int_env("SCAN_FAST_LIMIT", min(scan_limit, 200))
-        topk = get_int_env("SCAN_FAST_TOPK", max(topk, 8))
-        conc = get_int_env("SCAN_FAST_CONCURRENCY", max(conc, 8))
+    # Yeni öneri: SCAN_FAST + SCAN_AGGRESSIVE
+    scan_fast = get_bool_env("SCAN_FAST", legacy_fast_mode)
+    scan_aggressive = get_bool_env("SCAN_AGGRESSIVE", False)
+
+    # Warm cache (opsiyonel)
+    warm_cache = get_bool_env("SCAN_FAST_WARM_CACHE", False)
+
+    # Volatility-based adaptive (opsiyonel)
+    adaptive = get_bool_env("SCAN_ADAPTIVE", False) or scan_fast
+
+    # FAST tuning env
+    fast_min_every = float(os.getenv("SCAN_FAST_MIN_EVERY_SEC", "5"))
+    fast_max_every = float(os.getenv("SCAN_FAST_MAX_EVERY_SEC", "25"))
+    fast_ref_vol = float(os.getenv("SCAN_FAST_REF_VOL", "0.004"))
+    fast_topk_min = int(os.getenv("SCAN_FAST_TOPK_MIN", "2"))
+    fast_topk_max = int(os.getenv("SCAN_FAST_TOPK_MAX", "5"))
+
+    # AGGRESSIVE preset (hız için clamp/boost)
+    if scan_aggressive:
+        scan_limit = int(min(scan_limit, int(os.getenv("SCAN_AGGR_LIMIT", "120"))))
+        conc = int(max(conc, int(os.getenv("SCAN_AGGR_CONC", "8"))))
+        topk = int(max(topk, int(os.getenv("SCAN_AGGR_TOPK", "5"))))
+        scan_every = float(min(scan_every, float(os.getenv("SCAN_AGGR_EVERY_SEC", "7"))))
 
     err_backoff_base = float(os.getenv("SCAN_ERR_BACKOFF_SEC", "2.0"))
     err_backoff_max = float(os.getenv("SCAN_ERR_BACKOFF_MAX_SEC", "30.0"))
@@ -1333,6 +1375,7 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     limit=scan_limit,
                     logger=system_logger,
                 )
+
                 if light_scanner is not None and hasattr(light_scanner, "score"):
                     try:
                         out = light_scanner.score(df)  # type: ignore
@@ -1349,6 +1392,8 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     score = _light_score_from_klines(df)
                     reason = None
 
+                vol_reg = _quick_vol_regime(df, window=min(80, max(30, int(scan_limit))))
+
                 last_px = None
                 try:
                     if "close" in df.columns and len(df) > 0:
@@ -1356,27 +1401,23 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 except Exception:
                     last_px = None
 
-                return {"symbol": sym, "score": float(score), "reason": reason, "last": last_px}
+                return {"symbol": sym, "score": float(score), "reason": reason, "last": last_px, "vol_reg": float(vol_reg)}
             except Exception as e:
                 if system_logger:
                     system_logger.debug("[SCAN] %s failed: %s", sym, e)
-                return {"symbol": sym, "score": 0.0, "reason": None, "last": None, "err": str(e)}
+                return {"symbol": sym, "score": 0.0, "reason": None, "last": None, "vol_reg": 0.0, "err": str(e)}
 
     if system_logger:
         system_logger.info(
-            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d",
-            len(symbols), scan_interval, topk, scan_every, conc
+            "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d fast=%s aggressive=%s adaptive=%s",
+            len(symbols), scan_interval, topk, scan_every, conc, scan_fast, scan_aggressive, adaptive
         )
-        if fast_mode:
-            system_logger.info(
-                "[SCAN][FAST] enabled | every=%.1fs limit=%d topk=%d conc=%d warm_cache=%s adaptive=%s",
-                scan_every, scan_limit, topk, conc, warm_cache, adaptive
-            )
 
     while True:
         t0 = time.time()
         try:
             results = await asyncio.gather(*[_scan_one(s) for s in symbols], return_exceptions=True)
+
             rows: List[Dict[str, Any]] = []
             for r in results:
                 if isinstance(r, Exception):
@@ -1385,7 +1426,40 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     rows.append(r)
 
             rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
-            candidates = [r for r in rows[:max(1, topk)] if float(r.get("score", 0.0) or 0.0) > 0.0]
+
+            # -------------------------
+            # FAST adaptive scan config
+            # -------------------------
+            scan_every_eff = float(scan_every)
+            topk_eff = int(topk)
+            if scan_fast and rows:
+                vol_regs = [float(r.get("vol_reg", 0.0) or 0.0) for r in rows[:min(10, len(rows))]]
+                vol_regs = [v for v in vol_regs if v > 0]
+                vol_med = float(pd.Series(vol_regs).median()) if vol_regs else 0.0
+
+                # scan_every: vol yükseldikçe daha sık
+                if vol_med > 1e-9:
+                    scale = float(fast_ref_vol / vol_med)
+                else:
+                    scale = 1.0
+                scale = max(0.4, min(3.0, scale))
+                scan_every_eff = float(max(fast_min_every, min(fast_max_every, scan_every * scale)))
+
+                # topk: vol yükseldikçe daha fazla aday
+                if vol_med >= fast_ref_vol * 1.2:
+                    topk_eff = int(min(fast_topk_max, max(fast_topk_min, topk + 2)))
+                elif vol_med <= fast_ref_vol * 0.7:
+                    topk_eff = int(max(fast_topk_min, min(topk, fast_topk_max)))
+                else:
+                    topk_eff = int(max(fast_topk_min, min(topk, fast_topk_max)))
+
+                if system_logger and get_bool_env("LOG_SCAN_FAST", True):
+                    system_logger.info(
+                        "[SCAN-FAST] vol_med=%.6f ref=%.6f -> every=%.2fs topk=%d",
+                        vol_med, fast_ref_vol, scan_every_eff, topk_eff
+                    )
+
+            candidates = [r for r in rows[:max(1, topk_eff)] if float(r.get("score", 0.0) or 0.0) > 0.0]
             if not candidates:
                 candidates = rows[:1] if rows else []
 
@@ -1395,10 +1469,10 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 system_logger.info(
                     "[SCAN] candidates=%s | scores(top10)=%s",
                     cand_syms,
-                    [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
+                    [(r["symbol"], round(float(r.get("score", 0.0) or 0.0), 2)) for r in rows[:min(10, len(rows))]],
                 )
 
-            # Adaptive scan (volatility-based)
+            # Legacy adaptive: probe candidate[0] üzerinden parametre güncelle (opsiyonel)
             if adaptive and cand_syms:
                 try:
                     df_probe = await fetch_klines(
@@ -1409,16 +1483,19 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                         logger=None,
                     )
                     v = _volatility_score(df_probe)
-                    p = _adaptive_scan_params(scan_every, topk, v)
-                    scan_every = float(p["scan_every"])
-                    topk = int(p["topk"])
-                    if system_logger:
-                        system_logger.info("[SCAN][ADAPT] vol=%.3f -> every=%.1fs topk=%d", float(p["vol_score"]), scan_every, topk)
+                    p = _adaptive_scan_params(scan_every_eff, topk_eff, v)
+                    scan_every_eff = float(p["scan_every"])
+                    topk_eff = int(p["topk"])
+                    if system_logger and get_bool_env("LOG_SCAN_ADAPT", True):
+                        system_logger.info(
+                            "[SCAN-ADAPT] v=%.3f -> every=%.2fs topk=%d",
+                            float(p["vol_score"]), scan_every_eff, topk_eff
+                        )
                 except Exception:
                     pass
 
             # Warm cache for candidates (OFFLINE LRU'yu ısıt)
-            if fast_mode and warm_cache and cand_syms:
+            if scan_fast and warm_cache and cand_syms:
                 try:
                     await asyncio.gather(
                         *[
@@ -1430,15 +1507,23 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 except Exception:
                     pass
 
+            # Heavy run + latency log
             for sym in cand_syms:
                 try:
+                    t_heavy0 = time.time()
                     await engine.run_once(sym)
+                    t_heavy = time.time() - t_heavy0
+                    if system_logger and get_bool_env("LOG_LATENCY", False):
+                        system_logger.info("[LATENCY] heavy.run_once symbol=%s dt=%.3fs", sym, t_heavy)
                 except Exception as e:
                     if system_logger:
                         system_logger.warning("[HEAVY] %s run_once failed: %s", sym, e)
 
             dt = time.time() - t0
-            sleep_s = max(0.0, scan_every - dt)
+            if system_logger and get_bool_env("LOG_LATENCY", False):
+                system_logger.info("[LATENCY] scan->predict batch dt=%.3fs candidates=%s", dt, cand_syms)
+
+            sleep_s = max(0.0, scan_every_eff - dt)
             await asyncio.sleep(_sleep_jitter(sleep_s, 0.10))
 
             scan_failures = 0
@@ -1451,7 +1536,6 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             if system_logger:
                 system_logger.exception("[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d", e, backoff, scan_failures)
             await asyncio.sleep(_sleep_jitter(backoff, 0.20))
-
 
 # ----------------------------------------------------------------------
 # Async main
@@ -1600,3 +1684,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
