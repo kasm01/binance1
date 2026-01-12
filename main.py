@@ -25,6 +25,7 @@ from core.position_manager import PositionManager
 from core.risk_manager import RiskManager
 from core.trade_executor import TradeExecutor
 
+from core.market_meta_builder import MarketMetaBuilder
 from data.anomaly_detection import AnomalyDetector
 from data.whale_detector import MultiTimeframeWhaleDetector
 
@@ -851,6 +852,8 @@ def create_trading_objects() -> Dict[str, Any]:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
+    market_meta_builder = MarketMetaBuilder()
+
 
     whale_detector = None
     try:
@@ -961,6 +964,7 @@ def create_trading_objects() -> Dict[str, Any]:
         "registry": registry,
         "models_by_interval": models_by_interval,
         "okx_ws": okx_ws,
+        "market_meta_builder": market_meta_builder,
     }
 def _normalize_signal(sig: Any) -> str:
     s = str(sig).strip().lower()
@@ -984,6 +988,7 @@ class HeavyEngine:
         self.whale_detector = objs.get("whale_detector")
         self.tg_bot = objs.get("tg_bot")
         self.okx_ws = objs.get("okx_ws")
+        self.market_meta_builder = objs.get("market_meta_builder")
         self.interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
         self.data_limit = int(os.getenv("DATA_LIMIT", "500"))
         self.mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
@@ -1149,7 +1154,30 @@ class HeavyEngine:
         if self.whale_detector is not None:
             try:
                 if hasattr(self.whale_detector, "analyze_multiple_timeframes"):
-                    whale_signals = self.whale_detector.analyze_multiple_timeframes(mtf_whale_raw)
+                    market_meta_by_tf = None
+
+                    okx_dfs = None
+
+                    if self.market_meta_builder is not None:
+
+                        try:
+
+                            market_meta_by_tf = self.market_meta_builder.build_meta_by_tf(symbol, list(mtf_whale_raw.keys()))
+
+                        except Exception:
+
+                            market_meta_by_tf = None
+
+                    # OKX df'leri opsiyonel: burada sadece placeholder (WS/REST ile doldurulacak)
+
+                    # okx_dfs = {tf: df} gibi verilirse cross-exchange confirm çalışır.
+
+                    whale_signals = self.whale_detector.analyze_multiple_timeframes(
+                        mtf_whale_raw,
+                        okx_dfs=okx_dfs,
+                        market_meta_by_tf=market_meta_by_tf,
+                        symbol=symbol,
+                    )
                     best_tf = None
                     best_score = 0.0
 
