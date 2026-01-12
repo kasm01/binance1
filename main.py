@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, List
 
 import pandas as pd
 import threading
+from functools import lru_cache
 
 from config.load_env import load_environment_variables
 from config.settings import Settings
@@ -31,7 +32,6 @@ from models.hybrid_inference import HybridMultiTFModel
 from models.model_registry import ModelRegistry
 
 from tg_bot.telegram_bot import TelegramBot
-from functools import lru_cache
 
 # WebSocket
 from websocket.binance_ws import BinanceWS
@@ -133,6 +133,77 @@ def _sleep_jitter(base_s: float, jitter_ratio: float = 0.15) -> float:
     return max(0.0, base_s + random.uniform(-j, j))
 
 
+# ----------------------------------------------------------------------
+# Latency profiling helper
+# ----------------------------------------------------------------------
+class _StepTimer:
+    def __init__(self) -> None:
+        self.t0 = time.perf_counter()
+        self.last = self.t0
+        self.steps: Dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.steps[name] = float(now - self.last)
+        self.last = now
+
+    def total(self) -> float:
+        return float(time.perf_counter() - self.t0)
+
+
+# ----------------------------------------------------------------------
+# Adaptive scan (volatility-based) helpers
+# ----------------------------------------------------------------------
+def _volatility_score(df: pd.DataFrame) -> float:
+    """
+    Hızlı volatilite skoru (scan için):
+      - (high-low)/close rolling mean
+      - abs return_1 rolling mean
+    """
+    try:
+        if df is None or df.empty or len(df) < 40:
+            return 0.0
+        x = df.copy()
+        for c in ("high", "low", "close"):
+            if c in x.columns:
+                x[c] = pd.to_numeric(x[c], errors="coerce").fillna(0.0).astype(float)
+        if not {"high", "low", "close"}.issubset(x.columns):
+            return 0.0
+        close = x["close"].astype(float).replace(0.0, pd.NA).ffill().bfill().fillna(1.0)
+        hl = (x["high"].astype(float) - x["low"].astype(float)).abs()
+        hl_pct = (hl / (close + 1e-9)).rolling(20).mean().iloc[-1]
+        r1 = close.pct_change(1).abs().rolling(20).mean().iloc[-1]
+        s = float(hl_pct + 0.8 * r1)
+        if not (s == s):
+            return 0.0
+        return max(0.0, min(1.0, s * 10.0))  # normalize-ish
+    except Exception:
+        return 0.0
+
+
+def _adaptive_scan_params(base_every: float, base_topk: int, vol_score: float) -> Dict[str, Any]:
+    """
+    vol_score ~ [0..1]
+      - yüksek vol: daha sık scan + daha yüksek topk
+      - düşük vol: daha yavaş scan + düşük topk
+    """
+    every_min = get_float_env("SCAN_EVERY_MIN_SEC", 3.0)
+    every_max = get_float_env("SCAN_EVERY_MAX_SEC", 30.0)
+    topk_min = get_int_env("SCAN_TOPK_MIN", 2)
+    topk_max = get_int_env("SCAN_TOPK_MAX", 12)
+
+    v = max(0.0, min(1.0, float(vol_score)))
+
+    # high vol => smaller every
+    every = float(base_every * (1.0 - 0.6 * v))
+    every = max(every_min, min(every_max, every))
+
+    topk = int(round(base_topk + (topk_max - base_topk) * v))
+    topk = max(topk_min, min(topk_max, topk))
+
+    return {"scan_every": every, "topk": topk, "vol_score": v}
+
+
 def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
     """
     Light scanner score (hızlı):
@@ -213,8 +284,6 @@ HYBRID_MODE: bool = get_bool_env("HYBRID_MODE", True)
 TRAINING_MODE: bool = get_bool_env("TRAINING_MODE", False)
 USE_MTF_ENS: bool = get_bool_env("USE_MTF_ENS", False)
 DRY_RUN: bool = get_bool_env("DRY_RUN", True)
-
-
 # ----------------------------------------------------------------------
 # Basit feature engineering (stabilized)
 # ----------------------------------------------------------------------
@@ -306,8 +375,6 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
 # ----------------------------------------------------------------------
 # OFFLINE LRU cache helpers (raw + normalized_tail)
 # ----------------------------------------------------------------------
-from functools import lru_cache
-
 _KLINE_COLUMNS = [
     "open_time", "open", "high", "low", "close", "volume",
     "close_time", "quote_asset_volume", "number_of_trades",
@@ -417,8 +484,6 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
     if logger:
         logger.info("[DATA] LIVE(PUBLIC) REST kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
     return df
-
-
 # ----------------------------------------------------------------------
 # fetch_klines (OFFLINE cached + LIVE client/rest)
 # ----------------------------------------------------------------------
@@ -620,8 +685,6 @@ class ShutdownManager:
 
 
 _shutdown_mgr = ShutdownManager()
-
-
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
@@ -893,6 +956,7 @@ class HeavyEngine:
         self.mtf_ensemble = objs.get("mtf_ensemble")
         self.whale_detector = objs.get("whale_detector")
         self.tg_bot = objs.get("tg_bot")
+        self.okx_ws = objs.get("okx_ws")
         self.interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
         self.data_limit = int(os.getenv("DATA_LIMIT", "500"))
         self.mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
@@ -956,11 +1020,12 @@ class HeavyEngine:
                 system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
 
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
-
     async def run_once(self, symbol: str) -> Dict[str, Any]:
         global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS
 
         interval = self.interval
+        timer = _StepTimer()
+
         raw_df = await fetch_klines(
             client=self.client,
             symbol=symbol,
@@ -968,17 +1033,21 @@ class HeavyEngine:
             limit=self.data_limit,
             logger=system_logger,
         )
+        timer.mark("fetch_klines")
 
         feat_df = build_features(raw_df)
         feat_df = self._normalize_feat_df(feat_df, interval)
+        timer.mark("features+schema")
 
         sch_main = self._schema_for(interval)
         feat_df = self.anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
+        timer.mark("anomaly_filter")
 
         X_live = feat_df.tail(500)
 
         p_arr_single, debug_single = self.hybrid_model.predict_proba(X_live)
         p_single = float(p_arr_single[-1])
+        timer.mark("predict_single")
 
         meta = getattr(self.hybrid_model, "meta", {}) or {}
         model_conf_factor = float(meta.get("confidence_factor", 1.0) or 1.0)
@@ -1014,6 +1083,8 @@ class HeavyEngine:
                     if system_logger:
                         system_logger.warning("[MTF] %s interval'i hazırlanırken hata: %s", itv, e)
 
+        timer.mark("mtf_prepare")
+
         p_used = p_single
         mtf_debug: Optional[Dict[str, Any]] = None
 
@@ -1040,6 +1111,9 @@ class HeavyEngine:
                 p_used = p_single
                 mtf_debug = None
 
+        timer.mark("mtf_ensemble")
+
+        # Whale: sadece detector çağrısı (asıl güçlendirme data/whale_detector.py içine taşınacak)
         whale_meta: Dict[str, Any] = {"direction": "none", "score": 0.0, "per_tf": {}}
         whale_dir = "none"
         whale_score = 0.0
@@ -1062,6 +1136,7 @@ class HeavyEngine:
                         whale_meta.update(
                             {"direction": best_sig.direction, "score": best_sig.score, "best_tf": best_tf, "best_reason": best_sig.reason}
                         )
+
                 elif hasattr(self.whale_detector, "from_klines"):
                     ws = self.whale_detector.from_klines(raw_df)
                     whale_meta.update({"direction": ws.direction, "score": ws.score, "reason": ws.reason, "meta": ws.meta})
@@ -1073,8 +1148,11 @@ class HeavyEngine:
                 if system_logger:
                     system_logger.warning("[WHALE] MTF whale hesaplanırken hata: %s", e)
 
+        timer.mark("whale")
+
         atr_period = int(os.getenv("ATR_PERIOD", "14"))
         atr_value = compute_atr_from_klines(raw_df, period=atr_period)
+        timer.mark("atr")
 
         probs: Dict[str, Any] = {
             "p_used": p_used,
@@ -1093,6 +1171,7 @@ class HeavyEngine:
             "p_buy_source": (debug_single.get("mode") if isinstance(debug_single, dict) else "unknown"),
             "whale_dir": whale_dir,
             "whale_score": float(whale_score),
+            "latency_steps": dict(timer.steps),
         }
 
         signal_side: Optional[str] = None
@@ -1167,6 +1246,13 @@ class HeavyEngine:
             extra=extra,
         )
 
+        extra["latency_total_sec"] = float(timer.total())
+        if system_logger and get_bool_env("LOG_LATENCY", False):
+            system_logger.info(
+                "[LATENCY] %s total=%.4fs steps=%s",
+                symbol, float(extra["latency_total_sec"]), {k: round(v, 4) for k, v in timer.steps.items()}
+            )
+
         return {
             "symbol": symbol,
             "signal": signal_side,
@@ -1212,6 +1298,17 @@ async def scanner_loop(engine: HeavyEngine) -> None:
     scan_every = float(os.getenv("SCAN_EVERY_SEC", "15"))
     topk = int(os.getenv("SCAN_TOPK", "3"))
     conc = int(os.getenv("SCAN_CONCURRENCY", "4"))
+
+    # FAST mode overrides (agresif hız)
+    fast_mode = get_bool_env("SCAN_FAST_MODE", False)
+    warm_cache = get_bool_env("SCAN_FAST_WARM_CACHE", False)
+    adaptive = get_bool_env("SCAN_ADAPTIVE", False)
+
+    if fast_mode:
+        scan_every = get_float_env("SCAN_FAST_EVERY_SEC", max(2.0, scan_every * 0.5))
+        scan_limit = get_int_env("SCAN_FAST_LIMIT", min(scan_limit, 200))
+        topk = get_int_env("SCAN_FAST_TOPK", max(topk, 8))
+        conc = get_int_env("SCAN_FAST_CONCURRENCY", max(conc, 8))
 
     err_backoff_base = float(os.getenv("SCAN_ERR_BACKOFF_SEC", "2.0"))
     err_backoff_max = float(os.getenv("SCAN_ERR_BACKOFF_MAX_SEC", "30.0"))
@@ -1270,6 +1367,11 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d",
             len(symbols), scan_interval, topk, scan_every, conc
         )
+        if fast_mode:
+            system_logger.info(
+                "[SCAN][FAST] enabled | every=%.1fs limit=%d topk=%d conc=%d warm_cache=%s adaptive=%s",
+                scan_every, scan_limit, topk, conc, warm_cache, adaptive
+            )
 
     while True:
         t0 = time.time()
@@ -1295,6 +1397,38 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     cand_syms,
                     [(r["symbol"], round(float(r.get("score", 0.0)), 2)) for r in rows[:min(10, len(rows))]],
                 )
+
+            # Adaptive scan (volatility-based)
+            if adaptive and cand_syms:
+                try:
+                    df_probe = await fetch_klines(
+                        client=engine.client,
+                        symbol=cand_syms[0],
+                        interval=scan_interval,
+                        limit=min(300, max(120, scan_limit)),
+                        logger=None,
+                    )
+                    v = _volatility_score(df_probe)
+                    p = _adaptive_scan_params(scan_every, topk, v)
+                    scan_every = float(p["scan_every"])
+                    topk = int(p["topk"])
+                    if system_logger:
+                        system_logger.info("[SCAN][ADAPT] vol=%.3f -> every=%.1fs topk=%d", float(p["vol_score"]), scan_every, topk)
+                except Exception:
+                    pass
+
+            # Warm cache for candidates (OFFLINE LRU'yu ısıt)
+            if fast_mode and warm_cache and cand_syms:
+                try:
+                    await asyncio.gather(
+                        *[
+                            fetch_klines(engine.client, s, scan_interval, scan_limit, None)
+                            for s in cand_syms
+                        ],
+                        return_exceptions=True,
+                    )
+                except Exception:
+                    pass
 
             for sym in cand_syms:
                 try:
