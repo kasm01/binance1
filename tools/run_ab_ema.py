@@ -21,15 +21,14 @@ def _read_summary(summary_path: str) -> Dict[str, float]:
     if not p.exists():
         return {}
 
-    # summary csv typically has 2 columns: metric,value OR header row with fields
     rows = list(csv.reader(p.read_text(encoding="utf-8").splitlines()))
     if not rows:
         return {}
 
     out: Dict[str, float] = {}
 
-    # try key,value pairs
-    if len(rows[0]) >= 2 and rows[0][0].lower() != "metric":
+    # metric,value pairs
+    if len(rows[0]) >= 2 and (rows[0][0] or "").strip().lower() != "metric":
         for r in rows:
             if len(r) >= 2:
                 k = (r[0] or "").strip()
@@ -40,7 +39,7 @@ def _read_summary(summary_path: str) -> Dict[str, float]:
                     pass
         return out
 
-    # try header-based
+    # header-based single-row
     header = [c.strip() for c in rows[0]]
     for r in rows[1:]:
         if len(r) != len(header):
@@ -55,7 +54,21 @@ def _read_summary(summary_path: str) -> Dict[str, float]:
     return out
 
 
-def _run_case(name: str, env_overrides: Dict[str, str], log_file: Path) -> Optional[str]:
+def _pick_latest_summary(symbol: str, interval: str) -> Optional[str]:
+    out_dir = ROOT / "outputs"
+    patt = re.compile(rf"^summary_{re.escape(symbol)}_{re.escape(interval)}_(\d{{8}}_\d{{6}})\.csv$")
+    best = None
+    for p in out_dir.glob(f"summary_{symbol}_{interval}_*.csv"):
+        m = patt.match(p.name)
+        if not m:
+            continue
+        stamp = m.group(1)
+        if best is None or stamp > best[0]:
+            best = (stamp, p)
+    return str(best[1]) if best else None
+
+
+def _run_case(name: str, env_overrides: Dict[str, str], log_file: Path, symbol: str, interval: str) -> Optional[str]:
     env = os.environ.copy()
     env.update(env_overrides)
 
@@ -88,6 +101,11 @@ def _run_case(name: str, env_overrides: Dict[str, str], log_file: Path) -> Optio
     if rc != 0:
         raise subprocess.CalledProcessError(rc, cmd)
 
+    # fallback: regex yakalanmadıysa latest summary seç
+    if not summary_path:
+        picked = _pick_latest_summary(symbol, interval)
+        return picked
+
     return summary_path
 
 
@@ -112,27 +130,20 @@ def main():
         "BT_WARMUP_BARS": str(args.warmup),
         "BT_WHALE_FILTER": str(args.whale_filter),
         "BT_WHALE_THR": str(args.whale_thr),
-        # ensure dry backtest behavior
+        "BT_OUT_DIR": "outputs",  # ✅ tool’larla aynı
         "DRY_RUN": "true",
     }
 
-    # A: EMA OFF
-    envA = {
-        **base_env,
-        "USE_PBUY_STABILIZER_SIGNAL": "false",
-    }
-
-    # B: EMA ON
+    envA = {**base_env, "USE_PBUY_STABILIZER_SIGNAL": "false"}
     envB = {
         **base_env,
         "USE_PBUY_STABILIZER_SIGNAL": "true",
-        # optional whale gating in EMA
         "EMA_WHALE_ONLY": os.getenv("EMA_WHALE_ONLY", "false"),
         "EMA_WHALE_THR": os.getenv("EMA_WHALE_THR", str(args.whale_thr)),
     }
 
-    sumA = _run_case("A_EMA_OFF", envA, log_path)
-    sumB = _run_case("B_EMA_ON", envB, log_path)
+    sumA = _run_case("A_EMA_OFF", envA, log_path, str(args.symbol), str(args.interval))
+    sumB = _run_case("B_EMA_ON", envB, log_path, str(args.symbol), str(args.interval))
 
     rows = []
     for tag, sp in [("A_EMA_OFF", sumA), ("B_EMA_ON", sumB)]:
@@ -161,3 +172,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

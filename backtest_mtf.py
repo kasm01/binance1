@@ -2,7 +2,7 @@
 import os
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 import pandas as pd
 from datetime import datetime
@@ -11,21 +11,9 @@ from pathlib import Path
 from config.load_env import load_environment_variables
 from core.logger import setup_logger
 
-# Proje modülleri (sende mevcut)
 from core.risk_manager import RiskManager
 from core.trade_executor import TradeExecutor
-from models.hybrid_inference import HybridModel
-from core.hybrid_mtf import MultiTimeframeHybridEnsemble
-from data.whale_detector import MultiTimeframeWhaleDetector
 from data.anomaly_detection import AnomalyDetector
-
-# Eğer sende bu fonksiyonlar farklı modüllerdeyse, aşağıdaki importları kendi projene göre düzelt:
-# - fetch_klines: canlı modda kline çeker
-# - build_features: feature engineering
-try:
-    from data.fetch_klines import fetch_klines  # type: ignore
-except Exception:
-    fetch_klines = None  # noqa
 
 try:
     from features.pipeline import build_features  # type: ignore
@@ -39,7 +27,6 @@ system_logger = logging.getLogger("system")
 # Helpers
 # -------------------------
 def _ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    """Ensure df has all columns in `cols` (missing -> NaN), and order them."""
     for c in cols:
         if c not in df.columns:
             df[c] = pd.NA
@@ -47,46 +34,10 @@ def _ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
 
 
 def _atomic_to_csv(df: pd.DataFrame, path: Path) -> None:
-    """Atomic CSV write."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     df.to_csv(tmp, index=False)
     tmp.replace(path)
-
-
-def _force_close_eob(
-    *,
-    position_manager: Any,
-    symbol: str,
-    df: Optional[pd.DataFrame],
-    closed_trades: List[Dict[str, Any]],
-    system_logger: logging.Logger,
-) -> None:
-    """
-    Force close open position at end-of-backtest so trades>0 even if no SL/TP hit.
-    Safe: does nothing if no open pos / missing pm api.
-    """
-    try:
-        if not position_manager:
-            return
-        has_open = getattr(position_manager, "has_open_position", None)
-        close_pos = getattr(position_manager, "close_position", None)
-        if not callable(has_open) or not callable(close_pos):
-            return
-
-        if not has_open(symbol):
-            return
-
-        last_price = 0.0
-        if df is not None and hasattr(df, "columns") and "close" in df.columns and len(df) > 0:
-            last_price = float(df["close"].iloc[-1])
-
-        closed = close_pos(symbol, price=last_price, reason="eob_force_close")
-        if closed:
-            closed_trades.append(closed)
-
-    except Exception as e:
-        system_logger.error("[BT] force-close failed: %s", e, exc_info=True)
 
 
 def _save_backtest_csv(
@@ -97,10 +48,9 @@ def _save_backtest_csv(
     tag: str,
     equity_rows: List[Dict[str, Any]],
     closed_trades: List[Dict[str, Any]],
-    bt_stats: Any,
+    bt_stats: Dict[str, Any],
     system_logger: logging.Logger,
 ) -> None:
-    """Write equity/trades/summary CSV outputs."""
     equity_path = out_dir / f"equity_curve_{symbol}_{main_interval}_{tag}.csv"
     trades_path = out_dir / f"trades_{symbol}_{main_interval}_{tag}.csv"
     summary_path = out_dir / f"summary_{symbol}_{main_interval}_{tag}.csv"
@@ -177,13 +127,7 @@ def _save_backtest_csv(
 
     eq_df = _ensure_columns(pd.DataFrame(equity_rows), EQ_COLS)
     tr_df = _ensure_columns(pd.DataFrame(closed_trades), TR_COLS)
-
-    try:
-        summary_dict = bt_stats.summary_dict() if hasattr(bt_stats, "summary_dict") else {}
-    except Exception:
-        summary_dict = {}
-
-    sm_df = pd.DataFrame([summary_dict])
+    sm_df = pd.DataFrame([bt_stats])
 
     _atomic_to_csv(eq_df, equity_path)
     _atomic_to_csv(tr_df, trades_path)
@@ -194,149 +138,294 @@ def _save_backtest_csv(
     system_logger.info("[BT-CSV] summary:     %s", str(summary_path))
 
 
-# -------------------------
-# Minimal stats container
-# -------------------------
-class BTStats:
-    def __init__(self) -> None:
-        self.trades = 0
-        self.pnl_total = 0.0
-        self.max_dd_pct = 0.0
-        self.peak_equity = 0.0
-        self.last_equity = 0.0
-
-    def summary_dict(self) -> Dict[str, Any]:
-        return {
-            "trades": int(self.trades),
-            "pnl_total": float(self.pnl_total),
-            "max_drawdown_pct": float(self.max_dd_pct),
-            "peak_equity": float(self.peak_equity),
-            "last_equity": float(self.last_equity),
-        }
+def _pick_env(*names: str, default: str = "") -> str:
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and str(v).strip() != "":
+            return str(v)
+    return default
 
 
-# -------------------------
-# Backtest main
-# -------------------------
+def _to_dt_from_ms(ms: Any) -> Optional[str]:
+    try:
+        x = float(ms)
+        if x > 1e12:  # ms epoch
+            return datetime.utcfromtimestamp(x / 1000.0).isoformat()
+        if x > 1e9:  # sec epoch
+            return datetime.utcfromtimestamp(x).isoformat()
+    except Exception:
+        pass
+    return None
+
+
+def _simple_p_from_returns(close: pd.Series) -> float:
+    """
+    Model yoksa basit bir fallback:
+    - son 3 bar momentum -> p ~ sigmoid benzeri
+    """
+    try:
+        if len(close) < 6:
+            return 0.5
+        r1 = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2])
+        r3 = (float(close.iloc[-1]) - float(close.iloc[-4])) / float(close.iloc[-4])
+        x = 8.0 * r1 + 4.0 * r3
+        # basit squash
+        p = 0.5 + max(-0.49, min(0.49, x))
+        return float(max(0.0, min(1.0, p)))
+    except Exception:
+        return 0.5
+
+
 async def run_backtest() -> None:
-    """
-    Bu dosya sende zaten vardı. Şunlar eklendi/düzeltildi:
-
-    ✅ Öneri #1: AnomalyDetector.filter_anomalies çağrıları context ile güncellendi:
-        context=f"heavy:{symbol}:{interval}"
-
-    ✅ Öneri #2: Eksik olabilecek import/fallback'lar (fetch_klines/build_features) eklendi.
-       (Sende zaten varsa, try/except blokları sorun çıkarmaz.)
-
-    ✅ EOB force-close + CSV export aynen korundu.
-
-    Not: Senin gerçek backtest loop’un projende mevcut olduğu için burada “minimum çalışır iskelet”
-    bırakıyorum. Aşağıdaki TODO alanına kendi loop’unu koyunca anomaly context’li satırlar hazır.
-    """
     global system_logger
     system_logger = logging.getLogger("system")
 
-    out_dir = Path(os.getenv("BT_OUT_DIR", "backtests"))
-    symbol = os.getenv("SYMBOL", "BTCUSDT")
-    main_interval = os.getenv("INTERVAL", "5m")
+    # tools/*.py ile uyumlu env isimleri
+    symbol = _pick_env("BT_SYMBOL", "SYMBOL", default="BTCUSDT").upper()
+    main_interval = _pick_env("BT_MAIN_INTERVAL", "INTERVAL", default="5m")
+    out_dir = Path(_pick_env("BT_OUT_DIR", default="outputs"))
     tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    # MTF interval listesi (projendeki ayara göre güncelleyebilirsin)
-    mtf_intervals = os.getenv("MTF_INTERVALS", "1m,3m,5m,15m,30m,1h").split(",")
-    mtf_intervals = [x.strip() for x in mtf_intervals if x.strip()]
+    offline_dir = Path(_pick_env("OFFLINE_DIR", default="data/offline_cache"))
+    data_limit = int(_pick_env("BT_DATA_LIMIT", "DATA_LIMIT", default="2000"))
+    warmup = int(_pick_env("BT_WARMUP_BARS", default="200"))
+    start_equity = float(_pick_env("BT_START_EQUITY", default="1000"))
 
-    equity_rows: List[Dict[str, Any]] = []
-    closed_trades: List[Dict[str, Any]] = []
-    bt_stats = BTStats()
+    # karar eşiği
+    p_thr = float(_pick_env("BT_P_THR", default="0.55"))
+    inv_thr = 1.0 - p_thr
 
-    df: Optional[pd.DataFrame] = None
-    position_manager = None
+    dry_run = str(_pick_env("DRY_RUN", default="true")).lower() in ("1", "true", "yes", "on")
 
-    # -------------------------
-    # NEW: anomaly detector (context-aware)
-    # -------------------------
-    anomaly_detector = AnomalyDetector(logger=system_logger)
+    # CSV input
+    main_csv = offline_dir / f"{symbol}_{main_interval}_6m.csv"
+    if not main_csv.exists():
+        system_logger.error("[BT] Offline CSV bulunamadı: %s", str(main_csv))
+        return
 
-    # -------------------------
-    # TODO: burada senin gerçek backtest setup/loop kodun olacak
-    # -------------------------
-    #
-    # Aşağıda “senin run_once bloğundaki” önerilen satırları birebir backtest’e uygun şekilde verdim.
-    # Nano ile, backtest’te feature üretip anomaly filter uyguladığın yere bunu aynen koy:
-    #
-    # --- MAIN TF ---
-    # sch_main = self._schema_for(main_interval)  # sende hangi fonksiyonsa
-    # feat_df = anomaly_detector.filter_anomalies(
-    #     feat_df,
-    #     schema=sch_main,
-    #     context=f"heavy:{symbol}:{main_interval}",
-    # )
-    #
-    # --- MTF TF ---
-    # sch_itv = self._schema_for(itv)
-    # feat_df_itv = anomaly_detector.filter_anomalies(
-    #     feat_df_itv,
-    #     schema=sch_itv,
-    #     context=f"heavy:{symbol}:{itv}",
-    # )
-    #
-    # -------------------------
-    # Minimum örnek (offline csv ile) — istersen kullan:
-    # -------------------------
-    offline_dir = Path(os.getenv("OFFLINE_DIR", "data/offline_cache"))
-    offline_main = offline_dir / f"{symbol}_{main_interval}_6m.csv"
-    if offline_main.exists():
-        df = pd.read_csv(offline_main)
-        # Sende build_features varsa:
-        if build_features is None:
-            system_logger.warning("[BT] build_features import edilemedi. Feature üretimi atlandı.")
+    df = pd.read_csv(main_csv)
+    if data_limit > 0 and len(df) > data_limit:
+        df = df.tail(data_limit).reset_index(drop=True)
+
+    if "close" not in df.columns:
+        system_logger.error("[BT] CSV içinde 'close' kolonu yok: %s", str(main_csv))
+        return
+
+    # time kolonu üret (varsa open_time kullan)
+    if "time" not in df.columns:
+        if "open_time" in df.columns:
+            df["time"] = df["open_time"].apply(_to_dt_from_ms)
         else:
-            feat_df = build_features(df)
-            # schema fonksiyonun yoksa bile anomaly filter çalışsın diye schema=None bırakılabilir.
-            # Ama sende schema varsa aşağıdaki sch_main ile değiştir.
-            sch_main = None
+            df["time"] = [None] * len(df)
 
-            # ✅ ÖNERİ (context ekli)
+    # Feature pipeline + anomaly
+    anomaly_detector = AnomalyDetector(logger=system_logger)
+    feat_df: Optional[pd.DataFrame] = None
+
+    if build_features is None:
+        system_logger.warning("[BT] build_features import edilemedi -> direkt df ile ilerliyorum (p fallback)")
+    else:
+        try:
+            feat_df = build_features(df)
+            # schema sende varsa burada set et (şimdilik None)
+            sch_main = None
             feat_df = anomaly_detector.filter_anomalies(
                 feat_df,
                 schema=sch_main,
                 context=f"heavy:{symbol}:{main_interval}",
             )
+        except Exception as e:
+            system_logger.warning("[BT] feature/anomaly aşamasında hata: %s (fallback)", e)
+            feat_df = None
 
-            # MTF’ler (varsa)
-            for itv in mtf_intervals:
-                if itv == main_interval:
-                    continue
-                offline_itv = offline_dir / f"{symbol}_{itv}_6m.csv"
-                if not offline_itv.exists():
-                    continue
-                df_itv = pd.read_csv(offline_itv)
-                feat_df_itv = build_features(df_itv)
-
-                sch_itv = None
-                # ✅ ÖNERİ (context ekli)
-                feat_df_itv = anomaly_detector.filter_anomalies(
-                    feat_df_itv,
-                    schema=sch_itv,
-                    context=f"heavy:{symbol}:{itv}",
-                )
-
-    # ---- TODO: burada backtest sinyal/pozisyon/trade kayıt akışın olacak ----
-
-    # ----------------------------------------------------------
-    # Force close at end of backtest (so trades>0 even if no SL/TP hit)
-    # ----------------------------------------------------------
-    _force_close_eob(
-        position_manager=position_manager,
-        symbol=symbol,
-        df=df,
-        closed_trades=closed_trades,
-        system_logger=system_logger,
+    # Risk + executor
+    rm = RiskManager(equity_start_of_day=start_equity, logger=system_logger)
+    te = TradeExecutor(
+        client=None,
+        risk_manager=rm,
+        position_manager=None,  # backtestte state TE içinde kalsın
+        logger=system_logger,
+        dry_run=dry_run,
     )
 
-    # ----------------------------------------------------------
-    # Write CSV outputs
-    # ----------------------------------------------------------
+    equity_rows: List[Dict[str, Any]] = []
+    closed_trades: List[Dict[str, Any]] = []
+
+    equity = float(start_equity)
+    peak = float(start_equity)
+    max_dd_pct = 0.0
+    pnl_total = 0.0
+
+    # Loop
+    n = len(df)
+    warmup = max(0, min(warmup, n - 1))
+
+    for i in range(warmup, n):
+        price = float(df["close"].iloc[i])
+        t = df["time"].iloc[i] if "time" in df.columns else None
+        t = str(t) if t is not None else ""
+
+        # 1) trailing/SL/TP check (her barda)
+        te._check_sl_tp_trailing(symbol=symbol, price=price, interval=main_interval)
+
+        # 2) P üretimi (model yoksa fallback)
+        # (feat_df varsa da şu aşamada “p” fallback kullanıyoruz; istersen HybridModel entegrasyonunu buraya ekleriz)
+        p_single = _simple_p_from_returns(df["close"].iloc[: i + 1])
+
+        # 3) sinyal
+        if p_single >= p_thr:
+            signal = "BUY"
+        elif p_single <= inv_thr:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
+
+        probs = {
+            "p_single": float(p_single),
+            "p_used": float(p_single),
+        }
+
+        extra = {
+            "signal_source": "p_fallback",
+            "model_confidence_factor": 1.0,
+            "atr": float(df["close"].iloc[max(0, i - 1)]) * 0.0,  # atr yoksa 0
+            "whale_dir": "none",
+            "whale_score": 0.0,
+            "ensemble_p": None,
+        }
+
+        # 4) decision
+        await te.execute_decision(
+            signal=signal,
+            symbol=symbol,
+            price=price,
+            size=None,
+            interval=main_interval,
+            training_mode=False,
+            hybrid_mode=True,
+            probs=probs,
+            extra=extra,
+        )
+
+        # 5) kapanan trade buffer
+        for tr in te.pop_closed_trades():
+            pnl = float(tr.get("realized_pnl") or 0.0)
+            pnl_total += pnl
+            equity += pnl
+
+            # backtest meta ekle
+            tr2 = dict(tr)
+            tr2.update({
+                "bt_symbol": symbol,
+                "bt_interval": main_interval,
+                "bt_bar": i,
+                "bt_time": t,
+                "bt_signal": signal,
+                "bt_price": price,
+                "bt_p_used": float(p_single),
+                "bt_p_single": float(p_single),
+                "bt_p_1m": None,
+                "bt_p_5m": None,
+                "bt_p_15m": None,
+                "bt_p_1h": None,
+                "whale_dir": "none",
+                "whale_score": 0.0,
+                "whale_on": False,
+                "whale_alignment": "no_whale",
+                "whale_thr": None,
+                "model_confidence_factor": 1.0,
+                "ens_scale": None,
+                "ens_notional": None,
+                "bt_atr": None,
+            })
+            closed_trades.append(tr2)
+
+        # dd
+        if equity > peak:
+            peak = equity
+        dd_pct = 0.0 if peak <= 0 else (peak - equity) / peak * 100.0
+        if dd_pct > max_dd_pct:
+            max_dd_pct = dd_pct
+
+        equity_rows.append({
+            "bar": i,
+            "time": t,
+            "symbol": symbol,
+            "interval": main_interval,
+            "price": price,
+            "signal": signal,
+            "p_used": float(p_single),
+            "p_single": float(p_single),
+            "p_1m": None,
+            "p_5m": None,
+            "p_15m": None,
+            "p_1h": None,
+            "whale_dir": "none",
+            "whale_score": 0.0,
+            "whale_on": False,
+            "whale_alignment": "no_whale",
+            "whale_thr": None,
+            "model_confidence_factor": 1.0,
+            "ens_scale": None,
+            "ens_notional": None,
+            "atr": None,
+            "equity": float(equity),
+            "peak_equity": float(peak),
+            "max_drawdown_pct": float(max_dd_pct),
+            "pnl_total": float(pnl_total),
+        })
+
+    # EOB force close
+    if te.has_open_position(symbol):
+        last_price = float(df["close"].iloc[-1])
+        te.close_position(symbol, last_price, reason="eob_force_close", interval=main_interval)
+        for tr in te.pop_closed_trades():
+            pnl = float(tr.get("realized_pnl") or 0.0)
+            pnl_total += pnl
+            equity += pnl
+            tr2 = dict(tr)
+            tr2.update({
+                "bt_symbol": symbol,
+                "bt_interval": main_interval,
+                "bt_bar": n - 1,
+                "bt_time": str(df["time"].iloc[-1]) if "time" in df.columns else "",
+                "bt_signal": "EOB_CLOSE",
+                "bt_price": last_price,
+                "bt_p_used": None,
+                "bt_p_single": None,
+                "bt_p_1m": None,
+                "bt_p_5m": None,
+                "bt_p_15m": None,
+                "bt_p_1h": None,
+                "whale_dir": "none",
+                "whale_score": 0.0,
+                "whale_on": False,
+                "whale_alignment": "no_whale",
+                "whale_thr": None,
+                "model_confidence_factor": 1.0,
+                "ens_scale": None,
+                "ens_notional": None,
+                "bt_atr": None,
+            })
+            closed_trades.append(tr2)
+
+    # summary
+    n_trades = len(closed_trades)
+    winrate = (sum(1 for t in closed_trades if float(t.get("realized_pnl") or 0.0) > 0.0) / n_trades * 100.0) if n_trades else 0.0
+
+    bt_stats = {
+        "symbol": symbol,
+        "interval": main_interval,
+        "starting_equity": float(start_equity),
+        "ending_equity": float(equity),
+        "pnl": float(pnl_total),
+        "pnl_pct": float((equity - start_equity) / start_equity * 100.0) if start_equity else 0.0,
+        "n_trades": int(n_trades),
+        "winrate": float(winrate),
+        "max_drawdown_pct": float(max_dd_pct),
+        "tag": tag,
+    }
+
     _save_backtest_csv(
         out_dir=out_dir,
         symbol=symbol,
@@ -349,9 +438,6 @@ async def run_backtest() -> None:
     )
 
 
-# ==========================================================
-# Entry
-# ==========================================================
 async def async_main() -> None:
     global system_logger
     load_environment_variables()
@@ -366,4 +452,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -1,3 +1,4 @@
+# core/position_manager.py
 """
 core.position_manager
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 try:
@@ -168,6 +170,36 @@ class PositionManager:
                 self.logger.error("[POS] PG delete hata: %s", e)
 
     # -------------------------
+    # Backtest compat API (NEW)
+    # -------------------------
+    def has_open_position(self, symbol: str) -> bool:
+        pos = self.get_position(symbol)
+        if not pos:
+            return False
+        side = str(pos.get("side") or "").lower()
+        qty = float(pos.get("qty") or 0.0)
+        return (side in ("long", "short")) and qty > 0
+
+    def close_position(self, symbol: str, price: float = 0.0, reason: str = "manual") -> Optional[Dict[str, Any]]:
+        """
+        PositionManager gerçek emir kapatmaz; sadece state'i temizler.
+        Backtest/utility için: pozisyon dict'ine kapama alanları ekleyip clear eder.
+        """
+        pos = self.get_position(symbol)
+        if not pos:
+            return None
+
+        try:
+            pos["closed_at"] = datetime.utcnow().isoformat()
+            pos["close_price"] = float(price)
+            pos["close_reason"] = str(reason)
+        except Exception:
+            pass
+
+        self.clear_position(symbol)
+        return pos
+
+    # -------------------------
     # List / Count
     # -------------------------
     def list_symbols(self) -> List[str]:
@@ -269,10 +301,6 @@ class PositionManager:
     #  Shutdown contract (deterministic)
     # ---------------------------------------------------------
     def shutdown(self, reason: str = "unknown") -> None:
-        """
-        Tek tip kapanış kontratı.
-        main.ShutdownManager -> pm.shutdown(...) çağırabilir.
-        """
         try:
             if getattr(self, "logger", None):
                 self.logger.info("[POS] shutdown requested | reason=%s", reason)
@@ -281,12 +309,10 @@ class PositionManager:
         self.close()
 
     def close(self) -> None:
-        """Idempotent close()."""
         if self._closed:
             return
         self._closed = True
 
-        # --- PG close ---
         try:
             if self.pg_conn is not None:
                 try:
@@ -296,7 +322,6 @@ class PositionManager:
         finally:
             self.pg_conn = None
 
-        # --- Redis close (best-effort) ---
         try:
             if self.redis_client is not None:
                 rc = self.redis_client
@@ -309,61 +334,7 @@ class PositionManager:
             self.redis_client = None
 
     def __del__(self) -> None:
-        # güvenli: interpreter shutdown sırasında exception yut
         try:
             self.close()
         except Exception:
             pass
-
-
-# === BT_COMPAT_OPEN_POSITION ===
-def _bt_open_position_compat(self, symbol: str, side: str, qty: float, entry_price=None, **kwargs):
-    candidates = ("open_position", "execute_trade", "open_trade", "open", "open_new_position")
-    for name in candidates:
-        fn = getattr(self, name, None)
-        if not callable(fn) or fn is _bt_open_position_compat:
-            continue
-        for call in (
-            lambda: fn(symbol=symbol, side=side, qty=qty, entry_price=entry_price, **kwargs),
-            lambda: fn(symbol=symbol, side=side, qty=qty, price=entry_price, **kwargs),
-            lambda: fn(symbol, side, qty, entry_price),
-            lambda: fn(symbol, side, qty),
-            lambda: fn(side=side, qty=qty, price=entry_price, **kwargs),
-        ):
-            try:
-                return call()
-            except TypeError:
-                continue
-            except Exception:
-                continue
-
-    pos = {
-        "symbol": symbol,
-        "side": str(side).lower(),
-        "qty": float(qty),
-        "entry_price": None if entry_price is None else float(entry_price),
-    }
-    if hasattr(self, "current_position"):
-        setattr(self, "current_position", pos)
-    elif hasattr(self, "position"):
-        setattr(self, "position", pos)
-    else:
-        setattr(self, "current_position", pos)
-    return pos
-
-
-def _bt_execute_trade_compat(self, *args, **kwargs):
-    return _bt_open_position_compat(self, *args, **kwargs)
-
-
-try:
-    PositionManager  # type: ignore[name-defined]
-except NameError:
-    pass
-else:
-    if not hasattr(PositionManager, "open_position"):
-        PositionManager.open_position = _bt_open_position_compat  # type: ignore[attr-defined]
-    if not hasattr(PositionManager, "execute_trade"):
-        PositionManager.execute_trade = _bt_execute_trade_compat  # type: ignore[attr-defined]
-# === /BT_COMPAT_OPEN_POSITION ===
-

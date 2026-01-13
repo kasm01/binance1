@@ -1,44 +1,47 @@
+# tools/run_ab_whale.py
 import os
 import sys
-import glob
+import re
 import subprocess
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def _latest(pattern: str) -> Optional[str]:
-    """
-    ROOT altında verilen glob pattern'e uyan en son (mtime) dosyayı döndürür.
-    """
-    paths = glob.glob(os.path.join(ROOT, pattern))
-    if not paths:
-        return None
-    return max(paths, key=os.path.getmtime)
+def _pick_latest(outputs: Path, prefix: str, symbol: str, interval: str) -> Optional[str]:
+    patt = re.compile(rf"^{re.escape(prefix)}_{re.escape(symbol)}_{re.escape(interval)}_(\d{{8}}_\d{{6}})\.csv$")
+    best = None
+    for p in outputs.glob(f"{prefix}_{symbol}_{interval}_*.csv"):
+        m = patt.match(p.name)
+        if not m:
+            continue
+        stamp = m.group(1)
+        if best is None or stamp > best[0]:
+            best = (stamp, p)
+    return str(best[1]) if best else None
 
 
 def _run_case(name: str, env_overrides: Dict[str, str]) -> Tuple[str, str, str]:
     env = os.environ.copy()
     env.update({k: str(v) for k, v in env_overrides.items()})
 
-    cmd = [sys.executable, os.path.join(ROOT, "backtest_mtf.py")]
+    cmd = [sys.executable, str(ROOT / "backtest_mtf.py")]
     print(f"\n=== RUN {name} ===")
     print("ENV:", {k: env_overrides[k] for k in sorted(env_overrides.keys())})
 
-    subprocess.check_call(cmd, cwd=ROOT, env=env)
+    subprocess.check_call(cmd, cwd=str(ROOT), env=env)
 
-    eq = _latest("outputs/equity_curve_*_*.csv")
-    tr = _latest("outputs/trades_*_*.csv")
-    sm = _latest("outputs/summary_*_*.csv")
+    outputs = ROOT / "outputs"
+    eq = _pick_latest(outputs, "equity_curve", env_overrides["BT_SYMBOL"], env_overrides["BT_MAIN_INTERVAL"])
+    tr = _pick_latest(outputs, "trades", env_overrides["BT_SYMBOL"], env_overrides["BT_MAIN_INTERVAL"])
+    sm = _pick_latest(outputs, "summary", env_overrides["BT_SYMBOL"], env_overrides["BT_MAIN_INTERVAL"])
 
     if not (eq and tr and sm):
-        raise RuntimeError(
-            f"[{name}] çıktı dosyaları bulunamadı. "
-            f"eq={eq} tr={tr} sm={sm} (outputs klasörünü kontrol et)"
-        )
+        raise RuntimeError(f"[{name}] çıktı dosyaları bulunamadı. eq={eq} tr={tr} sm={sm}")
 
     return eq, tr, sm
 
@@ -60,9 +63,7 @@ def _summarize(eq_path: str, tr_path: str, sm_path: str) -> Dict:
     }
 
     if "whale_dir" in eq.columns:
-        out["eq_whale_dir_counts"] = (
-            eq["whale_dir"].astype(str).str.lower().value_counts().head(6).to_dict()
-        )
+        out["eq_whale_dir_counts"] = eq["whale_dir"].astype(str).str.lower().value_counts().head(6).to_dict()
 
     if "whale_score" in eq.columns:
         ws = pd.to_numeric(eq["whale_score"], errors="coerce").fillna(0.0)
@@ -70,7 +71,6 @@ def _summarize(eq_path: str, tr_path: str, sm_path: str) -> Dict:
         out["eq_whale_score_p75"] = float(ws.quantile(0.75))
 
     if "whale_on" in tr.columns:
-        # bool / 0-1 / "True" gibi değerlerin hepsini normalize et
         w = tr["whale_on"]
         if w.dtype == bool:
             out["tr_whale_on_true"] = int(w.sum())
@@ -79,27 +79,24 @@ def _summarize(eq_path: str, tr_path: str, sm_path: str) -> Dict:
             out["tr_whale_on_true"] = int(w2.sum())
 
     if "whale_alignment" in tr.columns:
-        out["tr_alignment_counts"] = (
-            tr["whale_alignment"].astype(str).str.lower().value_counts().to_dict()
-        )
+        out["tr_alignment_counts"] = tr["whale_alignment"].astype(str).str.lower().value_counts().to_dict()
 
     return out
 
 
 def main() -> None:
-    # Varsayılanlar
     symbol = os.getenv("BT_SYMBOL", "BTCUSDT")
     interval = os.getenv("BT_MAIN_INTERVAL", "5m")
     limit = os.getenv("BT_DATA_LIMIT", "2000")
     warmup = os.getenv("BT_WARMUP_BARS", "200")
     thr = os.getenv("BT_WHALE_THR", "0.50")
 
-    # CASE A: Whale kapalı (baseline)
     caseA_env = {
         "BT_SYMBOL": symbol,
         "BT_MAIN_INTERVAL": interval,
         "BT_DATA_LIMIT": limit,
         "BT_WARMUP_BARS": warmup,
+        "BT_OUT_DIR": "outputs",
         "BT_WHALE_FILTER": "false",
         "BT_WHALE_ONLY": "false",
         "BT_WHALE_THR": thr,
@@ -108,12 +105,12 @@ def main() -> None:
         "BT_WHALE_ALIGNED_BOOST": "1.00",
     }
 
-    # CASE B: Whale aktif (senin policy)
     caseB_env = {
         "BT_SYMBOL": symbol,
         "BT_MAIN_INTERVAL": interval,
         "BT_DATA_LIMIT": limit,
         "BT_WARMUP_BARS": warmup,
+        "BT_OUT_DIR": "outputs",
         "BT_WHALE_FILTER": "true",
         "BT_WHALE_ONLY": os.getenv("BT_WHALE_ONLY", "false"),
         "BT_WHALE_THR": thr,
@@ -138,7 +135,7 @@ def main() -> None:
         ]
     )
 
-    out_path = os.path.join(ROOT, "outputs", f"ab_whale_report_{symbol}_{interval}_{stamp}.csv")
+    out_path = ROOT / "outputs" / f"ab_whale_report_{symbol}_{interval}_{stamp}.csv"
     report.to_csv(out_path, index=False)
 
     print("\n[AB] report saved:", out_path)

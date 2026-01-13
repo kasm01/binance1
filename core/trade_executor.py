@@ -1,10 +1,14 @@
+# core/trade_executor.py
+from __future__ import annotations
+
+import asyncio
 import logging
 import os
 import time
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from config import config
 from core.risk_manager import RiskManager
@@ -24,6 +28,11 @@ class TradeExecutor:
     Tek tip shutdown kontratı:
       - close() (sync, idempotent)
       - shutdown() (async, idempotent)  <-- main.ShutdownManager bunu çağırabilir
+
+    BACKTEST yardımcı API (eklendi):
+      - has_open_position(symbol) -> bool
+      - close_position(symbol, price, reason="manual", interval="") -> Optional[dict]
+      - pop_closed_trades() -> List[dict]   (backtest trade kayıtları için)
     """
 
     def __init__(
@@ -44,7 +53,7 @@ class TradeExecutor:
         atr_sl_mult: float = 1.5,
         atr_tp_mult: float = 3.0,
         whale_risk_boost: float = 2.0,
-        tg_bot_unused_kw: Optional[Any] = None,  # backward compat: bazı yerlerde tg_bot=tg_bot geliyor
+        tg_bot_unused_kw: Optional[Any] = None,  # backward compat
     ) -> None:
         self.client = client
         self.risk_manager = risk_manager
@@ -74,22 +83,21 @@ class TradeExecutor:
         }
 
         self._local_positions: Dict[str, Dict[str, Any]] = {}
+
+        # backtest trade buffer (NEW)
+        self._closed_buffer: List[Dict[str, Any]] = []
+
         self._closed = False
 
     # -------------------------
     # unified shutdown contract
     # -------------------------
     def close(self) -> None:
-        """
-        Sync close (idempotent).
-        main ayrıca client / ws / pm kapatacağı için double-close safe.
-        """
+        """Sync close (idempotent)."""
         if self._closed:
             return
         self._closed = True
 
-        # Client kapanışını main yönetsin (ownership net)
-        # PositionManager kapanışını best-effort dene (ownership sende olmayabilir)
         try:
             pm = self.position_manager
             if pm is not None and hasattr(pm, "close"):
@@ -97,15 +105,8 @@ class TradeExecutor:
         except Exception:
             pass
 
-    # ---------------------------------------------------------
-    #  Shutdown contract (deterministic) - ASYNC
-    # ---------------------------------------------------------
     async def shutdown(self, reason: str = "unknown") -> None:
-        """
-        Tek tip kapanış kontratı (async).
-        main.ShutdownManager -> te.shutdown(...) çağırabilir.
-        Amaç: idempotent + hızlı best-effort kapanış.
-        """
+        """Async shutdown (idempotent)."""
         if getattr(self, "_closed", False):
             return
         self._closed = True
@@ -116,7 +117,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # TradeExecutor tarafında ağır kaynak yok; yine de PM'yi best-effort kapat.
         try:
             pm = getattr(self, "position_manager", None)
             if pm is not None:
@@ -134,8 +134,28 @@ class TradeExecutor:
         return
 
     async def aclose(self) -> None:
-        """Async alias (close is sync; async kapanış gerekiyorsa bunu çağır)."""
         return await self.shutdown(reason="close")
+
+    # -------------------------
+    # backtest helper API (NEW)
+    # -------------------------
+    def has_open_position(self, symbol: str) -> bool:
+        pos = self._get_position(symbol)
+        if not pos:
+            return False
+        side = str(pos.get("side") or "").lower()
+        qty = float(pos.get("qty") or 0.0)
+        return (side in ("long", "short")) and (qty > 0)
+
+    def close_position(self, symbol: str, price: float, reason: str = "manual", interval: str = "") -> Optional[Dict[str, Any]]:
+        """Backtest / helper close wrapper."""
+        return self._close_position(symbol=str(symbol).upper(), price=float(price), reason=str(reason), interval=str(interval or ""))
+
+    def pop_closed_trades(self) -> List[Dict[str, Any]]:
+        """Backtest: biriken kapanışları alıp buffer'ı temizler."""
+        out = list(self._closed_buffer)
+        self._closed_buffer.clear()
+        return out
 
     # -------------------------
     # helpers
@@ -207,7 +227,6 @@ class TradeExecutor:
             self._tg_state["last_sig"] = signal_u
             self._tg_state["last_sig_ts"] = now
 
-        # p seçimi (öncelik)
         p_used = None
         try:
             p_used = extra.get("ensemble_p")
@@ -381,6 +400,13 @@ class TradeExecutor:
         pos["close_price"] = float(price)
         pos["realized_pnl"] = float(realized_pnl)
         pos["close_reason"] = reason
+
+        # backtest buffer push (NEW)
+        try:
+            self._closed_buffer.append(dict(pos))
+        except Exception:
+            pass
+
         return pos
 
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
@@ -544,7 +570,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # HOLD: journal + return (deterministik: sizing/işlem yok)
+        # HOLD: journal + return
         if signal_u == "HOLD":
             try:
                 p_val = None
@@ -593,7 +619,7 @@ class TradeExecutor:
         if str(os.getenv("SHADOW_MODE", "false")).lower() in ("1", "true", "yes", "on"):
             return
 
-        # telegram notify (throttled)
+        # telegram notify
         try:
             self._notify_telegram(signal_u, str(symbol).upper(), interval, float(price), probs, extra0)
         except Exception:
@@ -640,21 +666,18 @@ class TradeExecutor:
         if qty <= 0 or float(price) <= 0:
             return
 
-        # open/flip logic (basit):
+        # open/flip logic:
         cur = self._get_position(str(symbol).upper())
         cur_side = str(cur.get("side")).lower() if cur else None
 
-        # flip varsa kapat
         if cur_side in ("long", "short") and cur_side != side_norm:
             self._close_position(str(symbol).upper(), float(price), reason="FLIP", interval=interval)
 
-        # hala pozisyon varsa aynı yönde -> dokunma
         cur2 = self._get_position(str(symbol).upper())
         cur2_side = str(cur2.get("side")).lower() if cur2 else None
         if cur2_side == side_norm:
             return
 
-        # yeni pozisyon aç
         pos, _opened_at = self._create_position_dict(
             signal=side_norm,
             symbol=str(symbol).upper(),
