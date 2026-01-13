@@ -1115,7 +1115,11 @@ class HeavyEngine:
         timer.mark("features+schema")
 
         sch_main = self._schema_for(interval)
-        feat_df = self.anomaly_detector.filter_anomalies(feat_df, schema=sch_main)
+        feat_df = self.anomaly_detector.filter_anomalies(
+            feat_df,
+            schema=sch_main,
+            context=f"heavy:{symbol}:{interval}",
+        )
         timer.mark("anomaly_filter")
 
         X_live = feat_df.tail(500)
@@ -1149,7 +1153,11 @@ class HeavyEngine:
                     feat_df_itv = self._normalize_feat_df(feat_df_itv, itv)
 
                     sch_itv = self._schema_for(itv)
-                    feat_df_itv = self.anomaly_detector.filter_anomalies(feat_df_itv, schema=sch_itv)
+                    feat_df_itv = self.anomaly_detector.filter_anomalies(
+                        feat_df_itv,
+                        schema=sch_itv,
+                        context=f"heavy:{symbol}:{itv}",
+                    )
 
                     mtf_feats[itv] = feat_df_itv
                     mtf_whale_raw[itv] = raw_df_itv

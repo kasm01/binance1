@@ -2,21 +2,35 @@
 import os
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass
 
 from config.load_env import load_environment_variables
 from core.logger import setup_logger
+
+# Proje modülleri (sende mevcut)
 from core.risk_manager import RiskManager
 from core.trade_executor import TradeExecutor
 from models.hybrid_inference import HybridModel
 from core.hybrid_mtf import MultiTimeframeHybridEnsemble
 from data.whale_detector import MultiTimeframeWhaleDetector
 from data.anomaly_detection import AnomalyDetector
+
+# Eğer sende bu fonksiyonlar farklı modüllerdeyse, aşağıdaki importları kendi projene göre düzelt:
+# - fetch_klines: canlı modda kline çeker
+# - build_features: feature engineering
+try:
+    from data.fetch_klines import fetch_klines  # type: ignore
+except Exception:
+    fetch_klines = None  # noqa
+
+try:
+    from features.pipeline import build_features  # type: ignore
+except Exception:
+    build_features = None  # noqa
 
 system_logger = logging.getLogger("system")
 
@@ -181,34 +195,133 @@ def _save_backtest_csv(
 
 
 # -------------------------
+# Minimal stats container
+# -------------------------
+class BTStats:
+    def __init__(self) -> None:
+        self.trades = 0
+        self.pnl_total = 0.0
+        self.max_dd_pct = 0.0
+        self.peak_equity = 0.0
+        self.last_equity = 0.0
+
+    def summary_dict(self) -> Dict[str, Any]:
+        return {
+            "trades": int(self.trades),
+            "pnl_total": float(self.pnl_total),
+            "max_drawdown_pct": float(self.max_dd_pct),
+            "peak_equity": float(self.peak_equity),
+            "last_equity": float(self.last_equity),
+        }
+
+
+# -------------------------
 # Backtest main
 # -------------------------
 async def run_backtest() -> None:
     """
-    Not: Bu fonksiyonun içeriği sende zaten vardı. Buraya sadece kritik kısım eklendi:
-      - EOB force-close
-      - CSV export
-    Aşağıdaki değişkenler senin mevcut akışından gelmeli:
-      out_dir, symbol, main_interval, tag, equity_rows, closed_trades, bt_stats, df, position_manager
+    Bu dosya sende zaten vardı. Şunlar eklendi/düzeltildi:
+
+    ✅ Öneri #1: AnomalyDetector.filter_anomalies çağrıları context ile güncellendi:
+        context=f"heavy:{symbol}:{interval}"
+
+    ✅ Öneri #2: Eksik olabilecek import/fallback'lar (fetch_klines/build_features) eklendi.
+       (Sende zaten varsa, try/except blokları sorun çıkarmaz.)
+
+    ✅ EOB force-close + CSV export aynen korundu.
+
+    Not: Senin gerçek backtest loop’un projende mevcut olduğu için burada “minimum çalışır iskelet”
+    bırakıyorum. Aşağıdaki TODO alanına kendi loop’unu koyunca anomaly context’li satırlar hazır.
     """
     global system_logger
     system_logger = logging.getLogger("system")
 
-    # ---- TODO: burada senin backtest setup/loop kodun olacak ----
-    # Aşağıdaki satırlar "placeholder" değişkenler; kendi kodunda zaten var.
     out_dir = Path(os.getenv("BT_OUT_DIR", "backtests"))
     symbol = os.getenv("SYMBOL", "BTCUSDT")
     main_interval = os.getenv("INTERVAL", "5m")
     tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
+    # MTF interval listesi (projendeki ayara göre güncelleyebilirsin)
+    mtf_intervals = os.getenv("MTF_INTERVALS", "1m,3m,5m,15m,30m,1h").split(",")
+    mtf_intervals = [x.strip() for x in mtf_intervals if x.strip()]
+
     equity_rows: List[Dict[str, Any]] = []
     closed_trades: List[Dict[str, Any]] = []
-    bt_stats = type("BTStats", (), {"summary_dict": lambda self: {}})()
+    bt_stats = BTStats()
 
     df: Optional[pd.DataFrame] = None
     position_manager = None
 
-    # ---- TODO: backtest loop burada doldurulacak ----
+    # -------------------------
+    # NEW: anomaly detector (context-aware)
+    # -------------------------
+    anomaly_detector = AnomalyDetector(logger=system_logger)
+
+    # -------------------------
+    # TODO: burada senin gerçek backtest setup/loop kodun olacak
+    # -------------------------
+    #
+    # Aşağıda “senin run_once bloğundaki” önerilen satırları birebir backtest’e uygun şekilde verdim.
+    # Nano ile, backtest’te feature üretip anomaly filter uyguladığın yere bunu aynen koy:
+    #
+    # --- MAIN TF ---
+    # sch_main = self._schema_for(main_interval)  # sende hangi fonksiyonsa
+    # feat_df = anomaly_detector.filter_anomalies(
+    #     feat_df,
+    #     schema=sch_main,
+    #     context=f"heavy:{symbol}:{main_interval}",
+    # )
+    #
+    # --- MTF TF ---
+    # sch_itv = self._schema_for(itv)
+    # feat_df_itv = anomaly_detector.filter_anomalies(
+    #     feat_df_itv,
+    #     schema=sch_itv,
+    #     context=f"heavy:{symbol}:{itv}",
+    # )
+    #
+    # -------------------------
+    # Minimum örnek (offline csv ile) — istersen kullan:
+    # -------------------------
+    offline_dir = Path(os.getenv("OFFLINE_DIR", "data/offline_cache"))
+    offline_main = offline_dir / f"{symbol}_{main_interval}_6m.csv"
+    if offline_main.exists():
+        df = pd.read_csv(offline_main)
+        # Sende build_features varsa:
+        if build_features is None:
+            system_logger.warning("[BT] build_features import edilemedi. Feature üretimi atlandı.")
+        else:
+            feat_df = build_features(df)
+            # schema fonksiyonun yoksa bile anomaly filter çalışsın diye schema=None bırakılabilir.
+            # Ama sende schema varsa aşağıdaki sch_main ile değiştir.
+            sch_main = None
+
+            # ✅ ÖNERİ (context ekli)
+            feat_df = anomaly_detector.filter_anomalies(
+                feat_df,
+                schema=sch_main,
+                context=f"heavy:{symbol}:{main_interval}",
+            )
+
+            # MTF’ler (varsa)
+            for itv in mtf_intervals:
+                if itv == main_interval:
+                    continue
+                offline_itv = offline_dir / f"{symbol}_{itv}_6m.csv"
+                if not offline_itv.exists():
+                    continue
+                df_itv = pd.read_csv(offline_itv)
+                feat_df_itv = build_features(df_itv)
+
+                sch_itv = None
+                # ✅ ÖNERİ (context ekli)
+                feat_df_itv = anomaly_detector.filter_anomalies(
+                    feat_df_itv,
+                    schema=sch_itv,
+                    context=f"heavy:{symbol}:{itv}",
+                )
+
+    # ---- TODO: burada backtest sinyal/pozisyon/trade kayıt akışın olacak ----
 
     # ----------------------------------------------------------
     # Force close at end of backtest (so trades>0 even if no SL/TP hit)
@@ -253,3 +366,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
