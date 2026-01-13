@@ -54,7 +54,12 @@ def _extract_ts_seconds_from_df(df: pd.DataFrame) -> Optional[float]:
         return None
     if "open_time" not in df.columns:
         return None
-    t = _safe_float(df["open_time"].iloc[-1], default=np.nan)
+    t = np.nan
+    try:
+        if df is not None and len(df) > 0 and "open_time" in df.columns:
+            t = _safe_float(df["open_time"].iloc[-1], default=np.nan)
+    except Exception:
+        t = np.nan
     if not (t == t):
         return None
     # ms ise genelde 1e12 civarı
@@ -126,7 +131,7 @@ def _obi_to_unit(obi: float) -> float:
       - OBI [-1..1] ise aynen
     return: unit in [-1..1]
     """
-    v = float(obi)
+    v = float(obi_val)
     if v < -1.2 or v > 1.2:
         # çok uç değer => clamp
         return float(max(-1.0, min(1.0, v)))
@@ -425,8 +430,16 @@ class WhaleDetector:
         feat = self.fe.compute(tail)
         if feat is None or feat.empty:
             return WhaleSignal("none", 0.0, "feature_engine_failed", {})
+        last = None
+        try:
+            if feat is not None and len(feat) > 0:
+                last = feat.iloc[-1]
+        except Exception:
+            last = None
 
-        last = feat.iloc[-1]
+        if last is None:
+            return WhaleSignal("none", 0.0, "last_is_none", {})
+
         bar_index = len(df) - 1
 
         # -------------------------
@@ -484,6 +497,26 @@ class WhaleDetector:
 
         spread_shock_veto = False
         spread_shock_penalty = False
+
+
+        tod_penalty = False
+        # market_meta orderbook imbalance (obi) [-1..+1]
+        obi = None
+        try:
+            if isinstance(market_meta, dict):
+                _obi = market_meta.get("obi", None)
+                obi = float(_obi) if _obi is not None else None
+        except Exception:
+            obi = None
+
+        # market_meta spread_shock (builder’dan gelir)
+        spread_shock_flag = False
+        try:
+            if isinstance(market_meta, dict):
+                spread_shock_flag = bool(market_meta.get("spread_shock", False))
+        except Exception:
+            spread_shock_flag = False
+
         if spread_z is not None and (spread_z == spread_z):
             if spread_z >= self.spread_z_veto_thr:
                 spread_shock_veto = True
@@ -529,6 +562,11 @@ class WhaleDetector:
             "flow_ratio": float(_safe_float(last.get("flow_ratio", 0.0))),
             "vwap_dev": float(vwap_dev),
             "spread_pct": float(spread_pct),
+            "spread_z": float(_safe_float(spread_z, 0.0)) if spread_z is not None else None,
+            "spread_shock": bool(spread_shock_flag),
+            "obi": float(_safe_float(obi, 0.0)) if obi is not None else None,
+            "hour_utc": int(hour_utc) if hour_utc is not None else None,
+            "tod_penalty": float(tod_penalty),
             "liq_score": float(liq_score),
             "spread_z": float(spread_z) if (spread_z is not None and spread_z == spread_z) else None,
             "spread_shock_veto": bool(spread_shock_veto),

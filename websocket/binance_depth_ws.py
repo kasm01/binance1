@@ -1,154 +1,228 @@
-# websocket/binance_depth_ws.py
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
 import threading
-from dataclasses import dataclass, asdict
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import websocket  # websocket-client
-
-from core.logger import system_logger
-from config.settings import Settings
-
-BINANCE_FUTURES_WS_URL_TEMPLATE = "wss://fstream.binance.com/ws/{symbol_lower}@depth5@100ms"
+try:
+    import websockets  # type: ignore
+except Exception:  # pragma: no cover
+    websockets = None  # type: ignore
 
 
-def _build_depth_ws_url(symbol: Optional[str] = None) -> str:
-    sym = (symbol or getattr(Settings, "SYMBOL", None) or "BTCUSDT").upper()
-    return BINANCE_FUTURES_WS_URL_TEMPLATE.format(symbol_lower=sym.lower())
+logger = logging.getLogger("system")
 
 
-@dataclass
-class DepthSnapshot:
-    ts: float
-    symbol: str
-    bids: List[Tuple[float, float]]  # [(price, qty), ...]
-    asks: List[Tuple[float, float]]
-    raw: Optional[Dict[str, Any]] = None
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+        if v != v:
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
 
 
 class BinanceDepthWS:
     """
-    Binance Futures depth5@100ms WS wrapper.
+    Binance Futures depth stream (default: depth5@100ms).
+    - websockets ile çalışır (websocket-client ile isim çakışmasını önler).
+    - last snapshot saklar
+    - opsiyonel MarketMetaBuilder'a update_orderbook ile otomatik basar
 
-    - best bid/ask + top5 levels burada var.
-    - Order-book imbalance / spread / liquidity proxy üretmek için ideal.
-
-    Kullanım:
-        dws = BinanceDepthWS(symbol="BTCUSDT")
-        dws.run_background()
-        snap = dws.get_last_depth()
-        ...
-        dws.stop()
+    main.py:
+        depth_ws = BinanceDepthWS(symbol=symbol, builder=market_meta_builder, tfs=list(mtf_intervals))
+        depth_ws.run_background()
+        snap = depth_ws.get_last_depth()
     """
 
-    def __init__(self, symbol: Optional[str] = None) -> None:
-        self.symbol = (symbol or getattr(Settings, "SYMBOL", None) or "BTCUSDT").upper()
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        url: Optional[str] = None,
+        depth_stream: Optional[str] = None,
+        logger_: Optional[logging.Logger] = None,
+        builder: Any = None,
+        tfs: Optional[List[str]] = None,
+        store_every_ms: int = 50,
+        reconnect_max_backoff_s: float = 30.0,
+        ping_interval_s: float = 20.0,
+        ping_timeout_s: float = 20.0,
+    ) -> None:
+        self.symbol = str(symbol).upper().strip()
 
-        self.ws_app: Optional[websocket.WebSocketApp] = None
+        # fstream (USDT-M Futures)
+        base = url or os.getenv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/ws")
+
+        # depth5@100ms default
+        stream = depth_stream or os.getenv("BINANCE_DEPTH_STREAM", f"{self.symbol.lower()}@depth5@100ms")
+        self.ws_url = f"{base}/{stream}"
+
+        self.logger = logger_ or logger
+
+        self.builder = builder
+        self.tfs = [str(x) for x in (tfs or [])]  # builder'a hangi TF'lere basılacak
+        self.store_every_ms = int(max(0, store_every_ms))
+
+        self.reconnect_max_backoff_s = float(max(1.0, reconnect_max_backoff_s))
+        self.ping_interval_s = float(max(5.0, ping_interval_s))
+        self.ping_timeout_s = float(max(5.0, ping_timeout_s))
+
         self._thread: Optional[threading.Thread] = None
+        self._stop_flag = threading.Event()
 
         self._lock = threading.Lock()
-        self._last: Optional[DepthSnapshot] = None
+        self._last_depth: Optional[Dict[str, Any]] = None
+        self._last_store_ts: float = 0.0
 
+    # --------------------------
+    # Public
+    # --------------------------
     def run_background(self) -> None:
         if self._thread and self._thread.is_alive():
             return
 
-        url = _build_depth_ws_url(self.symbol)
-        system_logger.info("[DEPTHWS] Connecting to: %s", url)
+        if websockets is None:
+            self.logger.warning("[DEPTHWS] websockets paketi yok. Kur: pip install websockets")
+            return
 
-        self.ws_app = websocket.WebSocketApp(
-            url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
-
-        def _run():
-            # ping_interval/timeout ile bağlantı daha stabil olur
-            self.ws_app.run_forever(ping_interval=20, ping_timeout=10)
-
-        self._thread = threading.Thread(target=_run, daemon=True, name=f"binance-depth-ws-{self.symbol.lower()}")
+        self._stop_flag.clear()
+        self._thread = threading.Thread(target=self._thread_main, name="binance-depth-ws", daemon=True)
         self._thread.start()
-        system_logger.info("[DEPTHWS] thread started. symbol=%s", self.symbol)
+        self.logger.info("[DEPTHWS] thread started url=%s", self.ws_url)
 
     def stop(self, timeout: float = 5.0) -> None:
+        self._stop_flag.set()
         try:
-            if self.ws_app is not None:
-                self.ws_app.close()
-        except Exception as e:
-            system_logger.warning("[DEPTHWS] close failed: %s", e)
-
-        try:
-            if self._thread is not None:
+            if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=timeout)
         except Exception:
             pass
 
     def get_last_depth(self) -> Optional[Dict[str, Any]]:
         with self._lock:
-            return asdict(self._last) if self._last else None
+            return dict(self._last_depth) if isinstance(self._last_depth, dict) else None
 
-    # ---------------- handlers ----------------
-    def _on_open(self, ws) -> None:
-        system_logger.info("[DEPTHWS] Connection opened. symbol=%s", self.symbol)
-
-    def _on_close(self, ws, close_status_code, close_msg) -> None:
-        system_logger.info("[DEPTHWS] Closed | code=%s msg=%s symbol=%s", close_status_code, close_msg, self.symbol)
-
-    def _on_error(self, ws, err) -> None:
-        system_logger.error("[DEPTHWS] Error: %s | symbol=%s", err, self.symbol)
-
-    def _on_message(self, ws, msg: str) -> None:
-        # msg format: {"e":"depthUpdate","E":...,"b":[["price","qty"],...],"a":[...]}
+    # --------------------------
+    # Internal
+    # --------------------------
+    def _thread_main(self) -> None:
         try:
-            s = msg.strip()
-            if not s:
-                return
-            j = json.loads(s)
-            if not isinstance(j, dict):
-                return
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._runner())
+        except Exception as e:
+            self.logger.exception("[DEPTHWS] thread crashed: %s", e)
 
-            bids_raw = j.get("b") or []
-            asks_raw = j.get("a") or []
-            if not isinstance(bids_raw, list) or not isinstance(asks_raw, list):
-                return
+    async def _runner(self) -> None:
+        backoff = 1.0
+        while not self._stop_flag.is_set():
+            try:
+                await self._connect_once()
+                backoff = 1.0
+            except Exception as e:
+                if self._stop_flag.is_set():
+                    break
+                self.logger.warning("[DEPTHWS] reconnect in %.1fs | err=%s", backoff, e)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.7, self.reconnect_max_backoff_s)
 
-            def _parse_levels(x: list) -> List[Tuple[float, float]]:
-                out: List[Tuple[float, float]] = []
-                for it in x:
-                    if not isinstance(it, (list, tuple)) or len(it) < 2:
-                        continue
+    async def _connect_once(self) -> None:
+        self.logger.info("[DEPTHWS] connecting %s", self.ws_url)
+
+        async with websockets.connect(
+            self.ws_url,
+            ping_interval=self.ping_interval_s,
+            ping_timeout=self.ping_timeout_s,
+        ) as ws:
+            while not self._stop_flag.is_set():
+                raw = await ws.recv()
+                if raw is None:
+                    continue
+
+                if isinstance(raw, (bytes, bytearray)):
                     try:
-                        p = float(it[0])
-                        q = float(it[1])
-                        out.append((p, q))
+                        raw = raw.decode("utf-8", errors="ignore")
                     except Exception:
                         continue
-                return out
 
-            bids = _parse_levels(bids_raw)
-            asks = _parse_levels(asks_raw)
+                s = str(raw).strip()
+                if not s:
+                    continue
 
-            # Binance depth lists are best-first (bids desc, asks asc) by stream spec
-            # yine de boşsa geç
-            if not bids or not asks:
-                return
+                try:
+                    msg = json.loads(s)
+                except Exception:
+                    continue
 
-            import time
-            snap = DepthSnapshot(
-                ts=time.time(),
-                symbol=self.symbol,
-                bids=bids[:5],
-                asks=asks[:5],
-                raw=j,
-            )
-            with self._lock:
-                self._last = snap
+                if not isinstance(msg, dict):
+                    continue
 
-        except Exception:
-            # spam log yapmayalım
-            return
+                # depth stream payload:
+                # bids: msg["b"] = [["price","qty"],...]
+                # asks: msg["a"] = [["price","qty"],...]
+                bids_raw = msg.get("b")
+                asks_raw = msg.get("a")
+                if not isinstance(bids_raw, list) or not isinstance(asks_raw, list):
+                    continue
+
+                now = time.time()
+                if self.store_every_ms > 0:
+                    if (now - self._last_store_ts) < (self.store_every_ms / 1000.0):
+                        continue
+
+                bids: List[Tuple[float, float]] = []
+                asks: List[Tuple[float, float]] = []
+
+                for x in bids_raw:
+                    if isinstance(x, (list, tuple)) and len(x) >= 2:
+                        p = _safe_float(x[0], 0.0)
+                        q = _safe_float(x[1], 0.0)
+                        if p > 0 and q >= 0:
+                            bids.append((p, q))
+
+                for x in asks_raw:
+                    if isinstance(x, (list, tuple)) and len(x) >= 2:
+                        p = _safe_float(x[0], 0.0)
+                        q = _safe_float(x[1], 0.0)
+                        if p > 0 and q >= 0:
+                            asks.append((p, q))
+
+                # sort best first (Binance genelde zaten sıralı gelir ama garanti edelim)
+                bids.sort(key=lambda t: t[0], reverse=True)
+                asks.sort(key=lambda t: t[0], reverse=False)
+
+                snap: Dict[str, Any] = {
+                    "ts": now,
+                    "symbol": self.symbol,
+                    "bids": bids,
+                    "asks": asks,
+                    "raw": None,
+                }
+
+                with self._lock:
+                    self._last_depth = snap
+                    self._last_store_ts = now
+
+                # Builder'a otomatik bas
+                if self.builder is not None:
+                    try:
+                        # TF listesi verildiyse hepsine güncelle; yoksa "5m" default gibi davran
+                        tfs = self.tfs or ["5m"]
+                        for tf in tfs:
+                            # builder.update_orderbook(symbol, tf, bids=..., asks=..., ts_sec=...)
+                            if hasattr(self.builder, "update_orderbook"):
+                                self.builder.update_orderbook(
+                                    self.symbol,
+                                    str(tf),
+                                    bids=bids,
+                                    asks=asks,
+                                    ts_sec=now,
+                                )
+                    except Exception:
+                        pass

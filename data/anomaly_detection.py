@@ -14,7 +14,7 @@ from core.logger import system_logger
 from features.schema import normalize_to_schema
 
 
-Context = Literal["heavy", "scan"]
+Context = str
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -131,6 +131,23 @@ class AnomalyDetector:
     ) -> pd.DataFrame:
         enabled, refit_every_sec, min_samples = self._profile(context)
 
+
+        # --- guards to prevent empty/too-small outputs after anomaly filtering ---
+        # Tune via env:
+        #   ANOM_MIN_KEEP=120
+        #   ANOM_MAX_REMOVED_RATIO=0.80
+        try:
+            import os
+            min_keep = int(os.getenv("ANOM_MIN_KEEP", "120"))
+        except Exception:
+            min_keep = 120
+        try:
+            import os
+            max_removed_ratio = float(os.getenv("ANOM_MAX_REMOVED_RATIO", "0.80"))
+        except Exception:
+            max_removed_ratio = 0.80
+        if min_keep < 1:
+            min_keep = 1
         if not enabled:
             return features_df.reset_index(drop=True) if isinstance(features_df, pd.DataFrame) else features_df
 
@@ -210,6 +227,24 @@ class AnomalyDetector:
 
         if self.logger:
             self.logger.info("[ANOM] Removed %d anomalous rows. Remaining=%d", removed, clean_df.shape[0])
+        # --- guard apply ---
+        try:
+            before_n = int(n) if "n" in locals() else int(len(df))
+        except Exception:
+            before_n = int(len(df))
+        after_n = int(clean_df.shape[0]) if hasattr(clean_df, "shape") else int(len(clean_df))
+        removed_n = max(0, before_n - after_n)
+        removed_ratio = (removed_n / max(1, before_n)) if before_n else 0.0
+
+        if after_n <= 0 or after_n < min_keep or removed_ratio > max_removed_ratio:
+            fallback = df.tail(min_keep).copy().reset_index(drop=True)
+            if self.logger:
+                self.logger.warning(
+                    "[ANOM] guard_keep_tail triggered: before=%s after=%s removed=%s ratio=%.3f min_keep=%s max_ratio=%.2f",
+                    before_n, after_n, removed_n, removed_ratio, min_keep, max_removed_ratio
+                )
+            clean_df = fallback
+
 
         return clean_df
 

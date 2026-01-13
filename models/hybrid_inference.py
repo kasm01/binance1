@@ -507,6 +507,14 @@ class HybridModel:
     def predict_proba(self, X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> Tuple[np.ndarray, Dict[str, Any]]:
         debug: Dict[str, Any] = {}
 
+        # Guard: empty/None input must not produce empty outputs
+        if X is None:
+            debug.update({"mode": "uniform_fallback", "reason": "X_is_None", "p_hybrid_mean": 0.5})
+            return np.full(1, 0.5, dtype=float), debug
+        if isinstance(X, pd.DataFrame) and X.shape[0] == 0:
+            debug.update({"mode": "uniform_fallback", "reason": "empty_dataframe", "p_hybrid_mean": 0.5})
+            return np.full(1, 0.5, dtype=float), debug
+
         # X -> numeric
         try:
             if isinstance(X, pd.DataFrame):
@@ -517,6 +525,14 @@ class HybridModel:
         except Exception as e:
             self._log_startup(logging.WARNING, "[HYBRID] Failed to convert X to numeric: %s -> uniform 0.5", e)
             n = X.shape[0] if hasattr(X, "shape") else len(X)
+            p_uniform = np.full(n, 0.5, dtype=float)
+            # ensure non-empty output
+            try:
+                n = int(n)
+            except Exception:
+                n = 0
+            if n <= 0:
+                n = 1
             p_uniform = np.full(n, 0.5, dtype=float)
             debug.update(
                 {

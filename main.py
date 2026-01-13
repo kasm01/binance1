@@ -37,6 +37,7 @@ from tg_bot.telegram_bot import TelegramBot
 # WebSocket
 from websocket.binance_ws import BinanceWS
 from websocket.okx_ws import OKXWS
+from websocket.binance_depth_ws import BinanceDepthWS
 
 # p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
@@ -600,6 +601,7 @@ class ShutdownManager:
         tg_bot: Optional[TelegramBot] = None,
         binance_ws: Optional[BinanceWS] = None,
         okx_ws: Optional[OKXWS] = None,
+        depth_ws: Any = None,
         client: Any = None,
         position_manager: Any = None,
         trade_executor: Any = None,
@@ -611,6 +613,8 @@ class ShutdownManager:
                 self._binance_ws = binance_ws
             if okx_ws is not None:
                 self._okx_ws = okx_ws
+            if depth_ws is not None:
+                self._depth_ws = depth_ws
             if client is not None:
                 self._client = client
             if position_manager is not None:
@@ -630,6 +634,7 @@ class ShutdownManager:
             tg_bot = self._tg_bot
             bws = self._binance_ws
             okx = self._okx_ws
+            dws = self._depth_ws
             client = self._client
             pm = self._position_manager
             te = self._trade_executor
@@ -656,6 +661,16 @@ class ShutdownManager:
         except Exception as e:
             if log:
                 log.warning("[SHUTDOWN] OKXWS stop failed: %s", e)
+
+        # 2.5) Depth WS stop (Binance Futures depth)
+        try:
+            if dws is not None and hasattr(dws, "stop"):
+                dws.stop(timeout=5.0)  # type: ignore
+                if log:
+                    log.info("[SHUTDOWN] DepthWS stopped.")
+        except Exception as e:
+            if log:
+                log.warning("[SHUTDOWN] DepthWS stop failed: %s", e)
 
         # 3) Telegram stop
         try:
@@ -821,6 +836,32 @@ def create_trading_objects() -> Dict[str, Any]:
 
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
+
+    # --- Market meta (depth-based) ---
+    depth_ws = None
+    market_meta_builder = None
+    try:
+        enable_depth_ws = get_bool_env("ENABLE_DEPTH_WS", True)
+        if enable_depth_ws:
+            market_meta_builder = MarketMetaBuilder(
+                spread_z_window=get_int_env("SPREAD_Z_WINDOW", 120),
+                spread_shock_z_thr=get_float_env("SPREAD_SHOCK_Z_THR", 2.5),
+                obi_levels=get_int_env("OBI_LEVELS", 5),
+                liq_use_notional=get_bool_env("LIQ_USE_NOTIONAL", True),
+            )
+            depth_ws = BinanceDepthWS(symbol=symbol, builder=market_meta_builder, tfs=list(mtf_intervals))
+            depth_ws.run_background()
+            if system_logger:
+                system_logger.info("[DEPTHWS] enabled | symbol=%s tfs=%s", symbol, list(mtf_intervals))
+        else:
+            if system_logger:
+                system_logger.info("[DEPTHWS] disabled (ENABLE_DEPTH_WS!=1)")
+    except Exception as e:
+        depth_ws = None
+        market_meta_builder = None
+        if system_logger:
+            system_logger.warning("[DEPTHWS] init failed: %s", e)
+
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
     models_by_interval = {
@@ -944,6 +985,7 @@ def create_trading_objects() -> Dict[str, Any]:
     _shutdown_mgr.register(
         tg_bot=tg_bot,
         okx_ws=okx_ws,
+        depth_ws=depth_ws,
         client=client,
         position_manager=position_manager,
         trade_executor=trade_executor,

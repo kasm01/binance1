@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 from collections import deque
 import time
-import math
 
 import numpy as np
 
@@ -12,7 +11,7 @@ import numpy as np
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         v = float(x)
-        if v != v:  # NaN
+        if v != v:
             return float(default)
         return float(v)
     except Exception:
@@ -30,7 +29,6 @@ def _hour_utc_from_ts(ts_sec: Optional[float]) -> Optional[int]:
     if ts_sec is None:
         return None
     try:
-        # UTC hour
         return int(time.gmtime(float(ts_sec)).tm_hour)
     except Exception:
         return None
@@ -40,7 +38,6 @@ def _hour_utc_from_ts(ts_sec: Optional[float]) -> Optional[int]:
 class _BookState:
     best_bid: float = 0.0
     best_ask: float = 0.0
-    # store depth levels as (price, qty)
     bids: Optional[List[Tuple[float, float]]] = None
     asks: Optional[List[Tuple[float, float]]] = None
     ts_sec: Optional[float] = None
@@ -48,64 +45,36 @@ class _BookState:
 
 class MarketMetaBuilder:
     """
-    Market meta üreticisi (tek modül):
+    Market meta üreticisi:
       - spread_pct: (ask-bid)/mid
-      - spread_z: spread_pct rolling z-score (shock ölçümü)
+      - spread_z: spread_pct rolling z-score
+      - spread_shock: spread_z >= shock_thr
       - obi: order-book imbalance (topN qty imbalance)
-      - liq_score: opsiyonel (basit proxy: depth toplamı)
-      - hour_utc: time-of-day filter için
-
-    Kullanım:
-      builder = MarketMetaBuilder()
-      builder.update_orderbook(symbol, tf, bids=[(p,q),...], asks=[(p,q),...], ts_sec=...)
-      builder.update_best_bid_ask(symbol, tf, best_bid=..., best_ask=..., ts_sec=...)
-      meta = builder.build_meta(symbol, tf)
+      - liq_score: topN notional proxy (opsiyonel)
+      - hour_utc: time-of-day filter
     """
 
     def __init__(
         self,
         *,
-        spread_window: int = 120,
-        obi_levels: int = 10,
+        spread_z_window: int = 120,
+        spread_shock_z_thr: float = 2.5,
+        obi_levels: int = 5,
+        liq_use_notional: bool = True,
         min_mid: float = 1e-12,
     ) -> None:
-        self.spread_window = int(max(10, spread_window))
+        self.spread_z_window = int(max(10, spread_z_window))
+        self.spread_shock_z_thr = float(spread_shock_z_thr)
         self.obi_levels = int(max(1, obi_levels))
+        self.liq_use_notional = bool(liq_use_notional)
         self.min_mid = float(min_mid)
 
-        # state: (symbol, tf) -> bookstate
         self._book: Dict[Tuple[str, str], _BookState] = {}
-
-        # spread history: (symbol, tf) -> deque[spread_pct]
         self._spread_hist: Dict[Tuple[str, str], deque] = {}
-
-        # last meta cache: (symbol, tf) -> dict
         self._last_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def _key(self, symbol: str, tf: str) -> Tuple[str, str]:
         return (str(symbol).upper(), str(tf).lower())
-
-    # -------------------------
-    # Updates (WS / REST tarafı burayı besler)
-    # -------------------------
-    def update_best_bid_ask(
-        self,
-        symbol: str,
-        tf: str,
-        *,
-        best_bid: Any,
-        best_ask: Any,
-        ts_sec: Optional[float] = None,
-    ) -> None:
-        k = self._key(symbol, tf)
-        st = self._book.get(k) or _BookState()
-        st.best_bid = _safe_float(best_bid, 0.0)
-        st.best_ask = _safe_float(best_ask, 0.0)
-        st.ts_sec = ts_sec if ts_sec is not None else st.ts_sec
-        self._book[k] = st
-
-        # spread history güncelle
-        self._push_spread(k, st.best_bid, st.best_ask)
 
     def update_orderbook(
         self,
@@ -153,18 +122,16 @@ class MarketMetaBuilder:
 
         dq = self._spread_hist.get(k)
         if dq is None:
-            dq = deque(maxlen=self.spread_window)
+            dq = deque(maxlen=self.spread_z_window)
             self._spread_hist[k] = dq
         dq.append(float(spread_pct))
 
-    # -------------------------
-    # Feature builders
-    # -------------------------
     def _compute_spread_meta(self, k: Tuple[str, str], bid: float, ask: float) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         if bid <= 0 or ask <= 0 or ask < bid:
             out["spread_pct"] = 0.0
             out["spread_z"] = None
+            out["spread_shock"] = False
             return out
 
         mid = (bid + ask) / 2.0
@@ -172,26 +139,28 @@ class MarketMetaBuilder:
         out["spread_pct"] = float(max(0.0, spread_pct))
 
         dq = self._spread_hist.get(k)
-        if dq is None or len(dq) < max(20, int(self.spread_window * 0.25)):
+        if dq is None or len(dq) < max(20, int(self.spread_z_window * 0.25)):
             out["spread_z"] = None
+            out["spread_shock"] = False
             return out
 
         arr = np.array(dq, dtype=float)
         mu = float(arr.mean())
         sd = float(arr.std()) if float(arr.std()) > 1e-12 else 1e-12
         z = (float(spread_pct) - mu) / sd
+
         out["spread_z"] = float(z)
         out["spread_mu"] = float(mu)
         out["spread_sd"] = float(sd)
         out["spread_n"] = int(len(dq))
+        out["spread_shock"] = bool(float(z) >= self.spread_shock_z_thr)
         return out
 
-    def _compute_obi_meta(self, bids: Optional[List[Tuple[float, float]]], asks: Optional[List[Tuple[float, float]]]) -> Dict[str, Any]:
-        """
-        OBI (order-book imbalance):
-          obi = (sum_bid_qty - sum_ask_qty) / (sum_bid_qty + sum_ask_qty)
-          range: [-1..1]
-        """
+    def _compute_obi_meta(
+        self,
+        bids: Optional[List[Tuple[float, float]]],
+        asks: Optional[List[Tuple[float, float]]],
+    ) -> Dict[str, Any]:
         out: Dict[str, Any] = {"obi": None, "liq_score": 0.0}
         if not bids or not asks:
             return out
@@ -206,23 +175,31 @@ class MarketMetaBuilder:
             if q > 0:
                 aq += float(q)
 
-        denom = bq + aq
-        if denom <= 1e-12:
+        denom_qty = bq + aq
+        if denom_qty <= 1e-12:
             return out
 
-        obi = (bq - aq) / denom
+        obi = (bq - aq) / denom_qty
         out["obi"] = float(_clamp(obi, -1.0, 1.0))
 
-        # liq_score: basit proxy (topN toplam qty)
-        out["liq_score"] = float(max(0.0, denom))
+        if self.liq_use_notional:
+            bn = 0.0
+            an = 0.0
+            for p, q in bids[:topn]:
+                if p > 0 and q > 0:
+                    bn += float(p) * float(q)
+            for p, q in asks[:topn]:
+                if p > 0 and q > 0:
+                    an += float(p) * float(q)
+            out["liq_score"] = float(max(0.0, bn + an))
+        else:
+            out["liq_score"] = float(max(0.0, denom_qty))
+
         out["liq_bid_qty"] = float(bq)
         out["liq_ask_qty"] = float(aq)
         out["liq_topn"] = int(topn)
         return out
 
-    # -------------------------
-    # Public: build meta dict
-    # -------------------------
     def build_meta(
         self,
         symbol: str,
@@ -231,14 +208,10 @@ class MarketMetaBuilder:
         fallback_ts_sec: Optional[float] = None,
         override_hour_utc: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Whale detector'a doğrudan verilecek market_meta dict'i üretir.
-        """
         k = self._key(symbol, tf)
         st = self._book.get(k)
 
         if st is None:
-            # hiçbir data yoksa cache döndür
             cached = self._last_meta.get(k)
             return dict(cached) if isinstance(cached, dict) else {}
 
@@ -251,13 +224,9 @@ class MarketMetaBuilder:
         meta: Dict[str, Any] = {}
         meta["hour_utc"] = hour_utc
 
-        # spread
         meta.update(self._compute_spread_meta(k, bid, ask))
-
-        # obi + liquidity
         meta.update(self._compute_obi_meta(st.bids, st.asks))
 
-        # (ops) best bid/ask keep
         meta["best_bid"] = float(bid)
         meta["best_ask"] = float(ask)
         meta["ts_sec"] = float(ts_sec) if ts_sec is not None else None
