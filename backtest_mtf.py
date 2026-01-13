@@ -12,7 +12,9 @@ from config.load_env import load_environment_variables
 from core.logger import setup_logger
 
 from core.risk_manager import RiskManager
+from core.position_manager import PositionManager
 from core.trade_executor import TradeExecutor
+from models.hybrid_inference import HybridModel
 from data.anomaly_detection import AnomalyDetector
 
 try:
@@ -40,6 +42,51 @@ def _atomic_to_csv(df: pd.DataFrame, path: Path) -> None:
     tmp.replace(path)
 
 
+def _compute_drawdown_pct(equity: float, peak: float) -> float:
+    if peak <= 0:
+        return 0.0
+    dd = (peak - equity) / peak
+    return float(dd * 100.0)
+
+
+# -------------------------
+# Minimal stats container
+# -------------------------
+class BTStats:
+    def __init__(self, start_equity: float = 1000.0) -> None:
+        self.trades = 0
+        self.pnl_total = 0.0
+        self.max_dd_pct = 0.0
+        self.peak_equity = float(start_equity)
+        self.last_equity = float(start_equity)
+        self.start_equity = float(start_equity)
+
+    def on_trade_close(self, realized_pnl: float) -> None:
+        self.trades += 1
+        self.pnl_total += float(realized_pnl)
+        self.last_equity = self.start_equity + self.pnl_total
+        if self.last_equity > self.peak_equity:
+            self.peak_equity = self.last_equity
+        dd = _compute_drawdown_pct(self.last_equity, self.peak_equity)
+        if dd > self.max_dd_pct:
+            self.max_dd_pct = dd
+
+    def summary_dict(self) -> Dict[str, Any]:
+        # tools scriptleri farklı kolon adları da okuyabiliyor ama biz temel seti verelim
+        ending_equity = float(self.last_equity)
+        pnl = float(self.pnl_total)
+        pnl_pct = (pnl / self.start_equity * 100.0) if self.start_equity > 0 else 0.0
+        return {
+            "ending_equity": ending_equity,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "n_trades": int(self.trades),
+            "trades": int(self.trades),  # ekstra uyumluluk
+            "max_drawdown_pct": float(self.max_dd_pct),
+            "peak_equity": float(self.peak_equity),
+        }
+
+
 def _save_backtest_csv(
     *,
     out_dir: Path,
@@ -48,7 +95,7 @@ def _save_backtest_csv(
     tag: str,
     equity_rows: List[Dict[str, Any]],
     closed_trades: List[Dict[str, Any]],
-    bt_stats: Dict[str, Any],
+    bt_stats: BTStats,
     system_logger: logging.Logger,
 ) -> None:
     equity_path = out_dir / f"equity_curve_{symbol}_{main_interval}_{tag}.csv"
@@ -64,10 +111,6 @@ def _save_backtest_csv(
         "signal",
         "p_used",
         "p_single",
-        "p_1m",
-        "p_5m",
-        "p_15m",
-        "p_1h",
         "whale_dir",
         "whale_score",
         "whale_on",
@@ -102,6 +145,7 @@ def _save_backtest_csv(
         "close_price",
         "realized_pnl",
         "close_reason",
+        # backtest context
         "bt_symbol",
         "bt_interval",
         "bt_bar",
@@ -110,24 +154,22 @@ def _save_backtest_csv(
         "bt_price",
         "bt_p_used",
         "bt_p_single",
-        "bt_p_1m",
-        "bt_p_5m",
-        "bt_p_15m",
-        "bt_p_1h",
+        "bt_atr",
+        # whale context placeholders
         "whale_dir",
         "whale_score",
         "whale_on",
         "whale_alignment",
         "whale_thr",
+        # misc
         "model_confidence_factor",
         "ens_scale",
         "ens_notional",
-        "bt_atr",
     ]
 
     eq_df = _ensure_columns(pd.DataFrame(equity_rows), EQ_COLS)
     tr_df = _ensure_columns(pd.DataFrame(closed_trades), TR_COLS)
-    sm_df = pd.DataFrame([bt_stats])
+    sm_df = pd.DataFrame([bt_stats.summary_dict()])
 
     _atomic_to_csv(eq_df, equity_path)
     _atomic_to_csv(tr_df, trades_path)
@@ -138,293 +180,306 @@ def _save_backtest_csv(
     system_logger.info("[BT-CSV] summary:     %s", str(summary_path))
 
 
-def _pick_env(*names: str, default: str = "") -> str:
-    for n in names:
-        v = os.getenv(n)
-        if v is not None and str(v).strip() != "":
-            return str(v)
-    return default
+# -------------------------
+# Backtest TradeExecutor wrapper
+# (kapanan trade'leri yakalamak için)
+# -------------------------
+class BTTradeExecutor(TradeExecutor):
+    def __init__(
+        self,
+        *args: Any,
+        closed_trades: List[Dict[str, Any]],
+        bt_stats: BTStats,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._bt_closed_trades = closed_trades
+        self._bt_stats = bt_stats
+
+        # loop sırasında set edilecek:
+        self._bt_ctx: Dict[str, Any] = {}
+
+    def set_bt_context(self, **ctx: Any) -> None:
+        self._bt_ctx = dict(ctx)
+
+    # TradeExecutor içindeki internal close’u override ediyoruz
+    def _close_position(self, symbol: str, price: float, reason: str, interval: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
+        closed = super()._close_position(symbol, price, reason, interval)
+        if not closed:
+            return None
+
+        # backtest tagleri
+        try:
+            ctx = self._bt_ctx or {}
+            closed["bt_symbol"] = ctx.get("bt_symbol")
+            closed["bt_interval"] = ctx.get("bt_interval")
+            closed["bt_bar"] = ctx.get("bt_bar")
+            closed["bt_time"] = ctx.get("bt_time")
+            closed["bt_signal"] = ctx.get("bt_signal")
+            closed["bt_price"] = ctx.get("bt_price")
+            closed["bt_p_used"] = ctx.get("bt_p_used")
+            closed["bt_p_single"] = ctx.get("bt_p_single")
+            closed["bt_atr"] = ctx.get("bt_atr")
+        except Exception:
+            pass
+
+        # stats
+        try:
+            rp = float(closed.get("realized_pnl") or 0.0)
+            self._bt_stats.on_trade_close(rp)
+        except Exception:
+            pass
+
+        self._bt_closed_trades.append(closed)
+        return closed
 
 
-def _to_dt_from_ms(ms: Any) -> Optional[str]:
-    try:
-        x = float(ms)
-        if x > 1e12:  # ms epoch
-            return datetime.utcfromtimestamp(x / 1000.0).isoformat()
-        if x > 1e9:  # sec epoch
-            return datetime.utcfromtimestamp(x).isoformat()
-    except Exception:
-        pass
-    return None
-
-
-def _simple_p_from_returns(close: pd.Series) -> float:
+def _force_close_eob(
+    *,
+    executor: BTTradeExecutor,
+    position_manager: PositionManager,
+    symbol: str,
+    last_price: float,
+    interval: str,
+    system_logger: logging.Logger,
+) -> None:
     """
-    Model yoksa basit bir fallback:
-    - son 3 bar momentum -> p ~ sigmoid benzeri
+    EOB force-close:
+    - PM üzerinde pozisyon var mı bak
+    - varsa executor._close_position ile kapat (BTTradeExecutor override closed_trades'e yazar)
     """
     try:
-        if len(close) < 6:
-            return 0.5
-        r1 = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2])
-        r3 = (float(close.iloc[-1]) - float(close.iloc[-4])) / float(close.iloc[-4])
-        x = 8.0 * r1 + 4.0 * r3
-        # basit squash
-        p = 0.5 + max(-0.49, min(0.49, x))
-        return float(max(0.0, min(1.0, p)))
-    except Exception:
-        return 0.5
+        pos = position_manager.get_position(symbol)
+        if not pos:
+            return
+        executor.set_bt_context(
+            bt_symbol=symbol,
+            bt_interval=interval,
+            bt_bar="EOB",
+            bt_time=None,
+            bt_signal="FORCE_CLOSE",
+            bt_price=last_price,
+            bt_p_used=None,
+            bt_p_single=None,
+            bt_atr=None,
+        )
+        executor._close_position(symbol, float(last_price), reason="EOB_FORCE_CLOSE", interval=interval)
+    except Exception as e:
+        system_logger.error("[BT] force-close failed: %s", e, exc_info=True)
 
 
+# -------------------------
+# Backtest main
+# -------------------------
 async def run_backtest() -> None:
     global system_logger
     system_logger = logging.getLogger("system")
 
-    # tools/*.py ile uyumlu env isimleri
-    symbol = _pick_env("BT_SYMBOL", "SYMBOL", default="BTCUSDT").upper()
-    main_interval = _pick_env("BT_MAIN_INTERVAL", "INTERVAL", default="5m")
-    out_dir = Path(_pick_env("BT_OUT_DIR", default="outputs"))
+    # tools/* scriptleriyle uyumlu env isimleri
+    out_dir = Path(os.getenv("BT_OUT_DIR", "outputs"))
+    symbol = os.getenv("BT_SYMBOL", os.getenv("SYMBOL", "BTCUSDT")).upper()
+    main_interval = os.getenv("BT_MAIN_INTERVAL", os.getenv("INTERVAL", "5m"))
     tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    offline_dir = Path(_pick_env("OFFLINE_DIR", default="data/offline_cache"))
-    data_limit = int(_pick_env("BT_DATA_LIMIT", "DATA_LIMIT", default="2000"))
-    warmup = int(_pick_env("BT_WARMUP_BARS", default="200"))
-    start_equity = float(_pick_env("BT_START_EQUITY", default="1000"))
+    data_limit = int(float(os.getenv("BT_DATA_LIMIT", "2000")))
+    warmup = int(float(os.getenv("BT_WARMUP_BARS", "200")))
 
-    # karar eşiği
-    p_thr = float(_pick_env("BT_P_THR", default="0.55"))
-    inv_thr = 1.0 - p_thr
+    # sinyal threshold
+    buy_thr = float(os.getenv("BT_BUY_THR", "0.55"))
+    sell_thr = float(os.getenv("BT_SELL_THR", "0.45"))
 
-    dry_run = str(_pick_env("DRY_RUN", default="true")).lower() in ("1", "true", "yes", "on")
+    # model window (rolling)
+    window = int(float(os.getenv("BT_MODEL_WINDOW", "200")))
 
-    # CSV input
-    main_csv = offline_dir / f"{symbol}_{main_interval}_6m.csv"
-    if not main_csv.exists():
-        system_logger.error("[BT] Offline CSV bulunamadı: %s", str(main_csv))
+    # start equity
+    start_equity = float(os.getenv("BT_START_EQUITY", "1000.0"))
+
+    equity_rows: List[Dict[str, Any]] = []
+    closed_trades: List[Dict[str, Any]] = []
+    bt_stats = BTStats(start_equity=start_equity)
+
+    # --- setup components ---
+    anomaly_detector = AnomalyDetector(logger=system_logger)
+
+    risk = RiskManager(
+        equity_start_of_day=start_equity,
+        logger=system_logger,
+    )
+    pm = PositionManager(
+        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        redis_db=int(os.getenv("REDIS_DB", "0")),
+        redis_key_prefix=os.getenv("REDIS_POS_KEY_PREFIX", "positions"),
+        enable_pg=str(os.getenv("ENABLE_PG_POS_LOG", "0")).lower() in ("1", "true", "yes", "on"),
+        pg_dsn=os.getenv("PG_DSN"),
+        logger=system_logger,
+    )
+
+    execu = BTTradeExecutor(
+        client=None,
+        risk_manager=risk,
+        position_manager=pm,
+        tg_bot=None,
+        logger=system_logger,
+        dry_run=True,  # backtest her zaman dry_run
+        base_order_notional=float(os.getenv("BT_BASE_ORDER_NOTIONAL", "50")),
+        max_position_notional=float(os.getenv("BT_MAX_POSITION_NOTIONAL", "500")),
+        max_leverage=float(os.getenv("BT_MAX_LEVERAGE", "3")),
+        sl_pct=float(os.getenv("BT_SL_PCT", "0.01")),
+        tp_pct=float(os.getenv("BT_TP_PCT", "0.02")),
+        trailing_pct=float(os.getenv("BT_TRAILING_PCT", "0.01")),
+        use_atr_sltp=str(os.getenv("BT_USE_ATR_SLTP", "1")).lower() in ("1", "true", "yes", "on"),
+        atr_sl_mult=float(os.getenv("BT_ATR_SL_MULT", "1.5")),
+        atr_tp_mult=float(os.getenv("BT_ATR_TP_MULT", "3.0")),
+        closed_trades=closed_trades,
+        bt_stats=bt_stats,
+    )
+
+    model = HybridModel(model_dir=os.getenv("MODELS_DIR", None), interval=main_interval, logger=system_logger)
+
+    # --- load offline CSV ---
+    offline_dir = Path(os.getenv("OFFLINE_DIR", "data/offline_cache"))
+    offline_main = offline_dir / f"{symbol}_{main_interval}_6m.csv"
+    if not offline_main.exists():
+        system_logger.error("[BT] Offline CSV bulunamadı: %s", str(offline_main))
         return
 
-    df = pd.read_csv(main_csv)
+    df = pd.read_csv(offline_main)
     if data_limit > 0 and len(df) > data_limit:
         df = df.tail(data_limit).reset_index(drop=True)
 
     if "close" not in df.columns:
-        system_logger.error("[BT] CSV içinde 'close' kolonu yok: %s", str(main_csv))
+        system_logger.error("[BT] CSV içinde 'close' kolonu yok: %s", str(offline_main))
         return
 
-    # time kolonu üret (varsa open_time kullan)
-    if "time" not in df.columns:
-        if "open_time" in df.columns:
-            df["time"] = df["open_time"].apply(_to_dt_from_ms)
-        else:
-            df["time"] = [None] * len(df)
-
-    # Feature pipeline + anomaly
-    anomaly_detector = AnomalyDetector(logger=system_logger)
-    feat_df: Optional[pd.DataFrame] = None
-
     if build_features is None:
-        system_logger.warning("[BT] build_features import edilemedi -> direkt df ile ilerliyorum (p fallback)")
-    else:
-        try:
-            feat_df = build_features(df)
-            # schema sende varsa burada set et (şimdilik None)
-            sch_main = None
-            feat_df = anomaly_detector.filter_anomalies(
-                feat_df,
-                schema=sch_main,
-                context=f"heavy:{symbol}:{main_interval}",
-            )
-        except Exception as e:
-            system_logger.warning("[BT] feature/anomaly aşamasında hata: %s (fallback)", e)
-            feat_df = None
+        system_logger.error("[BT] build_features import edilemedi. features.pipeline kontrol et.")
+        return
 
-    # Risk + executor
-    rm = RiskManager(equity_start_of_day=start_equity, logger=system_logger)
-    te = TradeExecutor(
-        client=None,
-        risk_manager=rm,
-        position_manager=None,  # backtestte state TE içinde kalsın
-        logger=system_logger,
-        dry_run=dry_run,
+    feat = build_features(df)
+
+    # anomaly filter (context cache ayrımı için)
+    feat = anomaly_detector.filter_anomalies(
+        feat,
+        schema=None,
+        context=f"heavy:{symbol}:{main_interval}",
     )
 
-    equity_rows: List[Dict[str, Any]] = []
-    closed_trades: List[Dict[str, Any]] = []
+    # time kolonunu normalize etmeye çalış (yoksa None)
+    time_col = "time" if "time" in df.columns else ("timestamp" if "timestamp" in df.columns else None)
 
-    equity = float(start_equity)
-    peak = float(start_equity)
-    max_dd_pct = 0.0
-    pnl_total = 0.0
+    # warmup + window guard
+    start_i = max(warmup, window)
+    if len(feat) <= start_i + 1:
+        system_logger.error("[BT] Veri yetersiz: rows=%d start_i=%d", len(feat), start_i)
+        return
 
-    # Loop
-    n = len(df)
-    warmup = max(0, min(warmup, n - 1))
+    peak = bt_stats.peak_equity
 
-    for i in range(warmup, n):
+    for i in range(start_i, len(feat)):
         price = float(df["close"].iloc[i])
-        t = df["time"].iloc[i] if "time" in df.columns else None
-        t = str(t) if t is not None else ""
 
-        # 1) trailing/SL/TP check (her barda)
-        te._check_sl_tp_trailing(symbol=symbol, price=price, interval=main_interval)
+        # model input: son window bar (DF)
+        Xw = feat.iloc[i - window : i].copy()
 
-        # 2) P üretimi (model yoksa fallback)
-        # (feat_df varsa da şu aşamada “p” fallback kullanıyoruz; istersen HybridModel entegrasyonunu buraya ekleriz)
-        p_single = _simple_p_from_returns(df["close"].iloc[: i + 1])
+        # p üret
+        p_arr, dbg = model.predict_proba(Xw)
+        p_single = float(p_arr[-1]) if len(p_arr) else 0.5
+        p_used = p_single  # şimdilik tek kaynak
 
-        # 3) sinyal
-        if p_single >= p_thr:
-            signal = "BUY"
-        elif p_single <= inv_thr:
-            signal = "SELL"
+        # sinyal
+        if p_used >= buy_thr:
+            sig = "BUY"
+        elif p_used <= sell_thr:
+            sig = "SELL"
         else:
-            signal = "HOLD"
+            sig = "HOLD"
 
-        probs = {
-            "p_single": float(p_single),
-            "p_used": float(p_single),
-        }
+        # bt ctx (kapanan trade’e yazmak için)
+        bt_time = None
+        if time_col is not None:
+            bt_time = df[time_col].iloc[i]
 
-        extra = {
-            "signal_source": "p_fallback",
-            "model_confidence_factor": 1.0,
-            "atr": float(df["close"].iloc[max(0, i - 1)]) * 0.0,  # atr yoksa 0
-            "whale_dir": "none",
-            "whale_score": 0.0,
-            "ensemble_p": None,
-        }
+        execu.set_bt_context(
+            bt_symbol=symbol,
+            bt_interval=main_interval,
+            bt_bar=i,
+            bt_time=str(bt_time) if bt_time is not None else None,
+            bt_signal=sig,
+            bt_price=price,
+            bt_p_used=p_used,
+            bt_p_single=p_single,
+            bt_atr=float(Xw["atr"].iloc[-1]) if "atr" in Xw.columns and len(Xw) else None,
+        )
 
-        # 4) decision
-        await te.execute_decision(
-            signal=signal,
+        # risk tick (yeni gün reset vb)
+        try:
+            risk.tick()
+        except Exception:
+            pass
+
+        # trade decision
+        await execu.execute_decision(
+            signal=sig,
             symbol=symbol,
             price=price,
             size=None,
             interval=main_interval,
             training_mode=False,
             hybrid_mode=True,
-            probs=probs,
-            extra=extra,
+            probs={"p_single": p_single, "p_used": p_used},
+            extra={
+                "p_buy_raw": p_single,
+                "p_buy_source": "hybrid_single",
+                "model_confidence_factor": float(dbg.get("p_hybrid_mean", 0.5) or 0.5),
+                "atr": float(Xw["atr"].iloc[-1]) if "atr" in Xw.columns and len(Xw) else 0.0,
+                # whale placeholders (sonraki adım)
+                "whale_dir": "none",
+                "whale_score": 0.0,
+            },
         )
 
-        # 5) kapanan trade buffer
-        for tr in te.pop_closed_trades():
-            pnl = float(tr.get("realized_pnl") or 0.0)
-            pnl_total += pnl
-            equity += pnl
-
-            # backtest meta ekle
-            tr2 = dict(tr)
-            tr2.update({
-                "bt_symbol": symbol,
-                "bt_interval": main_interval,
-                "bt_bar": i,
-                "bt_time": t,
-                "bt_signal": signal,
-                "bt_price": price,
-                "bt_p_used": float(p_single),
-                "bt_p_single": float(p_single),
-                "bt_p_1m": None,
-                "bt_p_5m": None,
-                "bt_p_15m": None,
-                "bt_p_1h": None,
-                "whale_dir": "none",
-                "whale_score": 0.0,
-                "whale_on": False,
-                "whale_alignment": "no_whale",
-                "whale_thr": None,
-                "model_confidence_factor": 1.0,
-                "ens_scale": None,
-                "ens_notional": None,
-                "bt_atr": None,
-            })
-            closed_trades.append(tr2)
-
-        # dd
+        # equity snapshot (kapanan trade geldiyse bt_stats güncel)
+        equity = bt_stats.last_equity
         if equity > peak:
             peak = equity
-        dd_pct = 0.0 if peak <= 0 else (peak - equity) / peak * 100.0
-        if dd_pct > max_dd_pct:
-            max_dd_pct = dd_pct
+        dd_pct = _compute_drawdown_pct(equity, peak)
 
-        equity_rows.append({
-            "bar": i,
-            "time": t,
-            "symbol": symbol,
-            "interval": main_interval,
-            "price": price,
-            "signal": signal,
-            "p_used": float(p_single),
-            "p_single": float(p_single),
-            "p_1m": None,
-            "p_5m": None,
-            "p_15m": None,
-            "p_1h": None,
-            "whale_dir": "none",
-            "whale_score": 0.0,
-            "whale_on": False,
-            "whale_alignment": "no_whale",
-            "whale_thr": None,
-            "model_confidence_factor": 1.0,
-            "ens_scale": None,
-            "ens_notional": None,
-            "atr": None,
-            "equity": float(equity),
-            "peak_equity": float(peak),
-            "max_drawdown_pct": float(max_dd_pct),
-            "pnl_total": float(pnl_total),
-        })
-
-    # EOB force close
-    if te.has_open_position(symbol):
-        last_price = float(df["close"].iloc[-1])
-        te.close_position(symbol, last_price, reason="eob_force_close", interval=main_interval)
-        for tr in te.pop_closed_trades():
-            pnl = float(tr.get("realized_pnl") or 0.0)
-            pnl_total += pnl
-            equity += pnl
-            tr2 = dict(tr)
-            tr2.update({
-                "bt_symbol": symbol,
-                "bt_interval": main_interval,
-                "bt_bar": n - 1,
-                "bt_time": str(df["time"].iloc[-1]) if "time" in df.columns else "",
-                "bt_signal": "EOB_CLOSE",
-                "bt_price": last_price,
-                "bt_p_used": None,
-                "bt_p_single": None,
-                "bt_p_1m": None,
-                "bt_p_5m": None,
-                "bt_p_15m": None,
-                "bt_p_1h": None,
+        equity_rows.append(
+            {
+                "bar": i,
+                "time": str(bt_time) if bt_time is not None else None,
+                "symbol": symbol,
+                "interval": main_interval,
+                "price": price,
+                "signal": sig,
+                "p_used": p_used,
+                "p_single": p_single,
                 "whale_dir": "none",
                 "whale_score": 0.0,
                 "whale_on": False,
-                "whale_alignment": "no_whale",
+                "whale_alignment": "none",
                 "whale_thr": None,
-                "model_confidence_factor": 1.0,
+                "model_confidence_factor": float(dbg.get("p_hybrid_mean", 0.5) or 0.5),
                 "ens_scale": None,
                 "ens_notional": None,
-                "bt_atr": None,
-            })
-            closed_trades.append(tr2)
+                "atr": float(Xw["atr"].iloc[-1]) if "atr" in Xw.columns and len(Xw) else None,
+                "equity": equity,
+                "peak_equity": peak,
+                "max_drawdown_pct": dd_pct,
+                "pnl_total": bt_stats.pnl_total,
+            }
+        )
 
-    # summary
-    n_trades = len(closed_trades)
-    winrate = (sum(1 for t in closed_trades if float(t.get("realized_pnl") or 0.0) > 0.0) / n_trades * 100.0) if n_trades else 0.0
-
-    bt_stats = {
-        "symbol": symbol,
-        "interval": main_interval,
-        "starting_equity": float(start_equity),
-        "ending_equity": float(equity),
-        "pnl": float(pnl_total),
-        "pnl_pct": float((equity - start_equity) / start_equity * 100.0) if start_equity else 0.0,
-        "n_trades": int(n_trades),
-        "winrate": float(winrate),
-        "max_drawdown_pct": float(max_dd_pct),
-        "tag": tag,
-    }
+    # EOB force close (pozisyon kaldıysa)
+    last_price = float(df["close"].iloc[-1])
+    _force_close_eob(
+        executor=execu,
+        position_manager=pm,
+        symbol=symbol,
+        last_price=last_price,
+        interval=main_interval,
+        system_logger=system_logger,
+    )
 
     _save_backtest_csv(
         out_dir=out_dir,
@@ -438,6 +493,9 @@ async def run_backtest() -> None:
     )
 
 
+# ==========================================================
+# Entry
+# ==========================================================
 async def async_main() -> None:
     global system_logger
     load_environment_variables()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, List
 
 import numpy as np
 import pandas as pd
@@ -46,9 +46,23 @@ class HybridModel:
     Notlar:
     - feature_schema: SGD / genel DF normalize için
     - lstm_feature_schema: LSTM için özel schema (order+size garanti)
+
+    ÖNEMLİ:
+    - HybridMultiTFModel sende HybridModel(...) çağrısında startup/inference log override parametreleri geçiyor.
+      Bu dosyada HybridModel __init__ buna uyumlu hale getirildi (geri uyumlu).
     """
 
-    def __init__(self, model_dir: Optional[str], interval: str, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        model_dir: Optional[str],
+        interval: str,
+        logger: Optional[logging.Logger] = None,
+        # --- NEW (backward/forward compatible overrides) ---
+        startup_log_level: Optional[str] = None,
+        disable_startup_log: Optional[bool] = None,
+        inference_log_level: Optional[str] = None,
+        disable_inference_log: Optional[bool] = None,
+    ) -> None:
         self.model_dir = model_dir or MODELS_DIR
         self.interval = interval
         self.logger = logger or logging.getLogger("system")
@@ -59,22 +73,18 @@ class HybridModel:
         self.sgd_helper_sat_thr = float(os.getenv("SGD_HELPER_SAT_THR", "0.95"))
 
         # --- runtime logging control ---
-        self.hybrid_model_log_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
-        self.disable_hybrid_model_inference_log = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        env_inf_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
+        env_disable_inf = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in ("1", "true", "yes", "on")
+
+        self.hybrid_model_log_level = str(inference_log_level or env_inf_level).upper()
+        self.disable_hybrid_model_inference_log = bool(env_disable_inf if disable_inference_log is None else disable_inference_log)
 
         # --- startup logging control ---
-        self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
-        self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        env_start_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
+        env_disable_start = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in ("1", "true", "yes", "on")
+
+        self.hybrid_model_startup_log_level = str(startup_log_level or env_start_level).upper()
+        self.disable_hybrid_model_startup_log = bool(env_disable_start if disable_startup_log is None else disable_startup_log)
 
         # hybrid weight: p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
         self.alpha: float = float(os.getenv("HYBRID_ALPHA", "0.60"))
@@ -96,6 +106,9 @@ class HybridModel:
         }
         self.use_lstm_hybrid: bool = False
         self.last_debug: Dict[str, Any] = {}
+
+        # normalize warnings spam control
+        self._schema_missing_warned: set[Tuple[str, ...]] = set()
 
         # load
         self._load_sgd_model()
@@ -150,13 +163,15 @@ class HybridModel:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 meta_file = json.load(f) or {}
-            self.meta.update(meta_file)
+            if isinstance(meta_file, dict):
+                self.meta.update(meta_file)
+
             self.use_lstm_hybrid = bool(self.meta.get("use_lstm_hybrid", False))
 
             level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
             self._log_startup(level, "[HYBRID] Meta loaded from %s", path)
 
-            # --- load SGD helper (optional) ---
+            # --- load SGD helper (optional)C ---
             try:
                 _disable_sgd = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
                 if self.enable_sgd_helper and (not _disable_sgd):
@@ -230,7 +245,7 @@ class HybridModel:
             self.lstm_short = load_model(short_path, compile=False)
             self.lstm_scaler = load(scaler_path)
 
-            # input_shape mismatch -> sadece logla (hack yok)
+            # input_shape mismatch -> sadece logla
             try:
                 li = tuple(getattr(self.lstm_long, "input_shape", ()) or ())
                 si = tuple(getattr(self.lstm_short, "input_shape", ()) or ())
@@ -260,7 +275,6 @@ class HybridModel:
             self.lstm_scaler = None
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
-
 
     # --------------------------
     # Feature helpers
@@ -292,19 +306,19 @@ class HybridModel:
 
         raise TypeError(f"Unsupported X type: {type(X)}")
 
-    def _get_feature_schema(self) -> Optional[list[str]]:
+    def _get_feature_schema(self) -> Optional[List[str]]:
         sch = self.meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
 
-    def _get_lstm_feature_schema(self) -> Optional[list[str]]:
+    def _get_lstm_feature_schema(self) -> Optional[List[str]]:
         sch = self.meta.get("lstm_feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
 
-    def _normalize_to_schema(self, df: pd.DataFrame, schema: list[str]) -> pd.DataFrame:
+    def _normalize_to_schema(self, df: pd.DataFrame, schema: List[str]) -> pd.DataFrame:
         """
         Tek sözleşme:
           - alias fix
@@ -312,14 +326,15 @@ class HybridModel:
           - fazla kolonları ignore et
           - schema sırasına göre seç/sırala
           - numeric coerce + inf/nan temizle
+
+        NOT: Aliasing tek yönlü tutulur (çift yönlü mapping çakışma yapmasın).
         """
         out = df.copy()
 
+        # Tek yönlü alias (en yaygın kaynak -> hedef)
         aliases = {
             "taker_buy_base_asset_volume": "taker_buy_base_volume",
             "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
-            "taker_buy_base_volume": "taker_buy_base_asset_volume",
-            "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
         }
         for src, dst in aliases.items():
             if src in out.columns and dst not in out.columns:
@@ -327,7 +342,10 @@ class HybridModel:
 
         missing = [c for c in schema if c not in out.columns]
         if missing:
-            self._log_startup(logging.WARNING, "[HYBRID] schema missing cols (filled=0): %s", missing)
+            key = tuple(schema)
+            if key not in self._schema_missing_warned:
+                self._schema_missing_warned.add(key)
+                self._log_startup(logging.WARNING, "[HYBRID] schema missing cols (filled=0): %s", missing)
             for c in missing:
                 out[c] = 0.0
 
@@ -500,7 +518,6 @@ class HybridModel:
             self._log_startup(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(n, 0.5, dtype=float), debug
 
-
     # --------------------------
     # Public API
     # --------------------------
@@ -511,6 +528,7 @@ class HybridModel:
         if X is None:
             debug.update({"mode": "uniform_fallback", "reason": "X_is_None", "p_hybrid_mean": 0.5})
             return np.full(1, 0.5, dtype=float), debug
+
         if isinstance(X, pd.DataFrame) and X.shape[0] == 0:
             debug.update({"mode": "uniform_fallback", "reason": "empty_dataframe", "p_hybrid_mean": 0.5})
             return np.full(1, 0.5, dtype=float), debug
@@ -524,22 +542,23 @@ class HybridModel:
                 X_arr = self._to_numeric_matrix(X)
         except Exception as e:
             self._log_startup(logging.WARNING, "[HYBRID] Failed to convert X to numeric: %s -> uniform 0.5", e)
-            n = X.shape[0] if hasattr(X, "shape") else len(X)
-            p_uniform = np.full(n, 0.5, dtype=float)
-            # ensure non-empty output
+            n = 1
             try:
-                n = int(n)
+                if hasattr(X, "shape"):
+                    n = int(getattr(X, "shape")[0])
+                else:
+                    n = int(len(X))  # type: ignore[arg-type]
             except Exception:
-                n = 0
-            if n <= 0:
                 n = 1
+            n = 1 if n <= 0 else n
+
             p_uniform = np.full(n, 0.5, dtype=float)
             debug.update(
                 {
                     "mode": "uniform_fallback",
                     "error": str(e),
-                    "p_sgd_mean": 0.0,
-                    "p_lstm_mean": 0.0,
+                    "p_sgd_mean": 0.5,
+                    "p_lstm_mean": 0.5,
                     "p_hybrid_mean": 0.5,
                     "best_auc": float(self.meta.get("best_auc", 0.0)),
                     "best_side": self.meta.get("best_side", "best"),
@@ -563,8 +582,8 @@ class HybridModel:
         debug.update(
             {
                 "mode": mode,
-                "p_sgd_mean": float(np.mean(p_sgd)) if p_sgd is not None else 0.0,
-                "p_lstm_mean": float(np.mean(p_lstm)) if p_lstm is not None else 0.0,
+                "p_sgd_mean": float(np.mean(p_sgd)) if p_sgd is not None else 0.5,
+                "p_lstm_mean": float(np.mean(p_lstm)) if p_lstm is not None else 0.5,
                 "p_hybrid_mean": float(np.mean(p_hybrid)) if p_hybrid is not None else 0.5,
                 "best_auc": float(self.meta.get("best_auc", 0.0)),
                 "best_side": self.meta.get("best_side", "best"),
@@ -578,13 +597,13 @@ class HybridModel:
         self._log_inference(
             "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f p_lstm_mean=%.4f p_hybrid_mean=%.4f best_auc=%.4f best_side=%s",
             mode,
-            X_arr.shape[0],
-            X_arr.shape[1],
-            debug["p_sgd_mean"],
-            debug["p_lstm_mean"],
-            debug["p_hybrid_mean"],
-            debug["best_auc"],
-            debug["best_side"],
+            int(X_arr.shape[0]),
+            int(X_arr.shape[1]),
+            float(debug["p_sgd_mean"]),
+            float(debug["p_lstm_mean"]),
+            float(debug["p_hybrid_mean"]),
+            float(debug["best_auc"]),
+            str(debug["best_side"]),
         )
 
         return p_hybrid, debug
@@ -601,9 +620,9 @@ class HybridMultiTFModel:
     def __init__(
         self,
         model_dir: Optional[str],
-        intervals: list[str],
+        intervals: List[str],
         logger: Optional[logging.Logger] = None,
-        models_by_interval: Optional[Dict[str, "HybridModel"]] = None,  # <-- NEW
+        models_by_interval: Optional[Dict[str, HybridModel]] = None,  # NEW
     ) -> None:
         self.model_dir = model_dir or MODELS_DIR
         self.intervals = list(intervals)
@@ -619,14 +638,12 @@ class HybridMultiTFModel:
 
         # NEW: dışarıdan hazır model verilirse tekrar yükleme yapma
         if models_by_interval:
-            # sadece istenen interval'ları al (fazla varsa ignore et)
-            self.models: Dict[str, HybridModel] = {
-                itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval
-            }
+            self.models: Dict[str, HybridModel] = {itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval}
 
             missing = [itv for itv in self.intervals if itv not in self.models]
             if missing:
-                # eksik varsa fallback olarak sadece eksikleri yükle
+                level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+                self._log_startup(level, "[HYBRID-MTF] models_by_interval provided, missing=%s -> loading missing", missing)
                 for itv in missing:
                     self.models[itv] = HybridModel(
                         interval=itv,
@@ -637,7 +654,7 @@ class HybridMultiTFModel:
                     )
         else:
             # eski davranış: hepsini burada yükle
-            self.models: Dict[str, HybridModel] = {}
+            self.models = {}
             for itv in self.intervals:
                 self.models[itv] = HybridModel(
                     interval=itv,
@@ -653,6 +670,7 @@ class HybridMultiTFModel:
             logger=self.logger,
             auc_key_priority=("auc_used", "wf_auc_mean", "val_auc", "best_auc", "auc", "oof_auc"),
         )
+
     def _log(self, level: int, msg: str, *args: Any) -> None:
         if self.logger:
             self.logger.log(level, msg, *args)
@@ -668,7 +686,13 @@ class HybridMultiTFModel:
         level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
         for itv in self.intervals:
             try:
-                self.models[itv] = HybridModel(model_dir=self.model_dir, interval=itv, logger=self.logger)
+                self.models[itv] = HybridModel(
+                    model_dir=self.model_dir,
+                    interval=itv,
+                    logger=self.logger,
+                    startup_log_level=self.hybrid_model_startup_log_level,
+                    disable_startup_log=self.disable_hybrid_model_startup_log,
+                )
                 self._log_startup(level, "[HYBRID-MTF] Loaded HybridModel for interval=%s", itv)
             except Exception as e:
                 self._log_startup(logging.WARNING, "[HYBRID-MTF] Failed to init HybridModel for %s: %s", itv, e)
