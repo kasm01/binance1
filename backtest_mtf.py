@@ -17,10 +17,43 @@ from core.trade_executor import TradeExecutor
 from models.hybrid_inference import HybridModel
 from data.anomaly_detection import AnomalyDetector
 
-try:
-    from features.pipeline import build_features  # type: ignore
-except Exception:
-    build_features = None  # noqa
+import importlib
+import traceback
+
+def _resolve_build_features(logger: logging.Logger):
+    """
+    features.pipeline içinden build_features benzeri fonksiyonu güvenli şekilde bulur.
+    Import sırasında hata olursa stack trace ile loglar.
+    """
+    mod_name = "features.pipeline"
+    try:
+        m = importlib.import_module(mod_name)
+    except Exception as e:
+        logger.error("[BT] %s import ederken hata: %s", mod_name, e)
+        logger.error("[BT] traceback:\n%s", traceback.format_exc())
+        return None
+
+    # 1) doğrudan beklenen isim
+    candidates = [
+        "build_features",
+        "build_features_df",
+        "make_features",
+        "build_feature_pipeline",
+        "build_features_online",
+    ]
+
+    for name in candidates:
+        fn = getattr(m, name, None)
+        if callable(fn):
+            logger.info("[BT] build_features resolved: %s.%s", mod_name, name)
+            return fn
+
+    # fonksiyon yoksa modülde neler var yaz
+    public = sorted([x for x in dir(m) if not x.startswith("_")])
+    logger.error("[BT] %s içinde build_features benzeri fonksiyon bulunamadı.", mod_name)
+    logger.error("[BT] %s public members: %s", mod_name, public)
+    return None
+
 
 system_logger = logging.getLogger("system")
 
@@ -351,11 +384,12 @@ async def run_backtest() -> None:
         system_logger.error("[BT] CSV içinde 'close' kolonu yok: %s", str(offline_main))
         return
 
-    if build_features is None:
-        system_logger.error("[BT] build_features import edilemedi. features.pipeline kontrol et.")
+    build_features_fn = _resolve_build_features(system_logger)
+    if build_features_fn is None:
+        system_logger.error("[BT] Feature pipeline bulunamadı/import edilemedi. Logdaki traceback'i düzelt.")
         return
 
-    feat = build_features(df)
+    feat = build_features_fn(df)
 
     # anomaly filter (context cache ayrımı için)
     feat = anomaly_detector.filter_anomalies(
