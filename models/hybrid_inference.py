@@ -383,16 +383,23 @@ class HybridModel:
                 logging.WARNING,
                 "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
                 X.shape, expected,
-            )
+             )
             return np.full(X.shape[0], 0.5, dtype=float)
 
         # --- predict_proba + correct positive column selection ---
         try:
-            proba = self.sgd_model.predict_proba(X)
-            proba = np.asarray(proba, dtype=float)
+            proba = np.asarray(self.sgd_model.predict_proba(X), dtype=float)
 
             if proba.ndim == 2 and proba.shape[1] >= 2:
+                # Pipeline ise classes_ bazen son estimator'da daha garanti
                 classes_ = getattr(self.sgd_model, "classes_", None)
+                try:
+                    # sklearn Pipeline
+                    if hasattr(self.sgd_model, "named_steps") and "sgd" in getattr(self.sgd_model, "named_steps", {}):
+                        classes_ = getattr(self.sgd_model.named_steps["sgd"], "classes_", classes_)
+                except Exception:
+                    pass
+
                 idx_pos = 1
                 try:
                     if classes_ is not None:
@@ -423,45 +430,7 @@ class HybridModel:
             _eps = max(0.0, min(0.49, float(_eps)))
             p1 = _eps + (1.0 - 2.0 * _eps) * p1
 
-        p1 = np.clip(p1, 0.0, 1.0)
-
-        # --- stabilizer (center/band) ---
-        # SGD_CENTER:
-        #   - "0"/"false" => disable centering
-        #   - numeric (e.g. 0.5) => center target
-        # SGD_BAND: float (0..0.5) clip band around 0.5 after centering
-        try:
-            _center_raw = os.getenv("SGD_CENTER", "0").strip().lower()
-            if _center_raw in ("0", "false", "no", "off"):
-                do_center = False
-                center_target = 0.5
-            elif _center_raw in ("1", "true", "yes", "on"):
-                do_center = True
-                center_target = 0.5
-            else:
-                # numeric target (e.g. "0.5")
-                do_center = True
-                center_target = float(_center_raw)
-
-            _band = float(os.getenv("SGD_BAND", "0.10"))
-            _band = max(0.0, min(0.5, abs(_band)))
-        except Exception:
-            do_center, center_target, _band = False, 0.5, 0.10
-
-        try:
-            if do_center:
-                mu = float(np.mean(p1))
-                p1 = p1 + (center_target - mu)
-
-            # band clip around 0.5 (after centering)
-            if _band < 0.5:
-                p1 = 0.5 + np.clip(p1 - 0.5, -_band, _band)
-
-            p1 = np.clip(p1, 0.0, 1.0)
-        except Exception:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        return p1.reshape(-1)
+        return np.clip(p1, 0.0, 1.0).reshape(-1)
 
     # --------------------------
     # LSTM

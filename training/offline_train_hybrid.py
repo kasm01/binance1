@@ -13,6 +13,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 import joblib
+from features.pipeline import make_matrix, FEATURE_SCHEMA_22
 
 # ------------------------------------------------------------
 # Logging
@@ -198,27 +199,41 @@ def train_interval(interval: str) -> None:
     logger.info("========== TRAIN interval=%s ==========", interval)
 
     raw_df = load_offline_klines(SYMBOL, interval)
+
+    # label için (close üzerinden) - burada X_df sadece label üretimi için kullanılacak
     X_df, y = make_xy(raw_df, horizon=HORIZON, thr=LABEL_THR)
 
     if len(X_df) < 1000:
         logger.warning("[%s] Çok az sample: n=%d, skip.", interval, len(X_df))
         return
 
-    # Safety: prevent schema drift (asset_volume cols must never reach training matrix)
-    for _c in ("taker_buy_base_asset_volume","taker_buy_quote_asset_volume"):
-        if _c in X_df.columns:
-            X_df = X_df.drop(columns=[_c])
+    # ---- TEK FEATURE KAYNAĞI: features.pipeline.make_matrix ----
+    # Time kolonlarını özellikle çıkarıyoruz (saturasyon kök nedeni)
+    schema_used = [c for c in FEATURE_SCHEMA_22 if c not in ("open_time", "close_time")]
+    feature_cols = list(schema_used)
 
-    X_num = X_df.select_dtypes(include=[np.number])
-    feature_cols = list(X_num.columns)
-    X = X_num.to_numpy(dtype=float)
+    # make_matrix: raw_df -> numpy feature matrix
+    X = make_matrix(raw_df, schema=schema_used)
+    X = np.asarray(X, dtype=float)
+
+    # numeric temizlik
+    X = np.where(np.isfinite(X), X, np.nan)
+    row_ok = ~np.isnan(X).any(axis=1)
+    X = X[row_ok]
+
+    # y hizalama (horizon etkisi + row_ok)
+    y = np.asarray(y, dtype=int)[: X.shape[0]]
+
+    if X.shape[0] < 1000:
+        logger.warning("[%s] Çok az temiz sample: n=%d, skip.", interval, int(X.shape[0]))
+        return
 
     logger.info("[%s] X shape=%s | y len=%d | n_features=%d", interval, X.shape, len(y), X.shape[1])
 
     n = X.shape[0]
     split_idx = int(n * 0.8)
-    X_train, y_train = X[:split_idx], y.iloc[:split_idx]
-    X_val, y_val = X[split_idx:], y.iloc[split_idx:]
+    X_train, y_train = X[:split_idx], y[:split_idx]
+    X_val, y_val = X[split_idx:], y[split_idx:]
 
     clf = Pipeline(
         steps=[
@@ -262,15 +277,15 @@ def train_interval(interval: str) -> None:
     meta: Dict[str, Any] = {
         "interval": interval,
         "symbol": SYMBOL,
-        "feature_schema": feature_cols,
-        "feature_source": "offline_train_hybrid::build_features",
+        "feature_schema": feature_cols,  # artık time'sız schema_used
+        "feature_source": "offline_train_hybrid::features.pipeline.make_matrix(FEATURE_SCHEMA_22 w/o open_time/close_time)",
         "n_samples": int(len(y)),
         "n_features": int(X.shape[1]),
         "best_auc": float(auc),
         "best_side": best_side,
         "use_lstm_hybrid": True if interval in set(LSTM_INTERVALS) else False,
         "seq_len": int(LSTM_SEQ_LEN_DEFAULT),
-        "meta_version": 2,
+        "meta_version": 3,  # <-- 2 -> 3
         "label_horizon": int(HORIZON),
         "label_thr": float(LABEL_THR),
         "sgd_alpha": float(SGD_ALPHA),

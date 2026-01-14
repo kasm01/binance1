@@ -131,13 +131,24 @@ def build_features(df_raw: pd.DataFrame, interval: str | None = None) -> pd.Data
     
     if _time_norm:
         try:
-            if 'open_time' in df.columns:
-                base = float(pd.to_numeric(df['open_time'], errors='coerce').iloc[0])
-                df['open_time'] = (pd.to_numeric(df['open_time'], errors='coerce') - base) / 60000.0
-            if 'close_time' in df.columns:
-                base2 = float(pd.to_numeric(df['close_time'], errors='coerce').iloc[0])
-                df['close_time'] = (pd.to_numeric(df['close_time'], errors='coerce') - base2) / 60000.0
-            df = df.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
+            def _to_minutes(arr: pd.Series) -> pd.Series:
+                a = pd.to_numeric(arr, errors="coerce").astype(float)
+                mx = float(np.nanmax(a)) if len(a) else 0.0
+                # ms gibi görünüyorsa: dakika = ms / 60000
+                if mx > 1.0e12:
+                    return a / 60000.0
+                # saniye gibi görünüyorsa: dakika = sec / 60
+                return a / 60.0
+
+            if "open_time" in df.columns:
+                ot = pd.to_numeric(df["open_time"], errors="coerce").astype(float)
+                df["open_time"] = _to_minutes(ot - float(ot.iloc[0]))
+
+            if "close_time" in df.columns:
+                ct = pd.to_numeric(df["close_time"], errors="coerce").astype(float)
+                df["close_time"] = _to_minutes(ct - float(ct.iloc[0]))
+
+            df = df.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
         except Exception:
             pass
 
