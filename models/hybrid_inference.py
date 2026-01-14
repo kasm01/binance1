@@ -388,6 +388,23 @@ class HybridModel:
 
         try:
             proba = self.sgd_model.predict_proba(X)
+            proba = np.asarray(proba)
+            # classes_ sırasına göre 'pozitif' class kolonunu seç
+            classes_ = getattr(self.sgd_model, 'classes_', None)
+            IDX_POS = None
+            try:
+                if classes_ is not None:
+                    classes_list = list(classes_)
+                    # hedef label genelde 1'dir; yoksa son kolonu kullan
+                    IDX_POS = classes_list.index(1) if 1 in classes_list else (len(classes_list)-1)
+            except Exception:
+                IDX_POS = None
+            if proba.ndim == 2 and proba.shape[1] >= 2:
+                if IDX_POS is None:
+                    IDX_POS = 1
+                p1 = proba[:, IDX_POS]
+            else:
+                p1 = np.asarray(proba).reshape(-1)
         except Exception as e:
             self._log_startup(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
             return np.full(X.shape[0], 0.5, dtype=float)
@@ -409,6 +426,20 @@ class HybridModel:
 
         try:
             p1 = np.asarray(p1, dtype=float)
+            # --- optional proba transform (debug/compat) ---
+            # SGD_FLIP_PROBA=1 => p = 1 - p  (etiket yönü ters ise hızlı test)
+            # SGD_PROBA_EPS=0.02 => p = eps + (1-2eps)*p  (0/1 saturasyonu yumuşat)
+            try:
+                _flip = str(os.getenv("SGD_FLIP_PROBA", "0")).lower() in ("1","true","yes","on")
+                _eps = float(os.getenv("SGD_PROBA_EPS", "0.0"))
+            except Exception:
+                _flip, _eps = False, 0.0
+            if _flip:
+                p1 = 1.0 - p1
+            if _eps and _eps > 0.0:
+                _eps = max(0.0, min(0.49, float(_eps)))
+                p1 = _eps + (1.0 - 2.0*_eps) * p1
+
             p1 = np.clip(p1, 0.0, 1.0)
             if _center:
                 p1 = p1 - (float(np.mean(p1)) - 0.5)

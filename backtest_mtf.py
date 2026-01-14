@@ -20,11 +20,25 @@ from data.anomaly_detection import AnomalyDetector
 import importlib
 import traceback
 
+
 def _resolve_build_features(logger: logging.Logger):
     """
-    features.pipeline içinden build_features benzeri fonksiyonu güvenli şekilde bulur.
-    Import sırasında hata olursa stack trace ile loglar.
+    build_features fonksiyonunu güvenli şekilde bulur:
+      - önce features.fe_labels.build_features
+      - sonra features.pipeline içindeki adaylar
     """
+    # 1) fe_labels kesin var (rg çıktın bunu gösteriyor)
+    try:
+        m = importlib.import_module("features.fe_labels")
+        fn = getattr(m, "build_features", None)
+        if callable(fn):
+            logger.info("[BT] Feature builder resolved: features.fe_labels.build_features")
+            return fn
+    except Exception as e:
+        logger.error("[BT] features.fe_labels import hata: %s", e)
+        logger.error("[BT] traceback:\n%s", traceback.format_exc())
+
+    # 2) pipeline fallback
     mod_name = "features.pipeline"
     try:
         m = importlib.import_module(mod_name)
@@ -33,7 +47,6 @@ def _resolve_build_features(logger: logging.Logger):
         logger.error("[BT] traceback:\n%s", traceback.format_exc())
         return None
 
-    # 1) doğrudan beklenen isim
     candidates = [
         "build_features",
         "build_features_df",
@@ -45,10 +58,9 @@ def _resolve_build_features(logger: logging.Logger):
     for name in candidates:
         fn = getattr(m, name, None)
         if callable(fn):
-            logger.info("[BT] build_features resolved: %s.%s", mod_name, name)
+            logger.info("[BT] Feature builder resolved: %s.%s", mod_name, name)
             return fn
 
-    # fonksiyon yoksa modülde neler var yaz
     public = sorted([x for x in dir(m) if not x.startswith("_")])
     logger.error("[BT] %s içinde build_features benzeri fonksiyon bulunamadı.", mod_name)
     logger.error("[BT] %s public members: %s", mod_name, public)
@@ -58,9 +70,6 @@ def _resolve_build_features(logger: logging.Logger):
 system_logger = logging.getLogger("system")
 
 
-# -------------------------
-# Helpers
-# -------------------------
 def _ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     for c in cols:
         if c not in df.columns:
@@ -78,13 +87,9 @@ def _atomic_to_csv(df: pd.DataFrame, path: Path) -> None:
 def _compute_drawdown_pct(equity: float, peak: float) -> float:
     if peak <= 0:
         return 0.0
-    dd = (peak - equity) / peak
-    return float(dd * 100.0)
+    return float((peak - equity) / peak * 100.0)
 
 
-# -------------------------
-# Minimal stats container
-# -------------------------
 class BTStats:
     def __init__(self, start_equity: float = 1000.0) -> None:
         self.trades = 0
@@ -105,7 +110,6 @@ class BTStats:
             self.max_dd_pct = dd
 
     def summary_dict(self) -> Dict[str, Any]:
-        # tools scriptleri farklı kolon adları da okuyabiliyor ama biz temel seti verelim
         ending_equity = float(self.last_equity)
         pnl = float(self.pnl_total)
         pnl_pct = (pnl / self.start_equity * 100.0) if self.start_equity > 0 else 0.0
@@ -114,7 +118,7 @@ class BTStats:
             "pnl": pnl,
             "pnl_pct": pnl_pct,
             "n_trades": int(self.trades),
-            "trades": int(self.trades),  # ekstra uyumluluk
+            "trades": int(self.trades),
             "max_drawdown_pct": float(self.max_dd_pct),
             "peak_equity": float(self.peak_equity),
         }
@@ -136,68 +140,20 @@ def _save_backtest_csv(
     summary_path = out_dir / f"summary_{symbol}_{main_interval}_{tag}.csv"
 
     EQ_COLS = [
-        "bar",
-        "time",
-        "symbol",
-        "interval",
-        "price",
-        "signal",
-        "p_used",
-        "p_single",
-        "whale_dir",
-        "whale_score",
-        "whale_on",
-        "whale_alignment",
-        "whale_thr",
-        "model_confidence_factor",
-        "ens_scale",
-        "ens_notional",
-        "atr",
-        "equity",
-        "peak_equity",
-        "max_drawdown_pct",
-        "pnl_total",
+        "bar", "time", "symbol", "interval", "price", "signal",
+        "p_used", "p_single",
+        "whale_dir", "whale_score", "whale_on", "whale_alignment", "whale_thr",
+        "model_confidence_factor", "ens_scale", "ens_notional", "atr",
+        "equity", "peak_equity", "max_drawdown_pct", "pnl_total",
     ]
 
     TR_COLS = [
-        "symbol",
-        "side",
-        "qty",
-        "entry_price",
-        "notional",
-        "interval",
-        "opened_at",
-        "sl_price",
-        "tp_price",
-        "trailing_pct",
-        "atr_value",
-        "highest_price",
-        "lowest_price",
-        "meta",
-        "closed_at",
-        "close_price",
-        "realized_pnl",
-        "close_reason",
-        # backtest context
-        "bt_symbol",
-        "bt_interval",
-        "bt_bar",
-        "bt_time",
-        "bt_signal",
-        "bt_price",
-        "bt_p_used",
-        "bt_p_single",
-        "bt_atr",
-        # whale context placeholders
-        "whale_dir",
-        "whale_score",
-        "whale_on",
-        "whale_alignment",
-        "whale_thr",
-        # misc
-        "model_confidence_factor",
-        "ens_scale",
-        "ens_notional",
+        "symbol","side","qty","entry_price","notional","interval","opened_at",
+        "sl_price","tp_price","trailing_pct","atr_value","highest_price","lowest_price","meta",
+        "closed_at","close_price","realized_pnl","close_reason",
+        "bt_symbol","bt_interval","bt_bar","bt_time","bt_signal","bt_price","bt_p_used","bt_p_single","bt_atr",
+        "whale_dir","whale_score","whale_on","whale_alignment","whale_thr",
+        "model_confidence_factor","ens_scale","ens_notional",
     ]
 
     eq_df = _ensure_columns(pd.DataFrame(equity_rows), EQ_COLS)
@@ -213,35 +169,21 @@ def _save_backtest_csv(
     system_logger.info("[BT-CSV] summary:     %s", str(summary_path))
 
 
-# -------------------------
-# Backtest TradeExecutor wrapper
-# (kapanan trade'leri yakalamak için)
-# -------------------------
 class BTTradeExecutor(TradeExecutor):
-    def __init__(
-        self,
-        *args: Any,
-        closed_trades: List[Dict[str, Any]],
-        bt_stats: BTStats,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, *args: Any, closed_trades: List[Dict[str, Any]], bt_stats: BTStats, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._bt_closed_trades = closed_trades
         self._bt_stats = bt_stats
-
-        # loop sırasında set edilecek:
         self._bt_ctx: Dict[str, Any] = {}
 
     def set_bt_context(self, **ctx: Any) -> None:
         self._bt_ctx = dict(ctx)
 
-    # TradeExecutor içindeki internal close’u override ediyoruz
     def _close_position(self, symbol: str, price: float, reason: str, interval: str) -> Optional[Dict[str, Any]]:  # type: ignore[override]
         closed = super()._close_position(symbol, price, reason, interval)
         if not closed:
             return None
 
-        # backtest tagleri
         try:
             ctx = self._bt_ctx or {}
             closed["bt_symbol"] = ctx.get("bt_symbol")
@@ -256,7 +198,6 @@ class BTTradeExecutor(TradeExecutor):
         except Exception:
             pass
 
-        # stats
         try:
             rp = float(closed.get("realized_pnl") or 0.0)
             self._bt_stats.on_trade_close(rp)
@@ -276,39 +217,24 @@ def _force_close_eob(
     interval: str,
     system_logger: logging.Logger,
 ) -> None:
-    """
-    EOB force-close:
-    - PM üzerinde pozisyon var mı bak
-    - varsa executor._close_position ile kapat (BTTradeExecutor override closed_trades'e yazar)
-    """
     try:
         pos = position_manager.get_position(symbol)
         if not pos:
             return
+
         executor.set_bt_context(
-            bt_symbol=symbol,
-            bt_interval=interval,
-            bt_bar="EOB",
-            bt_time=None,
-            bt_signal="FORCE_CLOSE",
-            bt_price=last_price,
-            bt_p_used=None,
-            bt_p_single=None,
-            bt_atr=None,
+            bt_symbol=symbol, bt_interval=interval, bt_bar="EOB", bt_time=None,
+            bt_signal="FORCE_CLOSE", bt_price=last_price, bt_p_used=None, bt_p_single=None, bt_atr=None,
         )
         executor._close_position(symbol, float(last_price), reason="EOB_FORCE_CLOSE", interval=interval)
     except Exception as e:
         system_logger.error("[BT] force-close failed: %s", e, exc_info=True)
 
 
-# -------------------------
-# Backtest main
-# -------------------------
 async def run_backtest() -> None:
     global system_logger
     system_logger = logging.getLogger("system")
 
-    # tools/* scriptleriyle uyumlu env isimleri
     out_dir = Path(os.getenv("BT_OUT_DIR", "outputs"))
     symbol = os.getenv("BT_SYMBOL", os.getenv("SYMBOL", "BTCUSDT")).upper()
     main_interval = os.getenv("BT_MAIN_INTERVAL", os.getenv("INTERVAL", "5m"))
@@ -316,28 +242,20 @@ async def run_backtest() -> None:
 
     data_limit = int(float(os.getenv("BT_DATA_LIMIT", "2000")))
     warmup = int(float(os.getenv("BT_WARMUP_BARS", "200")))
-
-    # sinyal threshold
     buy_thr = float(os.getenv("BT_BUY_THR", "0.55"))
     sell_thr = float(os.getenv("BT_SELL_THR", "0.45"))
-
-    # model window (rolling)
     window = int(float(os.getenv("BT_MODEL_WINDOW", "200")))
-
-    # start equity
     start_equity = float(os.getenv("BT_START_EQUITY", "1000.0"))
+
+    progress_every = int(float(os.getenv("BT_PROGRESS_EVERY", "200")))
 
     equity_rows: List[Dict[str, Any]] = []
     closed_trades: List[Dict[str, Any]] = []
     bt_stats = BTStats(start_equity=start_equity)
 
-    # --- setup components ---
     anomaly_detector = AnomalyDetector(logger=system_logger)
 
-    risk = RiskManager(
-        equity_start_of_day=start_equity,
-        logger=system_logger,
-    )
+    risk = RiskManager(equity_start_of_day=start_equity, logger=system_logger)
     pm = PositionManager(
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         redis_db=int(os.getenv("REDIS_DB", "0")),
@@ -353,7 +271,7 @@ async def run_backtest() -> None:
         position_manager=pm,
         tg_bot=None,
         logger=system_logger,
-        dry_run=True,  # backtest her zaman dry_run
+        dry_run=True,
         base_order_notional=float(os.getenv("BT_BASE_ORDER_NOTIONAL", "50")),
         max_position_notional=float(os.getenv("BT_MAX_POSITION_NOTIONAL", "500")),
         max_leverage=float(os.getenv("BT_MAX_LEVERAGE", "3")),
@@ -369,7 +287,6 @@ async def run_backtest() -> None:
 
     model = HybridModel(model_dir=os.getenv("MODELS_DIR", None), interval=main_interval, logger=system_logger)
 
-    # --- load offline CSV ---
     offline_dir = Path(os.getenv("OFFLINE_DIR", "data/offline_cache"))
     offline_main = offline_dir / f"{symbol}_{main_interval}_6m.csv"
     if not offline_main.exists():
@@ -386,22 +303,14 @@ async def run_backtest() -> None:
 
     build_features_fn = _resolve_build_features(system_logger)
     if build_features_fn is None:
-        system_logger.error("[BT] Feature pipeline bulunamadı/import edilemedi. Logdaki traceback'i düzelt.")
+        system_logger.error("[BT] Feature builder bulunamadı.")
         return
 
-    feat = build_features_fn(df)
+    feat = build_features_fn(df, interval=main_interval)  # fe_labels build_features bunu destekliyor
+    feat = anomaly_detector.filter_anomalies(feat, schema=None, context=f"heavy:{symbol}:{main_interval}")
 
-    # anomaly filter (context cache ayrımı için)
-    feat = anomaly_detector.filter_anomalies(
-        feat,
-        schema=None,
-        context=f"heavy:{symbol}:{main_interval}",
-    )
-
-    # time kolonunu normalize etmeye çalış (yoksa None)
     time_col = "time" if "time" in df.columns else ("timestamp" if "timestamp" in df.columns else None)
 
-    # warmup + window guard
     start_i = max(warmup, window)
     if len(feat) <= start_i + 1:
         system_logger.error("[BT] Veri yetersiz: rows=%d start_i=%d", len(feat), start_i)
@@ -409,18 +318,19 @@ async def run_backtest() -> None:
 
     peak = bt_stats.peak_equity
 
-    for i in range(start_i, len(feat)):
-        price = float(df["close"].iloc[i])
+    system_logger.info("[BT] START loop | rows=%d start_i=%d end=%d window=%d", len(feat), start_i, len(feat)-1, window)
 
-        # model input: son window bar (DF)
+    for i in range(start_i, len(feat)):
+        if progress_every > 0 and (i % progress_every == 0):
+            system_logger.info("[BT] progress i=%d/%d equity=%.2f trades=%d", i, len(feat)-1, bt_stats.last_equity, bt_stats.trades)
+
+        price = float(df["close"].iloc[i])
         Xw = feat.iloc[i - window : i].copy()
 
-        # p üret
         p_arr, dbg = model.predict_proba(Xw)
         p_single = float(p_arr[-1]) if len(p_arr) else 0.5
-        p_used = p_single  # şimdilik tek kaynak
+        p_used = p_single
 
-        # sinyal
         if p_used >= buy_thr:
             sig = "BUY"
         elif p_used <= sell_thr:
@@ -428,31 +338,30 @@ async def run_backtest() -> None:
         else:
             sig = "HOLD"
 
-        # bt ctx (kapanan trade’e yazmak için)
-        bt_time = None
-        if time_col is not None:
-            bt_time = df[time_col].iloc[i]
+        bt_time = df[time_col].iloc[i] if time_col is not None else None
 
         execu.set_bt_context(
-            bt_symbol=symbol,
-            bt_interval=main_interval,
-            bt_bar=i,
-            bt_time=str(bt_time) if bt_time is not None else None,
-            bt_signal=sig,
-            bt_price=price,
-            bt_p_used=p_used,
-            bt_p_single=p_single,
+            bt_symbol=symbol, bt_interval=main_interval, bt_bar=i, bt_time=str(bt_time) if bt_time is not None else None,
+            bt_signal=sig, bt_price=price, bt_p_used=p_used, bt_p_single=p_single,
             bt_atr=float(Xw["atr"].iloc[-1]) if "atr" in Xw.columns and len(Xw) else None,
         )
 
-        # risk tick (yeni gün reset vb)
         try:
             risk.tick()
         except Exception:
             pass
 
         # trade decision
-        await execu.execute_decision(
+        call_exec = True
+        # HOLD iken pozisyon yoksa executor çağırma (log/performans)
+        if sig == "HOLD":
+            try:
+                call_exec = (pm.get_position(symbol) is not None)
+            except Exception:
+                call_exec = True
+        
+        if call_exec:
+            await execu.execute_decision(
             signal=sig,
             symbol=symbol,
             price=price,
@@ -466,13 +375,11 @@ async def run_backtest() -> None:
                 "p_buy_source": "hybrid_single",
                 "model_confidence_factor": float(dbg.get("p_hybrid_mean", 0.5) or 0.5),
                 "atr": float(Xw["atr"].iloc[-1]) if "atr" in Xw.columns and len(Xw) else 0.0,
-                # whale placeholders (sonraki adım)
                 "whale_dir": "none",
                 "whale_score": 0.0,
             },
         )
 
-        # equity snapshot (kapanan trade geldiyse bt_stats güncel)
         equity = bt_stats.last_equity
         if equity > peak:
             peak = equity
@@ -504,16 +411,8 @@ async def run_backtest() -> None:
             }
         )
 
-    # EOB force close (pozisyon kaldıysa)
     last_price = float(df["close"].iloc[-1])
-    _force_close_eob(
-        executor=execu,
-        position_manager=pm,
-        symbol=symbol,
-        last_price=last_price,
-        interval=main_interval,
-        system_logger=system_logger,
-    )
+    _force_close_eob(executor=execu, position_manager=pm, symbol=symbol, last_price=last_price, interval=main_interval, system_logger=system_logger)
 
     _save_backtest_csv(
         out_dir=out_dir,
@@ -527,15 +426,18 @@ async def run_backtest() -> None:
     )
 
 
-# ==========================================================
-# Entry
-# ==========================================================
 async def async_main() -> None:
     global system_logger
     load_environment_variables()
     setup_logger()
     system_logger = logging.getLogger("system")
-    await run_backtest()
+
+    try:
+        await run_backtest()
+    except Exception as e:
+        system_logger.error("[BT] FATAL: %s", e)
+        system_logger.error("[BT] traceback:\n%s", traceback.format_exc())
+        raise
 
 
 def main() -> None:
