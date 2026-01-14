@@ -368,9 +368,10 @@ class HybridModel:
     # --------------------------
     def _predict_sgd_proba(self, X: np.ndarray) -> np.ndarray:
         _disable = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
-        if _disable or self.sgd_model is None:
-            return np.full(X.shape[0], 0.5, dtype=float)
+        if _disable or self.sgd_model is None or X is None or X.size == 0:
+            return np.full((0 if X is None else X.shape[0],), 0.5, dtype=float)
 
+        # feature count guard
         expected = None
         try:
             expected = int(self.meta.get("n_features") or 0) or None
@@ -381,69 +382,81 @@ class HybridModel:
             self._log_startup(
                 logging.WARNING,
                 "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
-                X.shape,
-                expected,
+                X.shape, expected,
             )
             return np.full(X.shape[0], 0.5, dtype=float)
 
+        # --- predict_proba + correct positive column selection ---
         try:
             proba = self.sgd_model.predict_proba(X)
-            proba = np.asarray(proba)
-            # classes_ sırasına göre 'pozitif' class kolonunu seç
-            classes_ = getattr(self.sgd_model, 'classes_', None)
-            IDX_POS = None
-            try:
-                if classes_ is not None:
-                    classes_list = list(classes_)
-                    # hedef label genelde 1'dir; yoksa son kolonu kullan
-                    IDX_POS = classes_list.index(1) if 1 in classes_list else (len(classes_list)-1)
-            except Exception:
-                IDX_POS = None
+            proba = np.asarray(proba, dtype=float)
+
             if proba.ndim == 2 and proba.shape[1] >= 2:
-                if IDX_POS is None:
-                    IDX_POS = 1
-                p1 = proba[:, IDX_POS]
+                classes_ = getattr(self.sgd_model, "classes_", None)
+                idx_pos = 1
+                try:
+                    if classes_ is not None:
+                        cl = list(classes_)
+                        idx_pos = cl.index(1) if 1 in cl else (len(cl) - 1)
+                except Exception:
+                    idx_pos = 1
+
+                p1 = proba[:, idx_pos]
             else:
-                p1 = np.asarray(proba).reshape(-1)
+                p1 = np.asarray(proba, dtype=float).reshape(-1)
+
         except Exception as e:
             self._log_startup(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
             return np.full(X.shape[0], 0.5, dtype=float)
 
-        try:
-            if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
-                p1 = proba[:, 1]
-            else:
-                p1 = np.asarray(proba, dtype=float).reshape(-1)
-        except Exception:
-            return np.full(X.shape[0], 0.5, dtype=float)
-
-        # stabilizer (center/band)
-        try:
-            _center = str(os.getenv("SGD_CENTER", "1")).lower() in ("1", "true", "yes", "on")
-            _band = float(os.getenv("SGD_BAND", "0.10"))
-        except Exception:
-            _center, _band = True, 0.10
-
+        # --- optional proba transform (debug/compat) ---
         try:
             p1 = np.asarray(p1, dtype=float)
-            # --- optional proba transform (debug/compat) ---
-            # SGD_FLIP_PROBA=1 => p = 1 - p  (etiket yönü ters ise hızlı test)
-            # SGD_PROBA_EPS=0.02 => p = eps + (1-2eps)*p  (0/1 saturasyonu yumuşat)
-            try:
-                _flip = str(os.getenv("SGD_FLIP_PROBA", "0")).lower() in ("1","true","yes","on")
-                _eps = float(os.getenv("SGD_PROBA_EPS", "0.0"))
-            except Exception:
-                _flip, _eps = False, 0.0
-            if _flip:
-                p1 = 1.0 - p1
-            if _eps and _eps > 0.0:
-                _eps = max(0.0, min(0.49, float(_eps)))
-                p1 = _eps + (1.0 - 2.0*_eps) * p1
+            _flip = str(os.getenv("SGD_FLIP_PROBA", "0")).lower() in ("1", "true", "yes", "on")
+            _eps = float(os.getenv("SGD_PROBA_EPS", "0.0"))
+        except Exception:
+            _flip, _eps = False, 0.0
 
-            p1 = np.clip(p1, 0.0, 1.0)
-            if _center:
-                p1 = p1 - (float(np.mean(p1)) - 0.5)
-            p1 = 0.5 + np.clip(p1 - 0.5, -abs(_band), abs(_band))
+        if _flip:
+            p1 = 1.0 - p1
+        if _eps > 0.0:
+            _eps = max(0.0, min(0.49, float(_eps)))
+            p1 = _eps + (1.0 - 2.0 * _eps) * p1
+
+        p1 = np.clip(p1, 0.0, 1.0)
+
+        # --- stabilizer (center/band) ---
+        # SGD_CENTER:
+        #   - "0"/"false" => disable centering
+        #   - numeric (e.g. 0.5) => center target
+        # SGD_BAND: float (0..0.5) clip band around 0.5 after centering
+        try:
+            _center_raw = os.getenv("SGD_CENTER", "0").strip().lower()
+            if _center_raw in ("0", "false", "no", "off"):
+                do_center = False
+                center_target = 0.5
+            elif _center_raw in ("1", "true", "yes", "on"):
+                do_center = True
+                center_target = 0.5
+            else:
+                # numeric target (e.g. "0.5")
+                do_center = True
+                center_target = float(_center_raw)
+
+            _band = float(os.getenv("SGD_BAND", "0.10"))
+            _band = max(0.0, min(0.5, abs(_band)))
+        except Exception:
+            do_center, center_target, _band = False, 0.5, 0.10
+
+        try:
+            if do_center:
+                mu = float(np.mean(p1))
+                p1 = p1 + (center_target - mu)
+
+            # band clip around 0.5 (after centering)
+            if _band < 0.5:
+                p1 = 0.5 + np.clip(p1 - 0.5, -_band, _band)
+
             p1 = np.clip(p1, 0.0, 1.0)
         except Exception:
             return np.full(X.shape[0], 0.5, dtype=float)
