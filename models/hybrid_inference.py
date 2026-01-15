@@ -1,4 +1,3 @@
-# models/hybrid_inference.py
 from __future__ import annotations
 
 import json
@@ -16,7 +15,6 @@ from models.hybrid_mtf import HybridMTF
 
 try:
     from tensorflow.keras.models import load_model  # type: ignore
-
     TENSORFLOW_AVAILABLE = True
 except Exception:
     TENSORFLOW_AVAILABLE = False
@@ -35,21 +33,31 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return float(default)
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return float(default)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return bool(default)
+    s = str(v).strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
+
+
 class HybridModel:
     """
-    Hybrid scorer: combines SGD (online model) and LSTM models.
+    Hybrid scorer: SGD + LSTM
 
-    - SGD: online_model_<interval>_best.joblib
-    - LSTM: lstm_long_<interval>.h5, lstm_short_<interval>.h5, lstm_scaler_<interval>.joblib/.pkl
-    - Meta: model_meta_<interval>.json
-
-    Notlar:
-    - feature_schema: SGD / genel DF normalize için
-    - lstm_feature_schema: LSTM için özel schema (order+size garanti)
-
-    ÖNEMLİ:
-    - HybridMultiTFModel sende HybridModel(...) çağrısında startup/inference log override parametreleri geçiyor.
-      Bu dosyada HybridModel __init__ buna uyumlu hale getirildi (geri uyumlu).
+    SÖZLEŞME / DRIFT KİLİDİ:
+      - SGD için: meta["feature_schema"] (order + size)
+      - LSTM için: meta["lstm_feature_schema"] (yoksa feature_schema fallback)
     """
 
     def __init__(
@@ -57,7 +65,6 @@ class HybridModel:
         model_dir: Optional[str],
         interval: str,
         logger: Optional[logging.Logger] = None,
-        # --- NEW (backward/forward compatible overrides) ---
         startup_log_level: Optional[str] = None,
         disable_startup_log: Optional[bool] = None,
         inference_log_level: Optional[str] = None,
@@ -69,39 +76,27 @@ class HybridModel:
 
         # --- SGD helper (aux) ---
         self.sgd_helper = None
-        self.enable_sgd_helper = str(os.getenv("ENABLE_SGD_HELPER", "1")).lower() in ("1", "true", "yes", "on")
-        self.sgd_helper_sat_thr = float(os.getenv("SGD_HELPER_SAT_THR", "0.95"))
+        self.enable_sgd_helper = _env_bool("ENABLE_SGD_HELPER", True)
+        self.sgd_helper_sat_thr = _env_float("SGD_HELPER_SAT_THR", 0.95)
 
-        # --- runtime logging control ---
+        # --- logging control ---
         env_inf_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
-        env_disable_inf = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-
+        env_disable_inf = _env_bool("DISABLE_HYBRID_MODEL_INFERENCE_LOG", False)
         self.hybrid_model_log_level = str(inference_log_level or env_inf_level).upper()
-        self.disable_hybrid_model_inference_log = bool(
-            env_disable_inf if disable_inference_log is None else disable_inference_log
-        )
+        self.disable_hybrid_model_inference_log = bool(env_disable_inf if disable_inference_log is None else disable_inference_log)
 
-        # --- startup logging control ---
         env_start_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
-        env_disable_start = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-
+        env_disable_start = _env_bool("DISABLE_HYBRID_MODEL_STARTUP_LOG", False)
         self.hybrid_model_startup_log_level = str(startup_log_level or env_start_level).upper()
-        self.disable_hybrid_model_startup_log = bool(
-            env_disable_start if disable_startup_log is None else disable_startup_log
-        )
+        self.disable_hybrid_model_startup_log = bool(env_disable_start if disable_startup_log is None else disable_startup_log)
 
-        # hybrid weight: p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
-        self.alpha: float = float(os.getenv("HYBRID_ALPHA", "0.60"))
+        # --- alpha / auto-alpha ---
+        # base formula: p_hybrid = alpha * p_lstm + (1-alpha) * p_sgd
+        self.alpha: float = _env_float("HYBRID_ALPHA", 0.60)
+        self.alpha_auto: bool = _env_bool("HYBRID_ALPHA_AUTO", False)
+        self.alpha_min: float = _env_float("HYBRID_ALPHA_MIN", 0.05)
+        self.alpha_max: float = _env_float("HYBRID_ALPHA_MAX", 0.95)
+        self.alpha_floor_if_bad: float = _env_float("HYBRID_ALPHA_BAD_FLOOR", 0.15)  # LSTM çok kötüyse alpha cap
 
         # models
         self.sgd_model = None
@@ -121,10 +116,8 @@ class HybridModel:
         self.use_lstm_hybrid: bool = False
         self.last_debug: Dict[str, Any] = {}
 
-        # normalize warnings spam control
+        # spam control
         self._schema_missing_warned: set[Tuple[str, ...]] = set()
-
-        # PATCH 4 (optional): LSTM mismatch spam control (interval bazında 1 kere logla)
         self._lstm_mismatch_warned: bool = False
 
         # load
@@ -183,7 +176,7 @@ class HybridModel:
             if isinstance(meta_file, dict):
                 self.meta.update(meta_file)
 
-            # PATCH 2: lstm_feature_schema yoksa feature_schema'dan türet
+            # lstm_feature_schema yoksa feature_schema'dan türet
             try:
                 if not self.meta.get("lstm_feature_schema"):
                     fs = self.meta.get("feature_schema")
@@ -197,12 +190,12 @@ class HybridModel:
             level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
             self._log_startup(level, "[HYBRID] Meta loaded from %s", path)
 
-            # --- load SGD helper (optional)C ---
+            # SGD helper (optional)
             try:
-                _disable_sgd = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
+                _disable_sgd = _env_bool("DISABLE_SGD", False)
                 if self.enable_sgd_helper and (not _disable_sgd):
                     helper_path = os.getenv("SGD_HELPER_PATH", os.path.join(self.model_dir, "sgd_helper.joblib"))
-                    if os.path.exists(helper_path):
+                    if helper_path and os.path.exists(helper_path):
                         self.sgd_helper = SGDHelperRuntime(helper_path)
                         self._log_startup(level, "[HYBRID] SGD helper loaded from %s", helper_path)
                     else:
@@ -228,27 +221,25 @@ class HybridModel:
         long_path = os.path.join(self.model_dir, f"lstm_long_{self.interval}.h5")
         short_path = os.path.join(self.model_dir, f"lstm_short_{self.interval}.h5")
 
-        scaler_joblib = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib")
-        scaler_pkl = os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl")
-        scaler_path = scaler_joblib if os.path.exists(scaler_joblib) else scaler_pkl
+        # scaler search (joblib/pkl + alias)
+        scaler_candidates = [
+            os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.joblib"),
+            os.path.join(self.model_dir, f"lstm_{self.interval}_scaler.joblib"),
+            os.path.join(self.model_dir, f"lstm_scaler_{self.interval}.pkl"),
+        ]
+        scaler_path = next((p for p in scaler_candidates if os.path.exists(p)), None)
 
-        # scaler yoksa LSTM disable
-        if not os.path.exists(scaler_path):
+        if not scaler_path:
             self._log_startup(
                 logging.WARNING,
-                "[HYBRID] LSTM scaler not found for interval=%s. Checked: %s , %s. Disabling LSTM.",
+                "[HYBRID] LSTM scaler not found for interval=%s. Checked: %s. Disabling LSTM.",
                 self.interval,
-                scaler_joblib,
-                scaler_pkl,
+                scaler_candidates,
             )
-            self.lstm_long = None
-            self.lstm_short = None
-            self.lstm_scaler = None
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
             return
 
-        # modeller yoksa LSTM disable
         if not (os.path.exists(long_path) and os.path.exists(short_path)):
             self._log_startup(
                 logging.WARNING,
@@ -259,9 +250,6 @@ class HybridModel:
                 short_path,
                 os.path.exists(short_path),
             )
-            self.lstm_long = None
-            self.lstm_short = None
-            self.lstm_scaler = None
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
             return
@@ -271,7 +259,7 @@ class HybridModel:
             self.lstm_short = load_model(short_path, compile=False)
             self.lstm_scaler = load(scaler_path)
 
-            # input_shape mismatch -> sadece logla
+            # input_shape mismatch -> log only
             try:
                 li = tuple(getattr(self.lstm_long, "input_shape", ()) or ())
                 si = tuple(getattr(self.lstm_short, "input_shape", ()) or ())
@@ -303,51 +291,21 @@ class HybridModel:
             self.meta["use_lstm_hybrid"] = False
 
     # --------------------------
-    # Feature helpers
+    # Schema helpers (DRIFT KILL)
     # --------------------------
-    @staticmethod
-    def _to_numeric_matrix(X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> np.ndarray:
-        if isinstance(X, pd.DataFrame):
-            X_num = X.select_dtypes(include=[np.number])
-            if X_num.empty:
-                raise ValueError("No numeric columns in DataFrame")
-            return X_num.to_numpy(dtype=float)
-
-        if isinstance(X, pd.Series):
-            if pd.api.types.is_numeric_dtype(X.dtype):
-                return X.to_numpy(dtype=float).reshape(-1, 1)
-            raise ValueError("Series is not numeric")
-
-        if isinstance(X, list):
-            X = np.asarray(X)
-
-        if isinstance(X, np.ndarray):
-            if np.issubdtype(X.dtype, np.number):
-                return X.astype(float)
-            df = pd.DataFrame(X)
-            X_num = df.select_dtypes(include=[np.number])
-            if X_num.empty:
-                raise ValueError("No numeric columns in ndarray")
-            return X_num.to_numpy(dtype=float)
-
-        raise TypeError(f"Unsupported X type: {type(X)}")
-
     def _get_feature_schema(self) -> Optional[List[str]]:
         sch = self.meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
         return None
 
-    # PATCH 1: lstm_feature_schema yoksa feature_schema fallback
     def _get_lstm_feature_schema(self) -> Optional[List[str]]:
         sch = self.meta.get("lstm_feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
-
         sch2 = self.meta.get("feature_schema")
         if isinstance(sch2, list) and sch2 and all(isinstance(x, str) for x in sch2):
             return sch2
-
         return None
 
     def _normalize_to_schema(self, df: pd.DataFrame, schema: List[str]) -> pd.DataFrame:
@@ -358,12 +316,9 @@ class HybridModel:
           - fazla kolonları ignore et
           - schema sırasına göre seç/sırala
           - numeric coerce + inf/nan temizle
-
-        NOT: Aliasing tek yönlü tutulur (çift yönlü mapping çakışma yapmasın).
         """
         out = df.copy()
 
-        # Tek yönlü alias (en yaygın kaynak -> hedef)
         aliases = {
             "taker_buy_base_asset_volume": "taker_buy_base_volume",
             "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
@@ -383,11 +338,41 @@ class HybridModel:
 
         out = out[schema].copy()
 
+        # strict numeric coercion
         for c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
         out = out.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
         return out
+
+    @staticmethod
+    def _df_to_matrix_strict(df: pd.DataFrame) -> np.ndarray:
+        """
+        DataFrame -> float matrix.
+        (ÖNEMLİ) select_dtypes ile kolon düşürme YOK; schema zaten numeric olmalı.
+        """
+        arr = df.to_numpy(dtype=float, copy=False)
+        if arr.ndim != 2:
+            arr = np.asarray(arr, dtype=float).reshape(arr.shape[0], -1)
+        return arr
+
+    @staticmethod
+    def _to_numeric_matrix(X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> np.ndarray:
+        if isinstance(X, pd.DataFrame):
+            return HybridModel._df_to_matrix_strict(X)
+
+        if isinstance(X, pd.Series):
+            return pd.to_numeric(X, errors="coerce").to_numpy(dtype=float).reshape(-1, 1)
+
+        if isinstance(X, list):
+            X = np.asarray(X)
+
+        if isinstance(X, np.ndarray):
+            if X.ndim == 1:
+                return X.astype(float).reshape(-1, 1)
+            return X.astype(float)
+
+        raise TypeError(f"Unsupported X type: {type(X)}")
 
     def _align_df_to_schema(self, df: pd.DataFrame) -> pd.DataFrame:
         sch = self._get_feature_schema()
@@ -399,16 +384,20 @@ class HybridModel:
     # SGD
     # --------------------------
     def _predict_sgd_proba(self, X: np.ndarray) -> np.ndarray:
-        _disable = str(os.getenv("DISABLE_SGD", "0")).lower() in ("1", "true", "yes", "on")
+        _disable = _env_bool("DISABLE_SGD", False)
         if _disable or self.sgd_model is None or X is None or X.size == 0:
             return np.full((0 if X is None else X.shape[0],), 0.5, dtype=float)
 
-        # feature count guard
+        # expected features: prefer schema length, then meta.n_features
         expected = None
-        try:
-            expected = int(self.meta.get("n_features") or 0) or None
-        except Exception:
-            expected = None
+        sch = self._get_feature_schema()
+        if sch:
+            expected = len(sch)
+        else:
+            try:
+                expected = int(self.meta.get("n_features") or 0) or None
+            except Exception:
+                expected = None
 
         if expected is not None and X.shape[1] != expected:
             self._log_startup(
@@ -419,15 +408,12 @@ class HybridModel:
             )
             return np.full(X.shape[0], 0.5, dtype=float)
 
-        # --- predict_proba + correct positive column selection ---
         try:
             proba = np.asarray(self.sgd_model.predict_proba(X), dtype=float)
 
             if proba.ndim == 2 and proba.shape[1] >= 2:
-                # Pipeline ise classes_ bazen son estimator'da daha garanti
                 classes_ = getattr(self.sgd_model, "classes_", None)
                 try:
-                    # sklearn Pipeline
                     if hasattr(self.sgd_model, "named_steps") and "sgd" in getattr(self.sgd_model, "named_steps", {}):
                         classes_ = getattr(self.sgd_model.named_steps["sgd"], "classes_", classes_)
                 except Exception:
@@ -449,13 +435,9 @@ class HybridModel:
             self._log_startup(logging.WARNING, "[HYBRID] SGD predict_proba failed: %r", e)
             return np.full(X.shape[0], 0.5, dtype=float)
 
-        # --- optional proba transform (debug/compat) ---
-        try:
-            p1 = np.asarray(p1, dtype=float)
-            _flip = str(os.getenv("SGD_FLIP_PROBA", "0")).lower() in ("1", "true", "yes", "on")
-            _eps = float(os.getenv("SGD_PROBA_EPS", "0.0"))
-        except Exception:
-            _flip, _eps = False, 0.0
+        # optional proba transform
+        _flip = _env_bool("SGD_FLIP_PROBA", False)
+        _eps = _env_float("SGD_PROBA_EPS", 0.0)
 
         if _flip:
             p1 = 1.0 - p1
@@ -496,49 +478,40 @@ class HybridModel:
             return np.full(n, 0.5, dtype=float), debug
 
         try:
-            # --- LSTM FEATURE SCHEMA KİLİDİ (ORDER GUARANTEED) ---
-            lstm_schema = self._get_lstm_feature_schema()
-            if isinstance(X, pd.DataFrame) and isinstance(lstm_schema, list) and lstm_schema:
-                Xdf = self._normalize_to_schema(X, lstm_schema)
-                X_num = self._to_numeric_matrix(Xdf)
+            # LSTM schema lock (order + size)
+            if isinstance(X, pd.DataFrame):
+                lstm_schema = self._get_lstm_feature_schema()
+                if lstm_schema:
+                    Xdf = self._normalize_to_schema(X, lstm_schema)
+                else:
+                    Xdf = X
+                X_num = self._df_to_matrix_strict(Xdf)
             else:
                 X_num = self._to_numeric_matrix(X)
 
-            # --- scaler n_features_in_ kontrolü (NO trim/pad) ---
             need = getattr(self.lstm_scaler, "n_features_in_", None)
             try:
                 need = int(need) if need is not None else None
             except Exception:
                 need = None
 
-            # PATCH 3: mismatch davranışı
             if need is not None and need > 0 and X_num.shape[1] != need:
-                # PATCH 4: mismatch log spam kontrolü (interval başına bir kere)
+                # mismatch: fallback only (do NOT disable runtime permanently)
                 if not self._lstm_mismatch_warned:
                     self._lstm_mismatch_warned = True
                     self._log_startup(
                         logging.WARNING,
-                        "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s",
+                        "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s -> fallback 0.5 (no disable)",
                         self.interval,
                         X_num.shape,
                         need,
                     )
-
-                debug["lstm_used"] = False
-                debug["error"] = "lstm_feature_mismatch"
-                debug["need"] = int(need)
-                debug["got"] = int(X_num.shape[1])
-
-                # DataFrame değilse align şansı yok -> disable etme, sadece fallback
-                if not isinstance(X, pd.DataFrame):
-                    return np.full(n, 0.5, dtype=float), debug
-
-                # DataFrame ise: schema/meta sözleşmesi bozuk -> runtime disable mantıklı
-                self.lstm_long = None
-                self.lstm_short = None
-                self.lstm_scaler = None
-                self.use_lstm_hybrid = False
-                self.meta["use_lstm_hybrid"] = False
+                debug.update({
+                    "lstm_used": False,
+                    "error": "lstm_feature_mismatch",
+                    "lstm_need_features": int(need),
+                    "lstm_got_features": int(X_num.shape[1]),
+                })
                 return np.full(n, 0.5, dtype=float), debug
 
             X_scaled = self.lstm_scaler.transform(X_num)
@@ -548,7 +521,7 @@ class HybridModel:
             p_short = self.lstm_short.predict(seqs, verbose=0).reshape(-1)
             p_lstm = 0.5 * (p_long + p_short)
 
-            # seq padding: ilk seq_len-1 satırı doldur
+            # seq padding
             if len(p_lstm) < n and len(p_lstm) > 0:
                 pad_len = n - len(p_lstm)
                 p_lstm = np.concatenate([np.full(pad_len, float(p_lstm[0])), p_lstm])
@@ -571,6 +544,73 @@ class HybridModel:
             debug["error"] = str(e)
             self._log_startup(logging.WARNING, "[HYBRID] LSTM predict failed (%s): %s", self.interval, str(e))
             return np.full(n, 0.5, dtype=float), debug
+ # --------------------------
+    # Alpha auto
+    # --------------------------
+    def _get_sgd_auc(self) -> float:
+        try:
+            return float(self.meta.get("best_auc", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _get_lstm_auc(self) -> float:
+        # prefer explicit lstm_auc, otherwise max(long/short)
+        try:
+            v = self.meta.get("lstm_auc", None)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+
+        vals = []
+        for k in ("lstm_long_auc", "lstm_short_auc"):
+            try:
+                vals.append(float(self.meta.get(k, 0.0) or 0.0))
+            except Exception:
+                continue
+        return float(max(vals) if vals else 0.0)
+
+    def _compute_alpha_used(self) -> Tuple[float, Dict[str, Any]]:
+        dbg: Dict[str, Any] = {}
+        a_base = float(self.alpha)
+        a_base = max(0.0, min(1.0, a_base))
+
+        if not self.alpha_auto:
+            a = float(np.clip(a_base, self.alpha_min, self.alpha_max))
+            dbg.update({"alpha_used": a, "alpha_mode": "fixed", "alpha_base": a_base})
+            return a, dbg
+
+        sgd_auc = self._get_sgd_auc()
+        lstm_auc = self._get_lstm_auc()
+
+        dbg.update({"alpha_base": a_base, "sgd_auc": sgd_auc, "lstm_auc": lstm_auc})
+
+        # if no meaningful auc -> keep base
+        if sgd_auc <= 0.0 or lstm_auc <= 0.0:
+            a = float(np.clip(a_base, self.alpha_min, self.alpha_max))
+            dbg.update({"alpha_used": a, "alpha_mode": "auto_no_auc"})
+            return a, dbg
+
+        # compare improvements above 0.5 (AUC baseline)
+        s = max(0.0, sgd_auc - 0.5)
+        l = max(0.0, lstm_auc - 0.5)
+
+        # if SGD has no edge, keep base
+        if s <= 1e-9:
+            a = float(np.clip(a_base, self.alpha_min, self.alpha_max))
+            dbg.update({"alpha_used": a, "alpha_mode": "auto_sgd_flat"})
+            return a, dbg
+
+        ratio = float(np.clip(l / s, 0.0, 1.0))  # LSTM relative quality
+        a = a_base * ratio
+
+        # extra cap: if lstm_auc < sgd_auc, keep it below a_floor_if_bad (optional)
+        if lstm_auc < sgd_auc:
+            a = min(a, self.alpha_floor_if_bad)
+
+        a = float(np.clip(a, self.alpha_min, self.alpha_max))
+        dbg.update({"alpha_used": a, "alpha_mode": "auto_ratio", "alpha_ratio": ratio})
+        return a, dbg
 
     # --------------------------
     # Public API
@@ -578,7 +618,6 @@ class HybridModel:
     def predict_proba(self, X: Union[np.ndarray, pd.DataFrame, pd.Series, list]) -> Tuple[np.ndarray, Dict[str, Any]]:
         debug: Dict[str, Any] = {}
 
-        # Guard: empty/None input must not produce empty outputs
         if X is None:
             debug.update({"mode": "uniform_fallback", "reason": "X_is_None", "p_hybrid_mean": 0.5})
             return np.full(1, 0.5, dtype=float), debug
@@ -587,21 +626,18 @@ class HybridModel:
             debug.update({"mode": "uniform_fallback", "reason": "empty_dataframe", "p_hybrid_mean": 0.5})
             return np.full(1, 0.5, dtype=float), debug
 
-        # X -> numeric
+        # DataFrame ise schema lock (SGD tarafı)
         try:
             if isinstance(X, pd.DataFrame):
                 X_norm = self._align_df_to_schema(X)
-                X_arr = self._to_numeric_matrix(X_norm)
+                X_arr = self._df_to_matrix_strict(X_norm)
             else:
                 X_arr = self._to_numeric_matrix(X)
         except Exception as e:
             self._log_startup(logging.WARNING, "[HYBRID] Failed to convert X to numeric: %s -> uniform 0.5", e)
             n = 1
             try:
-                if hasattr(X, "shape"):
-                    n = int(getattr(X, "shape")[0])
-                else:
-                    n = int(len(X))  # type: ignore[arg-type]
+                n = int(getattr(X, "shape")[0]) if hasattr(X, "shape") else int(len(X))  # type: ignore[arg-type]
             except Exception:
                 n = 1
             n = 1 if n <= 0 else n
@@ -625,13 +661,14 @@ class HybridModel:
         p_lstm, lstm_debug = self._predict_lstm_proba(X if isinstance(X, pd.DataFrame) else X_arr)
 
         if self.use_lstm_hybrid and lstm_debug.get("lstm_used", False):
-            a = float(getattr(self, "alpha", 0.6))
-            a = max(0.0, min(1.0, a))
-            p_hybrid = a * p_lstm + (1.0 - a) * p_sgd
+            a_used, a_dbg = self._compute_alpha_used()
+            p_hybrid = a_used * p_lstm + (1.0 - a_used) * p_sgd
             mode = "lstm+sgd"
+            debug.update(a_dbg)
         else:
             p_hybrid = p_sgd
             mode = "sgd_only"
+            debug.update({"alpha_used": 0.0, "alpha_mode": "sgd_only"})
 
         debug.update(
             {
@@ -649,15 +686,17 @@ class HybridModel:
         self.last_debug = debug
 
         self._log_inference(
-            "[HYBRID] mode=%s n_samples=%d n_features=%d p_sgd_mean=%.4f p_lstm_mean=%.4f p_hybrid_mean=%.4f best_auc=%.4f best_side=%s",
+            "[HYBRID] mode=%s itv=%s n_samples=%d n_features=%d alpha=%.4f(%s) p_sgd_mean=%.4f p_lstm_mean=%.4f p_hybrid_mean=%.4f best_auc=%.4f",
             mode,
+            self.interval,
             int(X_arr.shape[0]),
             int(X_arr.shape[1]),
+            float(debug.get("alpha_used", 0.0)),
+            str(debug.get("alpha_mode", "na")),
             float(debug["p_sgd_mean"]),
             float(debug["p_lstm_mean"]),
             float(debug["p_hybrid_mean"]),
             float(debug["best_auc"]),
-            str(debug["best_side"]),
         )
 
         return p_hybrid, debug
@@ -666,9 +705,7 @@ class HybridModel:
 class HybridMultiTFModel:
     """
     Multi-timeframe hibrit model sarmalayıcısı.
-
-    TEK KAYNAK:
-    - Ensemble ağırlıkları / logları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
+    Ensemble ağırlıkları / AUC standardizasyonu: models.hybrid_mtf.HybridMTF
     """
 
     def __init__(
@@ -676,26 +713,17 @@ class HybridMultiTFModel:
         model_dir: Optional[str],
         intervals: List[str],
         logger: Optional[logging.Logger] = None,
-        models_by_interval: Optional[Dict[str, HybridModel]] = None,  # NEW
+        models_by_interval: Optional[Dict[str, HybridModel]] = None,
     ) -> None:
         self.model_dir = model_dir or MODELS_DIR
         self.intervals = list(intervals)
         self.logger = logger or logging.getLogger("system")
 
         self.hybrid_model_startup_log_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
-        self.disable_hybrid_model_startup_log = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        self.disable_hybrid_model_startup_log = _env_bool("DISABLE_HYBRID_MODEL_STARTUP_LOG", False)
 
-        # NEW: dışarıdan hazır model verilirse tekrar yükleme yapma
         if models_by_interval:
-            self.models: Dict[str, HybridModel] = {
-                itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval
-            }
-
+            self.models: Dict[str, HybridModel] = {itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval}
             missing = [itv for itv in self.intervals if itv not in self.models]
             if missing:
                 level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
@@ -709,7 +737,6 @@ class HybridMultiTFModel:
                         disable_startup_log=self.disable_hybrid_model_startup_log,
                     )
         else:
-            # eski davranış: hepsini burada yükle
             self.models = {}
             for itv in self.intervals:
                 self.models[itv] = HybridModel(
@@ -720,7 +747,7 @@ class HybridMultiTFModel:
                     disable_startup_log=self.disable_hybrid_model_startup_log,
                 )
 
-        # Ensemble/weight/AUC standardizasyonu tek yer: HybridMTF
+        # HybridMTF: auc_history disk persistence + calibration
         self.mtf = HybridMTF(
             models_by_interval=self.models,
             logger=self.logger,
@@ -738,21 +765,6 @@ class HybridMultiTFModel:
             return
         self._log(level, msg, *args)
 
-    def _init_models(self) -> None:
-        level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
-        for itv in self.intervals:
-            try:
-                self.models[itv] = HybridModel(
-                    model_dir=self.model_dir,
-                    interval=itv,
-                    logger=self.logger,
-                    startup_log_level=self.hybrid_model_startup_log_level,
-                    disable_startup_log=self.disable_hybrid_model_startup_log,
-                )
-                self._log_startup(level, "[HYBRID-MTF] Loaded HybridModel for interval=%s", itv)
-            except Exception as e:
-                self._log_startup(logging.WARNING, "[HYBRID-MTF] Failed to init HybridModel for %s: %s", itv, e)
-
     def predict_proba_multi(
         self,
         X_dict: Dict[str, Union[pd.DataFrame, np.ndarray, list]],
@@ -765,3 +777,4 @@ class HybridMultiTFModel:
             standardize_overwrite=standardize_overwrite,
         )
         return float(ensemble_p), mtf_debug
+
