@@ -28,7 +28,7 @@
   "n_features": 20,
   "best_auc": 0.5928583530074003,
   "best_side": "long",
-  "use_lstm_hybrid": false,
+  "use_lstm_hybrid": true,
   "seq_len": 50,
   "meta_version": 4,
   "label_horizon": 3,
@@ -42,5 +42,35 @@
   "sgd_tol": 0.001,
   "sgd_loss": "log_loss",
   "sgd_penalty": "l2",
-  "sgd_shuffle": false
+  "sgd_shuffle": false,
+  "lstm_feature_schema": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_asset_volume",
+    "number_of_trades",
+    "ignore",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "hl_range",
+    "oc_change",
+    "return_1",
+    "return_3",
+    "return_5",
+    "ma_5",
+    "ma_10",
+    "ma_20",
+    "vol_10",
+    "dummy_extra"
+  ],
+  "auc_history": [
+    {
+      "ts": "2026-01-15T14:33:28.669332+00:00",
+      "auc": 0.5928583530074003
+    }
+  ],
+  "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
+  "auc_history_last_day": "2026-01-15"
 }

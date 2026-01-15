@@ -1,0 +1,45 @@
+{
+  "interval": "1m",
+  "symbol": "BTCUSDT",
+  "window": 50,
+  "horizon": 3,
+  "thr": 0.0005,
+  "feature_schema_used": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_asset_volume",
+    "number_of_trades",
+    "ignore",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+    "hl_range",
+    "oc_change",
+    "return_1",
+    "return_3",
+    "return_5",
+    "ma_5",
+    "ma_10",
+    "ma_20",
+    "vol_10",
+    "dummy_extra"
+  ],
+  "n_features": 20,
+  "n_sequences": 19947,
+  "val_split": 0.2,
+  "ydist": {
+    "0": 16617,
+    "1": 3380
+  },
+  "pos_ratio": 0.16902535380307046,
+  "metrics_last": {
+    "loss": 0.40177133679389954,
+    "auc": 0.6802933216094971,
+    "val_loss": 0.5272589921951294,
+    "val_auc": 0.5999748706817627
+  },
+  "feature_source": "train_lstm_for_interval::features.pipeline.make_matrix(meta_schema)",
+  "meta_version": 2
+}
