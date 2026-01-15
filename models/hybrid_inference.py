@@ -74,17 +74,31 @@ class HybridModel:
 
         # --- runtime logging control ---
         env_inf_level = str(os.getenv("HYBRID_MODEL_LOG_LEVEL", "DEBUG")).upper()
-        env_disable_inf = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in ("1", "true", "yes", "on")
+        env_disable_inf = str(os.getenv("DISABLE_HYBRID_MODEL_INFERENCE_LOG", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         self.hybrid_model_log_level = str(inference_log_level or env_inf_level).upper()
-        self.disable_hybrid_model_inference_log = bool(env_disable_inf if disable_inference_log is None else disable_inference_log)
+        self.disable_hybrid_model_inference_log = bool(
+            env_disable_inf if disable_inference_log is None else disable_inference_log
+        )
 
         # --- startup logging control ---
         env_start_level = str(os.getenv("HYBRID_MODEL_STARTUP_LOG_LEVEL", "INFO")).upper()
-        env_disable_start = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in ("1", "true", "yes", "on")
+        env_disable_start = str(os.getenv("DISABLE_HYBRID_MODEL_STARTUP_LOG", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         self.hybrid_model_startup_log_level = str(startup_log_level or env_start_level).upper()
-        self.disable_hybrid_model_startup_log = bool(env_disable_start if disable_startup_log is None else disable_startup_log)
+        self.disable_hybrid_model_startup_log = bool(
+            env_disable_start if disable_startup_log is None else disable_startup_log
+        )
 
         # hybrid weight: p_hybrid = alpha * p_lstm + (1 - alpha) * p_sgd
         self.alpha: float = float(os.getenv("HYBRID_ALPHA", "0.60"))
@@ -109,6 +123,9 @@ class HybridModel:
 
         # normalize warnings spam control
         self._schema_missing_warned: set[Tuple[str, ...]] = set()
+
+        # PATCH 4 (optional): LSTM mismatch spam control (interval bazında 1 kere logla)
+        self._lstm_mismatch_warned: bool = False
 
         # load
         self._load_sgd_model()
@@ -165,6 +182,15 @@ class HybridModel:
                 meta_file = json.load(f) or {}
             if isinstance(meta_file, dict):
                 self.meta.update(meta_file)
+
+            # PATCH 2: lstm_feature_schema yoksa feature_schema'dan türet
+            try:
+                if not self.meta.get("lstm_feature_schema"):
+                    fs = self.meta.get("feature_schema")
+                    if isinstance(fs, list) and fs and all(isinstance(x, str) for x in fs):
+                        self.meta["lstm_feature_schema"] = list(fs)
+            except Exception:
+                pass
 
             self.use_lstm_hybrid = bool(self.meta.get("use_lstm_hybrid", False))
 
@@ -312,10 +338,16 @@ class HybridModel:
             return sch
         return None
 
+    # PATCH 1: lstm_feature_schema yoksa feature_schema fallback
     def _get_lstm_feature_schema(self) -> Optional[List[str]]:
         sch = self.meta.get("lstm_feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
+
+        sch2 = self.meta.get("feature_schema")
+        if isinstance(sch2, list) and sch2 and all(isinstance(x, str) for x in sch2):
+            return sch2
+
         return None
 
     def _normalize_to_schema(self, df: pd.DataFrame, schema: List[str]) -> pd.DataFrame:
@@ -382,8 +414,9 @@ class HybridModel:
             self._log_startup(
                 logging.WARNING,
                 "[HYBRID] SGD feature mismatch: X=%s expected=%s -> fallback 0.5",
-                X.shape, expected,
-             )
+                X.shape,
+                expected,
+            )
             return np.full(X.shape[0], 0.5, dtype=float)
 
         # --- predict_proba + correct positive column selection ---
@@ -478,26 +511,34 @@ class HybridModel:
             except Exception:
                 need = None
 
+            # PATCH 3: mismatch davranışı
             if need is not None and need > 0 and X_num.shape[1] != need:
-                self._log_startup(
-                    logging.WARNING,
-                    "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s -> disabling LSTM (no pad/trim).",
-                    self.interval,
-                    X_num.shape,
-                    need,
-                )
+                # PATCH 4: mismatch log spam kontrolü (interval başına bir kere)
+                if not self._lstm_mismatch_warned:
+                    self._lstm_mismatch_warned = True
+                    self._log_startup(
+                        logging.WARNING,
+                        "[HYBRID] LSTM scaler feature mismatch (interval=%s): X=%s need=%s",
+                        self.interval,
+                        X_num.shape,
+                        need,
+                    )
 
-                # runtime disable to stop repeated warnings
+                debug["lstm_used"] = False
+                debug["error"] = "lstm_feature_mismatch"
+                debug["need"] = int(need)
+                debug["got"] = int(X_num.shape[1])
+
+                # DataFrame değilse align şansı yok -> disable etme, sadece fallback
+                if not isinstance(X, pd.DataFrame):
+                    return np.full(n, 0.5, dtype=float), debug
+
+                # DataFrame ise: schema/meta sözleşmesi bozuk -> runtime disable mantıklı
                 self.lstm_long = None
                 self.lstm_short = None
                 self.lstm_scaler = None
                 self.use_lstm_hybrid = False
                 self.meta["use_lstm_hybrid"] = False
-
-                debug["lstm_used"] = False
-                debug["error"] = "lstm_feature_mismatch"
-                debug["need"] = need
-                debug["got"] = int(X_num.shape[1])
                 return np.full(n, 0.5, dtype=float), debug
 
             X_scaled = self.lstm_scaler.transform(X_num)
@@ -651,7 +692,9 @@ class HybridMultiTFModel:
 
         # NEW: dışarıdan hazır model verilirse tekrar yükleme yapma
         if models_by_interval:
-            self.models: Dict[str, HybridModel] = {itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval}
+            self.models: Dict[str, HybridModel] = {
+                itv: models_by_interval[itv] for itv in self.intervals if itv in models_by_interval
+            }
 
             missing = [itv for itv in self.intervals if itv not in self.models]
             if missing:

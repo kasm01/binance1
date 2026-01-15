@@ -23,25 +23,24 @@
     "vol_10",
     "dummy_extra"
   ],
-  "feature_source": "offline_train_hybrid::features.pipeline.make_matrix(FEATURE_SCHEMA_22 w/o open_time/close_time)",
+  "feature_source": "offline_train_hybrid::features.pipeline.make_matrix",
   "n_samples": 50000,
   "n_features": 20,
-  "best_auc": 0.529198549963749,
+  "best_auc": 0.5928583530074003,
   "best_side": "long",
-  "use_lstm_hybrid": true,
+  "use_lstm_hybrid": false,
   "seq_len": 50,
-  "meta_version": 3,
-  "label_horizon": 1,
-  "label_thr": 0.0,
+  "meta_version": 4,
+  "label_horizon": 3,
+  "label_thr": 0.0005,
+  "label_dist": {
+    "0": 33540,
+    "1": 16460
+  },
   "sgd_alpha": 0.0001,
   "sgd_max_iter": 50,
   "sgd_tol": 0.001,
-  "auc_history": [
-    {
-      "ts": "2026-01-14T23:21:23.862902+00:00",
-      "auc": 0.529198549963749
-    }
-  ],
-  "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
-  "auc_history_last_day": "2026-01-14"
+  "sgd_loss": "log_loss",
+  "sgd_penalty": "l2",
+  "sgd_shuffle": false
 }

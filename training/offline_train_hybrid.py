@@ -1,18 +1,35 @@
 #!/usr/bin/env python
-import os
+"""
+Offline SGD trainer (hybrid pipeline)
+- Feature contract is enforced via features.pipeline.make_matrix + FEATURE_SCHEMA_22
+- Time columns are excluded from SGD input to avoid saturation / scale issues
+- Meta includes lstm_feature_schema so LSTM training/inference can stay aligned
+"""
 
-from app_paths import MODELS_DIR
+from __future__ import annotations
+
+import os
 import json
 import logging
 from typing import Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 import joblib
+
+# ------------------------------------------------------------
+# MODELS_DIR import (robust)
+# ------------------------------------------------------------
+try:
+    from app_paths import MODELS_DIR  # project constant
+except Exception:
+    MODELS_DIR = os.getenv("MODELS_DIR", "models")
+
 from features.pipeline import make_matrix, FEATURE_SCHEMA_22
 
 # ------------------------------------------------------------
@@ -34,6 +51,7 @@ def _env_str(name: str, default: str) -> str:
     v = str(v).strip()
     return v if v != "" else default
 
+
 def _env_int(name: str, default: int) -> int:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
@@ -43,6 +61,7 @@ def _env_int(name: str, default: int) -> int:
     except Exception:
         return int(default)
 
+
 def _env_float(name: str, default: float) -> float:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
@@ -51,6 +70,7 @@ def _env_float(name: str, default: float) -> float:
         return float(v)
     except Exception:
         return float(default)
+
 
 def _env_bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
@@ -63,6 +83,7 @@ def _env_bool(name: str, default: bool) -> bool:
         return False
     return bool(default)
 
+
 def _env_csv_list(name: str, default: List[str]) -> List[str]:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
@@ -71,109 +92,93 @@ def _env_csv_list(name: str, default: List[str]) -> List[str]:
     parts = [p for p in parts if p]
     return parts if parts else list(default)
 
+
 # ------------------------------------------------------------
 # Config (ENV-driven)
 # ------------------------------------------------------------
-SYMBOL    = _env_str("SYMBOL", "BTCUSDT")
-DATA_DIR  = _env_str("DATA_DIR", "data/offline_cache")
+SYMBOL = _env_str("SYMBOL", "BTCUSDT")
+DATA_DIR = _env_str("DATA_DIR", "data/offline_cache")
 
-# INTERVALS env: "1m,3m,5m,15m,30m,1h"
-INTERVALS: List[str] = _env_csv_list("INTERVALS", ["1m","3m","5m","15m","30m","1h"])
+# interval list (requested)
+INTERVALS: List[str] = _env_csv_list("INTERVALS", ["1m", "3m", "5m", "15m", "30m", "1h"])
 
+# cap training bars
 MAX_BARS = _env_int("OFFLINE_MAX_BARS", 50000)
 
 # Label config
-HORIZON   = _env_int("LABEL_HORIZON", 1)
-LABEL_THR = _env_float("LABEL_THR", 0.0)  # 0.0005 gibi threshold istersen
+HORIZON = _env_int("LABEL_HORIZON", 3)      # sen genelde 3 kullanıyorsun
+LABEL_THR = _env_float("LABEL_THR", 0.0005) # sen genelde 0.0005 kullanıyorsun
 
-# SGD hyperparams (ENV)
-SGD_ALPHA    = _env_float("SGD_ALPHA", 1e-4)
+# SGD hyperparams
+SGD_ALPHA = _env_float("SGD_ALPHA", 1e-4)
 SGD_MAX_ITER = _env_int("SGD_MAX_ITER", 50)
-SGD_TOL      = _env_float("SGD_TOL", 1e-3)
-SGD_LOSS     = _env_str("SGD_LOSS", "log_loss")
-SGD_PENALTY  = _env_str("SGD_PENALTY", "l2")
-SGD_SHUFFLE  = _env_bool("SGD_SHUFFLE", False)
-SGD_NJOBS    = _env_int("SGD_NJOBS", -1)
+SGD_TOL = _env_float("SGD_TOL", 1e-3)
+SGD_LOSS = _env_str("SGD_LOSS", "log_loss")
+SGD_PENALTY = _env_str("SGD_PENALTY", "l2")
+SGD_SHUFFLE = _env_bool("SGD_SHUFFLE", False)
+SGD_NJOBS = _env_int("SGD_NJOBS", -1)
 SGD_RANDOM_STATE = _env_int("SGD_RANDOM_STATE", 42)
 
-# LSTM meta default (inference tarafı seq_len kullanıyor)
+# LSTM meta defaults
 LSTM_SEQ_LEN_DEFAULT = _env_int("LSTM_SEQ_LEN_DEFAULT", 50)
-
-# LSTM kullanım bayrağı: istersen sadece bazı interval’lerde aç
-# ör: LSTM_INTERVALS="1m,5m,15m,3m,30m"
-LSTM_INTERVALS: List[str] = _env_csv_list("LSTM_INTERVALS", ["1m","3m","5m","15m","30m","1h"])
+LSTM_INTERVALS: List[str] = _env_csv_list("LSTM_INTERVALS", ["1m", "3m", "5m", "15m", "30m", "1h"])
 
 # ------------------------------------------------------------
-# Feature & Label helpers
+# Feature schema (contract)
 # ------------------------------------------------------------
-def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
-    df = raw_df.copy()
-    # --- ROBUST NUMERIC COERCION (offline CSV -> safe) ---
-    # Binance kline kolonları string gelebiliyor, arithmetic öncesi float'a çevir.
-    num_cols = [
-        "open", "high", "low", "close", "volume",
-        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
-    ]
-    int_cols = ["open_time", "close_time", "number_of_trades", "ignore"]
+# IMPORTANT: Time columns excluded from SGD input (saturation fix)
+SGD_SCHEMA_USED: List[str] = [c for c in FEATURE_SCHEMA_22 if c not in ("open_time", "close_time")]
 
-    for c in num_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+# Optional: if you *really* want time features later, add env flag and implement proper normalization.
+# For now we keep them excluded to match your current stable setup.
+USE_TIME_FEATURES = _env_bool("SGD_USE_TIME_FEATURES", False)
+if USE_TIME_FEATURES:
+    SGD_SCHEMA_USED = list(FEATURE_SCHEMA_22)
 
-    for c in int_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+# ------------------------------------------------------------
+# Label helpers
+# ------------------------------------------------------------
+def make_labels_from_close(close: np.ndarray, horizon: int, thr: float) -> np.ndarray:
+    """
+    y[t] = 1 if (close[t+h] / close[t] - 1) > thr else 0
+    last horizon rows are forced to 0 (no future)
+    """
+    close = np.asarray(close, dtype=float)
+    close = np.where(np.isfinite(close), close, np.nan)
 
-    df = df.replace([float("inf"), float("-inf")], pd.NA)
-    df = df.ffill().bfill().fillna(0.0)
-
-    # Column name normalization (LIVE schema compatibility)
-    if "taker_buy_base_asset_volume" in df.columns and "taker_buy_base_volume" not in df.columns:
-        df["taker_buy_base_volume"] = df["taker_buy_base_asset_volume"]
-    if "taker_buy_quote_asset_volume" in df.columns and "taker_buy_quote_volume" not in df.columns:
-        df["taker_buy_quote_volume"] = df["taker_buy_quote_asset_volume"]
-
-
-    # Zaman kolonlarını saniye float yap (tutarlı)
-    for col in ["open_time", "close_time"]:
-        if col in df.columns:
-            dt = pd.to_datetime(df[col], unit="ms", utc=True, errors="coerce")
-            df[col] = dt.astype("int64") / 1e9
-
-    # Base numeric
-    df["hl_range"] = df["high"] - df["low"]
-    df["oc_change"] = df["close"] - df["open"]
-
-    df["return_1"] = df["close"].pct_change(1)
-    df["return_3"] = df["close"].pct_change(3)
-    df["return_5"] = df["close"].pct_change(5)
-
-    df["ma_5"] = df["close"].rolling(window=5, min_periods=1).mean()
-    df["ma_10"] = df["close"].rolling(window=10, min_periods=1).mean()
-    df["ma_20"] = df["close"].rolling(window=20, min_periods=1).mean()
-
-    df["vol_10"] = df["volume"].rolling(window=10, min_periods=1).std()
-
-    df["dummy_extra"] = 0.0
-
-    # NA temizliği
-    df = df.ffill().bfill().fillna(0.0)
-    return df
-
-def build_labels(close: pd.Series, horizon: int, thr: float) -> pd.Series:
-    future_close = close.shift(-horizon)
-    ret = future_close / close - 1.0
+    fut = np.roll(close, -horizon)
+    ret = (fut / np.maximum(close, 1e-12)) - 1.0
     y = (ret > float(thr)).astype(int)
+
+    # last horizon have no future
+    if horizon > 0:
+        y[-horizon:] = 0
+
+    # NaNs -> 0
+    y = np.where(np.isfinite(ret), y, 0).astype(int)
     return y
 
-def make_xy(df_raw: pd.DataFrame, horizon: int, thr: float) -> Tuple[pd.DataFrame, pd.Series]:
-    feat_df = build_features(df_raw)
-    y_all = build_labels(feat_df["close"], horizon=horizon, thr=thr)
 
-    mask = y_all.notna()
-    feat_df_aligned = feat_df[mask].copy()
-    y_aligned = y_all[mask].astype(int)
-    return feat_df_aligned, y_aligned
+def align_xy(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Clean X (finite rows) and align y to same length.
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=int)
+
+    # ensure same length (horizon, make_matrix differences)
+    n = min(len(y), X.shape[0])
+    X = X[:n]
+    y = y[:n]
+
+    # remove any rows with NaN/Inf
+    X = np.where(np.isfinite(X), X, np.nan)
+    row_ok = ~np.isnan(X).any(axis=1)
+    X = X[row_ok]
+    y = y[row_ok]
+
+    return X, y
+
 
 # ------------------------------------------------------------
 # Data loader
@@ -192,6 +197,7 @@ def load_offline_klines(symbol: str, interval: str) -> pd.DataFrame:
     logger.info("[%s] Loaded offline klines: shape=%s | path=%s", interval, df.shape, path)
     return df
 
+
 # ------------------------------------------------------------
 # Training logic per interval
 # ------------------------------------------------------------
@@ -200,44 +206,54 @@ def train_interval(interval: str) -> None:
 
     raw_df = load_offline_klines(SYMBOL, interval)
 
-    # label için (close üzerinden) - burada X_df sadece label üretimi için kullanılacak
-    X_df, y = make_xy(raw_df, horizon=HORIZON, thr=LABEL_THR)
-
-    if len(X_df) < 1000:
-        logger.warning("[%s] Çok az sample: n=%d, skip.", interval, len(X_df))
-        return
-
-    # ---- TEK FEATURE KAYNAĞI: features.pipeline.make_matrix ----
-    # Time kolonlarını özellikle çıkarıyoruz (saturasyon kök nedeni)
-    schema_used = [c for c in FEATURE_SCHEMA_22 if c not in ("open_time", "close_time")]
-    feature_cols = list(schema_used)
-
-    # make_matrix: raw_df -> numpy feature matrix
+    # --- build X from the SINGLE SOURCE OF TRUTH ---
+    schema_used = list(SGD_SCHEMA_USED)
     X = make_matrix(raw_df, schema=schema_used)
     X = np.asarray(X, dtype=float)
 
-    # numeric temizlik
-    X = np.where(np.isfinite(X), X, np.nan)
-    row_ok = ~np.isnan(X).any(axis=1)
-    X = X[row_ok]
+    # --- build y from close (raw_df close) ---
+    if "close" not in raw_df.columns:
+        raise RuntimeError(f"[{interval}] raw_df has no 'close' column")
 
-    # y hizalama (horizon etkisi + row_ok)
-    y = np.asarray(y, dtype=int)[: X.shape[0]]
+    close = pd.to_numeric(raw_df["close"], errors="coerce").astype(float).values
+    y = make_labels_from_close(close, horizon=HORIZON, thr=LABEL_THR)
+
+    # --- align + clean ---
+    X, y = align_xy(X, y)
 
     if X.shape[0] < 1000:
-        logger.warning("[%s] Çok az temiz sample: n=%d, skip.", interval, int(X.shape[0]))
+        logger.warning("[%s] Too few clean samples: n=%d, skip.", interval, int(X.shape[0]))
         return
 
-    logger.info("[%s] X shape=%s | y len=%d | n_features=%d", interval, X.shape, len(y), X.shape[1])
+    # label distribution sanity
+    u, cnt = np.unique(y, return_counts=True)
+    ydist = dict(zip(u.tolist(), cnt.tolist()))
+    if len(ydist) < 2:
+        logger.warning("[%s] Single-class labels: %s (thr/horizon?), skip.", interval, ydist)
+        return
 
+    logger.info(
+        "[%s] X shape=%s | n_features=%d | ydist=%s",
+        interval, X.shape, X.shape[1], ydist
+    )
+
+    # split
     n = X.shape[0]
     split_idx = int(n * 0.8)
     X_train, y_train = X[:split_idx], y[:split_idx]
     X_val, y_val = X[split_idx:], y[split_idx:]
 
+    # optional class imbalance weighting (stable SGD)
+    # gives roughly balanced contribution
+    cnt0 = max(int(ydist.get(0, 1)), 1)
+    cnt1 = max(int(ydist.get(1, 1)), 1)
+    w0 = 0.5 / cnt0
+    w1 = 0.5 / cnt1
+    sample_weight = np.where(y_train == 1, w1, w0).astype(float)
+
     clf = Pipeline(
         steps=[
-            ("scaler", StandardScaler()),
+            ("scaler", StandardScaler(with_mean=True, with_std=True)),
             ("sgd", SGDClassifier(
                 loss=SGD_LOSS,
                 penalty=SGD_PENALTY,
@@ -251,22 +267,27 @@ def train_interval(interval: str) -> None:
         ]
     )
 
-    logger.info("[%s] Training SGD... alpha=%g max_iter=%d tol=%g", interval, SGD_ALPHA, SGD_MAX_ITER, SGD_TOL)
-    clf.fit(X_train, y_train)
+    logger.info(
+        "[%s] Training SGD... alpha=%g max_iter=%d tol=%g loss=%s penalty=%s",
+        interval, SGD_ALPHA, SGD_MAX_ITER, SGD_TOL, SGD_LOSS, SGD_PENALTY
+    )
+    clf.fit(X_train, y_train, sgd__sample_weight=sample_weight)
 
+    # metrics
     try:
         proba = clf.predict_proba(X_val)[:, 1]
         if len(np.unique(y_val)) > 1:
             auc = float(roc_auc_score(y_val, proba))
         else:
             auc = 0.5
-            logger.warning("[%s] y_val tek sınıf, AUC=0.5 set edildi.", interval)
+            logger.warning("[%s] y_val single-class, AUC=0.5", interval)
     except Exception as e:
-        logger.warning("[%s] AUC hesap hatası: %s", interval, e)
+        logger.warning("[%s] AUC compute error: %r", interval, e)
         auc = 0.5
 
-    logger.info("[%s] Validation AUC=%.4f | label_mean=%.4f", interval, auc, float(y.mean()))
+    logger.info("[%s] Validation AUC=%.4f | y_mean=%.4f", interval, auc, float(np.mean(y)))
 
+    # save
     os.makedirs(MODELS_DIR, exist_ok=True)
     model_path = os.path.join(MODELS_DIR, f"online_model_{interval}_best.joblib")
     joblib.dump(clf, model_path)
@@ -274,33 +295,57 @@ def train_interval(interval: str) -> None:
     best_side = "long" if auc >= 0.5 else "short"
 
     meta_path = os.path.join(MODELS_DIR, f"model_meta_{interval}.json")
+
     meta: Dict[str, Any] = {
         "interval": interval,
         "symbol": SYMBOL,
-        "feature_schema": feature_cols,  # artık time'sız schema_used
-        "feature_source": "offline_train_hybrid::features.pipeline.make_matrix(FEATURE_SCHEMA_22 w/o open_time/close_time)",
-        "n_samples": int(len(y)),
+
+        # IMPORTANT: schema contract used in training
+        "feature_schema": list(schema_used),
+
+        # IMPORTANT: keep LSTM aligned (LSTM train should use this)
+        "lstm_feature_schema": list(schema_used),
+
+        "feature_source": "offline_train_hybrid::features.pipeline.make_matrix",
+        "n_samples": int(X.shape[0]),
         "n_features": int(X.shape[1]),
         "best_auc": float(auc),
         "best_side": best_side,
+
+        # hybrid flags
         "use_lstm_hybrid": True if interval in set(LSTM_INTERVALS) else False,
         "seq_len": int(LSTM_SEQ_LEN_DEFAULT),
-        "meta_version": 3,  # <-- 2 -> 3
+
+        # versioning
+        "meta_version": 4,
+
+        # label config
         "label_horizon": int(HORIZON),
         "label_thr": float(LABEL_THR),
+        "label_dist": ydist,
+
+        # sgd config
         "sgd_alpha": float(SGD_ALPHA),
         "sgd_max_iter": int(SGD_MAX_ITER),
         "sgd_tol": float(SGD_TOL),
+        "sgd_loss": str(SGD_LOSS),
+        "sgd_penalty": str(SGD_PENALTY),
+        "sgd_shuffle": bool(SGD_SHUFFLE),
     }
 
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
     logger.info("[%s] Model & meta saved: %s | %s", interval, model_path, meta_path)
 
+
 def main() -> None:
     logger.info("Offline SGD training started | symbol=%s | intervals=%s", SYMBOL, INTERVALS)
-    logger.info("LABEL_HORIZON=%d LABEL_THR=%g | SGD_ALPHA=%g MAX_ITER=%d TOL=%g", HORIZON, LABEL_THR, SGD_ALPHA, SGD_MAX_ITER, SGD_TOL)
+    logger.info(
+        "LABEL_HORIZON=%d LABEL_THR=%g | SGD_ALPHA=%g MAX_ITER=%d TOL=%g | schema_len=%d (time=%s)",
+        HORIZON, LABEL_THR, SGD_ALPHA, SGD_MAX_ITER, SGD_TOL, len(SGD_SCHEMA_USED), USE_TIME_FEATURES
+    )
+    logger.info("MODELS_DIR=%s | DATA_DIR=%s | MAX_BARS=%d", MODELS_DIR, DATA_DIR, MAX_BARS)
 
     for itv in INTERVALS:
         try:
@@ -311,6 +356,7 @@ def main() -> None:
             logger.exception("[%s] Train error: %s", itv, e)
 
     logger.info("Offline SGD training finished.")
+
 
 if __name__ == "__main__":
     main()

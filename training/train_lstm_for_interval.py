@@ -1,9 +1,11 @@
 #!/usr/bin/env python
+from __future__ import annotations
+
 import os
 import json
 import logging
 from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -21,9 +23,8 @@ try:
 except Exception:
     _CFG = None
 
-# Projedeki feature/label fonksiyonlarını kullan
-# NOT: build_labels artık thr zorunlu; bu dosyada thr yönetimi eklendi.
-from features.fe_labels import build_features, build_labels  # type: ignore
+# SINGLE SOURCE OF TRUTH for features
+from features.pipeline import make_matrix, FEATURE_SCHEMA_22  # type: ignore
 
 logger = logging.getLogger("lstm_train")
 logging.basicConfig(
@@ -75,21 +76,20 @@ def _load_meta(interval: str) -> dict:
     return json.loads(meta_path.read_text(encoding="utf-8"))
 
 
-def _load_meta_feature_cols(interval: str) -> List[str]:
+def _load_feature_cols(interval: str) -> List[str]:
     """
-    models/model_meta_<interval>.json içinden SGD'nin kullandığı feature kolonlarını çeker.
-    LSTM, SGD ile aynı feature düzenini kullanır.
-
-    Not:
-      - Yeni meta anahtarı: feature_schema
-      - Eski/opsiyonel: feature_cols
+    Öncelik:
+      1) lstm_feature_schema (yeni)
+      2) feature_schema (sgd schema)
+      3) feature_cols (legacy)
     """
     meta = _load_meta(interval)
-    feats = meta.get("feature_schema") or meta.get("feature_cols")
-    if not feats or not isinstance(feats, list) or not all(isinstance(x, str) for x in feats):
-        raise ValueError("[META] feature_schema/feature_cols meta içinde yok veya geçersiz.")
+    feats = meta.get("lstm_feature_schema") or meta.get("feature_schema") or meta.get("feature_cols")
 
-    logger.info("[META] feature columns loaded from models/model_meta_%s.json | n=%d", interval, len(feats))
+    if not feats or not isinstance(feats, list) or not all(isinstance(x, str) for x in feats):
+        raise ValueError("[META] lstm_feature_schema/feature_schema/feature_cols meta içinde yok veya geçersiz.")
+
+    logger.info("[META] feature schema loaded | interval=%s | n=%d", interval, len(feats))
     return list(feats)
 
 
@@ -116,36 +116,65 @@ def _load_label_thr(interval: str) -> float:
     return 0.0
 
 
-def _ensure_feature_schema(feat_df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
+def _load_label_horizon(interval: str, default: int = 1) -> int:
     """
-    - Meta'daki feature sırasını birebir uygular.
-    - Eksik feature varsa 0.0 ile oluşturur.
+    Öncelik:
+      1) LSTM_HORIZON env
+      2) LABEL_HORIZON env
+      3) model_meta_<interval>.json içindeki label_horizon
+      4) default
     """
-    out = feat_df.copy()
+    if os.getenv("LSTM_HORIZON"):
+        return _env_int("LSTM_HORIZON", default)
+    if os.getenv("LABEL_HORIZON"):
+        return _env_int("LABEL_HORIZON", default)
 
-    # Backward-compat alias map (projede bazı isimler değişmiş olabilir)
-    alias_map = {
-        "taker_buy_base_volume": "taker_buy_base_asset_volume",
-        "taker_buy_quote_volume": "taker_buy_quote_asset_volume",
-    }
-    for old_col, new_col in alias_map.items():
-        if old_col not in out.columns and new_col in out.columns:
-            out[old_col] = out[new_col]
+    try:
+        meta = _load_meta(interval)
+        if meta.get("label_horizon") is not None:
+            return int(meta["label_horizon"])
+    except Exception:
+        pass
 
-    missing = [c for c in feature_cols if c not in out.columns]
-    if missing:
-        logger.warning("[FE] Eksik feature kolonları (0 ile doldurulacak): %s", missing)
-        for c in missing:
-            out[c] = 0.0
+    return int(default)
 
-    # Sadece meta şemasını al ve sıralamayı sabitle
-    X_df = out[feature_cols].copy()
 
-    # Her şey numeric olsun
-    for c in X_df.columns:
-        X_df[c] = pd.to_numeric(X_df[c], errors="coerce").fillna(0.0)
+def make_labels_from_close(close: np.ndarray, horizon: int, thr: float) -> np.ndarray:
+    """
+    y[t] = 1 if (close[t+h] / close[t] - 1) > thr else 0
+    last horizon rows forced to 0 (no future)
+    """
+    close = np.asarray(close, dtype=float)
+    close = np.where(np.isfinite(close), close, np.nan)
 
-    return X_df
+    fut = np.roll(close, -horizon)
+    ret = (fut / np.maximum(close, 1e-12)) - 1.0
+    y = (ret > float(thr)).astype(int)
+
+    if horizon > 0:
+        y[-horizon:] = 0
+
+    y = np.where(np.isfinite(ret), y, 0).astype(int)
+    return y
+
+
+def align_xy(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Clean X (finite rows) and align y to same length.
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=int)
+
+    n = min(len(y), X.shape[0])
+    X = X[:n]
+    y = y[:n]
+
+    X = np.where(np.isfinite(X), X, np.nan)
+    row_ok = ~np.isnan(X).any(axis=1)
+    X = X[row_ok]
+    y = y[row_ok]
+
+    return X, y
 
 
 # ---------------------------
@@ -166,21 +195,17 @@ def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
-    # Çok kolon varsa ilk 12'yi al
     if df.shape[1] > 12:
         df = df.iloc[:, :12].copy()
 
-    # Header yoksa kolonlar 0..11 olur -> isimlendir
     if list(df.columns) == list(range(len(df.columns))) and df.shape[1] == 12:
         df = df.copy()
         df.columns = _KLINE_COLS
 
-    # Kolon isimleri tam oturmamışsa ama 12 kolon varsa yine isimlendir
     if df.shape[1] == 12 and not set(_KLINE_COLS).issubset(set(df.columns)):
         df = df.copy()
         df.columns = _KLINE_COLS
 
-    # Tipleri toparla
     float_cols = [
         "open", "high", "low", "close", "volume",
         "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
@@ -208,7 +233,6 @@ def load_offline_klines(symbol: str, interval: str, limit: int = 20000) -> pd.Da
     if not path.exists():
         raise FileNotFoundError(f"Offline cache yok: {path}")
 
-    # header belirsiz -> header=None ile okuyup normalize ediyoruz
     df = pd.read_csv(path, header=None, low_memory=False)
     df = _normalize_kline_df(df)
 
@@ -242,85 +266,70 @@ def make_lstm_dataset(X: np.ndarray, y: np.ndarray, window: int) -> Tuple[np.nda
 def prepare_data(
     symbol: str,
     interval: str,
-    horizon: int = 1,
-    window: int = 50,
-    thr: float = 0.0,
-    limit_rows: int = 20000,
-) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
+    horizon: int,
+    window: int,
+    thr: float,
+    limit_rows: int,
+) -> Tuple[np.ndarray, np.ndarray, StandardScaler, List[str], Dict[str, Any]]:
     """
     - Offline kline yükler
-    - build_features ile feature'ları üretir
-    - model_meta_<interval>.json'dan feature list alır (SGD ile aynı schema)
-    - build_labels ile binary hedef üretir (thr zorunlu)
+    - Meta'dan feature schema alır (lstm_feature_schema > feature_schema)
+    - make_matrix ile X üretir (SGD ile aynı sözleşme)
+    - close üzerinden label üretir (horizon/thr)
+    - align + clean
     - StandardScaler ile scale
-    - LSTM için sekans dataset üretir
+    - LSTM seq dataset üretir
     """
     if window < 2:
         raise ValueError(f"[DATA] window çok küçük: window={window}")
 
     df_raw = load_offline_klines(symbol, interval, limit=limit_rows)
 
-    # Feature engineering (offline_train_hybrid ile uyumlu)
-    feat_df = build_features(df_raw)
+    feature_cols = _load_feature_cols(interval)
+    meta = _load_meta(interval)
 
-    feature_cols = _load_meta_feature_cols(interval)
-    X_df = _ensure_feature_schema(feat_df, feature_cols)
+    # ---- SINGLE SOURCE OF TRUTH ----
+    X = make_matrix(df_raw, schema=feature_cols)
+    X = np.asarray(X, dtype=float)
 
-    # Label üret (feat_df üzerinden; build_labels'ın beklediği df bu)
-    labels = build_labels(feat_df, horizon=horizon, thr=thr)
+    # label: close üzerinden
+    close = pd.to_numeric(df_raw["close"], errors="coerce").astype(float).values
+    y = make_labels_from_close(close, horizon=horizon, thr=thr)
 
-    # horizon > 0 ise en son horizon satırların label'ı invalid olur
+    # horizon > 0 ise son horizon satır “gelecek yok” -> X/y kırp
     if horizon > 0:
-        X_df2 = X_df.iloc[:-horizon].reset_index(drop=True)
-        y_ser = labels.iloc[:-horizon].reset_index(drop=True)
-    else:
-        X_df2 = X_df.reset_index(drop=True)
-        y_ser = labels.reset_index(drop=True)
+        X = X[:-horizon] if X.shape[0] > horizon else X[:0]
+        y = y[:-horizon] if len(y) > horizon else y[:0]
 
-    y = pd.to_numeric(y_ser, errors="coerce").fillna(0.0).astype(float).to_numpy(dtype=np.float32)
-    X = X_df2.to_numpy(dtype=np.float32)
+    # align + clean
+    X, y = align_xy(X, y)
 
-    if len(X) != len(y):
-        n = min(len(X), len(y))
-        logger.warning("[DATA] X/y length mismatch -> truncating to n=%d (X=%d y=%d)", n, len(X), len(y))
-        X = X[:n]
-        y = y[:n]
-
-    logger.info("[DATA] After feature+label alignment: X shape=%s, y shape=%s | thr=%.8f", X.shape, y.shape, thr)
-
-    if len(X) <= window + 5:
-        raise ValueError(f"[DATA] Yetersiz örnek: N={len(X)} window={window} (sequence üretilemez)")
+    if X.shape[0] <= window + 5:
+        raise ValueError(f"[DATA] Yetersiz örnek: N={X.shape[0]} window={window} (sequence üretilemez)")
 
     # hedef dağılımı (kalite kontrol)
-    try:
-        pos = float((y > 0.5).mean())
-        logger.info("[DATA] y positive ratio=%.4f (pos=%d / n=%d)", pos, int((y > 0.5).sum()), int(len(y)))
-    except Exception:
-        pass
+    u, cnt = np.unique(y, return_counts=True)
+    ydist = dict(zip(u.tolist(), cnt.tolist()))
+    pos_ratio = float((y == 1).mean()) if len(y) else 0.0
+    logger.info("[DATA] X=%s y=%s | thr=%.8f horizon=%d | ydist=%s pos_ratio=%.4f",
+                X.shape, y.shape, thr, horizon, ydist, pos_ratio)
 
+    # scale
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X).astype(np.float32)
 
-    X_seq, y_seq = make_lstm_dataset(X_scaled, y, window)
-    logger.info("[DATA] LSTM seq dataset: X_seq shape=%s, y_seq shape=%s (window=%d)", X_seq.shape, y_seq.shape, window)
+    # sequences
+    X_seq, y_seq = make_lstm_dataset(X_scaled, y.astype(np.float32), window)
+    logger.info("[DATA] LSTM seq dataset: X_seq=%s y_seq=%s (window=%d n_features=%d)",
+                X_seq.shape, y_seq.shape, window, X_seq.shape[2])
 
-    # ekstra güvenlik
-    if X_seq.shape[0] != y_seq.shape[0]:
-        n = min(X_seq.shape[0], y_seq.shape[0])
-        logger.warning("[DATA] X_seq/y_seq mismatch -> truncating to n=%d", n)
-        X_seq = X_seq[:n]
-        y_seq = y_seq[:n]
-
-    return X_seq, y_seq, scaler
+    return X_seq, y_seq, scaler, feature_cols, {"ydist": ydist, "pos_ratio": pos_ratio, "meta": meta}
 
 
 # ---------------------------
 # Model
 # ---------------------------
 def build_lstm_model(window: int, n_features: int) -> tf.keras.Model:
-    """
-    Basit ama güçlü bir LSTM mimarisi (binary classification).
-    """
     model = models.Sequential(
         [
             layers.Input(shape=(window, n_features)),
@@ -343,7 +352,7 @@ def build_lstm_model(window: int, n_features: int) -> tf.keras.Model:
 
 
 # ---------------------------
-# Train + Save (atomic + validated)
+# Save (atomic)
 # ---------------------------
 def _atomic_joblib_dump(obj, path: Path) -> None:
     tmp = Path(str(path) + ".tmp")
@@ -361,75 +370,67 @@ def _atomic_joblib_dump(obj, path: Path) -> None:
 
 def _atomic_model_save(model: tf.keras.Model, path: Path) -> None:
     """
-    HDF5 (.h5) olarak atomik kaydet:
-      - tmp dosyası da .h5 ile bitsin ki Keras SavedModel klasörü üretmesin
-      - sonra os.replace ile atomik rename
+    Atomik HDF5 (.h5) save.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Aynı dizinde, .h5 uzantılı geçici dosya
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp.h5", dir=str(path.parent))
     os.close(fd)
     tmp_path = Path(tmp_name)
 
     try:
-        # HDF5 zorla (SavedModel'e kaymasın)
         tf.keras.models.save_model(model, str(tmp_path), save_format="h5")
-        # atomik replace
         os.replace(str(tmp_path), str(path))
     finally:
-        # bir şekilde kaldıysa temizle
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
         except Exception:
             pass
 
+
 def _save_scalers(models_dir: Path, interval: str, scaler: StandardScaler) -> None:
     """
     Projede iki isim var:
       - lstm_scaler_{interval}.joblib
       - lstm_{interval}_scaler.joblib
-    İkisini de yazarız.
-    Atomik + doğrulamalı.
     """
     p1 = models_dir / f"lstm_scaler_{interval}.joblib"
     p2 = models_dir / f"lstm_{interval}_scaler.joblib"
 
-    try:
-        models_dir.mkdir(parents=True, exist_ok=True)
-        if scaler is None:
-            raise ValueError("scaler is None")
+    _atomic_joblib_dump(scaler, p1)
+    _atomic_joblib_dump(scaler, p2)
 
-        _atomic_joblib_dump(scaler, p1)
-        _atomic_joblib_dump(scaler, p2)
+    ok1 = p1.exists() and p1.stat().st_size > 0
+    ok2 = p2.exists() and p2.stat().st_size > 0
+    if not (ok1 and ok2):
+        raise RuntimeError(f"[SAVE] scaler doğrulama FAIL: {p1} ok={ok1}, {p2} ok={ok2}")
 
-        ok1 = p1.exists() and p1.stat().st_size > 0
-        ok2 = p2.exists() and p2.stat().st_size > 0
-        if not (ok1 and ok2):
-            logger.warning("[SAVE] Scaler doğrulama FAIL | p1_ok=%s p2_ok=%s | %s | %s", ok1, ok2, p1, p2)
-        else:
-            logger.info("[SAVE] Scaler saved: %s (and alias %s)", p1, p2)
-
-    except Exception as e:
-        logger.exception("[SAVE] Scaler save failed | interval=%s | err=%s", interval, e)
-        raise
+    logger.info("[SAVE] Scaler saved: %s (and alias %s)", p1, p2)
 
 
 def _save_models(models_dir: Path, interval: str, model: tf.keras.Model) -> None:
     long_path = models_dir / f"lstm_long_{interval}.h5"
     short_path = models_dir / f"lstm_short_{interval}.h5"
 
-    try:
-        _atomic_model_save(model, long_path)
-        _atomic_model_save(model, short_path)
-        logger.info("[SAVE] Models saved: %s and %s", long_path, short_path)
-    except Exception as e:
-        logger.exception("[SAVE] Model save failed | interval=%s | err=%s", interval, e)
-        raise
+    _atomic_model_save(model, long_path)
+    _atomic_model_save(model, short_path)
+
+    logger.info("[SAVE] Models saved: %s and %s", long_path, short_path)
 
 
+def _save_lstm_meta(models_dir: Path, interval: str, payload: Dict[str, Any]) -> None:
+    p = models_dir / f"lstm_meta_{interval}.json"
+    tmp = Path(str(p) + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+    logger.info("[SAVE] LSTM meta saved: %s", p)
+
+
+# ---------------------------
+# Main
+# ---------------------------
 def main() -> None:
     import argparse
 
@@ -437,53 +438,48 @@ def main() -> None:
     parser.add_argument("--symbol", type=str, default=None, help="e.g. BTCUSDT")
     parser.add_argument("--interval", type=str, default=None, help="e.g. 1m,3m,5m,15m,30m,1h")
 
-    # Optional overrides (CLI > env > default)
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--val_split", type=float, default=None)
     parser.add_argument("--limit_rows", type=int, default=None)
-    parser.add_argument("--window", type=int, default=None)  # istersen manuel override
+    parser.add_argument("--window", type=int, default=None)
 
     args = parser.parse_args()
 
-    # SYMBOL öncelik: CLI -> env -> config -> fallback
     symbol = (
         (args.symbol or os.getenv("SYMBOL"))
         or ("BTCUSDT" if _CFG is None else getattr(_CFG, "SYMBOL", "BTCUSDT"))
     )
     symbol = str(symbol).strip().upper()
 
-    # INTERVAL öncelik: CLI -> env -> fallback
     interval = str(args.interval or os.getenv("INTERVAL", "5m")).strip().lower()
 
-    # Horizon / thr / window
-    horizon = int(args.horizon if args.horizon is not None else _env_int("LSTM_HORIZON", 1))
-    thr = _load_label_thr(interval)
+    # horizon / thr / window
+    horizon = int(args.horizon if args.horizon is not None else _load_label_horizon(interval, default=1))
+    thr = float(_load_label_thr(interval))
 
     if args.window is not None:
         window_size = int(args.window)
     else:
-        window_size = _interval_seq_len(interval, default=50)
+        # meta'da seq_len varsa onu kullanmayı tercih edelim
+        try:
+            meta = _load_meta(interval)
+            window_size = int(meta.get("seq_len") or _interval_seq_len(interval, default=50))
+        except Exception:
+            window_size = _interval_seq_len(interval, default=50)
 
     if window_size < 2:
         raise ValueError(f"[ARGS] window_size too small: {window_size}")
 
-    # Train params (CLI -> env -> default)
     batch_size = int(args.batch if args.batch is not None else _env_int("LSTM_BATCH", 64))
     patience = int(args.patience if args.patience is not None else _env_int("LSTM_PATIENCE", 5))
 
     val_split = float(args.val_split if args.val_split is not None else _env_float("LSTM_VAL_SPLIT", 0.2))
-    # güvenli aralık
-    if val_split < 0.05:
-        val_split = 0.05
-    if val_split > 0.40:
-        val_split = 0.40
+    val_split = min(0.40, max(0.05, val_split))
 
     epochs = int(args.epochs if args.epochs is not None else _env_int("LSTM_EPOCHS", 20))
-
-    # Veri limiti
     limit_rows = int(args.limit_rows if args.limit_rows is not None else _env_int("LSTM_LIMIT_ROWS", 20000))
 
     logger.info(
@@ -491,7 +487,7 @@ def main() -> None:
         symbol, interval, horizon, window_size, thr, batch_size, epochs, val_split, limit_rows, os.getpid()
     )
 
-    X_seq, y_seq, scaler = prepare_data(
+    X_seq, y_seq, scaler, schema_used, info = prepare_data(
         symbol=symbol,
         interval=interval,
         horizon=horizon,
@@ -502,12 +498,9 @@ def main() -> None:
 
     n_samples = int(X_seq.shape[0])
     if n_samples < 500:
-        logger.warning(
-            "[WARN] Çok az örnek var: n=%d (window=%d). Eğitim kalitesi düşük olabilir.",
-            n_samples, window_size
-        )
+        logger.warning("[WARN] Çok az örnek: n=%d (window=%d). Eğitim kalitesi düşük olabilir.", n_samples, window_size)
 
-    # Split (time-series): son val_split valid
+    # time-series split: last val_split for validation
     val_n = max(1, int(n_samples * float(val_split)))
     train_n = max(1, n_samples - val_n)
 
@@ -521,7 +514,6 @@ def main() -> None:
     models_dir = Path("models")
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Checkpoint (best auc) - PID'li
     ckpt_path = models_dir / f"lstm_{interval}_best_tmp_{os.getpid()}.h5"
     cbs = [
         callbacks.EarlyStopping(
@@ -549,7 +541,7 @@ def main() -> None:
     ]
 
     logger.info("[FIT] Training starting...")
-    model.fit(
+    hist = model.fit(
         X_train,
         y_train,
         validation_data=(X_val, y_val),
@@ -559,7 +551,7 @@ def main() -> None:
         verbose=1,
     )
 
-    # Best checkpoint varsa onu yükle
+    # best checkpoint load
     if ckpt_path.exists():
         logger.info("[LOAD] Best checkpoint loading: %s", ckpt_path)
         best_model = tf.keras.models.load_model(str(ckpt_path), compile=False)
@@ -574,6 +566,37 @@ def main() -> None:
     logger.info("[SAVE] Writing final artifacts for interval=%s", interval)
     _save_models(models_dir, interval, best_model)
     _save_scalers(models_dir, interval, scaler)
+
+    # LSTM meta (debug + contract)
+    last = hist.history
+    def _last(v):
+        try:
+            return float(v[-1]) if isinstance(v, list) and v else None
+        except Exception:
+            return None
+
+    lstm_meta = {
+        "interval": interval,
+        "symbol": symbol,
+        "window": int(window_size),
+        "horizon": int(horizon),
+        "thr": float(thr),
+        "feature_schema_used": list(schema_used),
+        "n_features": int(X_seq.shape[2]),
+        "n_sequences": int(X_seq.shape[0]),
+        "val_split": float(val_split),
+        "ydist": info.get("ydist"),
+        "pos_ratio": info.get("pos_ratio"),
+        "metrics_last": {
+            "loss": _last(last.get("loss")),
+            "auc": _last(last.get("auc")),
+            "val_loss": _last(last.get("val_loss")),
+            "val_auc": _last(last.get("val_auc")),
+        },
+        "feature_source": "train_lstm_for_interval::features.pipeline.make_matrix(meta_schema)",
+        "meta_version": 2,
+    }
+    _save_lstm_meta(models_dir, interval, lstm_meta)
 
     logger.info("[DONE] LSTM training completed | interval=%s", interval)
 
