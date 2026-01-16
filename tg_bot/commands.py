@@ -55,7 +55,7 @@ def help_command(update: Update, context: CallbackContext) -> None:
         "/ping - bot canlı mı\n"
         "/whoami - chat/user\n"
     )
-    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(msg)
 
 
 def ping_command(update: Update, context: CallbackContext) -> None:
@@ -69,7 +69,16 @@ def whoami_command(update: Update, context: CallbackContext) -> None:
         f"👤 user=`{getattr(u,'id','?')}` @{getattr(u,'username','-')}\n"
         f"💬 chat=`{getattr(c,'id','?')}` type=`{getattr(c,'type','-')}`"
     )
-    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    # TG_MD_FALLBACK: Markdown parse hatasında plain-text fallback
+    try:
+        update.message.reply_text(msg)
+    except Exception as e:
+        try:
+            context.bot.logger.warning("[TG] Markdown parse error -> fallback plain. err=%s", e)
+        except Exception:
+            pass
+        update.message.reply_text(msg)
+
 
 
 def status_command(update: Update, context: CallbackContext) -> None:
@@ -84,7 +93,7 @@ def status_command(update: Update, context: CallbackContext) -> None:
             f"p_used=`{snap.get('p_used','?')}` p_single=`{snap.get('p_single','?')}`\n"
             f"ts=`{_fmt_ts(snap.get('ts'))}`"
         )
-        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(msg)
     else:
         update.message.reply_text("📊 Bot çalışıyor. (son snapshot henüz oluşmadı)")
     system_logger.info("Telegram: /status command used")
@@ -115,7 +124,7 @@ def trades_command(update: Update, context: CallbackContext) -> None:
         src = r[5] if len(r) > 5 else "?"
         lines.append(f"{i}) `{_fmt_ts(ts)}` | *{sym}* `{itv}` | *{sig}* | p=`{p}` ({src})")
 
-    update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text("\n".join(lines))
     system_logger.info("Telegram: /trades command used")
 
 
@@ -144,7 +153,7 @@ def positions_command(update: Update, context: CallbackContext) -> None:
         f"SL=`{pos.get('sl_price','-')}` TP=`{pos.get('tp_price','-')}`\n"
         f"opened_at=`{_fmt_ts(pos.get('opened_at'))}`"
     )
-    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(msg)
     system_logger.info("Telegram: /positions command used")
 
 
@@ -210,7 +219,7 @@ def signal_command(update: Update, context: CallbackContext) -> None:
         f"ts=`{_fmt_ts(snap.get('ts'))}`\n\n"
         f"{_mtf_summary(extra)}"
     )
-    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(msg)
     system_logger.info("Telegram: /signal command used")
 
 
@@ -224,7 +233,7 @@ def cmd_risk(update: Update, context: CallbackContext) -> None:
     try:
         from tg_bot.message_formatter import format_risk_status
         text = format_risk_status(rm)
-        update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(text)
     except Exception:
         msg = (
             "🛡️ *Risk*\n"
@@ -232,7 +241,7 @@ def cmd_risk(update: Update, context: CallbackContext) -> None:
             f"daily_max_loss_pct=`{getattr(rm,'daily_max_loss_pct','?')}`\n"
             f"max_open_trades=`{getattr(rm,'max_open_trades','?')}`"
         )
-        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(msg)
 
     system_logger.info("Telegram: /risk command used")
 

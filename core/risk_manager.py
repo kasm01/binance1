@@ -9,6 +9,12 @@ from core.trade_journal import TradeJournal
 
 @dataclass
 class RiskManager:
+
+    tg_bot = None  # TelegramBot injector (class-level)
+
+    def set_telegram_bot(self, tg_bot) -> None:
+        """Inject TelegramBot instance for auto notifications."""
+        self.tg_bot = tg_bot
     """
     RiskManager:
       - Günlük max kayıp (USDT + yüzde)
@@ -262,132 +268,3 @@ class RiskManager:
     # Pozisyon açıldığında çağrılır
     # --------------------------------------------------
     def on_position_open(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        notional: float,
-        price: float,
-        interval: str,
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self._maybe_reset_day()
-        self.open_trades += 1
-
-        ts = datetime.now(timezone.utc).isoformat()
-        self.last_open_trade = {
-            "timestamp": ts,
-            "symbol": symbol,
-            "side": side,
-            "qty": float(qty),
-            "notional": float(notional),
-            "price": float(price),
-            "interval": interval,
-            "meta": meta or {},
-        }
-
-        if self.logger:
-            self.logger.info(
-                "[RISK] on_position_open | symbol=%s side=%s qty=%.6f notional=%.2f "
-                "price=%.2f interval=%s open_trades=%d meta=%s",
-                symbol,
-                side,
-                qty,
-                notional,
-                price,
-                interval,
-                self.open_trades,
-                meta,
-            )
-
-    # --------------------------------------------------
-    # Pozisyon kapandığında çağrılır
-    # --------------------------------------------------
-    def on_position_close(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        notional: float,
-        price: float,
-        interval: str,
-        realized_pnl: float,
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        realized_pnl: USDT cinsinden, pozisyonun toplam kar/zararı
-        price      : kapatma fiyatı (exit)
-        meta       : TradeExecutor._close_position içinden gelir
-        """
-        self._maybe_reset_day()
-
-        self.open_trades = max(0, self.open_trades - 1)
-
-        self.daily_realized_pnl += float(realized_pnl)
-        self.last_realized_pnl = float(realized_pnl)
-
-        self.total_trades += 1
-        if realized_pnl > 0:
-            self.total_wins += 1
-        elif realized_pnl < 0:
-            self.total_losses += 1
-
-        if realized_pnl < 0:
-            self.consecutive_losses += 1
-        else:
-            self.consecutive_losses = 0
-
-        ts = datetime.now(timezone.utc).isoformat()
-        m = meta or {}
-        self.last_close_trade = {
-            "timestamp": ts,
-            "symbol": symbol,
-            "side": side,
-            "qty": float(qty),
-            "notional": float(notional),
-            "exit_price": float(price),
-            "entry_price": float(m.get("entry_price", 0.0)),
-            "interval": interval,
-            "realized_pnl": float(realized_pnl),
-            "reason": m.get("reason"),
-            "meta": m,
-        }
-
-        if self.logger:
-            self.logger.info(
-                "[RISK] on_position_close | symbol=%s side=%s qty=%.6f notional=%.2f "
-                "price=%.2f interval=%s realized_pnl=%.2f "
-                "daily_realized_pnl=%.2f consecutive_losses=%d open_trades=%d "
-                "total_trades=%d wins=%d losses=%d meta=%s",
-                symbol,
-                side,
-                qty,
-                notional,
-                price,
-                interval,
-                realized_pnl,
-                self.daily_realized_pnl,
-                self.consecutive_losses,
-                self.open_trades,
-                self.total_trades,
-                self.total_wins,
-                self.total_losses,
-                meta,
-            )
-
-        # --- TradeJournal close log ---
-        try:
-            if not hasattr(self, "trade_journal"):
-                self.trade_journal = TradeJournal(logger=self.logger)
-
-            _meta = meta if isinstance(meta, dict) else {}
-
-            self.trade_journal.log_trade_from_close(
-                symbol=symbol,
-                exit_price=price,
-                pnl_usdt=realized_pnl,
-                meta=_meta,
-            )
-        except Exception as e:
-            if self.logger:
-                self.logger.warning("[RISK] TradeJournal log hata: %s", e)

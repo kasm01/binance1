@@ -69,8 +69,25 @@
     {
       "ts": "2026-01-15T14:33:28.670860+00:00",
       "auc": 0.571405135840252
+    },
+    {
+      "ts": "2026-01-16T08:00:00+00:00",
+      "auc": 0.571405135840252,
+      "bucket": "hour"
+    },
+    {
+      "ts": "2026-01-16T09:00:00+00:00",
+      "auc": 0.571405135840252,
+      "bucket": "hour"
+    },
+    {
+      "ts": "2026-01-16T10:00:00+00:00",
+      "auc": 0.571405135840252,
+      "bucket": "hour"
     }
   ],
   "auc_history_source": "boot_seed_from_auc_used_or_best_auc",
-  "auc_history_last_day": "2026-01-15"
+  "auc_history_last_day": "2026-01-15",
+  "auc_history_hourly_source": "append_auc_used_once_per_hour::auc_used",
+  "auc_history_hour_bucket_utc": "2026-01-16T10:00:00+00:00"
 }

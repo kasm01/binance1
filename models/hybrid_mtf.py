@@ -11,14 +11,6 @@ import pandas as pd
 system_logger = logging.getLogger("system")
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return bool(default)
-    s = str(v).strip().lower()
-    return s in ("1", "true", "yes", "y", "on")
-
-
 def _env_float(name: str, default: float) -> float:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
@@ -27,16 +19,6 @@ def _env_float(name: str, default: float) -> float:
         return float(str(v).strip())
     except Exception:
         return float(default)
-
-
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        return int(default)
-    try:
-        return int(float(str(v).strip()))
-    except Exception:
-        return int(default)
 
 
 class MultiTimeframeHybridEnsemble:
@@ -70,7 +52,7 @@ class MultiTimeframeHybridEnsemble:
             return 0.0
         return wf
 
-    def predict_mtf(
+    def predict_ensemble(
         self,
         X_by_interval: Dict[str, Any],
         weight_by_interval: Dict[str, float] | None = None,
@@ -143,28 +125,46 @@ class MultiTimeframeHybridEnsemble:
         return ensemble_p, mtf_debug
 
 
+    # --------------------------------------------------------------
+    # Backward-compat: dışarıya standart API
+    # --------------------------------------------------------------
+    # Backward-compat alias: eski çağrılar için
+
+    def predict_mtf(
+        self,
+        X_by_interval: Dict[str, Any],
+        standardize_auc_key: str | None = "auc_used",
+        standardize_overwrite: bool = False,
+    ) -> Tuple[float, Dict[str, Any]]:
+        return self.predict_ensemble(
+            X_by_interval=X_by_interval,
+            standardize_auc_key=standardize_auc_key,
+            standardize_overwrite=standardize_overwrite,
+        )
+    # backward-compat alias
+    predict_mtf = predict_ensemble
+
+
 class HybridMTF:
     """
-    Stabil MTF ağırlıklandırma (tek kaynak)
+    Stabil MTF ağırlıklandırma (tek sözleşme)
 
     AUC -> weight (linear map):
-      - auc <= auc_floor  -> weight=0.0 (skip)
-      - auc_floor..auc_max_used -> lineer map
-      - auc >= auc_max_used -> weight=1.0
+      - auc <= auc_floor      -> weight=0.0 (skip)
+      - auc_floor..auc_max    -> lineer map
+      - auc >= auc_max_used   -> weight=1.0
 
     Auto-calibrate auc_max_used:
-      - auc_history içinden percentile ile
+      - model.meta["auc_history"] içinden percentile ile
       - history yoksa auc_max default
 
     AUC history persistence:
       - models/auc_history_{interval}.jsonl
       - init'te load edip model.meta["auc_history"] içine koyar
 
-    IMPORTANT:
-      - history yazımı "hour bucket" (1 saatte 1 kayıt) olacak şekilde yapılır (default: hour)
-      - aynı bucket içinde yeni kayıt gelirse replace edilir
-      - AUC değişimi küçükse (|Δ| < AUC_HISTORY_MIN_DELTA) yazılmaz
-      - disk yazımı append değil, rewrite (duplicate bucket birikmesin)
+    ÖNEMLİ TASARIM:
+      - predict_mtf sırasında history yazılmaz.
+      - hourly/day history güncelleme retrain sonrası yapılır (utils/auc_history.py).
     """
 
     def __init__(
@@ -182,6 +182,7 @@ class HybridMTF:
         auc_key_priority: Tuple[str, ...] = ("auc_used", "wf_auc_mean", "val_auc", "best_auc", "auc", "oof_auc"),
     ) -> None:
         self.models_by_interval = models_by_interval or {}
+
         self.auc_floor = float(auc_floor)
         self.auc_max = float(auc_max)
         self.weight_floor = float(weight_floor)
@@ -202,16 +203,12 @@ class HybridMTF:
         # history persistence dir
         self.auc_history_dir = os.getenv("AUC_HISTORY_DIR", "models")
 
-        # bucket policy: "hour" (default) or "day"
+        # bucket policy (info amaçlı; yazımı utils/auc_history yapar)
         self.auc_history_bucket = str(os.getenv("AUC_HISTORY_BUCKET", "hour")).strip().lower()
         if self.auc_history_bucket not in ("hour", "day"):
             self.auc_history_bucket = "hour"
 
-        # min delta to write history (same bucket)
         self.auc_history_min_delta = float(_env_float("AUC_HISTORY_MIN_DELTA", 0.001))
-
-        # OPTIONAL: predict sırasında history güncellemek istersen (default kapalı)
-        self.update_history_on_predict = bool(_env_bool("AUC_HISTORY_UPDATE_ON_PREDICT", False))
 
         self._warned_skip_auc: set[str] = set()
         self._warned_low_w: set[str] = set()
@@ -223,7 +220,7 @@ class HybridMTF:
         self._bootstrap_auc_histories_from_disk()
 
     # --------------------------------------------------------------
-    # Disk persistence
+    # Disk persistence (READ-only for predict path)
     # --------------------------------------------------------------
     def _history_path(self, interval: str) -> str:
         return os.path.join(self.auc_history_dir, f"auc_history_{interval}.jsonl")
@@ -240,7 +237,7 @@ class HybridMTF:
                         continue
                     try:
                         rec = json.loads(line)
-                        if isinstance(rec, dict) and ("auc" in rec) and ("ts" in rec):
+                        if isinstance(rec, dict) and ("auc" in rec):
                             out.append(rec)
                     except Exception:
                         continue
@@ -250,23 +247,7 @@ class HybridMTF:
             out = out[-max_points:]
         return out
 
-    def _write_history_jsonl(self, path: str, rows: List[Dict[str, Any]]) -> None:
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-        except Exception:
-            pass
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                for r in rows:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-
     def _bootstrap_auc_histories_from_disk(self) -> None:
-        """
-        Disk'ten auc_history_{itv}.jsonl yükle.
-        Yoksa best_auc ile seed et (bucketed write).
-        """
         for itv, model in self.models_by_interval.items():
             meta = getattr(model, "meta", None)
             if meta is None or not isinstance(meta, dict):
@@ -279,31 +260,18 @@ class HybridMTF:
 
             path = self._history_path(itv)
             hist = self._read_history_jsonl(path, max_points=400)
-
             if hist:
                 meta["auc_history"] = hist
-                self.logger.info(
-                    "[AUC-HIST] Loaded auc_history from disk interval=%s n=%d path=%s",
-                    itv,
-                    len(hist),
-                    path,
-                )
-                continue
-
-            # seed from best_auc once
-            try:
-                best_auc = float(meta.get("best_auc", 0.0) or 0.0)
-            except Exception:
-                best_auc = 0.0
-
-            if best_auc > 0.0:
-                self.update_auc_history(
-                    interval=itv,
-                    auc_value=best_auc,
-                    max_points=400,
-                    replace_same_bucket=True,
-                )
-                self.logger.info("[AUC-HIST] Seeded auc_history interval=%s auc=%.6f", itv, best_auc)
+                self.logger.info("[AUC-HIST] Loaded auc_history from disk interval=%s n=%d path=%s", itv, len(hist), path)
+            else:
+                # seed ONLY in-memory for calibration/log clarity (write işi retrain sonrası utils'te)
+                try:
+                    best_auc = float(meta.get("best_auc", 0.0) or 0.0)
+                except Exception:
+                    best_auc = 0.0
+                if best_auc > 0.0:
+                    meta["auc_history"] = [{"ts": pd.Timestamp.now(tz="UTC").isoformat(), "auc": float(best_auc), "seed": True}]
+                    self.logger.info("[AUC-HIST] Seeded in-memory auc_history interval=%s auc=%.6f", itv, best_auc)
 
     # --------------------------------------------------------------
     # AUC pick/standardize
@@ -363,7 +331,6 @@ class HybridMTF:
             s = pd.Series(vals, index=idx).dropna()
             return s[s.index.notna()]
 
-        # fallback
         try:
             return pd.Series([float(items)])
         except Exception:
@@ -378,7 +345,7 @@ class HybridMTF:
             return s
 
         if isinstance(s.index, pd.DatetimeIndex) and s.index.notna().any():
-            now = pd.Timestamp.utcnow()
+            now = pd.Timestamp.now(tz="UTC")
             start = now - pd.Timedelta(days=max(self.calib_days, 1))
             s2 = s[(s.index >= start) & (s.index <= now)]
             return s2.dropna()
@@ -462,18 +429,14 @@ class HybridMTF:
     # --------------------------------------------------------------
     # Dış API: MTF tahmin (TEK)
     # --------------------------------------------------------------
-    def predict_mtf(
+    def predict_ensemble(
         self,
         X_by_interval: Dict[str, Any],
         standardize_auc_key: str | None = "auc_used",
         standardize_overwrite: bool = False,
     ) -> Tuple[float, Dict[str, Any]]:
         lvl = getattr(logging, self.predict_log_level, logging.INFO)
-        self.logger.log(
-            lvl,
-            "[HYBRID-MTF] predict_mtf called | intervals=%s",
-            list(self.models_by_interval.keys()),
-        )
+        self.logger.log(lvl, "[HYBRID-MTF] predict_ensemble called | intervals=%s", list(self.models_by_interval.keys()))
 
         weight_by_interval: Dict[str, float] = {}
         meta_by_interval: Dict[str, Any] = {}
@@ -493,19 +456,6 @@ class HybridMTF:
                 if hist:
                     meta["auc_history"] = hist
 
-            # OPTIONAL: predict sırasında history update (normalde retrain sonrası yazmak daha iyi)
-            if self.update_history_on_predict and (auc_key_used != "fallback"):
-                try:
-                    self.update_auc_history(
-                        interval=itv,
-                        auc_value=float(auc_used),
-                        ts=None,
-                        max_points=400,
-                        replace_same_bucket=True,
-                    )
-                except Exception:
-                    pass
-
             auc_max_used = self._calibrate_auc_max(itv, meta)
             weight = self._get_weight_for_interval(itv, auc_used, auc_max_used)
 
@@ -521,7 +471,7 @@ class HybridMTF:
                 "auc_history_min_delta": float(self.auc_history_min_delta),
             }
 
-        ensemble_p, mtf_debug = self._ensemble.predict_mtf(
+        ensemble_p, mtf_debug = self._ensemble.predict_ensemble(
             X_by_interval=X_by_interval,
             weight_by_interval=weight_by_interval,
         )
@@ -556,107 +506,19 @@ class HybridMTF:
 
         return ensemble_p, mtf_debug
 
-    # ----------------------------------------
-    # AUC history update (bucketed: hour/day)
-    # ----------------------------------------
-    def _bucket_ts(self, ts_dt: pd.Timestamp) -> pd.Timestamp:
-        # UTC-aware
-        if ts_dt.tzinfo is None:
-            ts_dt = ts_dt.tz_localize("UTC")
-        else:
-            ts_dt = ts_dt.tz_convert("UTC")
-
-        if self.auc_history_bucket == "day":
-            return ts_dt.floor("D")
-        # default hour
-        return ts_dt.floor("H")
-
-    def update_auc_history(
+    # --------------------------------------------------------------
+    # Backward-compat: dışarıya standart API
+    # --------------------------------------------------------------
+    def predict_mtf(
         self,
-        interval: str,
-        auc_value: float,
-        ts: str | pd.Timestamp | None = None,
-        max_points: int = 400,
-        replace_same_bucket: bool = True,
-    ) -> None:
-        """
-        Saatlik (veya günlük) bucket ile history günceller.
-        - aynı bucket varsa: min-delta küçükse yazmaz; değilse replace eder
-        - disk'e rewrite eder (bucket duplicate olmasın)
-        """
-        model = self.models_by_interval.get(interval)
-        if model is None:
-            return
+        X_by_interval: Dict[str, Any],
+        standardize_auc_key: str | None = "auc_used",
+        standardize_overwrite: bool = False,
+    ) -> Tuple[float, Dict[str, Any]]:
+        return self.predict_ensemble(
+            X_by_interval=X_by_interval,
+            standardize_auc_key=standardize_auc_key,
+            standardize_overwrite=standardize_overwrite,
+        )
 
-        try:
-            auc_f = float(auc_value)
-        except Exception:
-            return
-        if not np.isfinite(auc_f):
-            return
 
-        meta = getattr(model, "meta", None)
-        if meta is None or not isinstance(meta, dict):
-            meta = {}
-            setattr(model, "meta", meta)
-
-        # timestamp
-        if ts is None:
-            ts_dt = pd.Timestamp.utcnow().tz_localize("UTC")
-        else:
-            ts_dt = pd.to_datetime(ts, errors="coerce", utc=True)
-            if ts_dt is pd.NaT:
-                ts_dt = pd.Timestamp.utcnow().tz_localize("UTC")
-
-        bucket = self._bucket_ts(ts_dt)
-        rec = {"ts": bucket.isoformat(), "auc": float(auc_f), "bucket": self.auc_history_bucket}
-
-        hist = meta.get("auc_history", [])
-        if hist is None:
-            hist = []
-        if not isinstance(hist, list):
-            hist = []
-
-        # find existing record in same bucket
-        idx_same = None
-        old_auc = None
-        for i in range(len(hist) - 1, -1, -1):
-            h = hist[i]
-            if not isinstance(h, dict):
-                continue
-            hts = pd.to_datetime(h.get("ts"), errors="coerce", utc=True)
-            if hts is pd.NaT:
-                continue
-            if self._bucket_ts(hts) == bucket:
-                idx_same = i
-                try:
-                    old_auc = float(h.get("auc"))
-                except Exception:
-                    old_auc = None
-                break
-
-        # min-delta gate (aynı bucket içinde küçük farksa hiç yazma)
-        if idx_same is not None and old_auc is not None:
-            if abs(float(auc_f) - float(old_auc)) < float(self.auc_history_min_delta):
-                return
-
-        # apply update
-        if idx_same is not None and replace_same_bucket:
-            hist[idx_same] = rec
-        else:
-            hist.append(rec)
-
-        # sort & trim
-        try:
-            hist.sort(key=lambda x: pd.to_datetime(x.get("ts"), errors="coerce", utc=True))
-        except Exception:
-            pass
-
-        if max_points > 0 and len(hist) > max_points:
-            hist = hist[-max_points:]
-
-        meta["auc_history"] = hist
-
-        # persist to disk (rewrite to avoid duplicates within bucket)
-        path = self._history_path(interval)
-        self._write_history_jsonl(path, hist)

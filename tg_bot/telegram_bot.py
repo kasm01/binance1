@@ -1,8 +1,11 @@
+import os
+import re
 from typing import Optional
 
 from telegram import Bot
 from telegram.parsemode import ParseMode
 from telegram.ext import Updater
+from telegram.error import BadRequest
 
 from core.logger import system_logger, error_logger
 from core.risk_manager import RiskManager
@@ -16,9 +19,30 @@ class TelegramBot:
     - /start, /status, /trades, /risk gibi komutlar tg_bot.commands.register_handlers ile eklenir.
     """
 
+
+    def _safe_send(self, chat_id: str, text: str, **kwargs):
+        """Send message safely. If Telegram Markdown/HTML parse fails, retry as plain text."""
+        try:
+            return self._safe_send(chat_id=chat_id, text=text, **kwargs)
+        except BadRequest as e:
+            # Parse hatası vb. olursa parse_mode'u düşürüp plain text tekrar dene
+            msg = str(e)
+            if "Can't parse entities" in msg or "parse" in msg.lower():
+                kwargs.pop("parse_mode", None)
+                try:
+                    return self._safe_send(chat_id=chat_id, text=text, **kwargs)
+                except Exception:
+                    raise
+            raise
+
     def __init__(self) -> None:
         self.token: Optional[str] = getattr(Credentials, "TELEGRAM_BOT_TOKEN", None)
         self.default_chat_id: Optional[str] = getattr(Credentials, "TELEGRAM_CHAT_ID", None)
+        if not self.default_chat_id:
+            _allowed = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or ""
+            _parts = [x.strip() for x in re.split(r"[,\s]+", _allowed) if x.strip()]
+            if _parts:
+                self.default_chat_id = _parts[0]
 
         if not self.token:
             system_logger.warning("[TelegramBot] TELEGRAM_BOT_TOKEN bulunamadı. Telegram bot devre dışı.")
@@ -71,17 +95,37 @@ class TelegramBot:
             system_logger.warning("[TelegramBot] stop_polling hata: %s", e)
 
     def send_message(self, message: str, *, parse_mode: Optional[str] = None) -> None:
-        if not self.bot:
-            error_logger.error("[TelegramBot] send_message çağrıldı ama bot initialize edilmemiş.")
-            return
-
+        """Send message safely.
+        Markdown/HTML parse hatasında plain-text retry yapar.
+        """
         if not self.default_chat_id:
             error_logger.error("[TelegramBot] TELEGRAM_CHAT_ID tanımlı değil, mesaj gönderilemiyor.")
             return
 
         try:
-            pm = parse_mode or ParseMode.MARKDOWN
-            self.bot.send_message(chat_id=self.default_chat_id, text=message, parse_mode=pm)
-            system_logger.info("[TelegramBot] Mesaj gönderildi.")
+            # İlk deneme: parse_mode varsa kullan
+            self.bot.send_message(
+                chat_id=self.default_chat_id,
+                text=message,
+                parse_mode=parse_mode,
+            )
+            return
+
+        except BadRequest as e:
+            msg = str(e)
+            # Markdown / entity parse hatası → plain text retry
+            if "Can't parse entities" in msg or "parse" in msg.lower():
+                try:
+                    self.bot.send_message(
+                        chat_id=self.default_chat_id,
+                        text=message,
+                    )
+                    return
+                except Exception as e2:
+                    error_logger.error(f"[TelegramBot] Plain-text retry başarısız: {e2}")
+                    return
+
+            error_logger.error(f"[TelegramBot] Mesaj gönderilemedi: {e}")
+
         except Exception as e:
             error_logger.error(f"[TelegramBot] Mesaj gönderilemedi: {e}")

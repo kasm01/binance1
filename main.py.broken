@@ -615,7 +615,7 @@ async def bot_loop(objs: Dict[str, Any], prob_stab: ProbStabilizer) -> None:
                         X_by_interval[itv] = df_itv[cols_itv].tail(500)
 
                     if X_by_interval:
-                        p_ens, mtf_debug = mtf_ensemble.predict_mtf(X_by_interval)
+                        p_ens, mtf_debug = mtf_ensemble.predict_ensemble(X_by_interval)
                         p_used = float(p_ens)
 
                         per_int = mtf_debug.get("per_interval", {}) if isinstance(mtf_debug, dict) else {}

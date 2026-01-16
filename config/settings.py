@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 
 # .env yükle
@@ -57,7 +58,13 @@ class Settings:
 
     # ───────────── Telegram ayarları ─────────────
     TELEGRAM_BOT_TOKEN: str | None = os.getenv("TELEGRAM_BOT_TOKEN") or None
-    TELEGRAM_CHAT_ID: str | None = os.getenv("TELEGRAM_CHAT_ID") or None
+TELEGRAM_CHAT_ID: str | None = os.getenv("TELEGRAM_CHAT_ID") or None
+# Fallback: .env'e chat_id koymadan çalışmak için allowed ids'den default seç
+if not TELEGRAM_CHAT_ID:
+    _allowed = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or ""
+    _parts = [x.strip() for x in re.split(r"[,\s]+", _allowed) if x.strip()]
+    if _parts:
+        TELEGRAM_CHAT_ID = _parts[0]
 
     # ───────────── Cloud / Logging ─────────────
     USE_CLOUD: bool = os.getenv("USE_CLOUD", "True").lower() == "true"

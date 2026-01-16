@@ -1,3 +1,47 @@
+
+def _mask_env_presence(keys: list[str]) -> dict:
+    import os
+    out = {}
+    for k in keys:
+        v = os.getenv(k)
+        out[k] = "SET" if (v is not None and str(v).strip() != "") else "MISSING"
+    return out
+
+def _log_secret_env_presence(logger):
+    # Değerleri ASLA basmıyoruz. Sadece SET/MISSING.
+    keys = [
+        # Telegram
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_ALLOWED_CHAT_IDS",        # Binance / OKX
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "OKX_API_KEY",
+        "OKX_API_SECRET",
+        "OKX_PASSPHRASE",
+
+        # Infra
+        "REDIS_PASSWORD",
+        "PG_DSN",
+
+        # Web3 / Data APIs
+        "ETH_API_KEY",
+        "ALCHEMY_ETH_API_KEY",
+        "INFURA_API_KEY",
+        "POLYGON_API_KEY",
+        "ARBI_API_KEY",
+        "THE_GRAPH_API_KEY",
+        "GRAPH_API_KEY",
+        "COINGLASS_API_KEY",
+        "BSCSCAN_API_KEY",
+        "ETHERSCAN_API_KEY",
+        "CRYPTOQUANT_API_KEY",
+        "COINMARKETCAP_API_KEY",
+        "SANTIMENT_API_KEY",
+    ]
+    st = _mask_env_presence(keys)
+    # tek satır, okunur, güvenli
+    logger.info("[ENV][SECRETS] %s", st)
+
 import asyncio
 import logging
 import os
@@ -48,7 +92,7 @@ from features.schema import normalize_to_schema
 # Model path contract
 from app_paths import MODELS_DIR
 
-from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_day
+from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_hour
 
 # Optional: project light scanner (varsa)
 try:
@@ -884,7 +928,14 @@ def create_trading_objects() -> Dict[str, Any]:
 
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
-                append_auc_used_once_per_day(intervals=list(mtf_intervals), logger=system_logger)
+                if get_bool_env("AUC_RUNTIME_APPEND", False):
+                    # AUC history runtime append (default OFF). Retrain sonrası yazmak için run_* scriptleri kullanılır.
+                    if get_bool_env('AUC_RUNTIME_APPEND', False):
+                        append_auc_used_once_per_hour(intervals=list(mtf_intervals), logger=system_logger)
+                    else:
+                        # kapalı: predict/runtime sırasında disk write yapma
+                        pass
+
             except Exception as e:
                 if system_logger:
                     system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)

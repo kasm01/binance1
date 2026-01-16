@@ -113,3 +113,132 @@ def append_auc_used_once_per_day(intervals: List[str], logger=None) -> None:
         ok = _write_meta(meta_path, meta, logger=logger)
         if ok and logger:
             logger.info("[AUC-HIST] Daily append interval=%s day=%s auc=%.6f", itv, today, float(auc_val))
+
+
+def append_auc_used_once_per_hour(intervals: List[str], logger=None) -> None:
+    """
+    Her interval için model_meta_<itv>.json içindeki auc_used değerini
+    AUC history'e "1 saatte 1 kayıt" şeklinde yazar.
+
+    - ts bucket: UTC saat (floor("h"))
+    - aynı saat bucket'ında kayıt varsa replace edilir
+    - küçük değişimler yazılmasın diye min-delta filtresi vardır
+
+    ENV:
+      AUC_HISTORY_MIN_DELTA (default=0.001)
+      AUC_HISTORY_MAX_POINTS (default=400)
+    """
+    import os
+    import json
+    from pathlib import Path
+    import pandas as pd
+
+    min_delta = 0.001
+    try:
+        v = os.getenv("AUC_HISTORY_MIN_DELTA", "0.001")
+        min_delta = float(v) if v is not None and str(v).strip() != "" else 0.001
+    except Exception:
+        min_delta = 0.001
+
+    max_points = 400
+    try:
+        v = os.getenv("AUC_HISTORY_MAX_POINTS", "400")
+        max_points = int(float(v)) if v is not None and str(v).strip() != "" else 400
+    except Exception:
+        max_points = 400
+
+    # UTC hour bucket
+    now0 = pd.Timestamp.utcnow()
+    # pandas sürümüne göre tz-aware olabilir; güvenli normalize et
+    if getattr(now0, "tzinfo", None) is None:
+        now0 = now0.tz_localize("UTC")
+    else:
+        now0 = now0.tz_convert("UTC")
+    now = now0.floor("h")
+    ts = now.isoformat()
+
+    models_dir = Path("models")
+    for itv in intervals:
+        meta_path = models_dir / f"model_meta_{itv}.json"
+        if not meta_path.exists():
+            if logger:
+                logger.warning("[AUC-HIST] meta yok: %s", str(meta_path))
+            continue
+
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            if logger:
+                logger.warning("[AUC-HIST] meta read failed %s: %s", str(meta_path), e)
+            continue
+
+        auc_used = meta.get("auc_used", None)
+        if auc_used is None:
+            # fallback: best_auc vb.
+            auc_used = meta.get("best_auc", meta.get("wf_auc_mean", None))
+
+        try:
+            auc_f = float(auc_used)
+        except Exception:
+            if logger:
+                logger.warning("[AUC-HIST] auc_used parse edilemedi interval=%s raw=%r", itv, auc_used)
+            continue
+
+        if not (auc_f == auc_f) or auc_f <= 0.0:
+            continue
+
+        hist = meta.get("auc_history", [])
+        if not isinstance(hist, list):
+            hist = []
+
+        # aynı hour bucket var mı?
+        idx_same = None
+        old_auc = None
+        for i in range(len(hist) - 1, -1, -1):
+            h = hist[i]
+            if not isinstance(h, dict):
+                continue
+            hts = pd.to_datetime(h.get("ts"), errors="coerce", utc=True)
+            if hts is pd.NaT:
+                continue
+            if hts.floor("h") == now:
+                idx_same = i
+                try:
+                    old_auc = float(h.get("auc"))
+                except Exception:
+                    old_auc = None
+                break
+
+        # min-delta gate (aynı saat içinde ufak farksa yazma)
+        if idx_same is not None and old_auc is not None:
+            if abs(float(auc_f) - float(old_auc)) < float(min_delta):
+                continue
+
+        rec = {"ts": ts, "auc": float(auc_f), "bucket": "hour"}
+
+        if idx_same is not None:
+            hist[idx_same] = rec
+        else:
+            hist.append(rec)
+
+        # sort + trim
+        try:
+            hist.sort(key=lambda x: pd.to_datetime(x.get("ts"), errors="coerce", utc=True))
+        except Exception:
+            pass
+
+        if max_points > 0 and len(hist) > max_points:
+            hist = hist[-max_points:]
+
+        meta["auc_history"] = hist
+        meta["auc_history_hourly_source"] = "append_auc_used_once_per_hour::auc_used"
+        meta["auc_history_hour_bucket_utc"] = ts
+
+        try:
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            if logger:
+                logger.info("[AUC-HIST] hourly append ok interval=%s auc=%.6f ts=%s", itv, float(auc_f), ts)
+        except Exception as e:
+            if logger:
+                logger.warning("[AUC-HIST] meta write failed %s: %s", str(meta_path), e)
+            continue

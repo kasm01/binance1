@@ -72,7 +72,21 @@ tmux new-window -t "$SESSION_NAME:3" -n "sgd_6m_strict" \
    LOG=logs/training/sgd_6m_strict_\$(date +%Y%m%d_%H%M%S).log && \
    echo \"[SGD] 6 aylık strict eğitim başlıyor...\" && \
    PYTHONPATH=$PROJECT_DIR $PYTHON -u training/train_sgd_online_strict.py 2>&1 | tee \$LOG && \
+   # --- AUC-POST-SGD: retrain sonrası (1 kez) hourly auc_used append ---
+   $PYTHON - <<'PY'
+import os
+from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_hour
+mtf = os.getenv('MTF_INTERVALS','1m,3m,5m,15m,30m,1h')
+intervals = [x.strip() for x in mtf.split(',') if x.strip()]
+seed_auc_history_if_missing(intervals=intervals, logger=None)
+append_auc_used_once_per_hour(intervals=intervals, logger=None)
+print('[AUC-POST-SGD] hourly auc_used appended for:', intervals)
+PY
+   # --- /AUC-POST-SGD ---
+   && \
    echo \"[SGD] Eğitim tamamlandı. Log: \$LOG\" && read"
+
+
 
 # ==========================================================
 # BİTTİ
