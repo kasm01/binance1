@@ -809,6 +809,11 @@ def create_trading_objects() -> Dict[str, Any]:
     try:
         tg_bot = TelegramBot()
 
+        try:
+            risk_manager.set_telegram_bot(tg_bot)
+        except Exception:
+            pass
+
         dispatcher = getattr(tg_bot, "dispatcher", None)
         if dispatcher:
             if hasattr(tg_bot, "set_risk_manager"):

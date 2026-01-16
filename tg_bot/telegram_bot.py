@@ -60,6 +60,25 @@ class TelegramBot:
 
         system_logger.info("[TelegramBot] Telegram bot başarıyla initialize edildi.")
 
+
+        # default_chat_id fallback (no .env chat_id; use allowed list)
+
+        try:
+
+            if not getattr(self, "default_chat_id", None):
+
+                _allowed = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or ""
+
+                _parts = [x.strip() for x in re.split(r"[,\s]+", _allowed) if x.strip()]
+
+                if _parts:
+
+                    self.default_chat_id = _parts[0]
+
+        except Exception:
+
+            pass
+
     def set_risk_manager(self, risk_manager: RiskManager) -> None:
         if not self.dispatcher:
             system_logger.warning("[TelegramBot] set_risk_manager çağrıldı ama dispatcher yok.")
