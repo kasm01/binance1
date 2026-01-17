@@ -1,6 +1,22 @@
 # config/redis_config.py
 import redis
 
+def _clean_redis_password(pw):
+    """Return None if pw is empty/placeholder; otherwise return pw."""
+    if pw is None:
+        return None
+    try:
+        x = str(pw).strip()
+    except Exception:
+        return None
+    if x.lower() in {'', 'none', 'nopass', 'null', 'your_redis_password'}:
+        return None
+    # literal placeholder varyantlarını da yakala
+    if x == "YOUR_REDIS_PASSWORD":
+        return None
+    return x
+
+
 from .settings import Settings
 from .credentials import Credentials
 
@@ -15,7 +31,7 @@ class RedisConfig:
         self.host = Settings.REDIS_HOST
         self.port = Settings.REDIS_PORT
         self.db = Settings.REDIS_DB
-        self.password = Credentials.REDIS_PASSWORD
+        self.password=_clean_redis_password(Credentials.REDIS_PASSWORD)
         self._client: redis.Redis | None = None
 
     def connect(self) -> redis.Redis | None:
@@ -27,7 +43,7 @@ class RedisConfig:
                 host=self.host,
                 port=self.port,
                 db=self.db,
-                password=self.password,
+                password=_clean_redis_password(self.password),
                 decode_responses=True,
             )
             self._client.ping()

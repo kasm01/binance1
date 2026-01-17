@@ -1,5 +1,21 @@
 import redis
 
+def _clean_redis_password(pw):
+    """Return None if pw is empty/placeholder; otherwise return pw."""
+    if pw is None:
+        return None
+    try:
+        x = str(pw).strip()
+    except Exception:
+        return None
+    if x.lower() in {'', 'none', 'nopass', 'null', 'your_redis_password'}:
+        return None
+    # literal placeholder varyantlarını da yakala
+    if x == "YOUR_REDIS_PASSWORD":
+        return None
+    return x
+
+
 from core.utils import retry
 from config.settings import Settings
 from config.credentials import Credentials
@@ -18,7 +34,7 @@ class CacheManager:
             host=Settings.REDIS_HOST,
             port=Settings.REDIS_PORT,
             db=Settings.REDIS_DB,
-            password=Credentials.REDIS_PASSWORD,
+            password=_clean_redis_password(Credentials.REDIS_PASSWORD),
             decode_responses=True,
         )
 

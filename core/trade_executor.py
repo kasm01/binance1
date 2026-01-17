@@ -272,6 +272,37 @@ class TradeExecutor:
         if self.position_manager is not None:
             try:
                 self.position_manager.set_position(sym, pos)
+
+                try:
+                    rm = getattr(self, "risk_manager", None)
+                    if rm:
+                        # symbol/side/qty/notional/price/interval mümkün olduğunca local scope'tan alınır
+                        _symbol = str(locals().get("symbol") or locals().get("sym") or "").upper()
+                        _side = str(locals().get("side") or locals().get("position_side") or "")
+                        _qty = float(locals().get("qty") or locals().get("quantity") or 0.0)
+                        _notional = float(locals().get("notional") or locals().get("usdt_notional") or 0.0)
+                        _price = locals().get("entry_price", None)
+                        if _price is None:
+                            _price = locals().get("price", 0.0)
+                        _price = float(_price or 0.0)
+                        _interval = str(locals().get("interval") or "")
+                        _meta = locals().get("meta") if isinstance(locals().get("meta"), dict) else {}
+                        rm.on_position_open(
+                            symbol=_symbol,
+                            side=_side,
+                            qty=_qty,
+                            notional=_notional,
+                            price=_price,
+                            interval=_interval,
+                            meta={"reason": "EXEC_OPEN", **_meta},
+                        )
+                except Exception:
+                    try:
+                        if getattr(self, "logger", None):
+                            self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+                    except Exception:
+                        pass
+
                 return
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
@@ -695,5 +726,38 @@ class TradeExecutor:
                 "[EXEC] OPEN %s | symbol=%s qty=%.6f price=%.4f notional=%.2f interval=%s dry_run=%s",
                 side_norm.upper(), str(symbol).upper(), float(qty), float(price), float(notional), interval, self.dry_run
             )
+
+            # --- RISK / Telegram notify (position OPEN) ---
+            try:
+                rm = getattr(self, "risk_manager", None)
+                if rm:
+                    _side = str(side_norm).lower() if 'side_norm' in locals() else str(side).lower()
+                    if _side in ("buy", "long"):
+                        _side = "long"
+                    elif _side in ("sell", "short"):
+                        _side = "short"
+                    rm.on_position_open(
+                        symbol=str(symbol).upper(),
+                        side=_side,
+                        qty=float(qty),
+                        notional=float(notional),
+                        price=float(price),
+                        interval=str(interval or ""),
+                        meta={"reason": "EXEC_OPEN", **(meta or {})} if isinstance(meta, dict) else {"reason": "EXEC_OPEN"},
+                    )
+            except Exception:
+                try:
+                    if getattr(self, "logger", None):
+                        self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+                except Exception:
+                    pass
+
+                except Exception:
+                    try:
+                        if getattr(self, "logger", None):
+                            self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+                    except Exception:
+                        pass
+
         except Exception:
             pass

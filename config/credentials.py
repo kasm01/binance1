@@ -78,7 +78,7 @@ class Credentials:
         cls.OKX_PASSPHRASE = _env_any("OKX_PASSPHRASE")
 
         # Redis
-        cls.REDIS_PASSWORD = _env_any("REDIS_PASSWORD")
+        cls.REDIS_PASSWORD = (os.getenv("REDIS_PASSWORD") or "").strip() or None
 
         # Onchain/providers
         cls.ETHEREUM_API_KEY = _env_any("ETH_API_KEY", "ETHEREUM_API_KEY")
