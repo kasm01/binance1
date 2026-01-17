@@ -1,0 +1,250 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import json
+import os
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import redis
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _env_int(k: str, default: int) -> int:
+    try:
+        return int(os.getenv(k, str(default)).strip())
+    except Exception:
+        return default
+
+
+def _env_float(k: str, default: float) -> float:
+    try:
+        return float(os.getenv(k, str(default)).strip())
+    except Exception:
+        return default
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _safe_str(x: Any, default: str = "") -> str:
+    try:
+        return str(x)
+    except Exception:
+        return default
+
+
+@dataclass
+class TradeIntent:
+    intent_id: str
+    ts_utc: str
+    symbol: str
+    interval: str
+    side: str
+    score: float
+    recommended_leverage: int
+    recommended_notional_pct: float
+    reasons: List[str]
+    risk_tags: List[str]
+    raw: Dict[str, Any]
+
+
+class MasterExecutor:
+    """
+    Reads TOP5_STREAM packages, selects topN unique symbols, publishes trade intents.
+
+    IN:  top5_stream
+    OUT: trade_intents_stream
+    """
+
+    def __init__(self) -> None:
+        self.redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
+        self.redis_port = _env_int("REDIS_PORT", 6379)
+        self.redis_db = _env_int("REDIS_DB", 0)
+        self.redis_password = os.getenv("REDIS_PASSWORD") or None
+
+        self.in_stream = os.getenv("MASTER_IN_STREAM", os.getenv("TOP5_STREAM", "top5_stream"))
+        self.out_stream = os.getenv("MASTER_OUT_STREAM", os.getenv("TRADE_INTENTS_STREAM", "trade_intents_stream"))
+
+        self.topn = _env_int("MASTER_TOPN", 3)
+        self.max_pos = _env_int("MASTER_MAX_POS", 3)
+        self.read_block_ms = _env_int("MASTER_READ_BLOCK_MS", 2000)
+        self.batch_count = _env_int("MASTER_BATCH_COUNT", 50)
+        self.last_id = os.getenv("MASTER_START_ID", "0-0")
+
+        self.lev_min = _env_int("LEV_MIN", 3)
+        self.lev_max = _env_int("LEV_MAX", 30)
+        self.notional_min_pct = _env_float("NOTIONAL_MIN_PCT", 0.02)
+        self.notional_max_pct = _env_float("NOTIONAL_MAX_PCT", 0.25)
+
+        self.r = redis.Redis(
+            host=self.redis_host,
+            port=self.redis_port,
+            db=self.redis_db,
+            password=self.redis_password,
+            decode_responses=True,
+        )
+
+        print(
+            f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
+            f"topn={self.topn} max_pos={self.max_pos} "
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+        )
+
+    def _parse_pkg(self, stream_id: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        s = fields.get("json")
+        if not s:
+            return None
+        try:
+            pkg = json.loads(s)
+            if isinstance(pkg, dict):
+                pkg.setdefault("ts_utc", _now_utc_iso())
+                pkg["_source_stream_id"] = stream_id
+                return pkg
+        except Exception:
+            return None
+        return None
+
+    def _normalize_side(self, side: str) -> str:
+        s = side.strip().lower()
+        if s in ("buy", "long"):
+            return "long"
+        if s in ("sell", "short"):
+            return "short"
+        return s or "long"
+
+    def _candidate_score(self, c: Dict[str, Any]) -> float:
+        raw = c.get("raw") or {}
+        return _safe_float(c.get("_score_selected", c.get("score_total", raw.get("_score_total", 0.0))), 0.0)
+
+    def _make_intent(self, c: Dict[str, Any]) -> TradeIntent:
+        raw = c.get("raw") or {}
+        score = self._candidate_score(c)
+
+        base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
+        base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
+
+        conf = _safe_float(raw.get("confidence", 0.5), 0.5)
+        atr_pct = _safe_float(raw.get("atr_pct", 0.01), 0.01)
+        spread_pct = _safe_float(raw.get("spread_pct", 0.0003), 0.0003)
+
+        conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
+        atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
+        spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
+
+        lev = int(round(base_lev * conf_adj * atr_adj * spr_adj))
+        lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
+
+        npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1)
+        npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
+
+        return TradeIntent(
+            intent_id=str(uuid.uuid4()),
+            ts_utc=_now_utc_iso(),
+            symbol=_safe_str(c.get("symbol", "")).upper(),
+            interval=_safe_str(c.get("interval", "")),
+            side=self._normalize_side(_safe_str(c.get("side", raw.get("side", "")))),
+            score=float(score),
+            recommended_leverage=int(lev),
+            recommended_notional_pct=float(npct),
+            reasons=list(c.get("reasons") or []),
+            risk_tags=list(c.get("risk_tags") or []),
+            raw=dict(c),
+        )
+
+    def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
+        best_by_symbol: Dict[str, Dict[str, Any]] = {}
+        for c in items:
+            sym = _safe_str(c.get("symbol", "")).upper()
+            if not sym:
+                continue
+            sc = self._candidate_score(c)
+            prev = best_by_symbol.get(sym)
+            if (prev is None) or (sc > self._candidate_score(prev)):
+                best_by_symbol[sym] = c
+
+        intents = [self._make_intent(c) for c in best_by_symbol.values()]
+        intents.sort(key=lambda x: float(x.score), reverse=True)
+        return intents[: max(0, int(self.topn))]
+
+    def _read_top5(self) -> List[Tuple[str, Dict[str, Any]]]:
+        resp = self.r.xread({self.in_stream: self.last_id}, count=self.batch_count, block=self.read_block_ms)
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        if not resp:
+            return out
+        for _stream_name, entries in resp:
+            for sid, fields in entries:
+                pkg = self._parse_pkg(sid, fields)
+                if pkg:
+                    out.append((sid, pkg))
+                self.last_id = sid
+        return out
+
+    def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
+        payload = {
+            "ts_utc": _now_utc_iso(),
+            "source_top5_id": source_stream_id,
+            "count": len(intents),
+            "items": [
+                {
+                    "intent_id": it.intent_id,
+                    "ts_utc": it.ts_utc,
+                    "symbol": it.symbol,
+                    "interval": it.interval,
+                    "side": it.side,
+                    "score": it.score,
+                    "recommended_leverage": it.recommended_leverage,
+                    "recommended_notional_pct": it.recommended_notional_pct,
+                    "reasons": it.reasons,
+                    "risk_tags": it.risk_tags,
+                    "raw": it.raw,
+                }
+                for it in intents
+            ],
+        }
+        sid = self.r.xadd(self.out_stream, {"json": json.dumps(payload, ensure_ascii=False)}, maxlen=5000, approximate=True)
+        return sid
+
+    def run_forever(self) -> None:
+        idle = 0
+        while True:
+            pkgs = self._read_top5()
+            if not pkgs:
+                idle += 1
+                if idle % 30 == 0:
+                    print(f"[MasterExecutor] idle... last_id={self.last_id}")
+                continue
+            idle = 0
+
+            for sid, pkg in pkgs:
+                items = pkg.get("items") or []
+                if not isinstance(items, list) or not items:
+                    continue
+
+                intents = self._select_top_unique(items)
+                if not intents:
+                    continue
+
+                out_id = self._publish_intents(source_stream_id=sid, intents=intents)
+                summary = ", ".join(
+                    [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
+                )
+                print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
+
+
+if __name__ == "__main__":
+    MasterExecutor().run_forever()
