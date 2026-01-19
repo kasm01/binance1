@@ -86,6 +86,11 @@ class MasterExecutor:
         self.batch_count = _env_int("MASTER_BATCH_COUNT", 50)
         self.last_id = os.getenv("MASTER_START_ID", "0-0")
 
+
+        self.publish_cooldown_sec = int(os.getenv("MASTER_PUBLISH_COOLDOWN_SEC", "2"))
+        self._last_publish_ts = 0.0
+        self._last_published_source_id = None
+
         self.lev_min = _env_int("LEV_MIN", 3)
         self.lev_max = _env_int("LEV_MAX", 30)
         self.notional_min_pct = _env_float("NOTIONAL_MIN_PCT", 0.02)
@@ -195,6 +200,13 @@ class MasterExecutor:
         return out
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
+
+        # --- Dedupe same top5 package + cooldown ---
+        if self._last_published_source_id == source_stream_id:
+            return None
+        now = time.time()
+        if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
+            return None
         payload = {
             "ts_utc": _now_utc_iso(),
             "source_top5_id": source_stream_id,
@@ -217,6 +229,9 @@ class MasterExecutor:
             ],
         }
         sid = self.r.xadd(self.out_stream, {"json": json.dumps(payload, ensure_ascii=False)}, maxlen=5000, approximate=True)
+
+            self._last_publish_ts = time.time()
+        self._last_published_source_id = source_stream_id
         return sid
 
     def run_forever(self) -> None:

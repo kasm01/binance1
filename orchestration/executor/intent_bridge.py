@@ -47,123 +47,92 @@ class IntentBridge:
     Safe-by-default: if it cannot call executor methods, it only logs.
     """
 
-
-    def _gate_allow_open(self, symbol: str, side: str, interval: str, intent_id: str) -> bool:
-
-        """Return True if we can open; otherwise publish forward_skip and return False."""
-
+    def _gate_allow_open(self, symbol: str, side: str, interval: str, intent_id: str):
+        """Return (allow: bool, why: str). Uses Redis key open_positions_state by default.
+        Optional TTL cleanup via BRIDGE_OPEN_TTL_SEC (0=disabled).
+        """
         try:
-
             max_open = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
-
         except Exception:
-
             max_open = 3
 
-        dedup_symbol = os.getenv("DEDUP_SYMBOL_OPEN", "1").strip() not in ("0", "false", "False", "no", "NO")
-
+        dedup_symbol = os.getenv("DEDUP_SYMBOL_OPEN", "1").strip().lower() not in ("0","false","no","off")
         state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
 
+        try:
+            ttl_sec = int(os.getenv("BRIDGE_OPEN_TTL_SEC", "0"))
+        except Exception:
+            ttl_sec = 0
 
         try:
-
             raw_state = self.r.get(state_key)
-
             state = json.loads(raw_state) if raw_state else {}
-
         except Exception:
-
             state = {}
 
-
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
-
         if not isinstance(open_map, dict):
-
             open_map = {}
+        # TTL cleanup (optional)
+        if ttl_sec and ttl_sec > 0:
+            try:
+                now = datetime.now(timezone.utc)
+                dirty = False
+                for sym, info in list(open_map.items()):
+                    ts = ""
+                    if isinstance(info, dict):
+                        ts = str(info.get("ts_utc") or "")
+                    try:
+                        t0 = datetime.fromisoformat(ts) if ts else None
+                    except Exception:
+                        t0 = None
+                    if (t0 is None) or ((now - t0).total_seconds() > ttl_sec):
+                        open_map.pop(sym, None)
+                        dirty = True
+                if dirty:
+                    self.r.set(state_key, json.dumps({"open": open_map}))
+            except Exception:
+                pass
 
 
         if dedup_symbol and symbol in open_map:
-
-            try:
-
-                self._publish_event("forward_skip", {
-
-                    "intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval,
-
-                    "why": "symbol already open (gate)"
-
-                })
-
-            except Exception:
-
-                pass
-
-            return False
-
+            return (False, f"dedup_symbol: {symbol} already open")
 
         if len(open_map) >= max_open:
+            return (False, f"max_open: {len(open_map)} >= {max_open}")
 
-            try:
-
-                self._publish_event("forward_skip", {
-
-                    "intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval,
-
-                    "why": f"max open positions reached ({len(open_map)}/{max_open})"
-
-                })
-
-            except Exception:
-
-                pass
-
-            return False
-
-
-        return True
+        return (True, "ok")
 
 
     def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
-
         state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
 
         try:
-
             raw_state = self.r.get(state_key)
-
             state = json.loads(raw_state) if raw_state else {}
-
         except Exception:
-
             state = {}
 
-
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
-
         if not isinstance(open_map, dict):
-
             open_map = {}
 
-
         open_map[symbol] = {
-
-            "side": side, "interval": interval,
-
+            "side": side,
+            "interval": interval,
             "ts_utc": datetime.now(timezone.utc).isoformat(),
-
-            "intent_id": intent_id
-
+            "intent_id": intent_id,
         }
 
-
         try:
-
+            # state yaz
             self.r.set(state_key, json.dumps({"open": open_map}))
 
-        except Exception:
+            # TTL (auto-expire)
 
+        except Exception:
             pass
+
 
 
     def __init__(self) -> None:
@@ -255,21 +224,24 @@ class IntentBridge:
         symbol = _safe_str(it.get("symbol", "")).upper()
         interval = _safe_str(it.get("interval", ""))
 
-        # GATE_CHECK_BEGIN
-        # --- Position gate (max open positions + symbol dedupe) ---
+        # --- gate: max open + symbol dedupe (+ optional TTL cleanup) ---
+        side = self._normalize_side(_safe_str(it.get("side", "long")))
+        intent_id = _safe_str(it.get("intent_id", ""))
+
         try:
-            # intent_id/symbol/side/interval bu noktada hazır
-            if not self._gate_allow_open(symbol, side, interval, intent_id):
+            allow, why = self._gate_allow_open(symbol, side, interval, intent_id)
+            if not allow:
+                self._publish_event(
+                    "forward_skip",
+                    {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
+                )
                 return
         except Exception:
             pass
-        # GATE_CHECK_END
 
-        side = self._normalize_side(_safe_str(it.get("side", "long")))
         lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
         npct = float(_safe_float(it.get("recommended_notional_pct", 0.05), 0.05))
         score = float(_safe_float(it.get("score", 0.0), 0.0))
-        intent_id = _safe_str(it.get("intent_id", ""))
 
         meta = {
             "reason": "ORCH_INTENT",
