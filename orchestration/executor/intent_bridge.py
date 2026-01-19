@@ -72,8 +72,7 @@ class IntentBridge:
 
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
-            open_map = {}
-        # TTL cleanup (optional)
+            open_map = {}        # TTL cleanup (optional)
         if ttl_sec and ttl_sec > 0:
             try:
                 now = datetime.now(timezone.utc)
@@ -90,9 +89,13 @@ class IntentBridge:
                         open_map.pop(sym, None)
                         dirty = True
                 if dirty:
-                    self.r.set(state_key, json.dumps({"open": open_map}))
+                    try:
+                        self.r.set(state_key, json.dumps({"open": open_map}))
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
 
 
         if dedup_symbol and symbol in open_map:

@@ -230,7 +230,7 @@ class MasterExecutor:
         }
         sid = self.r.xadd(self.out_stream, {"json": json.dumps(payload, ensure_ascii=False)}, maxlen=5000, approximate=True)
 
-            self._last_publish_ts = time.time()
+        self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
         return sid
 
