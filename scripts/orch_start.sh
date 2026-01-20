@@ -13,6 +13,10 @@ start_one () {
   local name="$1"; shift
   local logfile="${LOGDIR}/${name}.log"
   local pidfile="${RUNDIR}/${name}.pid"
+  if [ "${DRY_RUN:-1}" = "1" ] || [ "${DRY_RUN:-1}" = "true" ]; then
+    echo "[START] DRY_RUN -> resetting open_positions_state"
+    redis-cli DEL open_positions_state >/dev/null 2>&1 || true
+  fi
 
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     echo "[SKIP] $name already running (pid=$(cat "$pidfile"))"
