@@ -18,14 +18,14 @@ def _now_utc_iso() -> str:
 
 def _env_int(k: str, default: int) -> int:
     try:
-        return int(os.getenv(k, str(default)).strip())
+        return int(str(os.getenv(k, str(default))).strip())
     except Exception:
         return default
 
 
 def _env_float(k: str, default: float) -> float:
     try:
-        return float(os.getenv(k, str(default)).strip())
+        return float(str(os.getenv(k, str(default))).strip())
     except Exception:
         return default
 
@@ -67,30 +67,41 @@ class MasterExecutor:
     """
     Reads TOP5_STREAM packages, selects topN unique symbols, publishes trade intents.
 
-    IN:  top5_stream
+    IN:  top5_stream (group-based consumption)
     OUT: trade_intents_stream
     """
 
     def __init__(self) -> None:
+        # Redis
         self.redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
         self.redis_port = _env_int("REDIS_PORT", 6379)
         self.redis_db = _env_int("REDIS_DB", 0)
         self.redis_password = os.getenv("REDIS_PASSWORD") or None
 
+        # Streams
         self.in_stream = os.getenv("MASTER_IN_STREAM", os.getenv("TOP5_STREAM", "top5_stream"))
         self.out_stream = os.getenv("MASTER_OUT_STREAM", os.getenv("TRADE_INTENTS_STREAM", "trade_intents_stream"))
 
-        self.topn = _env_int("MASTER_TOPN", 3)
-        self.max_pos = _env_int("MASTER_MAX_POS", 3)
+        # Consumer group
+        self.group = os.getenv("MASTER_GROUP", "master_exec_g")
+        self.consumer = os.getenv("MASTER_CONSUMER", "master_1")
+        self.group_start_id = os.getenv("MASTER_GROUP_START_ID", "$")  # "$" new only, or "0-0" from beginning
+        self.drain_pending = os.getenv("MASTER_DRAIN_PENDING", "0").strip().lower() in ("1", "true", "yes", "on")
+
+        # Read tuning
         self.read_block_ms = _env_int("MASTER_READ_BLOCK_MS", 2000)
         self.batch_count = _env_int("MASTER_BATCH_COUNT", 50)
-        self.last_id = os.getenv("MASTER_START_ID", "0-0")
 
+        # Selection / limits
+        self.topn = _env_int("MASTER_TOPN", 3)
+        self.max_pos = _env_int("MASTER_MAX_POS", 3)
 
-        self.publish_cooldown_sec = int(os.getenv("MASTER_PUBLISH_COOLDOWN_SEC", "2"))
+        # Publish cooldown (prevents spam)
+        self.publish_cooldown_sec = _env_int("MASTER_PUBLISH_COOLDOWN_SEC", 2)
         self._last_publish_ts = 0.0
-        self._last_published_source_id = None
+        self._last_published_source_id: Optional[str] = None
 
+        # Risk sizing clamp
         self.lev_min = _env_int("LEV_MIN", 3)
         self.lev_max = _env_int("LEV_MAX", 30)
         self.notional_min_pct = _env_float("NOTIONAL_MIN_PCT", 0.02)
@@ -104,11 +115,31 @@ class MasterExecutor:
             decode_responses=True,
         )
 
+        self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+
         print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
+            f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"topn={self.topn} max_pos={self.max_pos} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
+
+    def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
+        try:
+            self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
+            print(f"[MasterExecutor] XGROUP created: stream={stream} group={group} start_id={start_id}")
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" in str(e):
+                return
+            raise
+
+    def _ack(self, ids: List[str]) -> None:
+        if not ids:
+            return
+        try:
+            self.r.xack(self.in_stream, self.group, *ids)
+        except Exception:
+            pass
 
     def _parse_pkg(self, stream_id: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
         s = fields.get("json")
@@ -186,27 +217,42 @@ class MasterExecutor:
         intents.sort(key=lambda x: float(x.score), reverse=True)
         return intents[: max(0, int(self.topn))]
 
-    def _read_top5(self) -> List[Tuple[str, Dict[str, Any]]]:
-        resp = self.r.xread({self.in_stream: self.last_id}, count=self.batch_count, block=self.read_block_ms)
+    def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
+        """
+        start_id:
+          ">" => new messages only
+          "0" => pending messages (PEL) for this group
+        Returns list of (stream_id, pkg_dict)
+        """
+        resp = self.r.xreadgroup(
+            groupname=self.group,
+            consumername=self.consumer,
+            streams={self.in_stream: start_id},
+            count=self.batch_count,
+            block=self.read_block_ms,
+        )
         out: List[Tuple[str, Dict[str, Any]]] = []
         if not resp:
             return out
+
         for _stream_name, entries in resp:
             for sid, fields in entries:
                 pkg = self._parse_pkg(sid, fields)
                 if pkg:
                     out.append((sid, pkg))
-                self.last_id = sid
+                else:
+                    out.append((sid, {}))
         return out
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
-
-        # --- Dedupe same top5 package + cooldown ---
+        # Dedupe same top5 package + cooldown
         if self._last_published_source_id == source_stream_id:
             return None
+
         now = time.time()
         if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
             return None
+
         payload = {
             "ts_utc": _now_utc_iso(),
             "source_top5_id": source_stream_id,
@@ -228,24 +274,62 @@ class MasterExecutor:
                 for it in intents
             ],
         }
-        sid = self.r.xadd(self.out_stream, {"json": json.dumps(payload, ensure_ascii=False)}, maxlen=5000, approximate=True)
+
+        sid = self.r.xadd(
+            self.out_stream,
+            {"json": json.dumps(payload, ensure_ascii=False)},
+            maxlen=5000,
+            approximate=True,
+        )
 
         self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
         return sid
 
     def run_forever(self) -> None:
+        # Optional: drain pending first
+        if self.drain_pending:
+            print("[MasterExecutor] draining pending (PEL) ...")
+            while True:
+                rows = self._xreadgroup("0")
+                if not rows:
+                    break
+
+                # process
+                mids = [sid for sid, _ in rows]
+                for sid, pkg in rows:
+                    items = pkg.get("items") or []
+                    if not isinstance(items, list) or not items:
+                        continue
+                    intents = self._select_top_unique(items)
+                    if not intents:
+                        continue
+                    out_id = self._publish_intents(source_stream_id=sid, intents=intents)
+                    if out_id:
+                        summary = ", ".join(
+                            [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
+                        )
+                        print(f"[MasterExecutor] (PEL) published intents={len(intents)} id={out_id} | {summary}")
+
+                self._ack(mids)
+                time.sleep(0.05)
+
+            print("[MasterExecutor] pending drained.")
+
+        # Main loop
         idle = 0
         while True:
-            pkgs = self._read_top5()
-            if not pkgs:
+            rows = self._xreadgroup(">")
+            if not rows:
                 idle += 1
                 if idle % 30 == 0:
-                    print(f"[MasterExecutor] idle... last_id={self.last_id}")
+                    print("[MasterExecutor] idle...")
                 continue
             idle = 0
 
-            for sid, pkg in pkgs:
+            mids = [sid for sid, _ in rows]
+
+            for sid, pkg in rows:
                 items = pkg.get("items") or []
                 if not isinstance(items, list) or not items:
                     continue
@@ -255,10 +339,14 @@ class MasterExecutor:
                     continue
 
                 out_id = self._publish_intents(source_stream_id=sid, intents=intents)
-                summary = ", ".join(
-                    [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
-                )
-                print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
+                if out_id:
+                    summary = ", ".join(
+                        [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
+                    )
+                    print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
+
+            self._ack(mids)
+            time.sleep(0.05)
 
 
 if __name__ == "__main__":
