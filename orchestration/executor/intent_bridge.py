@@ -45,6 +45,10 @@ class IntentBridge:
     OUT: exec_events_stream (log/trace)
 
     Restart-safe: XREADGROUP + XACK
+
+    DRY_RUN behavior:
+      - Gate bypass (no dedup/max_open)
+      - No open_positions_state writes
     """
 
     def __init__(self) -> None:
@@ -67,9 +71,9 @@ class IntentBridge:
         self.batch_count = _env_int("BRIDGE_BATCH_COUNT", 20)
 
         # runtime
-        self.dry_run = os.getenv("DRY_RUN", "1").lower() in ("1", "true", "yes", "on")
+        self.dry_run = os.getenv("DRY_RUN", "1").strip().lower() in ("1", "true", "yes", "on")
 
-        # gating
+        # gating (LIVE only)
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
         self.dedup_symbol = os.getenv("DEDUP_SYMBOL_OPEN", "1").strip().lower() not in ("0", "false", "no", "off")
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
@@ -123,7 +127,12 @@ class IntentBridge:
     def _publish_event(self, kind: str, data: Dict[str, Any]) -> None:
         payload = {"ts_utc": _now_utc_iso(), "kind": kind, **data}
         try:
-            self.r.xadd(self.out_stream, {"json": json.dumps(payload, ensure_ascii=False)}, maxlen=5000, approximate=True)
+            self.r.xadd(
+                self.out_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=5000,
+                approximate=True,
+            )
         except Exception:
             pass
 
@@ -135,6 +144,9 @@ class IntentBridge:
             return "short"
         return s or "long"
 
+    # -----------------------
+    # State helpers (LIVE only)
+    # -----------------------
     def _load_state(self) -> Dict[str, Any]:
         try:
             raw_state = self.r.get(self.state_key)
@@ -173,6 +185,10 @@ class IntentBridge:
         return open_map
 
     def _gate_allow_open(self, symbol: str) -> Tuple[bool, str]:
+        # DRY-RUN MODE: bypass all open-position gates (no dedup, no max_open)
+        if self.dry_run:
+            return True, "dry_run_bypass"
+
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
@@ -189,6 +205,10 @@ class IntentBridge:
         return True, "ok"
 
     def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
+        # Safety: never write state in dry-run
+        if self.dry_run:
+            return
+
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
@@ -273,8 +293,13 @@ class IntentBridge:
         if callable(fn):
             try:
                 fn(symbol=symbol, side=side, interval=interval, meta=meta)
-                self._gate_mark_open(symbol, side, interval, intent_id)
-                self._publish_event("forward_ok", {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side})
+                # mark open (LIVE only)
+                if not self.dry_run:
+                    self._gate_mark_open(symbol, side, interval, intent_id)
+                self._publish_event(
+                    "forward_ok",
+                    {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
+                )
                 return
             except Exception as e:
                 err = repr(e)
@@ -287,13 +312,21 @@ class IntentBridge:
             try:
                 if inspect.iscoroutinefunction(fn2):
                     asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
-                    self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side})
+                    if not self.dry_run:
+                        self._gate_mark_open(symbol, side, interval, intent_id)
+                    self._publish_event(
+                        "forward_ok",
+                        {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
+                    )
                     return
                 else:
                     fn2(symbol=symbol, side=side, interval=interval, meta=meta)
-                    self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side})
+                    if not self.dry_run:
+                        self._gate_mark_open(symbol, side, interval, intent_id)
+                    self._publish_event(
+                        "forward_ok",
+                        {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},
+                    )
                     return
             except TypeError as e:
                 err = err or f"{name} signature mismatch: {e}"
@@ -302,7 +335,13 @@ class IntentBridge:
 
         self._publish_event(
             "forward_skip",
-            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": err or "no callable entrypoint on executor"},
+            {
+                "intent_id": intent_id,
+                "symbol": symbol,
+                "side": side,
+                "interval": interval,
+                "why": err or "no callable entrypoint on executor",
+            },
         )
 
     def _process_pkg(self, sid: str, pkg: Dict[str, Any]) -> None:

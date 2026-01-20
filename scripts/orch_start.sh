@@ -9,26 +9,39 @@ RUNDIR="run"
 
 mkdir -p "$LOGDIR" "$RUNDIR"
 
+# DRY_RUN reset'i sadece 1 kez yap
+if [ "${DRY_RUN:-1}" = "1" ] || [ "${DRY_RUN:-1}" = "true" ]; then
+  echo "[START] DRY_RUN -> resetting open_positions_state"
+  redis-cli DEL open_positions_state >/dev/null 2>&1 || true
+fi
+
 start_one () {
   local name="$1"; shift
   local logfile="${LOGDIR}/${name}.log"
   local pidfile="${RUNDIR}/${name}.pid"
-  if [ "${DRY_RUN:-1}" = "1" ] || [ "${DRY_RUN:-1}" = "true" ]; then
-    echo "[START] DRY_RUN -> resetting open_positions_state"
-    redis-cli DEL open_positions_state >/dev/null 2>&1 || true
-  fi
 
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    echo "[SKIP] $name already running (pid=$(cat "$pidfile"))"
-    return 0
+  # pidfile var ama proses ölü ise temizle
+  if [[ -f "$pidfile" ]]; then
+    local oldpid
+    oldpid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "${oldpid:-}" ]] && kill -0 "$oldpid" 2>/dev/null; then
+      echo "[SKIP] $name already running (pid=$oldpid)"
+      return 0
+    else
+      rm -f "$pidfile"
+    fi
   fi
 
   echo "[START] $name -> $logfile"
   nohup env PYTHONPATH="$PWD" "$@" >>"$logfile" 2>&1 &
   echo $! > "$pidfile"
+
+  # start check
   sleep 0.2
-  if kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    echo "[OK] $name pid=$(cat "$pidfile")"
+  local pid
+  pid="$(cat "$pidfile")"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "[OK] $name pid=$pid"
   else
     echo "[FAIL] $name did not start. Check: $logfile"
     rm -f "$pidfile"
@@ -39,11 +52,10 @@ start_one () {
 # 1) Scanner (stub)
 start_one "scanner" "$PY" -u orchestration/scanners/worker_stub.py
 
-# 2) Aggregator (your -c runner)
+# 2) Aggregator
 start_one "aggregator" "$PY" -u -c "from orchestration.event_bus.redis_bus import RedisBus; from orchestration.aggregator.aggregator import Aggregator; Aggregator(RedisBus()).run_forever()"
 
 # 3) Top Selector
-# group tabanliya gecince TOPSEL_START_ID kullanmayacaksin; burada dokunmuyoruz.
 start_one "top_selector" "$PY" -u orchestration/selector/top_selector.py
 
 # 4) Master Executor
