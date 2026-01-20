@@ -104,7 +104,7 @@ class IntentBridge:
         print(
             f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"dry_run={self.dry_run} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"dry_run={self.dry_run} state_key={self.state_key} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
@@ -156,10 +156,22 @@ class IntentBridge:
             return {}
 
     def _save_state(self, open_map: Dict[str, Any]) -> None:
+        payload = json.dumps({"open": open_map}, ensure_ascii=False)
         try:
-            self.r.set(self.state_key, json.dumps({"open": open_map}, ensure_ascii=False))
-        except Exception:
-            pass
+            self.r.set(self.state_key, payload)
+            # Debug: gerçekten yazıldı mı?
+            chk = self.r.get(self.state_key)
+            if not chk:
+                self._publish_event("state_write_failed", {"state_key": self.state_key, "len_open": len(open_map)})
+            else:
+                self._publish_event("state_written", {"state_key": self.state_key, "len_open": len(open_map)})
+        except Exception as e:
+            # Debug: hatayı saklama
+            try:
+                self._publish_event("state_error", {"state_key": self.state_key, "err": repr(e)})
+            except Exception:
+                pass
+            raise
 
     def _cleanup_ttl(self, open_map: Dict[str, Any]) -> Dict[str, Any]:
         if not self.open_ttl_sec or self.open_ttl_sec <= 0:
@@ -270,6 +282,15 @@ class IntentBridge:
             self._publish_event(
                 "forward_skip",
                 {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
+            )
+            return
+        # DRY RUN: do not call executor, just simulate forward + optionally mark state for dedup testing
+        if self.dry_run:
+            # optional: keep state so dedup/max_open logic can be tested in dry-run
+            self._gate_mark_open(symbol, side, interval, intent_id)
+            self._publish_event(
+                "forward_dry",
+                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"},
             )
             return
 
