@@ -48,7 +48,8 @@ class IntentBridge:
 
     DRY_RUN behavior:
       - Gate bypass (no dedup/max_open)
-      - No open_positions_state writes
+      - No real trade execution
+      - (Optional/Enabled here) Writes open_positions_state to test gating/dedup offline
     """
 
     def __init__(self) -> None:
@@ -73,7 +74,7 @@ class IntentBridge:
         # runtime
         self.dry_run = os.getenv("DRY_RUN", "1").strip().lower() in ("1", "true", "yes", "on")
 
-        # gating (LIVE only)
+        # gating (LIVE only bypassed in dry-run allow)
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
         self.dedup_symbol = os.getenv("DEDUP_SYMBOL_OPEN", "1").strip().lower() not in ("0", "false", "no", "off")
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
@@ -145,7 +146,7 @@ class IntentBridge:
         return s or "long"
 
     # -----------------------
-    # State helpers (LIVE only)
+    # State helpers
     # -----------------------
     def _load_state(self) -> Dict[str, Any]:
         try:
@@ -159,14 +160,12 @@ class IntentBridge:
         payload = json.dumps({"open": open_map}, ensure_ascii=False)
         try:
             self.r.set(self.state_key, payload)
-            # Debug: gerçekten yazıldı mı?
             chk = self.r.get(self.state_key)
             if not chk:
                 self._publish_event("state_write_failed", {"state_key": self.state_key, "len_open": len(open_map)})
             else:
                 self._publish_event("state_written", {"state_key": self.state_key, "len_open": len(open_map)})
         except Exception as e:
-            # Debug: hatayı saklama
             try:
                 self._publish_event("state_error", {"state_key": self.state_key, "err": repr(e)})
             except Exception:
@@ -217,10 +216,7 @@ class IntentBridge:
         return True, "ok"
 
     def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
-        # Safety: never write state in dry-run
-        if self.dry_run:
-            return
-
+        # NOTE: We DO write state in DRY_RUN as well (to validate dedup/max_open logic offline).
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
@@ -284,9 +280,9 @@ class IntentBridge:
                 {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
             )
             return
-        # DRY RUN: do not call executor, just simulate forward + optionally mark state for dedup testing
+
+        # DRY RUN: do not call executor, just simulate forward + keep state for dedup testing
         if self.dry_run:
-            # optional: keep state so dedup/max_open logic can be tested in dry-run
             self._gate_mark_open(symbol, side, interval, intent_id)
             self._publish_event(
                 "forward_dry",
@@ -314,9 +310,7 @@ class IntentBridge:
         if callable(fn):
             try:
                 fn(symbol=symbol, side=side, interval=interval, meta=meta)
-                # mark open (LIVE only)
-                if not self.dry_run:
-                    self._gate_mark_open(symbol, side, interval, intent_id)
+                self._gate_mark_open(symbol, side, interval, intent_id)
                 self._publish_event(
                     "forward_ok",
                     {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
@@ -333,8 +327,7 @@ class IntentBridge:
             try:
                 if inspect.iscoroutinefunction(fn2):
                     asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
-                    if not self.dry_run:
-                        self._gate_mark_open(symbol, side, interval, intent_id)
+                    self._gate_mark_open(symbol, side, interval, intent_id)
                     self._publish_event(
                         "forward_ok",
                         {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
@@ -342,8 +335,7 @@ class IntentBridge:
                     return
                 else:
                     fn2(symbol=symbol, side=side, interval=interval, meta=meta)
-                    if not self.dry_run:
-                        self._gate_mark_open(symbol, side, interval, intent_id)
+                    self._gate_mark_open(symbol, side, interval, intent_id)
                     self._publish_event(
                         "forward_ok",
                         {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},

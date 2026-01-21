@@ -9,10 +9,24 @@ RUNDIR="run"
 
 mkdir -p "$LOGDIR" "$RUNDIR"
 
-# DRY_RUN reset'i sadece 1 kez yap
+# DRY_RUN reset'i sadece "ilk start"ta yap (zaten çalışan proses varken silme)
 if [ "${DRY_RUN:-1}" = "1" ] || [ "${DRY_RUN:-1}" = "true" ]; then
-  echo "[START] DRY_RUN -> resetting open_positions_state"
-  redis-cli DEL open_positions_state >/dev/null 2>&1 || true
+  any_running=0
+  for f in "$RUNDIR"/*.pid; do
+    [[ -e "$f" ]] || continue
+    p="$(cat "$f" 2>/dev/null || true)"
+    if [[ -n "${p:-}" ]] && kill -0 "$p" 2>/dev/null; then
+      any_running=1
+      break
+    fi
+  done
+
+  if [[ "$any_running" -eq 0 ]]; then
+    echo "[START] DRY_RUN -> resetting open_positions_state"
+    redis-cli DEL open_positions_state >/dev/null 2>&1 || true
+  else
+    echo "[SKIP] DRY_RUN reset (processes already running)"
+  fi
 fi
 
 # pidfile -> expected pattern (ps args icinde aranir)
@@ -91,4 +105,3 @@ start_one "intent_bridge" "$PY" -u orchestration/executor/intent_bridge.py
 echo
 echo "All start commands issued."
 echo "Tail logs: tail -n 200 -f logs/orch/*.log"
-
