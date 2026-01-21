@@ -532,6 +532,9 @@ class IntentBridge:
         """
         Pushes 4 different symbols as trade intents and reports summary into exec_events_stream.
         Designed as a regression smoke-test for max_open/dedup gating.
+
+        FIX: Selftest now consumes/acks its own injected intents (XREADGROUP) before summarizing,
+        so counts are deterministic (no race with run_forever loop start).
         """
         try:
             if self.selftest_reset_state:
@@ -541,32 +544,61 @@ class IntentBridge:
                 except Exception:
                     pass
 
-            # Compose 4 intents in 4 separate packages so events are clearer
             stamp = str(int(time.time()))
+            expected_prefix = f"selftest-{stamp}-"
+            expected_intents = []
+
+            # 4 separate packages
             for i, sym in enumerate(self.selftest_symbols[:4], start=1):
+                iid = f"{expected_prefix}{i}-{sym}"
+                expected_intents.append(iid)
                 pkg = {
                     "items": [
                         {
                             "symbol": sym,
                             "side": self.selftest_side,
                             "interval": self.selftest_interval,
-                            "intent_id": f"selftest-{stamp}-{i}-{sym}",
+                            "intent_id": iid,
                         }
                     ]
                 }
                 self.r.xadd(self.in_stream, {"json": json.dumps(pkg, ensure_ascii=False)})
 
-            # Give bridge loop a moment to consume (we are in same process, but still async via stream + group)
-            time.sleep(self.selftest_wait_sec)
+            # ---- NEW: Consume/ack our own injected intents BEFORE summary ----
+            deadline = time.time() + float(self.selftest_wait_sec or 2.0)
+            seen: set[str] = set()
 
-            # Summarize: read last N exec events and count selftest results
-            rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=200)
-            ok = 0
-            dry = 0
-            skip = 0
-            close_ok = 0
-            close_dry = 0
-            close_skip = 0
+            while time.time() < deadline and len(seen) < len(expected_intents):
+                rows = self._xreadgroup(">")  # reads from consumer group
+                if not rows:
+                    time.sleep(0.05)
+                    continue
+
+                mids = [sid for sid, _ in rows]
+                for sid, pkg in rows:
+                    if not pkg:
+                        continue
+
+                    # mark seen by looking into pkg items intent_id
+                    items = pkg.get("items") or []
+                    if isinstance(items, list):
+                        for it in items:
+                            if isinstance(it, dict):
+                                iid = _safe_str(it.get("intent_id", ""))
+                                if iid.startswith(expected_prefix):
+                                    seen.add(iid)
+
+                    # process will emit forward_* events synchronously here
+                    self._process_pkg(sid, pkg)
+
+                self._ack(mids)
+                time.sleep(0.02)
+
+            # ---- Summarize from exec_events_stream (now deterministic) ----
+            rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=500)
+
+            ok = dry = skip = 0
+            close_ok = close_dry = close_skip = 0
             reasons: Dict[str, int] = {}
 
             for _id, fields in rows:
@@ -577,8 +609,9 @@ class IntentBridge:
                     ev = json.loads(s)
                 except Exception:
                     continue
+
                 iid = _safe_str(ev.get("intent_id", ""))
-                if not iid.startswith(f"selftest-{stamp}-"):
+                if not iid.startswith(expected_prefix):
                     continue
 
                 kind = _safe_str(ev.get("kind", ""))
@@ -606,6 +639,7 @@ class IntentBridge:
                     "dryrun_bypass_gate": self.dryrun_bypass_gate,
                     "max_open": self.max_open,
                     "dedup_symbol": self.dedup_symbol,
+                    "seen_intents": sorted(list(seen)),
                     "counts": {
                         "forward_ok": ok,
                         "forward_dry": dry,
