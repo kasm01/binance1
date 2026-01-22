@@ -27,7 +27,16 @@ def _env_bool(k: str, default: bool = False) -> bool:
     v = os.getenv(k)
     if v is None:
         return default
-    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    v = str(v).strip().lower()
+
+    if v in ("1", "true", "yes", "y", "on"):
+        return True
+    if v in ("0", "false", "no", "n", "off", ""):
+        return False
+
+    # Tanınmayan bir değer gelirse default'a düş
+    return default
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
