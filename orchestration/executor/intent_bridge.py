@@ -27,15 +27,12 @@ def _env_bool(k: str, default: bool = False) -> bool:
     v = os.getenv(k)
     if v is None:
         return default
-
-    v = str(v).strip().lower()
-
-    if v in ("1", "true", "yes", "y", "on"):
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
         return True
-    if v in ("0", "false", "no", "n", "off", ""):
+    if s in ("0", "false", "f", "no", "n", "off", ""):
         return False
-
-    # Tanınmayan bir değer gelirse default'a düş
+    # beklenmeyen değer -> default'a dön (ve istersen log bas)
     return default
 
 
