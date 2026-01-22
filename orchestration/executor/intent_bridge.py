@@ -84,9 +84,8 @@ class IntentBridge:
       - TTL cleanup can also prune stale open/closed entries
 
     IMPORTANT FIX:
-      - If the stream key gets deleted while XREADGROUP is blocking,
-        Redis may raise: "UNBLOCKED the stream key no longer exists".
-        We catch this, recreate stream+group (MKSTREAM) and continue.
+      - If close_position fails, DO NOT mark state_closed.
+        Only mark state_closed when close succeeds (or dry-run close is accepted).
     """
 
     def __init__(self) -> None:
@@ -101,7 +100,7 @@ class IntentBridge:
         # Consumer group
         self.group = os.getenv("BRIDGE_GROUP", "bridge_g")
         self.consumer = os.getenv("BRIDGE_CONSUMER", "bridge_1")
-        self.group_start_id = os.getenv("BRIDGE_GROUP_START_ID", "$")  # "$" new only, or "0-0" from beginning
+        self.group_start_id = os.getenv("BRIDGE_GROUP_START_ID", "$")
         self.drain_pending = _env_bool("BRIDGE_DRAIN_PENDING", False)
 
         # Read tuning
@@ -117,20 +116,19 @@ class IntentBridge:
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
 
         # TTL-based cleanup (open map)
-        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)  # 0 disabled
+        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)
 
         # Close cooldown (closed map)
-        self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)  # 0 disables cooldown
+        self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)
         self.closed_ttl_sec = _env_int(
             "BRIDGE_CLOSED_TTL_SEC",
             max(0, int(self.close_cooldown_sec) * 10) if self.close_cooldown_sec > 0 else 0,
         )
 
         # periodic cleanup loop
-        self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)  # 0 disables periodic cleanup loop
+        self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)
 
         # DRY_RUN gating knobs
-        # NOTE: default for bypass should be False for safer regression behavior, but keep as-is if you prefer.
         self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", True)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
@@ -158,6 +156,8 @@ class IntentBridge:
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         # TradeExecutor
+        # NOTE: Senin projende TradeExecutor yolu farklıysa burayı senin path'e göre değiştir.
+        # trading/trade_executor.py kullanıyorsan aşağıyı ona göre düzenlemen gerekebilir.
         from core.trade_executor import TradeExecutor  # noqa
         from core.risk_manager import RiskManager  # noqa
 
@@ -222,6 +222,53 @@ class IntentBridge:
         if s in ("sell", "short"):
             return "short"
         return s or "long"
+
+    def _normalize_direction(self, side_or_dir: str) -> str:
+        """
+        TradeExecutor close için LONG/SHORT normalize eder.
+        """
+        s = (side_or_dir or "").strip().upper()
+        if s in ("LONG", "BUY"):
+            return "LONG"
+        if s in ("SHORT", "SELL"):
+            return "SHORT"
+        if s in ("LONG", "SHORT"):
+            return s
+        # Intent tarafında bazen "long/short" gelir:
+        sl = (side_or_dir or "").strip().lower()
+        if sl == "long":
+            return "LONG"
+        if sl == "short":
+            return "SHORT"
+        return ""
+
+    def _is_close_success(self, res: Any) -> bool:
+        """
+        Executor close dönüşünü normalize eder.
+        Başarılı sayılacaklar:
+          - dict: status in (success, ok, closed, dry_run)
+          - True (bool)
+          - None => başarısız
+        """
+        if res is None:
+            return False
+
+        if isinstance(res, bool):
+            return res is True
+
+        if isinstance(res, dict):
+            st = _safe_str(res.get("status", "")).strip().lower()
+            if st in ("success", "ok", "closed", "dry_run"):
+                return True
+            # bazı implementasyonlar 'result' vs döndürebilir
+            if _safe_str(res.get("result", "")).strip().lower() in ("success", "ok"):
+                return True
+            return False
+
+        # Coroutine/sync bazı close fonksiyonları bir şey döndürmeyebilir,
+        # ama exception yoksa başarılı kabul etmek isteyebilirsin.
+        # Burada konservatif olalım: dict/bool dışını başarı sayma.
+        return False
 
     # -----------------------
     # State helpers
@@ -297,6 +344,26 @@ class IntentBridge:
                 )
         except Exception:
             pass
+
+    def _get_open_side_from_state(self, symbol: str) -> str:
+        """
+        Eğer close intent side göndermediyse, state'teki open_map üzerinden side bul.
+        open_map side: 'long'/'short' saklıyor.
+        """
+        state = self._load_state()
+        open_map = state.get("open", {}) if isinstance(state, dict) else {}
+        if not isinstance(open_map, dict):
+            return ""
+        info = open_map.get(symbol)
+        if not isinstance(info, dict):
+            return ""
+        s = _safe_str(info.get("side", ""))
+        # state long/short tutuyor -> LONG/SHORT'a çevir
+        if s.strip().lower() == "long":
+            return "LONG"
+        if s.strip().lower() == "short":
+            return "SHORT"
+        return self._normalize_direction(s)
 
     # -----------------------
     # Gate logic
@@ -385,6 +452,10 @@ class IntentBridge:
         )
 
     def _gate_mark_close(self, symbol: str, reason: str, intent_id: str) -> None:
+        """
+        IMPORTANT:
+        Bu fonksiyon SADECE close gerçekten başarılıysa çağrılmalı.
+        """
         if self.dry_run and (not self.dryrun_write_state):
             return
 
@@ -456,7 +527,6 @@ class IntentBridge:
             if "UNBLOCKED" in msg and "no longer exists" in msg:
                 print(f"[IntentBridge] WARN: stream disappeared during blocking read; recreating group. err={msg}")
                 try:
-                    # recreate stream+group; safe if group already exists
                     self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
                 except Exception:
                     pass
@@ -497,6 +567,66 @@ class IntentBridge:
         return False
 
     # -----------------------
+    # Close call helper
+    # -----------------------
+    def _try_close_executor(self, symbol: str, interval: str, direction: str, price: Any, meta: Dict[str, Any]) -> Tuple[bool, Any, str]:
+        """
+        Executor üzerinde farklı close entrypoint'lerini dener.
+        Geri dönüş:
+            (success, result, method_name_or_err)
+        """
+        # En uyumlu denenecek sıralama:
+        candidates = ("close_position_from_signal", "close_position", "close_trade", "close")
+
+        for name in candidates:
+            fn = getattr(self.executor, name, None)
+            if not callable(fn):
+                continue
+
+            try:
+                if inspect.iscoroutinefunction(fn):
+                    # coroutine: mümkün olduğunca zengin kwargs ile dene
+                    kwargs_list = [
+                        {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "price": price},
+                        {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "exit_price": price},
+                        {"symbol": symbol, "interval": interval, "meta": meta},
+                        {"symbol": symbol},
+                    ]
+                    last_te = None
+                    for kwargs in kwargs_list:
+                        try:
+                            res = asyncio.run(fn(**kwargs))
+                            return True, res, f"{name}(asyncio.run)"
+                        except TypeError as te:
+                            last_te = te
+                            continue
+                    return False, None, f"{name} signature mismatch: {last_te}"
+
+                # sync fonksiyonlar
+                kwargs_list = [
+                    {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "price": price},
+                    {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "exit_price": price},
+                    {"symbol": symbol, "direction": direction, "price": price},
+                    {"symbol": symbol, "direction": direction, "exit_price": price},
+                    {"symbol": symbol, "interval": interval, "meta": meta},
+                    {"symbol": symbol},
+                ]
+                last_te = None
+                for kwargs in kwargs_list:
+                    try:
+                        res = fn(**kwargs)
+                        return True, res, f"{name}(sync)"
+                    except TypeError as te:
+                        last_te = te
+                        continue
+                return False, None, f"{name} signature mismatch: {last_te}"
+
+            except Exception as e:
+                return False, None, f"{name} failed: {repr(e)}"
+
+        return False, None, "no close entrypoint on executor"
+
+    # -----------------------
     # Forwarding logic
     # -----------------------
     def _forward_close(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -511,37 +641,73 @@ class IntentBridge:
             )
             return
 
-        self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+        # direction belirle: intent side > state side
+        raw_side = _safe_str(it.get("side", ""))
+        direction = self._normalize_direction(raw_side)
+        if not direction:
+            direction = self._get_open_side_from_state(symbol)
 
+        # fiyat: intent'ten al (varsa). Yoksa None.
+        # (TradeExecutor tarafında fiyat yoksa marketten çekmeyi eklediysen sorun yok)
+        price_val = it.get("price", None)
+        if price_val is None:
+            price_val = it.get("exit_price", None)
+        if price_val is None:
+            price_val = it.get("close_price", None)
+
+        # Eğer hiç yoksa None bırak.
+        price: Any = None
+        if price_val is not None and str(price_val).strip() != "":
+            # sayı ise float'a çevir
+            price = _safe_float(price_val, 0.0)
+
+        # DRY RUN: close'u kabul ediyoruz ve state'i güncelliyoruz (opsiyonel write_state)
         if self.dry_run:
-            self._publish_event("close_dry", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "dry_run"})
+            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+            self._publish_event(
+                "close_dry",
+                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "dry_run"},
+            )
             return
 
         meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
-        err = None
+        ok, res, method_or_err = self._try_close_executor(
+            symbol=symbol,
+            interval=interval,
+            direction=direction,
+            price=price,
+            meta=meta,
+        )
 
-        for name in ("close_position_from_signal", "close_position", "close_trade", "close"):
-            fn = getattr(self.executor, name, None)
-            if not callable(fn):
-                continue
-            try:
-                if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn(symbol=symbol, interval=interval, meta=meta))
-                    self._publish_event("close_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "interval": interval})
-                    return
-                else:
-                    try:
-                        fn(symbol=symbol, interval=interval, meta=meta)
-                    except TypeError:
-                        fn(symbol=symbol)
-                    self._publish_event("close_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "interval": interval})
-                    return
-            except Exception as e:
-                err = err or f"{name} failed: {repr(e)}"
+        # Eğer executor "ok" dedi ama res None döndüyse, bu belirsiz.
+        # Burada güvenli davranıp, dict/bool success değilse state'i kapatma.
+        if ok and self._is_close_success(res):
+            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+            self._publish_event(
+                "close_ok",
+                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval},
+            )
+            return
+
+        # Bazı implementasyonlarda close başarılı olur ama res None döner.
+        # Bunu da başarılı saymak istersen: aşağıdaki satırı True yapabilirsin.
+        accept_none_as_success = _env_bool("BRIDGE_CLOSE_ACCEPT_NONE_SUCCESS", False)
+        if ok and res is None and accept_none_as_success:
+            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+            self._publish_event(
+                "close_ok",
+                {"intent_id": intent_id, "method": f"{method_or_err}/none_ok", "symbol": symbol, "interval": interval},
+            )
+            return
+
+        # Başarısız => state'e dokunma
+        why = method_or_err
+        if isinstance(res, dict):
+            why = _safe_str(res.get("reason") or res.get("why") or why)
 
         self._publish_event(
             "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": err or "no close entrypoint on executor"},
+            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": f"close_position failed: {why}"},
         )
 
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -559,12 +725,18 @@ class IntentBridge:
 
         allow, why = self._gate_allow_open(symbol)
         if not allow:
-            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why})
+            self._publish_event(
+                "forward_skip",
+                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
+            )
             return
 
         if self.dry_run:
             self._gate_mark_open(symbol, side, interval, intent_id)
-            self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
+            self._publish_event(
+                "forward_dry",
+                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"},
+            )
             return
 
         lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
@@ -587,7 +759,10 @@ class IntentBridge:
             try:
                 fn(symbol=symbol, side=side, interval=interval, meta=meta)
                 self._gate_mark_open(symbol, side, interval, intent_id)
-                self._publish_event("forward_ok", {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side})
+                self._publish_event(
+                    "forward_ok",
+                    {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
+                )
                 return
             except Exception as e:
                 err = repr(e)
@@ -600,13 +775,18 @@ class IntentBridge:
                 if inspect.iscoroutinefunction(fn2):
                     asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
                     self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side})
+                    self._publish_event(
+                        "forward_ok",
+                        {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
+                    )
                     return
-                else:
-                    fn2(symbol=symbol, side=side, interval=interval, meta=meta)
-                    self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side})
-                    return
+                fn2(symbol=symbol, side=side, interval=interval, meta=meta)
+                self._gate_mark_open(symbol, side, interval, intent_id)
+                self._publish_event(
+                    "forward_ok",
+                    {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},
+                )
+                return
             except TypeError as e:
                 err = err or f"{name} signature mismatch: {e}"
             except Exception as e:
@@ -735,10 +915,6 @@ class IntentBridge:
                         "close_skip": close_skip,
                     },
                     "skip_reasons": reasons,
-                    "note": (
-                        "Expected (when BRIDGE_DRYRUN_BYPASS_GATE=0 and DRY_RUN=1 and BRIDGE_DRYRUN_WRITE_STATE=1): "
-                        "3 forward_dry + 1 forward_skip(max_open)."
-                    ),
                 },
             )
         except Exception as e:

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
-from core.logger import system_logger
-from core.exceptions import TradeExecutionException
 from config.settings import Config
-from trading.risk_manager import RiskManager
+from core.exceptions import TradeExecutionException
+from core.logger import system_logger
 from trading.position_manager import PositionManager
+from trading.risk_manager import RiskManager
 
 
 class TradeExecutor:
