@@ -80,7 +80,8 @@ class PositionManager:
         self,
         symbol: str,
         side: str,
-        exit_price: float,
+        exit_price: float = None,
+        price: float = None,
     ) -> Optional[float]:
         """
         Pozisyonu kapatır ve PnL döner.
@@ -94,6 +95,18 @@ class PositionManager:
         if key not in self.active_positions:
             logger.warning(
                 "[PositionManager] Tried to close unknown position: %s %s",
+                symbol,
+                side,
+            )
+            return None
+
+        # price -> exit_price alias
+        if exit_price is None and price is not None:
+            exit_price = price
+
+        if exit_price is None:
+            logger.warning(
+                "[PositionManager] close_position requires a price: %s %s",
                 symbol,
                 side,
             )

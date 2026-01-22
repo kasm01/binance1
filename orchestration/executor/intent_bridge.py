@@ -496,7 +496,6 @@ class IntentBridge:
 
         return False
 
-
     # -----------------------
     # Forwarding logic
     # -----------------------

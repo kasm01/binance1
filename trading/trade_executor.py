@@ -160,21 +160,30 @@ class TradeExecutor:
             raise TradeExecutionException(str(e)) from e
 
     # ─────────────────────── pozisyon kapama ───────────────────────
-
     def close_position(
         self,
         symbol: str,
         direction: str,  # pozisyon yönü: "LONG" veya "SHORT"
-        exit_price: float,
+        exit_price: float = None,
+        price: float = None,
     ) -> Dict[str, Any]:
         """
         Mevcut LONG/SHORT pozisyonu kapatır ve realized PnL'i RiskManager'a işler.
+
+        Uyumluluk:
+        - Bazı çağıranlar `price=` gönderebilir. Bu yüzden `price` parametresi desteklenir.
+        - `exit_price` yoksa `price` kullanılır.
+        - Live modda fiyat yoksa borsadan fiyat çekmeye çalışır.
         """
         direction = direction.upper()
         if direction not in ("LONG", "SHORT"):
             msg = f"Invalid direction: {direction}"
             system_logger.error(f"[TRADE] {msg}")
             return {"status": "failed", "reason": msg}
+
+        # price -> exit_price alias
+        if exit_price is None and price is not None:
+            exit_price = price
 
         position = self.position_manager.get_position(symbol, direction)
         if not position:
@@ -187,15 +196,50 @@ class TradeExecutor:
 
         # DRY-RUN
         if not Config.LIVE_TRADING_ENABLED:
+            if exit_price is None:
+                msg = "close_position requires exit_price (or price) in dry-run"
+                system_logger.warning(f"[TRADE] {msg} symbol={symbol} dir={direction}")
+                return {"status": "failed", "reason": "close_requires_price"}
+
             pnl = self.position_manager.close_position(
-                symbol=symbol, side=direction, exit_price=exit_price
+                symbol=symbol,
+                side=direction,
+                exit_price=exit_price,
             )
+            if pnl is None:
+                return {"status": "failed", "reason": "pm_close_returned_none"}
+
             self.risk_manager.register_closed_trade(pnl)
             system_logger.info(
                 f"[TRADE] DRY-RUN CLOSE {symbol} {direction} "
-                f"qty={qty:.6f} price={exit_price:.2f} pnl={pnl:.2f}"
+                f"qty={qty:.6f} price={float(exit_price):.2f} pnl={pnl:.2f}"
             )
             return {"status": "dry_run", "pnl": pnl}
+
+        # Live: fiyat yoksa borsadan çekmeyi dene
+        if exit_price is None:
+            fetched = None
+            try:
+                # Futures mark price endpoint (python-binance uyumlu olabilir)
+                mp = self.client.futures_mark_price(symbol=symbol)
+                fetched = float(mp["markPrice"])
+            except Exception:
+                fetched = None
+
+            if fetched is None:
+                try:
+                    # Alternatif: ticker price
+                    tp = self.client.futures_symbol_ticker(symbol=symbol)
+                    fetched = float(tp["price"])
+                except Exception:
+                    fetched = None
+
+            if fetched is None:
+                msg = "close_position could not determine price (exit_price/price missing)"
+                system_logger.warning(f"[TRADE] {msg} symbol={symbol} dir={direction}")
+                return {"status": "failed", "reason": "close_requires_price"}
+
+            exit_price = fetched
 
         # Gerçek Binance kapama emri
         try:
@@ -206,7 +250,7 @@ class TradeExecutor:
                 side=side_for_binance,
                 type="MARKET",
                 quantity=qty,
-                reduceOnly=True,  # sadece açık pozisyonu kapat
+                reduceOnly=True,
             )
 
             fills = close_order.get("fills") or []
@@ -216,8 +260,13 @@ class TradeExecutor:
                 fill_price = float(close_order.get("avgPrice") or exit_price)
 
             pnl = self.position_manager.close_position(
-                symbol=symbol, side=direction, exit_price=fill_price
+                symbol=symbol,
+                side=direction,
+                exit_price=fill_price,
             )
+            if pnl is None:
+                return {"status": "failed", "reason": "pm_close_returned_none", "order": close_order}
+
             self.risk_manager.register_closed_trade(pnl)
 
             system_logger.info(
@@ -231,6 +280,7 @@ class TradeExecutor:
                 f"[TRADE] Failed to close position {symbol} {direction}: {e}"
             )
             raise TradeExecutionException(str(e)) from e
+
 
     # ─────────────────────── tüm pozisyonları kapat ───────────────────────
 
