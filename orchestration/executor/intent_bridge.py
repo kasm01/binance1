@@ -44,6 +44,15 @@ def _safe_str(x: Any, default: str = "") -> str:
         return default
 
 
+def _parse_iso(ts: str) -> Optional[datetime]:
+    try:
+        if not ts:
+            return None
+        return datetime.fromisoformat(ts)
+    except Exception:
+        return None
+
+
 class IntentBridge:
     """
     Consumes trade_intents_stream (group-based), forwards intents to TradeExecutor.
@@ -54,9 +63,14 @@ class IntentBridge:
     Restart-safe: XREADGROUP + XACK
 
     DRY_RUN behavior is now configurable:
-      - BRIDGE_DRYRUN_BYPASS_GATE=1  -> bypass all open-position gates (dedup/max_open)
+      - BRIDGE_DRYRUN_BYPASS_GATE=1  -> bypass all open-position gates (dedup/max_open/cooldown)
       - BRIDGE_DRYRUN_BYPASS_GATE=0  -> apply gates in dry-run (recommended for regression tests)
       - BRIDGE_DRYRUN_WRITE_STATE=1  -> keep open_positions_state in dry-run to test gates
+
+    Close/state cleanup:
+      - Close intents remove symbol from open map and write a "closed" cooldown marker
+      - Re-open within cooldown is skipped with reason "cooldown: <sec_left>s left"
+      - TTL cleanup can also prune stale open/closed entries
     """
 
     def __init__(self) -> None:
@@ -86,8 +100,19 @@ class IntentBridge:
         self.dedup_symbol = _env_bool("DEDUP_SYMBOL_OPEN", True)
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
 
-        # TTL-based cleanup
+        # TTL-based cleanup (open map)
         self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)  # 0 disabled
+
+        # Close cooldown (closed map)
+        # after a close intent, prevent reopen for N seconds (helps scanner churn)
+        self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)  # 0 disables cooldown
+        # TTL for closed markers (independent from cooldown; default 10x cooldown)
+        self.closed_ttl_sec = _env_int(
+            "BRIDGE_CLOSED_TTL_SEC",
+            max(0, int(self.close_cooldown_sec) * 10) if self.close_cooldown_sec > 0 else 0,
+        )
+
+        # periodic cleanup loop
         self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)  # 0 disables periodic cleanup loop
 
         # DRY_RUN gating knobs (for regression tests)
@@ -133,6 +158,8 @@ class IntentBridge:
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"dry_run={self.dry_run} state_key={self.state_key} "
             f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} "
+            f"max_open={self.max_open} dedup_symbol={self.dedup_symbol} "
+            f"close_cooldown_sec={self.close_cooldown_sec} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
@@ -183,31 +210,42 @@ class IntentBridge:
         try:
             raw_state = self.r.get(self.state_key)
             st = json.loads(raw_state) if raw_state else {}
-            return st if isinstance(st, dict) else {}
+            if not isinstance(st, dict):
+                return {}
+            # normalize keys
+            if "open" not in st or not isinstance(st.get("open"), dict):
+                st["open"] = {}
+            if "closed" not in st or not isinstance(st.get("closed"), dict):
+                st["closed"] = {}
+            return st
         except Exception:
-            return {}
+            return {"open": {}, "closed": {}}
 
-    def _save_state(self, open_map: Dict[str, Any]) -> None:
-        payload = json.dumps({"open": open_map}, ensure_ascii=False)
+    def _save_state(self, open_map: Dict[str, Any], closed_map: Optional[Dict[str, Any]] = None) -> None:
+        payload_obj: Dict[str, Any] = {"open": open_map}
+        if closed_map is not None:
+            payload_obj["closed"] = closed_map
+        else:
+            # preserve if exists
+            st = self._load_state()
+            payload_obj["closed"] = st.get("closed", {}) if isinstance(st.get("closed"), dict) else {}
+        payload = json.dumps(payload_obj, ensure_ascii=False)
         self.r.set(self.state_key, payload)
 
-    def _cleanup_ttl_inplace(self, open_map: Dict[str, Any]) -> bool:
+    def _cleanup_map_ttl_inplace(self, m: Dict[str, Any], ttl_sec: int) -> bool:
         """Returns True if modified."""
-        if not self.open_ttl_sec or self.open_ttl_sec <= 0:
+        if not ttl_sec or ttl_sec <= 0:
             return False
         try:
             now = datetime.now(timezone.utc)
             dirty = False
-            for sym, info in list(open_map.items()):
+            for sym, info in list(m.items()):
                 ts = ""
                 if isinstance(info, dict):
                     ts = str(info.get("ts_utc") or "")
-                try:
-                    t0 = datetime.fromisoformat(ts) if ts else None
-                except Exception:
-                    t0 = None
-                if (t0 is None) or ((now - t0).total_seconds() > self.open_ttl_sec):
-                    open_map.pop(sym, None)
+                t0 = _parse_iso(ts) if ts else None
+                if (t0 is None) or ((now - t0).total_seconds() > ttl_sec):
+                    m.pop(sym, None)
                     dirty = True
             return dirty
         except Exception:
@@ -219,19 +257,46 @@ class IntentBridge:
             return
         try:
             state = self._load_state()
-            open_map = state.get("open", {}) if isinstance(state, dict) else {}
-            if not isinstance(open_map, dict):
+            open_map = state.get("open", {})
+            closed_map = state.get("closed", {})
+            if not isinstance(open_map, dict) or not isinstance(closed_map, dict):
                 return
-            dirty = self._cleanup_ttl_inplace(open_map)
-            if dirty:
-                self._save_state(open_map)
-                self._publish_event("state_cleanup_ttl", {"state_key": self.state_key, "len_open": len(open_map)})
+
+            dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
+            dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
+
+            if dirty_open or dirty_closed:
+                self._save_state(open_map, closed_map)
+                self._publish_event(
+                    "state_cleanup_ttl",
+                    {
+                        "state_key": self.state_key,
+                        "len_open": len(open_map),
+                        "len_closed": len(closed_map),
+                        "open_ttl_sec": int(self.open_ttl_sec),
+                        "closed_ttl_sec": int(self.closed_ttl_sec),
+                    },
+                )
         except Exception:
             pass
 
     # -----------------------
     # Gate logic
     # -----------------------
+    def _cooldown_left_sec(self, closed_map: Dict[str, Any], symbol: str) -> int:
+        if not self.close_cooldown_sec or self.close_cooldown_sec <= 0:
+            return 0
+        info = closed_map.get(symbol)
+        if not isinstance(info, dict):
+            return 0
+        t0 = _parse_iso(_safe_str(info.get("ts_utc", "")))
+        if t0 is None:
+            return 0
+        now = datetime.now(timezone.utc)
+        elapsed = (now - t0).total_seconds()
+        left = float(self.close_cooldown_sec) - elapsed
+        return int(left) if left > 0 else 0
+
     def _gate_allow_open(self, symbol: str) -> Tuple[bool, str]:
         # DRY-RUN MODE: optionally bypass gates (legacy behavior)
         if self.dry_run and self.dryrun_bypass_gate:
@@ -239,19 +304,31 @@ class IntentBridge:
 
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
+        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
             open_map = {}
+        if not isinstance(closed_map, dict):
+            closed_map = {}
 
         # TTL cleanup
-        dirty = self._cleanup_ttl_inplace(open_map)
-        if dirty:
+        dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
+        dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
+        if dirty_open or dirty_closed:
             # allow cleanup writes even in dry-run if dryrun_write_state enabled
             if (not self.dry_run) or self.dryrun_write_state:
                 try:
-                    self._save_state(open_map)
-                    self._publish_event("state_cleanup_ttl", {"state_key": self.state_key, "len_open": len(open_map)})
+                    self._save_state(open_map, closed_map)
+                    self._publish_event(
+                        "state_cleanup_ttl",
+                        {"state_key": self.state_key, "len_open": len(open_map), "len_closed": len(closed_map)},
+                    )
                 except Exception:
                     pass
+
+        # cooldown check (prevents immediate reopen after close)
+        left = self._cooldown_left_sec(closed_map, symbol)
+        if left > 0:
+            return False, f"cooldown: {left}s left"
 
         if self.dedup_symbol and symbol in open_map:
             return False, f"dedup_symbol: {symbol} already open"
@@ -268,8 +345,16 @@ class IntentBridge:
 
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
+        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
             open_map = {}
+        if not isinstance(closed_map, dict):
+            closed_map = {}
+
+        # once opened, clear closed marker (if any)
+        if symbol in closed_map:
+            closed_map.pop(symbol, None)
+            self._publish_event("state_closed_cleared", {"state_key": self.state_key, "symbol": symbol})
 
         open_map[symbol] = {
             "side": side,
@@ -278,8 +363,8 @@ class IntentBridge:
             "intent_id": intent_id,
         }
 
-        self._save_state(open_map)
-        self._publish_event("state_written", {"state_key": self.state_key, "len_open": len(open_map)})
+        self._save_state(open_map, closed_map)
+        self._publish_event("state_written", {"state_key": self.state_key, "len_open": len(open_map), "len_closed": len(closed_map)})
 
     def _gate_mark_close(self, symbol: str, reason: str, intent_id: str) -> None:
         # In DRY_RUN, write state only if enabled
@@ -288,16 +373,31 @@ class IntentBridge:
 
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
+        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
         if not isinstance(open_map, dict):
             open_map = {}
+        if not isinstance(closed_map, dict):
+            closed_map = {}
 
         existed = symbol in open_map
         open_map.pop(symbol, None)
 
-        self._save_state(open_map)
+        # write closed marker for cooldown
+        if self.close_cooldown_sec and self.close_cooldown_sec > 0:
+            closed_map[symbol] = {"ts_utc": _now_utc_iso(), "reason": reason, "intent_id": intent_id}
+
+        self._save_state(open_map, closed_map)
         self._publish_event(
             "state_closed",
-            {"state_key": self.state_key, "symbol": symbol, "existed": existed, "reason": reason, "len_open": len(open_map), "intent_id": intent_id},
+            {
+                "state_key": self.state_key,
+                "symbol": symbol,
+                "existed": existed,
+                "reason": reason,
+                "len_open": len(open_map),
+                "len_closed": len(closed_map),
+                "intent_id": intent_id,
+            },
         )
 
     # -----------------------
@@ -371,6 +471,10 @@ class IntentBridge:
         interval = _safe_str(it.get("interval", ""))
         intent_id = _safe_str(it.get("intent_id", ""))
 
+        if not symbol:
+            self._publish_event("close_skip", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"})
+            return
+
         # state update (even in DRY_RUN if enabled)
         self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
 
@@ -426,6 +530,10 @@ class IntentBridge:
         interval = _safe_str(it.get("interval", ""))
         side = self._normalize_side(_safe_str(it.get("side", "long")))
         intent_id = _safe_str(it.get("intent_id", ""))
+
+        if not symbol:
+            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"})
+            return
 
         allow, why = self._gate_allow_open(symbol)
         if not allow:
@@ -531,9 +639,9 @@ class IntentBridge:
     def _selftest_run(self) -> None:
         """
         Pushes 4 different symbols as trade intents and reports summary into exec_events_stream.
-        Designed as a regression smoke-test for max_open/dedup gating.
+        Designed as a regression smoke-test for max_open/dedup/cooldown gating.
 
-        FIX: Selftest now consumes/acks its own injected intents (XREADGROUP) before summarizing,
+        Selftest consumes/acks its own injected intents (XREADGROUP) before summarizing,
         so counts are deterministic (no race with run_forever loop start).
         """
         try:
@@ -546,7 +654,7 @@ class IntentBridge:
 
             stamp = str(int(time.time()))
             expected_prefix = f"selftest-{stamp}-"
-            expected_intents = []
+            expected_intents: List[str] = []
 
             # 4 separate packages
             for i, sym in enumerate(self.selftest_symbols[:4], start=1):
@@ -564,12 +672,12 @@ class IntentBridge:
                 }
                 self.r.xadd(self.in_stream, {"json": json.dumps(pkg, ensure_ascii=False)})
 
-            # ---- NEW: Consume/ack our own injected intents BEFORE summary ----
+            # Consume/ack our own injected intents BEFORE summary
             deadline = time.time() + float(self.selftest_wait_sec or 2.0)
             seen: set[str] = set()
 
             while time.time() < deadline and len(seen) < len(expected_intents):
-                rows = self._xreadgroup(">")  # reads from consumer group
+                rows = self._xreadgroup(">")
                 if not rows:
                     time.sleep(0.05)
                     continue
@@ -579,7 +687,6 @@ class IntentBridge:
                     if not pkg:
                         continue
 
-                    # mark seen by looking into pkg items intent_id
                     items = pkg.get("items") or []
                     if isinstance(items, list):
                         for it in items:
@@ -588,13 +695,12 @@ class IntentBridge:
                                 if iid.startswith(expected_prefix):
                                     seen.add(iid)
 
-                    # process will emit forward_* events synchronously here
                     self._process_pkg(sid, pkg)
 
                 self._ack(mids)
                 time.sleep(0.02)
 
-            # ---- Summarize from exec_events_stream (now deterministic) ----
+            # Summarize from exec_events_stream
             rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=500)
 
             ok = dry = skip = 0
@@ -639,6 +745,7 @@ class IntentBridge:
                     "dryrun_bypass_gate": self.dryrun_bypass_gate,
                     "max_open": self.max_open,
                     "dedup_symbol": self.dedup_symbol,
+                    "close_cooldown_sec": self.close_cooldown_sec,
                     "seen_intents": sorted(list(seen)),
                     "counts": {
                         "forward_ok": ok,
@@ -649,7 +756,10 @@ class IntentBridge:
                         "close_skip": close_skip,
                     },
                     "skip_reasons": reasons,
-                    "note": "Expected (when BRIDGE_DRYRUN_BYPASS_GATE=0 and DRY_RUN=1 and BRIDGE_DRYRUN_WRITE_STATE=1): 3 forward_dry + 1 forward_skip(max_open).",
+                    "note": (
+                        "Expected (when BRIDGE_DRYRUN_BYPASS_GATE=0 and DRY_RUN=1 and BRIDGE_DRYRUN_WRITE_STATE=1): "
+                        "3 forward_dry + 1 forward_skip(max_open)."
+                    ),
                 },
             )
         except Exception as e:
