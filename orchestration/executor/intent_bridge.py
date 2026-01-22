@@ -24,6 +24,12 @@ def _env_int(k: str, default: int) -> int:
 
 
 def _env_bool(k: str, default: bool = False) -> bool:
+    """
+    Robust bool env parser:
+      True  -> 1, true, t, yes, y, on
+      False -> 0, false, f, no, n, off, "" (empty)
+      else  -> default
+    """
     v = os.getenv(k)
     if v is None:
         return default
@@ -32,7 +38,6 @@ def _env_bool(k: str, default: bool = False) -> bool:
         return True
     if s in ("0", "false", "f", "no", "n", "off", ""):
         return False
-    # beklenmeyen değer -> default'a dön (ve istersen log bas)
     return default
 
 
@@ -68,7 +73,7 @@ class IntentBridge:
 
     Restart-safe: XREADGROUP + XACK
 
-    DRY_RUN behavior is now configurable:
+    DRY_RUN behavior is configurable:
       - BRIDGE_DRYRUN_BYPASS_GATE=1  -> bypass all open-position gates (dedup/max_open/cooldown)
       - BRIDGE_DRYRUN_BYPASS_GATE=0  -> apply gates in dry-run (recommended for regression tests)
       - BRIDGE_DRYRUN_WRITE_STATE=1  -> keep open_positions_state in dry-run to test gates
@@ -77,6 +82,11 @@ class IntentBridge:
       - Close intents remove symbol from open map and write a "closed" cooldown marker
       - Re-open within cooldown is skipped with reason "cooldown: <sec_left>s left"
       - TTL cleanup can also prune stale open/closed entries
+
+    IMPORTANT FIX:
+      - If the stream key gets deleted while XREADGROUP is blocking,
+        Redis may raise: "UNBLOCKED the stream key no longer exists".
+        We catch this, recreate stream+group (MKSTREAM) and continue.
     """
 
     def __init__(self) -> None:
@@ -110,9 +120,7 @@ class IntentBridge:
         self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)  # 0 disabled
 
         # Close cooldown (closed map)
-        # after a close intent, prevent reopen for N seconds (helps scanner churn)
         self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)  # 0 disables cooldown
-        # TTL for closed markers (independent from cooldown; default 10x cooldown)
         self.closed_ttl_sec = _env_int(
             "BRIDGE_CLOSED_TTL_SEC",
             max(0, int(self.close_cooldown_sec) * 10) if self.close_cooldown_sec > 0 else 0,
@@ -121,7 +129,8 @@ class IntentBridge:
         # periodic cleanup loop
         self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)  # 0 disables periodic cleanup loop
 
-        # DRY_RUN gating knobs (for regression tests)
+        # DRY_RUN gating knobs
+        # NOTE: default for bypass should be False for safer regression behavior, but keep as-is if you prefer.
         self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", True)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
@@ -145,6 +154,7 @@ class IntentBridge:
             decode_responses=True,
         )
 
+        # Ensure stream+group exist (MKSTREAM) at startup
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         # TradeExecutor
@@ -173,6 +183,10 @@ class IntentBridge:
     # Redis helpers
     # -----------------------
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
+        """
+        Ensure consumer group exists; create stream if missing (MKSTREAM).
+        Safe to call multiple times.
+        """
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
             print(f"[IntentBridge] XGROUP created: stream={stream} group={group} start_id={start_id}")
@@ -217,8 +231,7 @@ class IntentBridge:
             raw_state = self.r.get(self.state_key)
             st = json.loads(raw_state) if raw_state else {}
             if not isinstance(st, dict):
-                return {}
-            # normalize keys
+                return {"open": {}, "closed": {}}
             if "open" not in st or not isinstance(st.get("open"), dict):
                 st["open"] = {}
             if "closed" not in st or not isinstance(st.get("closed"), dict):
@@ -232,7 +245,6 @@ class IntentBridge:
         if closed_map is not None:
             payload_obj["closed"] = closed_map
         else:
-            # preserve if exists
             st = self._load_state()
             payload_obj["closed"] = st.get("closed", {}) if isinstance(st.get("closed"), dict) else {}
         payload = json.dumps(payload_obj, ensure_ascii=False)
@@ -320,7 +332,6 @@ class IntentBridge:
         dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
         dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
         if dirty_open or dirty_closed:
-            # allow cleanup writes even in dry-run if dryrun_write_state enabled
             if (not self.dry_run) or self.dryrun_write_state:
                 try:
                     self._save_state(open_map, closed_map)
@@ -331,7 +342,7 @@ class IntentBridge:
                 except Exception:
                     pass
 
-        # cooldown check (prevents immediate reopen after close)
+        # cooldown check
         left = self._cooldown_left_sec(closed_map, symbol)
         if left > 0:
             return False, f"cooldown: {left}s left"
@@ -345,7 +356,6 @@ class IntentBridge:
         return True, "ok"
 
     def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
-        # In DRY_RUN, write state only if enabled (needed for regression tests)
         if self.dry_run and (not self.dryrun_write_state):
             return
 
@@ -357,7 +367,6 @@ class IntentBridge:
         if not isinstance(closed_map, dict):
             closed_map = {}
 
-        # once opened, clear closed marker (if any)
         if symbol in closed_map:
             closed_map.pop(symbol, None)
             self._publish_event("state_closed_cleared", {"state_key": self.state_key, "symbol": symbol})
@@ -370,10 +379,12 @@ class IntentBridge:
         }
 
         self._save_state(open_map, closed_map)
-        self._publish_event("state_written", {"state_key": self.state_key, "len_open": len(open_map), "len_closed": len(closed_map)})
+        self._publish_event(
+            "state_written",
+            {"state_key": self.state_key, "len_open": len(open_map), "len_closed": len(closed_map)},
+        )
 
     def _gate_mark_close(self, symbol: str, reason: str, intent_id: str) -> None:
-        # In DRY_RUN, write state only if enabled
         if self.dry_run and (not self.dryrun_write_state):
             return
 
@@ -388,7 +399,6 @@ class IntentBridge:
         existed = symbol in open_map
         open_map.pop(symbol, None)
 
-        # write closed marker for cooldown
         if self.close_cooldown_sec and self.close_cooldown_sec > 0:
             closed_map[symbol] = {"ts_utc": _now_utc_iso(), "reason": reason, "intent_id": intent_id}
 
@@ -428,14 +438,33 @@ class IntentBridge:
         start_id:
           ">" => new
           "0" => pending (PEL)
+
+        Important: If stream key is deleted while blocking,
+        Redis can raise: "UNBLOCKED the stream key no longer exists".
+        We recover by recreating stream+group and returning empty batch.
         """
-        resp = self.r.xreadgroup(
-            groupname=self.group,
-            consumername=self.consumer,
-            streams={self.in_stream: start_id},
-            count=self.batch_count,
-            block=self.read_block_ms,
-        )
+        try:
+            resp = self.r.xreadgroup(
+                groupname=self.group,
+                consumername=self.consumer,
+                streams={self.in_stream: start_id},
+                count=self.batch_count,
+                block=self.read_block_ms,
+            )
+        except redis.exceptions.ResponseError as e:
+            msg = str(e)
+            if "UNBLOCKED" in msg and "no longer exists" in msg:
+                print(f"[IntentBridge] WARN: stream disappeared during blocking read; recreating group. err={msg}")
+                try:
+                    # recreate stream+group; safe if group already exists
+                    self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+                except Exception:
+                    pass
+                return []
+            raise
+        except Exception:
+            return []
+
         out: List[Tuple[str, Dict[str, Any]]] = []
         if not resp:
             return out
@@ -450,7 +479,6 @@ class IntentBridge:
     # Intent semantics: open vs close
     # -----------------------
     def _is_close_intent(self, it: Dict[str, Any]) -> bool:
-        # Flexible close detection
         action = _safe_str(it.get("action", "")).strip().lower()
         intent_type = _safe_str(it.get("intent_type", "")).strip().lower()
         close_flag = it.get("close", None)
@@ -462,12 +490,12 @@ class IntentBridge:
         if isinstance(close_flag, bool) and close_flag is True:
             return True
 
-        # side could be "close"
         side = _safe_str(it.get("side", "")).strip().lower()
         if side in ("close", "exit"):
             return True
 
         return False
+
 
     # -----------------------
     # Forwarding logic
@@ -478,28 +506,21 @@ class IntentBridge:
         intent_id = _safe_str(it.get("intent_id", ""))
 
         if not symbol:
-            self._publish_event("close_skip", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"})
-            return
-
-        # state update (even in DRY_RUN if enabled)
-        self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
-
-        if self.dry_run:
             self._publish_event(
-                "close_dry",
-                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "dry_run"},
+                "close_skip",
+                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"},
             )
             return
 
-        meta = {
-            "reason": "ORCH_INTENT_CLOSE",
-            "intent_id": intent_id,
-            "source_pkg_id": source_pkg_id,
-        }
+        self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
 
+        if self.dry_run:
+            self._publish_event("close_dry", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "dry_run"})
+            return
+
+        meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
         err = None
 
-        # try executor close methods
         for name in ("close_position_from_signal", "close_position", "close_trade", "close"):
             fn = getattr(self.executor, name, None)
             if not callable(fn):
@@ -507,21 +528,14 @@ class IntentBridge:
             try:
                 if inspect.iscoroutinefunction(fn):
                     asyncio.run(fn(symbol=symbol, interval=interval, meta=meta))
-                    self._publish_event(
-                        "close_ok",
-                        {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "interval": interval},
-                    )
+                    self._publish_event("close_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "interval": interval})
                     return
                 else:
-                    # best-effort signature
                     try:
                         fn(symbol=symbol, interval=interval, meta=meta)
                     except TypeError:
                         fn(symbol=symbol)
-                    self._publish_event(
-                        "close_ok",
-                        {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "interval": interval},
-                    )
+                    self._publish_event("close_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "interval": interval})
                     return
             except Exception as e:
                 err = err or f"{name} failed: {repr(e)}"
@@ -538,24 +552,20 @@ class IntentBridge:
         intent_id = _safe_str(it.get("intent_id", ""))
 
         if not symbol:
-            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"})
+            self._publish_event(
+                "forward_skip",
+                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"},
+            )
             return
 
         allow, why = self._gate_allow_open(symbol)
         if not allow:
-            self._publish_event(
-                "forward_skip",
-                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
-            )
+            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why})
             return
 
-        # DRY RUN: do not call executor, but write state if enabled (for regression tests)
         if self.dry_run:
             self._gate_mark_open(symbol, side, interval, intent_id)
-            self._publish_event(
-                "forward_dry",
-                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"},
-            )
+            self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
             return
 
         lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
@@ -573,21 +583,16 @@ class IntentBridge:
 
         err = None
 
-        # 1) open_position_from_signal (best)
         fn = getattr(self.executor, "open_position_from_signal", None)
         if callable(fn):
             try:
                 fn(symbol=symbol, side=side, interval=interval, meta=meta)
                 self._gate_mark_open(symbol, side, interval, intent_id)
-                self._publish_event(
-                    "forward_ok",
-                    {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
-                )
+                self._publish_event("forward_ok", {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side})
                 return
             except Exception as e:
                 err = repr(e)
 
-        # 2) open_position / execute_trade (async supported)
         for name in ("open_position", "execute_trade"):
             fn2 = getattr(self.executor, name, None)
             if not callable(fn2):
@@ -596,18 +601,12 @@ class IntentBridge:
                 if inspect.iscoroutinefunction(fn2):
                     asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
                     self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event(
-                        "forward_ok",
-                        {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
-                    )
+                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side})
                     return
                 else:
                     fn2(symbol=symbol, side=side, interval=interval, meta=meta)
                     self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event(
-                        "forward_ok",
-                        {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},
-                    )
+                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side})
                     return
             except TypeError as e:
                 err = err or f"{name} signature mismatch: {e}"
@@ -616,13 +615,7 @@ class IntentBridge:
 
         self._publish_event(
             "forward_skip",
-            {
-                "intent_id": intent_id,
-                "symbol": symbol,
-                "side": side,
-                "interval": interval,
-                "why": err or "no callable entrypoint on executor",
-            },
+            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": err or "no callable entrypoint on executor"},
         )
 
     def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -643,13 +636,6 @@ class IntentBridge:
     # Selftest
     # -----------------------
     def _selftest_run(self) -> None:
-        """
-        Pushes 4 different symbols as trade intents and reports summary into exec_events_stream.
-        Designed as a regression smoke-test for max_open/dedup/cooldown gating.
-
-        Selftest consumes/acks its own injected intents (XREADGROUP) before summarizing,
-        so counts are deterministic (no race with run_forever loop start).
-        """
         try:
             if self.selftest_reset_state:
                 try:
@@ -662,23 +648,12 @@ class IntentBridge:
             expected_prefix = f"selftest-{stamp}-"
             expected_intents: List[str] = []
 
-            # 4 separate packages
             for i, sym in enumerate(self.selftest_symbols[:4], start=1):
                 iid = f"{expected_prefix}{i}-{sym}"
                 expected_intents.append(iid)
-                pkg = {
-                    "items": [
-                        {
-                            "symbol": sym,
-                            "side": self.selftest_side,
-                            "interval": self.selftest_interval,
-                            "intent_id": iid,
-                        }
-                    ]
-                }
+                pkg = {"items": [{"symbol": sym, "side": self.selftest_side, "interval": self.selftest_interval, "intent_id": iid}]}
                 self.r.xadd(self.in_stream, {"json": json.dumps(pkg, ensure_ascii=False)})
 
-            # Consume/ack our own injected intents BEFORE summary
             deadline = time.time() + float(self.selftest_wait_sec or 2.0)
             seen: set[str] = set()
 
@@ -706,7 +681,6 @@ class IntentBridge:
                 self._ack(mids)
                 time.sleep(0.02)
 
-            # Summarize from exec_events_stream
             rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=500)
 
             ok = dry = skip = 0
@@ -775,7 +749,12 @@ class IntentBridge:
     # Main loop
     # -----------------------
     def run_forever(self) -> None:
-        # optional: drain pending first
+        # Ensure group exists even if stream was deleted before start
+        try:
+            self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+        except Exception:
+            pass
+
         if self.drain_pending:
             print("[IntentBridge] draining pending (PEL) ...")
             while True:
@@ -790,7 +769,6 @@ class IntentBridge:
                 time.sleep(0.05)
             print("[IntentBridge] pending drained.")
 
-        # selftest (once per process)
         if self.selftest:
             self._publish_event("selftest_start", {"enabled": True})
             self._selftest_run()
@@ -802,7 +780,7 @@ class IntentBridge:
             rows = self._xreadgroup(">")
             if not rows:
                 idle += 1
-                # periodic TTL cleanup even if stream idle
+
                 if self.cleanup_every_sec > 0 and (time.time() - last_cleanup) >= self.cleanup_every_sec:
                     self._maybe_periodic_cleanup()
                     last_cleanup = time.time()
@@ -820,7 +798,6 @@ class IntentBridge:
 
             self._ack(mids)
 
-            # periodic cleanup after batch too
             if self.cleanup_every_sec > 0 and (time.time() - last_cleanup) >= self.cleanup_every_sec:
                 self._maybe_periodic_cleanup()
                 last_cleanup = time.time()
