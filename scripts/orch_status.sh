@@ -7,11 +7,11 @@ RUNDIR="run"
 # pidfile -> expected pattern map
 # (patternler ps args içinde aranır)
 declare -A EXPECTED
-EXPECTED["scanner"]="orchestration/scanners/worker_stub.py"
-EXPECTED["aggregator"]="Aggregator(RedisBus()).run_forever"
+EXPECTED["aggregator"]="orchestration/aggregator/run_aggregator.py"
 EXPECTED["top_selector"]="orchestration/selector/top_selector.py"
 EXPECTED["master_executor"]="orchestration/executor/master_executor.py"
 EXPECTED["intent_bridge"]="orchestration/executor/intent_bridge.py"
+# scanner_w1..scanner_wN dinamik -> altta otomatik bakılacak
 
 cleanup_pidfiles () {
   shopt -s nullglob
@@ -33,10 +33,16 @@ cleanup_pidfiles () {
       continue
     fi
 
-    # cmd mismatch kontrolü (beklenen pattern varsa)
+    # beklenen pattern belirle
     expect="${EXPECTED[$name]:-}"
+
+    # scanner_w* için otomatik expected
+    if [[ -z "$expect" && "$name" =~ ^scanner_w[0-9]+$ ]]; then
+      expect="orchestration/scanners/worker_stub.py"
+    fi
+
+    # cmd mismatch kontrolü (beklenen pattern varsa)
     if [[ -n "$expect" ]]; then
-      # ps args al
       cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
       if [[ -z "$cmd" ]]; then
         echo "[CLEAN] $name pid=$pid no cmd -> removing $pidfile"
@@ -59,23 +65,28 @@ cleanup_pidfiles () {
 cleanup_pidfiles
 
 echo "=== PID files ==="
-ls -1 run/*.pid 2>/dev/null || echo "(none)"
+ls -1 "${RUNDIR}"/*.pid 2>/dev/null || echo "(none)"
 
 echo
 echo "=== Running orchestration processes (ps) ==="
-ps aux | egrep "orchestration/(scanners/worker_stub\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)|Aggregator\(RedisBus\(\)\)\.run_forever" | grep -v grep || true
+ps aux | egrep \
+  "orchestration/(scanners/worker_stub\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
+  | grep -v grep || true
 
 echo
 echo "=== pgrep -af (orch) ==="
-pgrep -af "orchestration/(scanners/worker_stub\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" || true
+pgrep -af \
+  "orchestration/(scanners/worker_stub\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
+  || true
 
 echo
 echo "=== pgrep -af (aggregator) ==="
-pgrep -af "Aggregator\(RedisBus\(\)\)\.run_forever" || true
+pgrep -af "orchestration/aggregator/run_aggregator\.py" || true
 
 echo
 echo "=== Quick log liveness (last lines) ==="
-for f in logs/orch/scanner.log logs/orch/aggregator.log logs/orch/top_selector.log logs/orch/master_executor.log logs/orch/intent_bridge.log; do
+shopt -s nullglob
+for f in logs/orch/scanner_w*.log logs/orch/aggregator.log logs/orch/top_selector.log logs/orch/master_executor.log logs/orch/intent_bridge.log; do
   if [[ -f "$f" ]]; then
     echo "--- $f (tail -n 3) ---"
     tail -n 3 "$f" || true
@@ -83,4 +94,4 @@ for f in logs/orch/scanner.log logs/orch/aggregator.log logs/orch/top_selector.l
     echo "--- $f missing ---"
   fi
 done
-
+shopt -u nullglob

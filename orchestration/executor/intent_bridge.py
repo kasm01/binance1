@@ -24,22 +24,15 @@ def _env_int(k: str, default: int) -> int:
 
 
 def _env_bool(k: str, default: bool = False) -> bool:
-    """
-    Robust bool env parser:
-      True  -> 1, true, t, yes, y, on
-      False -> 0, false, f, no, n, off, "" (empty)
-      else  -> default
-    """
     v = os.getenv(k)
     if v is None:
         return default
     s = str(v).strip().lower()
-    if s in ("1", "true", "t", "yes", "y", "on"):
+    if s in ("1", "true", "yes", "y", "on"):
         return True
-    if s in ("0", "false", "f", "no", "n", "off", ""):
+    if s in ("0", "false", "no", "n", "off", ""):
         return False
     return default
-
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
@@ -129,7 +122,7 @@ class IntentBridge:
         self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)
 
         # DRY_RUN gating knobs
-        self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", True)
+        self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", False)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
         # selftest
