@@ -48,6 +48,24 @@ def _safe_str(x: Any, default: str = "") -> str:
         return default
 
 
+def _as_list(x: Any) -> List[Any]:
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return []
+        # "a,b,c" gibi gelirse ayır
+        if "," in s:
+            return [t.strip() for t in s.split(",") if t.strip()]
+        return [s]
+    return []
+
+
 @dataclass
 class TradeIntent:
     intent_id: str
@@ -115,8 +133,9 @@ class MasterExecutor:
         self.whale_lev_boost = _env_float("MASTER_WHALE_LEV_BOOST", 1.35)      # multiplier
         self.whale_npct_boost = _env_float("MASTER_WHALE_NPCT_BOOST", 1.20)    # multiplier
         # Whale aggressive floor
-        self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)   # whale align -> lev at least this
-        self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)  # whale align -> npct at least this
+        self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)           # whale align -> lev at least this
+        self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)    # whale align -> npct at least this
+
         # High-volatility risk clamp (defaults)
         self.high_vol_tag = os.getenv("HIGH_VOL_TAG", "high_vol")
         self.high_vol_npct_mult = _env_float("HIGH_VOL_NPCT_MULT", 0.80)
@@ -200,7 +219,7 @@ class MasterExecutor:
         score = self._candidate_score(c)
 
         # hard drop by score
-        if score < self.min_trade_score:
+        if score < float(self.min_trade_score):
             return None
 
         base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
@@ -217,39 +236,42 @@ class MasterExecutor:
 
         side = self._normalize_side(_safe_str(c.get("side", raw.get("side", ""))))
 
+        reasons = [str(x) for x in _as_list(c.get("reasons"))]
+        risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
+
         # aligned check: reasons contains whale_align_*
-        reasons = list(c.get("reasons") or [])
-        risk_tags = list(c.get("risk_tags") or [])
         whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
 
         # whale boost / contra drop
         whale_score = _safe_float(raw.get("whale_score", 0.0), 0.0)
         whale_contra = self._is_whale_contra(side, raw)
 
-        if self.drop_if_whale_contra and whale_contra and whale_score >= self.whale_boost_thr:
+        if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
             return None
 
         whale_mult_lev = 1.0
         whale_mult_npct = 1.0
-        if whale_aligned and whale_score >= self.whale_boost_thr:
-            whale_mult_lev = self.whale_lev_boost
-            whale_mult_npct = self.whale_npct_boost
+        if whale_aligned and whale_score >= float(self.whale_boost_thr):
+            whale_mult_lev = float(self.whale_lev_boost)
+            whale_mult_npct = float(self.whale_npct_boost)
             reasons = reasons + ["master_whale_boost"]
 
-        lev = int(round(base_lev * conf_adj * atr_adj * spr_adj * whale_mult_lev))
+        lev = int(round(float(base_lev) * conf_adj * atr_adj * spr_adj * whale_mult_lev))
         lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
 
-        npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
+        npct = float(base_npct) * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
         npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
 
-        # high_vol -> leverage değil notional kıs (opsiyonel)
+        # high_vol -> notional+lev kıs (crash-proof)
         if self.high_vol_tag in (risk_tags or []):
-            lev = int(_clamp(float(int(round(lev * float(self.high_vol_lev_mult)))), float(self.lev_min), float(self.lev_max)))
-            npct = float(_clamp(npct * float(self.high_vol_npct_mult), float(self.notional_min_pct), float(self.notional_max_pct)))
+            hnp = float(getattr(self, "high_vol_npct_mult", 0.80))
+            hlv = float(getattr(self, "high_vol_lev_mult", 0.85))
+            lev = int(_clamp(float(int(round(float(lev) * hlv))), float(self.lev_min), float(self.lev_max)))
+            npct = float(_clamp(float(npct) * hnp, float(self.notional_min_pct), float(self.notional_max_pct)))
             reasons = reasons + ["master_high_vol_clamp"]
 
         # whale aligned ise: agresif floor uygula (lev/npct asla çok düşmesin)
-        if whale_aligned and whale_score >= self.whale_boost_thr:
+        if whale_aligned and whale_score >= float(self.whale_boost_thr):
             lev = max(lev, int(self.whale_lev_floor))
             npct = max(npct, float(self.whale_npct_floor))
 
@@ -411,3 +433,4 @@ class MasterExecutor:
 
 if __name__ == "__main__":
     MasterExecutor().run_forever()
+

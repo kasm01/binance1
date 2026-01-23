@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Optional: load env safely (avoids "KEY: value" parse errors)
+if [[ -f ".env" ]]; then
+  ./scripts/load_env.sh .env >/dev/null 2>&1 || true
+fi
+
 PY="./venv/bin/python"
 LOGDIR="logs/orch"
 RUNDIR="run"
@@ -24,7 +29,7 @@ expected_cmd() {
     local name="$1"
     case "$name" in
         scanner_*) echo "orchestration/scanners/worker_stub.py" ;;
-        aggregator) echo "orchestration.aggregator.aggregator import Aggregator" ;;
+        aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
         top_selector) echo "orchestration/selector/top_selector.py" ;;
         master_executor) echo "orchestration/executor/master_executor.py" ;;
         intent_bridge) echo "orchestration/executor/intent_bridge.py" ;;
@@ -162,8 +167,7 @@ start_one "scanner_w8" env WORKER_ID="w8" WORKER_SYMBOLS="$W8" WORKER_INTERVAL="
 # -----------------------------
 # Full orch start (downstream)
 # -----------------------------
-start_one "aggregator" "$PY" -u -c \
-    "from orchestration.event_bus.redis_bus import RedisBus; from orchestration.aggregator.aggregator import Aggregator; Aggregator(RedisBus()).run_forever()"
+start_one "aggregator" "$PY" -u orchestration/aggregator/run_aggregator.py
 
 start_one "top_selector" "$PY" -u orchestration/selector/top_selector.py
 start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
