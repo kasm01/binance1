@@ -117,6 +117,10 @@ class MasterExecutor:
         # Whale aggressive floor
         self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)   # whale align -> lev at least this
         self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)  # whale align -> npct at least this
+        # High-volatility risk clamp (defaults)
+        self.high_vol_tag = os.getenv("HIGH_VOL_TAG", "high_vol")
+        self.high_vol_npct_mult = _env_float("HIGH_VOL_NPCT_MULT", 0.80)
+        self.high_vol_lev_mult = _env_float("HIGH_VOL_LEV_MULT", 0.85)
 
         # Contra whale safety
         self.drop_if_whale_contra = os.getenv("MASTER_DROP_WHALE_CONTRA", "1").strip().lower() in ("1", "true", "yes", "on")
@@ -213,7 +217,12 @@ class MasterExecutor:
 
         side = self._normalize_side(_safe_str(c.get("side", raw.get("side", ""))))
 
-        # whale boost (only if aligned) / contra drop
+        # aligned check: reasons contains whale_align_*
+        reasons = list(c.get("reasons") or [])
+        risk_tags = list(c.get("risk_tags") or [])
+        whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
+
+        # whale boost / contra drop
         whale_score = _safe_float(raw.get("whale_score", 0.0), 0.0)
         whale_contra = self._is_whale_contra(side, raw)
 
@@ -222,16 +231,6 @@ class MasterExecutor:
 
         whale_mult_lev = 1.0
         whale_mult_npct = 1.0
-        # Whale aligned ise: agresif floor uygula
-        if whale_aligned and whale_score >= self.whale_boost_thr:
-            # lev floor AFTER compute (en sonda da uygulanabilir ama burada daha net)
-            pass
-
-        # aligned check: reasons contains whale_align_* OR risk_tags not contain whale_contra
-        reasons = list(c.get("reasons") or [])
-        risk_tags = list(c.get("risk_tags") or [])
-        whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
-
         if whale_aligned and whale_score >= self.whale_boost_thr:
             whale_mult_lev = self.whale_lev_boost
             whale_mult_npct = self.whale_npct_boost
@@ -242,6 +241,14 @@ class MasterExecutor:
 
         npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
         npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
+
+        # high_vol -> leverage değil notional kıs (opsiyonel)
+        if self.high_vol_tag in (risk_tags or []):
+            lev = int(_clamp(float(int(round(lev * float(self.high_vol_lev_mult)))), float(self.lev_min), float(self.lev_max)))
+            npct = float(_clamp(npct * float(self.high_vol_npct_mult), float(self.notional_min_pct), float(self.notional_max_pct)))
+            reasons = reasons + ["master_high_vol_clamp"]
+
+        # whale aligned ise: agresif floor uygula (lev/npct asla çok düşmesin)
         if whale_aligned and whale_score >= self.whale_boost_thr:
             lev = max(lev, int(self.whale_lev_floor))
             npct = max(npct, float(self.whale_npct_floor))
