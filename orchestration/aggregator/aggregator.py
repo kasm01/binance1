@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
+from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 from orchestration.event_bus.redis_bus import RedisBus
 from orchestration.state.dup_guard import DupGuard
-from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 
 
 def _ts_from_stream_id(mid: str) -> str:
-    """
-    Redis stream id: '1768833274051-0' -> epoch ms -> ISO
-    """
     try:
         ms = int(str(mid).split("-", 1)[0])
         return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
@@ -24,7 +22,13 @@ class Aggregator:
     """
     signals_stream -> candidates_stream
 
-    Restart-safe: uses Redis consumer groups via RedisBus.xreadgroup_json(...)
+    Reads signals via consumer groups, selects best topk_out signals,
+    publishes each as a candidate message to candidates_stream.
+
+    Notes:
+      - ACK is fail-open (we ack even if we drop candidates),
+        so the pipeline doesn't get stuck.
+      - side_candidate="none" is ignored (HOLD).
     """
 
     def __init__(
@@ -43,7 +47,7 @@ class Aggregator:
 
     def run_forever(self) -> None:
         assert self.bus.ping(), "[Aggregator] Redis ping failed."
-        print("[Aggregator] started. reading signals_stream ...")
+        print(f"[Aggregator] started. reading {self.bus.signals_stream} ...")
 
         while True:
             msgs = self.bus.xreadgroup_json(
@@ -54,6 +58,7 @@ class Aggregator:
                 block_ms=1000,
                 start_id=">",
                 create_group=True,
+                group_start_id="$",
             )
 
             if not msgs:
@@ -65,15 +70,31 @@ class Aggregator:
             for mid, evt in msgs:
                 mids.append(mid)
 
+                if not isinstance(evt, dict) or not evt:
+                    continue
+
+                # ignore HOLD
+                side = str(evt.get("side_candidate", "none")).strip().lower()
+                if side in ("none", "", "hold"):
+                    continue
+
+                # normalize symbol
+                sym = str(evt.get("symbol", "")).upper().strip()
+                if not sym:
+                    continue
+                evt["symbol"] = sym
+
+                # ensure timestamp
+                if not evt.get("ts_utc"):
+                    evt["ts_utc"] = _ts_from_stream_id(mid)
+
                 ok, _reason = pass_quality_gates(evt)
                 if not ok:
                     continue
 
-                ck = str(evt.get("cooldown_key") or "")
+                ck = str(evt.get("cooldown_key") or "").strip()
                 if not ck:
-                    sym = str(evt.get("symbol", "")).upper()
-                    side = str(evt.get("side_candidate", "none"))
-                    itv = str(evt.get("interval", ""))
+                    itv = str(evt.get("interval", "")).strip()
                     ck = f"{sym}|{itv}|{side}"
 
                 if not self.dup.allow(ck, cooldown_sec=None):
@@ -81,8 +102,8 @@ class Aggregator:
 
                 score, reasons, risk_tags = compute_score(evt)
                 evt["_score_total"] = float(score)
-                evt["_reasons"] = reasons
-                evt["_risk_tags"] = risk_tags
+                evt["_reasons"] = list(reasons or [])
+                evt["_risk_tags"] = list(risk_tags or [])
                 evt["_source_stream_id"] = mid
                 candidates.append(evt)
 
@@ -102,7 +123,7 @@ class Aggregator:
             for evt in top:
                 sym = str(evt.get("symbol", "")).upper()
                 itv = str(evt.get("interval", ""))
-                side = str(evt.get("side_candidate", "long"))
+                side = str(evt.get("side_candidate", "long")).strip().lower()
 
                 payload = {
                     "candidate_id": str(uuid.uuid4()),
@@ -113,8 +134,12 @@ class Aggregator:
                     "score_total": float(evt.get("_score_total", 0.0)),
                     "reasons": list(evt.get("_reasons", [])),
                     "risk_tags": list(evt.get("_risk_tags", [])),
-                    "recommended_notional_pct": 0.05,  # placeholder -> risk module will refine
-                    "recommended_leverage": 5,         # placeholder -> risk module will refine
+                    "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
+                    "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
                     "raw": evt,
                 }
                 self.bus.publish_candidate(payload)
+
+            # küçük pacing (CPU'yu yormasın)
+            time.sleep(0.01)
+

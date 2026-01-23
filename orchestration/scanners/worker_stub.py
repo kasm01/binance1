@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import time
 import uuid
@@ -8,15 +9,30 @@ from typing import List
 from orchestration.event_bus.redis_bus import RedisBus
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off", ""):
+        return False
+    return default
+
+
 def main() -> None:
     bus = RedisBus()
     assert bus.ping(), "[WorkerStub] Redis ping failed."
 
-    producer_id = "w0"
-    symbols: List[str] = ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
-    interval = "5m"
+    producer_id = os.getenv("WORKER_ID", "w0")
+    symbols: List[str] = [s.strip().upper() for s in os.getenv("WORKER_SYMBOLS", "BTCUSDT,ETHUSDT,XRPUSDT").split(",") if s.strip()]
+    interval = os.getenv("WORKER_INTERVAL", "5m")
 
-    print("[WorkerStub] started. publishing to signals_stream ...")
+    # HOLD event basmayı kapat (spam azaltır)
+    publish_hold = _env_bool("WORKER_PUBLISH_HOLD", False)
+
+    print(f"[WorkerStub] started. publishing to {bus.signals_stream} ...")
     while True:
         sym = random.choice(symbols)
         p = random.random()
@@ -25,6 +41,10 @@ def main() -> None:
             side = "long"
         elif p < 0.38:
             side = "short"
+
+        if side == "none" and not publish_hold:
+            time.sleep(0.5)
+            continue
 
         evt = {
             "event_id": str(uuid.uuid4()),
