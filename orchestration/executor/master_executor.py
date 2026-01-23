@@ -85,7 +85,7 @@ class MasterExecutor:
         # Consumer group
         self.group = os.getenv("MASTER_GROUP", "master_exec_g")
         self.consumer = os.getenv("MASTER_CONSUMER", "master_1")
-        self.group_start_id = os.getenv("MASTER_GROUP_START_ID", "$")  # "$" new only, or "0-0" from beginning
+        self.group_start_id = os.getenv("MASTER_GROUP_START_ID", "$")
         self.drain_pending = os.getenv("MASTER_DRAIN_PENDING", "0").strip().lower() in ("1", "true", "yes", "on")
 
         # Read tuning
@@ -101,11 +101,25 @@ class MasterExecutor:
         self._last_publish_ts = 0.0
         self._last_published_source_id: Optional[str] = None
 
+        # Global score gate (CRITICAL)
+        self.min_trade_score = _env_float("MASTER_MIN_TRADE_SCORE", 0.10)
+
         # Risk sizing clamp
         self.lev_min = _env_int("LEV_MIN", 3)
         self.lev_max = _env_int("LEV_MAX", 30)
         self.notional_min_pct = _env_float("NOTIONAL_MIN_PCT", 0.02)
         self.notional_max_pct = _env_float("NOTIONAL_MAX_PCT", 0.25)
+
+        # Whale aggression controls
+        self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
+        self.whale_lev_boost = _env_float("MASTER_WHALE_LEV_BOOST", 1.35)      # multiplier
+        self.whale_npct_boost = _env_float("MASTER_WHALE_NPCT_BOOST", 1.20)    # multiplier
+        # Whale aggressive floor
+        self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)   # whale align -> lev at least this
+        self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)  # whale align -> npct at least this
+
+        # Contra whale safety
+        self.drop_if_whale_contra = os.getenv("MASTER_DROP_WHALE_CONTRA", "1").strip().lower() in ("1", "true", "yes", "on")
 
         self.r = redis.Redis(
             host=self.redis_host,
@@ -120,7 +134,7 @@ class MasterExecutor:
         print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"topn={self.topn} max_pos={self.max_pos} "
+            f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
@@ -167,9 +181,23 @@ class MasterExecutor:
         raw = c.get("raw") or {}
         return _safe_float(c.get("_score_selected", c.get("score_total", raw.get("_score_total", 0.0))), 0.0)
 
-    def _make_intent(self, c: Dict[str, Any]) -> TradeIntent:
+    def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
+        whale_dir = _safe_str(raw.get("whale_dir", "none")).lower()
+        whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
+        whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
+        if whale_is_buy and side == "short":
+            return True
+        if whale_is_sell and side == "long":
+            return True
+        return False
+
+    def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
         raw = c.get("raw") or {}
         score = self._candidate_score(c)
+
+        # hard drop by score
+        if score < self.min_trade_score:
+            return None
 
         base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
         base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
@@ -178,27 +206,57 @@ class MasterExecutor:
         atr_pct = _safe_float(raw.get("atr_pct", 0.01), 0.01)
         spread_pct = _safe_float(raw.get("spread_pct", 0.0003), 0.0003)
 
+        # base adjusters
         conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
         atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
         spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
 
-        lev = int(round(base_lev * conf_adj * atr_adj * spr_adj))
+        side = self._normalize_side(_safe_str(c.get("side", raw.get("side", ""))))
+
+        # whale boost (only if aligned) / contra drop
+        whale_score = _safe_float(raw.get("whale_score", 0.0), 0.0)
+        whale_contra = self._is_whale_contra(side, raw)
+
+        if self.drop_if_whale_contra and whale_contra and whale_score >= self.whale_boost_thr:
+            return None
+
+        whale_mult_lev = 1.0
+        whale_mult_npct = 1.0
+        # Whale aligned ise: agresif floor uygula
+        if whale_aligned and whale_score >= self.whale_boost_thr:
+            # lev floor AFTER compute (en sonda da uygulanabilir ama burada daha net)
+            pass
+
+        # aligned check: reasons contains whale_align_* OR risk_tags not contain whale_contra
+        reasons = list(c.get("reasons") or [])
+        risk_tags = list(c.get("risk_tags") or [])
+        whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
+
+        if whale_aligned and whale_score >= self.whale_boost_thr:
+            whale_mult_lev = self.whale_lev_boost
+            whale_mult_npct = self.whale_npct_boost
+            reasons = reasons + ["master_whale_boost"]
+
+        lev = int(round(base_lev * conf_adj * atr_adj * spr_adj * whale_mult_lev))
         lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
 
-        npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1)
+        npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
         npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
+        if whale_aligned and whale_score >= self.whale_boost_thr:
+            lev = max(lev, int(self.whale_lev_floor))
+            npct = max(npct, float(self.whale_npct_floor))
 
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
             symbol=_safe_str(c.get("symbol", "")).upper(),
             interval=_safe_str(c.get("interval", "")),
-            side=self._normalize_side(_safe_str(c.get("side", raw.get("side", "")))),
+            side=side,
             score=float(score),
             recommended_leverage=int(lev),
             recommended_notional_pct=float(npct),
-            reasons=list(c.get("reasons") or []),
-            risk_tags=list(c.get("risk_tags") or []),
+            reasons=reasons,
+            risk_tags=risk_tags,
             raw=dict(c),
         )
 
@@ -213,17 +271,16 @@ class MasterExecutor:
             if (prev is None) or (sc > self._candidate_score(prev)):
                 best_by_symbol[sym] = c
 
-        intents = [self._make_intent(c) for c in best_by_symbol.values()]
+        intents: List[TradeIntent] = []
+        for c in best_by_symbol.values():
+            it = self._make_intent(c)
+            if it is not None:
+                intents.append(it)
+
         intents.sort(key=lambda x: float(x.score), reverse=True)
         return intents[: max(0, int(self.topn))]
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
-        """
-        start_id:
-          ">" => new messages only
-          "0" => pending messages (PEL) for this group
-        Returns list of (stream_id, pkg_dict)
-        """
         resp = self.r.xreadgroup(
             groupname=self.group,
             consumername=self.consumer,
@@ -245,7 +302,6 @@ class MasterExecutor:
         return out
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
-        # Dedupe same top5 package + cooldown
         if self._last_published_source_id == source_stream_id:
             return None
 
@@ -287,7 +343,6 @@ class MasterExecutor:
         return sid
 
     def run_forever(self) -> None:
-        # Optional: drain pending first
         if self.drain_pending:
             print("[MasterExecutor] draining pending (PEL) ...")
             while True:
@@ -295,7 +350,6 @@ class MasterExecutor:
                 if not rows:
                     break
 
-                # process
                 mids = [sid for sid, _ in rows]
                 for sid, pkg in rows:
                     items = pkg.get("items") or []
@@ -316,7 +370,6 @@ class MasterExecutor:
 
             print("[MasterExecutor] pending drained.")
 
-        # Main loop
         idle = 0
         while True:
             rows = self._xreadgroup(">")
