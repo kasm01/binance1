@@ -222,6 +222,19 @@ class IntentBridge:
         if s in ("sell", "short"):
             return "short"
         return s or "long"
+    def _extract_close_price(self, it: Dict[str, Any]) -> Optional[float]:
+        """
+        Close intent içinden fiyatı robust şekilde çıkarır.
+        Kabul edilen alanlar: price, exit_price, close_price, fill_price
+        """
+        for k in ("price", "exit_price", "close_price", "fill_price"):
+            v = it.get(k, None)
+            if v is None:
+                continue
+            p = _safe_float(v, 0.0)
+            if p > 0:
+                return float(p)
+        return None
 
     def _normalize_direction(self, side_or_dir: str) -> str:
         """
@@ -641,73 +654,145 @@ class IntentBridge:
             )
             return
 
-        # direction belirle: intent side > state side
-        raw_side = _safe_str(it.get("side", ""))
-        direction = self._normalize_direction(raw_side)
-        if not direction:
-            direction = self._get_open_side_from_state(symbol)
+        # side/direction normalize
+        raw_side = _safe_str(it.get("side", "")).strip()
+        side_norm = raw_side.upper()
+        if side_norm in ("BUY", "LONG"):
+            side_norm = "LONG"
+        elif side_norm in ("SELL", "SHORT"):
+            side_norm = "SHORT"
+        else:
+            # side verilmemişse state'ten dene (varsa)
+            st = self._load_state()
+            open_map = st.get("open", {}) if isinstance(st, dict) else {}
+            if isinstance(open_map, dict) and symbol in open_map and isinstance(open_map.get(symbol), dict):
+                prev = _safe_str(open_map[symbol].get("side", "long")).lower()
+                side_norm = "LONG" if prev == "long" else "SHORT"
+            else:
+                side_norm = "LONG"
 
-        # fiyat: intent'ten al (varsa). Yoksa None.
-        # (TradeExecutor tarafında fiyat yoksa marketten çekmeyi eklediysen sorun yok)
-        price_val = it.get("price", None)
-        if price_val is None:
-            price_val = it.get("exit_price", None)
-        if price_val is None:
-            price_val = it.get("close_price", None)
+        # close price
+        close_price = self._extract_close_price(it)
 
-        # Eğer hiç yoksa None bırak.
-        price: Any = None
-        if price_val is not None and str(price_val).strip() != "":
-            # sayı ise float'a çevir
-            price = _safe_float(price_val, 0.0)
-
-        # DRY RUN: close'u kabul ediyoruz ve state'i güncelliyoruz (opsiyonel write_state)
+        # DRY RUN ise: state'i kapat + event bas
         if self.dry_run:
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
                 "close_dry",
-                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "dry_run"},
+                {
+                    "intent_id": intent_id,
+                    "symbol": symbol,
+                    "interval": interval,
+                    "side": side_norm,
+                    "price": close_price,
+                    "why": "dry_run",
+                },
             )
             return
 
         meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
-        ok, res, method_or_err = self._try_close_executor(
-            symbol=symbol,
-            interval=interval,
-            direction=direction,
-            price=price,
-            meta=meta,
-        )
+        err: Optional[str] = None
 
-        # Eğer executor "ok" dedi ama res None döndüyse, bu belirsiz.
-        # Burada güvenli davranıp, dict/bool success değilse state'i kapatma.
-        if ok and self._is_close_success(res):
-            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
-            self._publish_event(
-                "close_ok",
-                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval},
-            )
-            return
+        # Executor close entrypoints (sırayla dene)
+        for name in ("close_position_from_signal", "close_position", "close_trade", "close"):
+            fn = getattr(self.executor, name, None)
+            if not callable(fn):
+                continue
 
-        # Bazı implementasyonlarda close başarılı olur ama res None döner.
-        # Bunu da başarılı saymak istersen: aşağıdaki satırı True yapabilirsin.
-        accept_none_as_success = _env_bool("BRIDGE_CLOSE_ACCEPT_NONE_SUCCESS", False)
-        if ok and res is None and accept_none_as_success:
-            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
-            self._publish_event(
-                "close_ok",
-                {"intent_id": intent_id, "method": f"{method_or_err}/none_ok", "symbol": symbol, "interval": interval},
-            )
-            return
+            try:
+                sig = None
+                try:
+                    sig = inspect.signature(fn)
+                except Exception:
+                    sig = None
 
-        # Başarısız => state'e dokunma
-        why = method_or_err
-        if isinstance(res, dict):
-            why = _safe_str(res.get("reason") or res.get("why") or why)
+                kwargs: Dict[str, Any] = {}
 
+                # İmzada hangi parametreler varsa onları doldur
+                if sig is not None:
+                    params = set(sig.parameters.keys())
+
+                    if "symbol" in params:
+                        kwargs["symbol"] = symbol
+
+                    if "interval" in params:
+                        kwargs["interval"] = interval
+
+                    if "meta" in params:
+                        kwargs["meta"] = meta
+
+                    # side/direction
+                    if "side" in params:
+                        kwargs["side"] = side_norm
+                    if "direction" in params:
+                        kwargs["direction"] = side_norm
+
+                    # price / exit_price
+                    if close_price is not None:
+                        if "price" in params:
+                            kwargs["price"] = close_price
+                        if "exit_price" in params:
+                            kwargs["exit_price"] = close_price
+                else:
+                    # signature okunamadıysa minimal dene
+                    kwargs = {"symbol": symbol}
+
+                # çağır
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn(**kwargs))
+                    self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+                    self._publish_event(
+                        "close_ok",
+                        {
+                            "intent_id": intent_id,
+                            "method": f"{name}(asyncio.run)",
+                            "symbol": symbol,
+                            "interval": interval,
+                            "side": side_norm,
+                            "price": close_price,
+                        },
+                    )
+                    return
+                else:
+                    fn(**kwargs)
+                    self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+                    self._publish_event(
+                        "close_ok",
+                        {
+                            "intent_id": intent_id,
+                            "method": f"{name}(sync)",
+                            "symbol": symbol,
+                            "interval": interval,
+                            "side": side_norm,
+                            "price": close_price,
+                        },
+                    )
+                    return
+
+            except TypeError as e:
+                # imza uyuşmazlığı: daha yalın bir deneme yap
+                err = err or f"{name} signature mismatch: {e}"
+                try:
+                    if inspect.iscoroutinefunction(fn):
+                        asyncio.run(fn(symbol=symbol))
+                    else:
+                        fn(symbol=symbol)
+                    self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
+                    self._publish_event(
+                        "close_ok",
+                        {"intent_id": intent_id, "method": f"{name}(fallback)", "symbol": symbol, "interval": interval},
+                    )
+                    return
+                except Exception as e2:
+                    err = err or f"{name} failed: {repr(e2)}"
+
+            except Exception as e:
+                err = err or f"{name} failed: {repr(e)}"
+
+        # Close çağrılamadıysa: state'i kapatma (kritik)
         self._publish_event(
             "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": f"close_position failed: {why}"},
+            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "side": side_norm, "why": err or "no close entrypoint"},
         )
 
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
