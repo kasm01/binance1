@@ -16,6 +16,23 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _env_bool(k: str, default: bool = False) -> bool:
+    v = os.getenv(k)
+    if v is None:
+        return default
+    t = str(v).strip().lower()
+    if t in ("1","true","yes","y","on"):
+        return True
+    if t in ("0","false","no","n","off",""):
+        return False
+    return default
+
+def _env_str(k: str, default: str = "") -> str:
+    v = os.getenv(k)
+    if v is None:
+        return default
+    return str(v).strip()
+
 def _env_int(k: str, default: int) -> int:
     try:
         return int(str(os.getenv(k, str(default))).strip())
@@ -154,12 +171,23 @@ class MasterExecutor:
 
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
-        print(
+            print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
-            f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
-            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
-        )
+
+                f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
+                f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
+                f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            )
+        # --- LIVE SAFETY POLICY ---
+        # If DRY_RUN=0 (live), require ARMED=1, ARM_TOKEN non-empty, and LIVE_KILL_SWITCH=0
+        self.armed = _env_bool("ARMED", False)
+        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
+        self.arm_token = _env_str("ARM_TOKEN", "")
+        self.dry_run_env = _env_bool("DRY_RUN", True)
+
+        self.live_allowed = (not self.dry_run_env) and self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16)
+        if not self.dry_run_env and not self.live_allowed:
+            print(f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)} -> will NOT publish intents")
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
@@ -425,7 +453,11 @@ class MasterExecutor:
                     summary = ", ".join(
                         [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
                     )
-                    print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
+                            # gate_publish
+        if (not getattr(self, "live_allowed", True)):
+            # live blocked -> skip publishing
+            continue
+print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
 
             self._ack(mids)
             time.sleep(0.05)

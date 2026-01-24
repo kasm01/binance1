@@ -103,6 +103,16 @@ class IntentBridge:
         # runtime
         self.dry_run = _env_bool("DRY_RUN", True)
 
+
+        # --- LIVE SAFETY POLICY ---
+        # Live trade is only allowed if:
+        #   - DRY_RUN=0
+        #   - ARMED=1
+        # Otherwise force dry_run=True.
+        self.armed = _env_bool("ARMED", False)
+        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
+        if (not self.armed) or self.kill_switch:
+            self.dry_run = True
         # gating + state
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
         self.dedup_symbol = _env_bool("DEDUP_SYMBOL_OPEN", True)
@@ -163,7 +173,7 @@ class IntentBridge:
         )
 
         print(
-            f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} "
+            f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} armed={getattr(self, 'armed', None)} kill_switch={getattr(self, 'kill_switch', None)} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"dry_run={self.dry_run} state_key={self.state_key} "
             f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} "
