@@ -21,17 +21,19 @@ def _env_bool(k: str, default: bool = False) -> bool:
     if v is None:
         return default
     t = str(v).strip().lower()
-    if t in ("1","true","yes","y","on"):
+    if t in ("1", "true", "yes", "y", "on"):
         return True
-    if t in ("0","false","no","n","off",""):
+    if t in ("0", "false", "no", "n", "off", ""):
         return False
     return default
+
 
 def _env_str(k: str, default: str = "") -> str:
     v = os.getenv(k)
     if v is None:
         return default
     return str(v).strip()
+
 
 def _env_int(k: str, default: int) -> int:
     try:
@@ -159,7 +161,12 @@ class MasterExecutor:
         self.high_vol_lev_mult = _env_float("HIGH_VOL_LEV_MULT", 0.85)
 
         # Contra whale safety
-        self.drop_if_whale_contra = os.getenv("MASTER_DROP_WHALE_CONTRA", "1").strip().lower() in ("1", "true", "yes", "on")
+        self.drop_if_whale_contra = os.getenv("MASTER_DROP_WHALE_CONTRA", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         self.r = redis.Redis(
             host=self.redis_host,
@@ -190,7 +197,7 @@ class MasterExecutor:
             print(
                 f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but "
                 f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)} "
-                "-> will NOT publish intents"
+                f"-> will NOT publish intents"
             )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
@@ -363,6 +370,10 @@ class MasterExecutor:
         return out
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
+        # LIVE gate: if live is blocked, do not publish
+        if not getattr(self, "live_allowed", True):
+            return None
+
         if self._last_published_source_id == source_stream_id:
             return None
 
@@ -457,11 +468,7 @@ class MasterExecutor:
                     summary = ", ".join(
                         [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
                     )
-                            # gate_publish
-        if (not getattr(self, "live_allowed", True)):
-            # live blocked -> skip publishing
-            continue
-print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
+                    print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
 
             self._ack(mids)
             time.sleep(0.05)
@@ -469,4 +476,3 @@ print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} i
 
 if __name__ == "__main__":
     MasterExecutor().run_forever()
-
