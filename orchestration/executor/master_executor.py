@@ -171,13 +171,13 @@ class MasterExecutor:
 
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
-            print(
+        print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
+            f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
+            f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+        )
 
-                f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-                f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
-                f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
-            )
         # --- LIVE SAFETY POLICY ---
         # If DRY_RUN=0 (live), require ARMED=1, ARM_TOKEN non-empty, and LIVE_KILL_SWITCH=0
         self.armed = _env_bool("ARMED", False)
@@ -187,7 +187,11 @@ class MasterExecutor:
 
         self.live_allowed = (not self.dry_run_env) and self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16)
         if not self.dry_run_env and not self.live_allowed:
-            print(f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)} -> will NOT publish intents")
+            print(
+                f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but "
+                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)} "
+                "-> will NOT publish intents"
+            )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
