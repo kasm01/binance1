@@ -10,6 +10,46 @@ if [[ -f ".env" ]]; then
 fi
 
 # -----------------------------
+# Ensure dirs exist
+# -----------------------------
+mkdir -p run logs/orch
+
+# -----------------------------
+# Helpers: pidfile heal / cleanup
+# -----------------------------
+heal_pidfile() {
+  # Usage: heal_pidfile <name> <pattern>
+  local name="$1"
+  local pat="$2"
+  local pidfile="run/${name}.pid"
+
+  if [[ -f "$pidfile" ]]; then
+    local pid
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+
+    # empty or dead pid -> attempt heal by pgrep, else cleanup
+    if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      local newpid
+      newpid="$(pgrep -f "$pat" | head -n1 || true)"
+
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        echo "[START][WARN] ${name} pidfile stale -> healed (old=${pid:-na} new=${newpid})"
+      else
+        rm -f "$pidfile" || true
+        echo "[START][WARN] ${name} pidfile stale -> cleaned (old=${pid:-na})"
+      fi
+    fi
+  fi
+}
+
+# Heal critical singleton pidfiles (prevents stale pid_dead alarms)
+heal_pidfile "aggregator"      "orchestration/aggregator/run_aggregator.py"
+heal_pidfile "top_selector"    "orchestration/selector/top_selector.py"
+heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
+heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
+
+# -----------------------------
 # DRY_RUN reset policy (SAFER)
 # -----------------------------
 if is_truthy "${DRY_RUN:-1}"; then
@@ -29,6 +69,11 @@ STERILE="${STERILE:-0}"
 
 if is_truthy "$STERILE"; then
   echo "[MODE] STERILE=1 -> starting only master_executor + intent_bridge"
+
+  # Heal again just in case (sterile runs standalone)
+  heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
+  heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
+
   start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
   start_one "intent_bridge"  "$PY" -u orchestration/executor/intent_bridge.py
 
@@ -62,12 +107,18 @@ start_one "scanner_w7" env WORKER_ID="w7" WORKER_SYMBOLS="$W7" WORKER_INTERVAL="
 start_one "scanner_w8" env WORKER_ID="w8" WORKER_SYMBOLS="$W8" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
 
 # -----------------------------
-# Downstream
+# Downstream (singletons)
 # -----------------------------
-start_one "aggregator" "$PY" -u orchestration/aggregator/run_aggregator.py
-start_one "top_selector" "$PY" -u orchestration/selector/top_selector.py
+# Heal just before starting (extra safety if something changed during scanner starts)
+heal_pidfile "aggregator"      "orchestration/aggregator/run_aggregator.py"
+heal_pidfile "top_selector"    "orchestration/selector/top_selector.py"
+heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
+heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
+
+start_one "aggregator"      "$PY" -u orchestration/aggregator/run_aggregator.py
+start_one "top_selector"    "$PY" -u orchestration/selector/top_selector.py
 start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
-start_one "intent_bridge" "$PY" -u orchestration/executor/intent_bridge.py
+start_one "intent_bridge"   "$PY" -u orchestration/executor/intent_bridge.py
 
 # -----------------------------
 # Readiness (optional)

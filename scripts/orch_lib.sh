@@ -31,46 +31,87 @@ loge() { echo "[$(_ts)] [ERR ] $*" >&2; }
 expected_cmd() {
   local name="${1:-}"
   case "$name" in
-    scanner_*) echo "orchestration/scanners/worker_stub.py" ;;
-    aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
-    top_selector) echo "orchestration/selector/top_selector.py" ;;
-    master_executor) echo "orchestration/executor/master_executor.py" ;;
-    intent_bridge) echo "orchestration/executor/intent_bridge.py" ;;
-    *) echo "" ;;
+    scanner_*)      echo "orchestration/scanners/worker_stub.py" ;;
+    aggregator)     echo "orchestration/aggregator/run_aggregator.py" ;;
+    top_selector)   echo "orchestration/selector/top_selector.py" ;;
+    master_executor)echo "orchestration/executor/master_executor.py" ;;
+    intent_bridge)  echo "orchestration/executor/intent_bridge.py" ;;
+    *)              echo "" ;;
   esac
 }
 
-cleanup_stale_pidfile_if_needed() {
+# Returns:
+#   0 -> continue (pidfile cleaned or doesn't exist, safe to start)
+#   1 -> already running (pidfile healed/valid), caller should NOT start a new one
+heal_pidfile_if_needed() {
   local name="$1"
   local pidfile="${RUNDIR}/${name}.pid"
+
   [[ -f "$pidfile" ]] || return 0
 
-  local oldpid cmd expect
-  oldpid="$(cat "$pidfile" 2>/dev/null || true)"
-
-  if [[ -z "${oldpid:-}" ]]; then
-    rm -f "$pidfile" || true
-    return 0
-  fi
-
-  if ! kill -0 "$oldpid" 2>/dev/null; then
-    rm -f "$pidfile" || true
-    return 0
-  fi
-
+  local pid expect cmd newpid
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
   expect="$(expected_cmd "$name")"
-  cmd="$(ps -p "$oldpid" -o args= 2>/dev/null || true)"
 
-  if [[ -n "$expect" ]] && [[ -n "$cmd" ]] && echo "$cmd" | grep -Fq "$expect"; then
-    echo "[SKIP] $name already running (pid=$oldpid)"
-    return 1
+  # If pid missing/empty -> try heal by pgrep, else remove
+  if [[ -z "${pid:-}" ]]; then
+    if [[ -n "${expect:-}" ]]; then
+      newpid="$(pgrep -f "$expect" | head -n1 || true)"
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        logw "[HEAL] $name pidfile empty -> healed (new=${newpid})"
+        echo "[SKIP] $name already running (pid=$newpid)"
+        return 1
+      fi
+    fi
+    rm -f "$pidfile" || true
+    logw "[CLEAN] $name pidfile empty -> removed"
+    return 0
   fi
 
-  echo "[CLEAN] $name pidfile exists but cmd mismatch (pid=$oldpid) -> removing pidfile"
-  echo "        expected: $expect"
-  echo "        actual:   $cmd"
-  rm -f "$pidfile" || true
-  return 0
+  # If pid dead -> try heal by pgrep, else remove
+  if ! kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "${expect:-}" ]]; then
+      newpid="$(pgrep -f "$expect" | head -n1 || true)"
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        logw "[HEAL] $name pidfile dead -> healed (old=${pid} new=${newpid})"
+        echo "[SKIP] $name already running (pid=$newpid)"
+        return 1
+      fi
+    fi
+    rm -f "$pidfile" || true
+    logw "[CLEAN] $name pidfile dead -> removed (old=${pid})"
+    return 0
+  fi
+
+  # pid alive: verify command matches expected (if we have expected)
+  if [[ -n "${expect:-}" ]]; then
+    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    if [[ -n "${cmd:-}" ]] && echo "$cmd" | grep -Fq "$expect"; then
+      echo "[SKIP] $name already running (pid=$pid)"
+      return 1
+    fi
+
+    # mismatch: try heal by pgrep to find correct process, else remove pidfile
+    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    if [[ -n "${newpid:-}" ]]; then
+      echo "$newpid" > "$pidfile"
+      logw "[HEAL] $name pidfile cmd mismatch -> healed (old=${pid} new=${newpid})"
+      echo "[SKIP] $name already running (pid=$newpid)"
+      return 1
+    fi
+
+    logw "[CLEAN] $name pidfile cmd mismatch -> removed (pid=$pid)"
+    logw "        expected: $expect"
+    logw "        actual:   ${cmd:-na}"
+    rm -f "$pidfile" || true
+    return 0
+  fi
+
+  # No expected pattern: if pid alive, accept as running
+  echo "[SKIP] $name already running (pid=$pid)"
+  return 1
 }
 
 start_one() {
@@ -78,24 +119,26 @@ start_one() {
   local logfile="${LOGDIR}/${name}.log"
   local pidfile="${RUNDIR}/${name}.pid"
 
-  if ! cleanup_stale_pidfile_if_needed "$name"; then
+  # If already running (or healed), don't start a new one
+  if ! heal_pidfile_if_needed "$name"; then
     return 0
   fi
 
   echo "[START] $name -> $logfile"
   nohup env PYTHONPATH="$ROOT_DIR" "$@" >>"$logfile" 2>&1 &
-  echo $! > "$pidfile"
+  local newpid="$!"
+  echo "$newpid" > "$pidfile"
 
+  # quick sanity check
   sleep 0.25
-  local pid
-  pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
-    echo "[OK] $name pid=$pid"
-  else
-    echo "[FAIL] $name did not start. Check: $logfile"
-    rm -f "$pidfile" || true
-    return 1
+  if kill -0 "$newpid" 2>/dev/null; then
+    echo "[OK] $name pid=$newpid"
+    return 0
   fi
+
+  echo "[FAIL] $name did not start. Check: $logfile"
+  rm -f "$pidfile" || true
+  return 1
 }
 
 any_orch_running() {

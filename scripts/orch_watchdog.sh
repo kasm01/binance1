@@ -139,41 +139,110 @@ if (( LAST_RESTART > 0 )) && (( $(now_ts) - LAST_RESTART < GRACE_SEC )); then
 fi
 
 # -----------------------------
-# Process health (must exist)
+# Grace period (restart sonrası false alarm keser)
 # -----------------------------
-# Her komponent için: pidfile varsa PID yaşıyor mu bak.
-# pidfile yoksa/bozuksa fallback: pgrep pattern
-must_items=(
-  "scanner_w1:orchestration/scanners/worker_stub.py"
-  "aggregator:orchestration/aggregator/run_aggregator.py"
-  "top_selector:orchestration/selector/top_selector.py"
-  "master_executor:orchestration/executor/master_executor.py"
-  "intent_bridge:orchestration/executor/intent_bridge.py"
-)
+GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"
+ts_now="$(now_ts)"
+
+if (( LAST_RESTART > 0 )) && (( ts_now - LAST_RESTART < GRACE_SEC )); then
+  echo "[WD][OK] in grace period (now-LAST_RESTART < ${GRACE_SEC}s)"
+  reset_fail
+  exit 0
+fi
+
+# -----------------------------
+# Process health (pidfile-aware + heal)
+# -----------------------------
+expected_cmd() {
+  local name="${1:-}"
+  case "$name" in
+    scanner_*)       echo "orchestration/scanners/worker_stub.py" ;;
+    aggregator)      echo "orchestration/aggregator/run_aggregator.py" ;;
+    top_selector)    echo "orchestration/selector/top_selector.py" ;;
+    master_executor) echo "orchestration/executor/master_executor.py" ;;
+    intent_bridge)   echo "orchestration/executor/intent_bridge.py" ;;
+    *)               echo "" ;;
+  esac
+}
+
+# must list: name + expected pattern (pattern, pgrep için)
+must_names=(scanner_w1 scanner_w2 scanner_w3 scanner_w4 scanner_w5 scanner_w6 scanner_w7 scanner_w8 aggregator top_selector master_executor intent_bridge)
 
 missing_proc=()
 
-for item in "${must_items[@]}"; do
-  name="${item%%:*}"
-  pat="${item#*:}"
+check_proc_with_pidfile() {
+  local name="$1"
+  local expect pidfile pid cmd newpid
 
+  expect="$(expected_cmd "$name")"
   pidfile="run/${name}.pid"
 
-  if [[ -f "$pidfile" ]]; then
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
-    if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
-      # pidfile var ama PID yok -> missing
-      missing_proc+=("${name}:pid_dead(${pid:-na})")
+  # pidfile yoksa -> pgrep ile heal dene
+  if [[ ! -f "$pidfile" ]]; then
+    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    if [[ -n "${newpid:-}" ]]; then
+      echo "$newpid" > "$pidfile"
+      echo "[WD][WARN] ${name} pidfile_missing -> healed (new=${newpid})"
+      return 0
     fi
-  else
-    # pidfile yok -> pattern ile bak
-    if ! pgrep -af "$pat" >/dev/null 2>&1; then
-      missing_proc+=("${name}:pgrep_missing")
-    fi
+    missing_proc+=("${name}:pidfile_missing")
+    return 1
   fi
+
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+
+  # boş pid
+  if [[ -z "${pid:-}" ]]; then
+    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    if [[ -n "${newpid:-}" ]]; then
+      echo "$newpid" > "$pidfile"
+      echo "[WD][WARN] ${name} pid_empty -> healed (new=${newpid})"
+      return 0
+    fi
+    missing_proc+=("${name}:pid_empty")
+    return 1
+  fi
+
+  # pid ölü
+  if ! kill -0 "$pid" 2>/dev/null; then
+    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    if [[ -n "${newpid:-}" ]]; then
+      echo "$newpid" > "$pidfile"
+      echo "[WD][WARN] ${name} pid_dead(${pid}) -> healed (new=${newpid})"
+      return 0
+    fi
+    missing_proc+=("${name}:pid_dead(${pid})")
+    return 1
+  fi
+
+  # pid canlı ama cmd mismatch olabilir -> doğrula
+  cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  if [[ -n "${cmd:-}" ]] && echo "$cmd" | grep -Fq "$expect"; then
+    return 0
+  fi
+
+  # mismatch -> doğru pid'i bulup heal et
+  newpid="$(pgrep -f "$expect" | head -n1 || true)"
+  if [[ -n "${newpid:-}" ]]; then
+    echo "$newpid" > "$pidfile"
+    echo "[WD][WARN] ${name} pid_cmd_mismatch(pid=${pid}) -> healed (new=${newpid})"
+    return 0
+  fi
+
+  missing_proc+=("${name}:pid_cmd_mismatch(${pid})")
+  return 1
+}
+
+for name in "${must_names[@]}"; do
+  # expect boş dönmesin diye güvenlik:
+  if [[ -z "$(expected_cmd "$name")" ]]; then
+    missing_proc+=("${name}:no_expected_cmd")
+    continue
+  fi
+  check_proc_with_pidfile "$name" >/dev/null 2>&1 || true
 done
 
-if (( ${#missing_proc[@]} > 0 )); then
+if [[ "${#missing_proc[@]}" -gt 0 ]]; then
   bump_fail
   do_restart_if_needed "missing process(es): ${missing_proc[*]}"
   exit 0

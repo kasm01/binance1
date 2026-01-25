@@ -45,6 +45,95 @@ if (( LAST_RESTART > 0 )) && (( now - LAST_RESTART < GRACE_SEC )); then
   exit 0
 fi
 
+# ---- expected cmd mapping ----
+expected_cmd() {
+  local name="${1:-}"
+  case "$name" in
+    aggregator)      echo "orchestration/aggregator/run_aggregator.py" ;;
+    top_selector)    echo "orchestration/selector/top_selector.py" ;;
+    master_executor) echo "orchestration/executor/master_executor.py" ;;
+    intent_bridge)   echo "orchestration/executor/intent_bridge.py" ;;
+    *)               echo "" ;;
+  esac
+}
+
+# ---- pidfile + expected cmd health (with heal) ----
+# returns 0 if OK, 1 if unhealthy (and appends reason)
+check_proc_with_pidfile() {
+  local n="$1"
+  local pidfile="run/${n}.pid"
+  local expect pid cmd newpid
+
+  expect="$(expected_cmd "$n")"
+
+  # pidfile missing
+  if [[ ! -f "$pidfile" ]]; then
+    # heal attempt via pgrep (if we know expected)
+    if [[ -n "${expect:-}" ]]; then
+      newpid="$(pgrep -f "$expect" | head -n1 || true)"
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        echo "[HEALTH][WARN] ${n} pidfile_missing -> healed (new=${newpid})"
+        return 0
+      fi
+    fi
+    reasons+=("${n}:pidfile_missing")
+    return 1
+  fi
+
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+
+  # pid empty
+  if [[ -z "${pid:-}" ]]; then
+    if [[ -n "${expect:-}" ]]; then
+      newpid="$(pgrep -f "$expect" | head -n1 || true)"
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        echo "[HEALTH][WARN] ${n} pid_empty -> healed (new=${newpid})"
+        return 0
+      fi
+    fi
+    reasons+=("${n}:pid_empty")
+    return 1
+  fi
+
+  # pid dead
+  if ! kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "${expect:-}" ]]; then
+      newpid="$(pgrep -f "$expect" | head -n1 || true)"
+      if [[ -n "${newpid:-}" ]]; then
+        echo "$newpid" > "$pidfile"
+        echo "[HEALTH][WARN] ${n} pid_dead(${pid}) -> healed (new=${newpid})"
+        return 0
+      fi
+    fi
+    reasons+=("${n}:pid_dead(${pid})")
+    return 1
+  fi
+
+  # pid alive -> verify expected cmd (if known)
+  if [[ -n "${expect:-}" ]]; then
+    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    if [[ -n "${cmd:-}" ]] && echo "$cmd" | grep -Fq "$expect"; then
+      return 0
+    fi
+
+    # mismatch -> try heal by finding correct pid via pgrep
+    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    if [[ -n "${newpid:-}" ]]; then
+      echo "$newpid" > "$pidfile"
+      echo "[HEALTH][WARN] ${n} pid_cmd_mismatch(pid=${pid}) -> healed (new=${newpid})"
+      return 0
+    fi
+
+    reasons+=("${n}:pid_cmd_mismatch(${pid})")
+    return 1
+  fi
+
+  # no expected -> accept alive pid
+  return 0
+}
+
 # ---- kritik pidfile'lar ----
 need_names=(aggregator top_selector master_executor intent_bridge)
 
@@ -52,33 +141,17 @@ ok=1
 reasons=()
 
 for n in "${need_names[@]}"; do
-  pidfile="run/${n}.pid"
-  if [[ ! -f "$pidfile" ]]; then
+  if ! check_proc_with_pidfile "$n"; then
     ok=0
-    reasons+=("${n}:pidfile_missing")
-    continue
-  fi
-
-  pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [[ -z "${pid:-}" ]]; then
-    ok=0
-    reasons+=("${n}:pid_empty")
-    continue
-  fi
-
-  if ! kill -0 "$pid" 2>/dev/null; then
-    ok=0
-    reasons+=("${n}:pid_dead(${pid})")
-    continue
   fi
 done
 
 # ---- stream kontrolü (soft, bilgi amaçlı) ----
 # redis-cli yoksa health'i sadece pidlerle değerlendir
 if need redis-cli; then
-  x1="$(redis-cli XLEN signals_stream 2>/dev/null || echo 0)"
+  x1="$(redis-cli XLEN signals_stream 2>/dev/null | tr -d '\r' || echo 0)"
   sleep 1
-  x2="$(redis-cli XLEN signals_stream 2>/dev/null || echo 0)"
+  x2="$(redis-cli XLEN signals_stream 2>/dev/null | tr -d '\r' || echo 0)"
   # XLEN trim ile azalabilir, bu yüzden sadece bilgi amaçlı
   if [[ "$x2" -gt "$x1" ]]; then :; fi
 fi
