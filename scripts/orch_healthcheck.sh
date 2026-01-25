@@ -87,8 +87,11 @@ if (( FAIL_COUNT < FAIL_THRESH )); then
 fi
 
 echo "[HEALTH][FAIL] threshold reached -> restarting binance1-orch.service"
+logger -t binance1-orch "HEALTH triggering restart (reason=threshold_reached)"
+
 FAIL_COUNT=0
 LAST_RESTART="$now"
 save_state
+
 systemctl --user restart binance1-orch.service
 exit 0

@@ -38,19 +38,24 @@ now_ms() { date +%s%3N; }
 read_state() {
   FAIL_COUNT=0
   LAST_RESTART=0
-  if [[ -f "$STATE_FILE" ]]; then
+
+  if [[ -f "${STATE_FILE:-}" ]]; then
     # shellcheck disable=SC1090
     source "$STATE_FILE" || true
   fi
+
   FAIL_COUNT="${FAIL_COUNT:-0}"
   LAST_RESTART="${LAST_RESTART:-0}"
 }
 
 write_state() {
-  cat >"$STATE_FILE" <<EOF
+  # atomic write
+  local tmp="${STATE_FILE}.tmp"
+  cat >"$tmp" <<EOF
 FAIL_COUNT=$FAIL_COUNT
 LAST_RESTART=$LAST_RESTART
 EOF
+  mv -f "$tmp" "$STATE_FILE"
 }
 
 cooldown_ok() {
@@ -87,12 +92,14 @@ do_restart_if_needed() {
   fi
 
   echo "[WD][FAIL] $reason -> restarting binance1-orch.service"
+  logger -t binance1-orch "WATCHDOG triggering restart (reason=${reason})"
+
   LAST_RESTART="$ts"
   FAIL_COUNT=0
   write_state
+
   systemctl --user restart binance1-orch.service
   exit 0
-}
 
 # -----------------------------
 # Stream helpers
