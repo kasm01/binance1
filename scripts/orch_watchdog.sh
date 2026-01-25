@@ -20,6 +20,9 @@ FAIL_THRESHOLD="${WATCHDOG_FAIL_THRESHOLD:-2}"
 # restartlar arası minimum süre (sn)
 COOLDOWN_SEC="${WATCHDOG_RESTART_COOLDOWN_SEC:-300}"  # 5 dk
 
+# restart sonrası kısa grace (sn) — process'ler yeni ayağa kalkarken false fail olmasın
+PROC_GRACE_SEC="${WATCHDOG_PROC_GRACE_SEC:-20}"
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/binance1"
 STATE_FILE="$STATE_DIR/orch_watchdog.state"
 mkdir -p "$STATE_DIR"
@@ -31,6 +34,7 @@ need awk
 need date
 need flock
 need logger
+need systemctl
 
 now_ts() { date +%s; }
 now_ms() { date +%s%3N; }
@@ -117,25 +121,59 @@ id_ms() {
 # -----------------------------
 read_state
 
+# Restart sonrası grace: process'ler yeni ayağa kalkarken false fail olmasın
+if (( LAST_RESTART > 0 )); then
+  now="$(now_ts)"
+  if (( now - LAST_RESTART < PROC_GRACE_SEC )); then
+    echo "[WD][OK] in grace period after restart (${now}-${LAST_RESTART}<${PROC_GRACE_SEC})"
+    exit 0
+  fi
+fi
+
+GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"
+
+if (( LAST_RESTART > 0 )) && (( $(now_ts) - LAST_RESTART < GRACE_SEC )); then
+  echo "[WD][OK] in grace period (now-LAST_RESTART < ${GRACE_SEC}s)"
+  reset_fail
+  exit 0
+fi
+
 # -----------------------------
 # Process health (must exist)
 # -----------------------------
-must_patterns=(
-  "orchestration/scanners/worker_stub.py"
-  "orchestration/aggregator/run_aggregator.py"
-  "orchestration/selector/top_selector.py"
-  "orchestration/executor/master_executor.py"
-  "orchestration/executor/intent_bridge.py"
+# Her komponent için: pidfile varsa PID yaşıyor mu bak.
+# pidfile yoksa/bozuksa fallback: pgrep pattern
+must_items=(
+  "scanner_w1:orchestration/scanners/worker_stub.py"
+  "aggregator:orchestration/aggregator/run_aggregator.py"
+  "top_selector:orchestration/selector/top_selector.py"
+  "master_executor:orchestration/executor/master_executor.py"
+  "intent_bridge:orchestration/executor/intent_bridge.py"
 )
 
 missing_proc=()
-for pat in "${must_patterns[@]}"; do
-  if ! pgrep -af "$pat" >/dev/null 2>&1; then
-    missing_proc+=("$pat")
+
+for item in "${must_items[@]}"; do
+  name="${item%%:*}"
+  pat="${item#*:}"
+
+  pidfile="run/${name}.pid"
+
+  if [[ -f "$pidfile" ]]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      # pidfile var ama PID yok -> missing
+      missing_proc+=("${name}:pid_dead(${pid:-na})")
+    fi
+  else
+    # pidfile yok -> pattern ile bak
+    if ! pgrep -af "$pat" >/dev/null 2>&1; then
+      missing_proc+=("${name}:pgrep_missing")
+    fi
   fi
 done
 
-if [[ "${#missing_proc[@]}" -gt 0 ]]; then
+if (( ${#missing_proc[@]} > 0 )); then
   bump_fail
   do_restart_if_needed "missing process(es): ${missing_proc[*]}"
   exit 0
@@ -190,4 +228,3 @@ fi
 bump_fail
 do_restart_if_needed "no activity (>${MAX_IDLE_SEC}s) (age_sig=${age_sig}s age_exec=${age_exe}s)"
 exit 0
-
