@@ -12,13 +12,103 @@ flock -n 9 || exit 0
 # Tuning
 # -----------------------------
 SLEEP_SEC="${WATCHDOG_SLEEP_SEC:-2}"
-MAX_IDLE_SEC=""   # 2s pencerede artış yoksa bile son aktivite <=15s ise OK
+MAX_IDLE_SEC="${WATCHDOG_MAX_IDLE_SEC:-15}"   # growth yoksa bile son event <=15s ise OK
+
+# restart için 2 kez üst üste fail şartı
+FAIL_THRESHOLD="${WATCHDOG_FAIL_THRESHOLD:-2}"
+
+# restartlar arası minimum süre (sn)
+COOLDOWN_SEC="${WATCHDOG_RESTART_COOLDOWN_SEC:-300}"  # 5 dk
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/binance1"
+STATE_FILE="$STATE_DIR/orch_watchdog.state"
+
+mkdir -p "$STATE_DIR"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "[WD][FAIL] missing: $1"; exit 2; }; }
 need redis-cli
 need pgrep
 need awk
 need date
+need flock
+
+now_ts() { date +%s; }
+now_ms() { date +%s%3N; }
+
+read_state() {
+  FAIL_COUNT=0
+  LAST_RESTART=0
+  if [[ -f "$STATE_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE" || true
+  fi
+  FAIL_COUNT="${FAIL_COUNT:-0}"
+  LAST_RESTART="${LAST_RESTART:-0}"
+}
+
+write_state() {
+  cat >"$STATE_FILE" <<EOF
+FAIL_COUNT=$FAIL_COUNT
+LAST_RESTART=$LAST_RESTART
+EOF
+}
+
+cooldown_ok() {
+  local ts age
+  ts="$(now_ts)"
+  age=$((ts - LAST_RESTART))
+  [[ "$age" -ge "$COOLDOWN_SEC" ]]
+}
+
+bump_fail() {
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  write_state
+}
+
+reset_fail() {
+  FAIL_COUNT=0
+  write_state
+}
+
+do_restart_if_needed() {
+  local reason="$1"
+  local ts age
+  ts="$(now_ts)"
+  age=$((ts - LAST_RESTART))
+
+  if [[ "$age" -lt "$COOLDOWN_SEC" ]]; then
+    echo "[WD][WARN] $reason but in cooldown (${age}s < ${COOLDOWN_SEC}s). fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD}"
+    exit 0
+  fi
+
+  if [[ "$FAIL_COUNT" -lt "$FAIL_THRESHOLD" ]]; then
+    echo "[WD][WARN] $reason. fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD} -> not restarting yet"
+    exit 0
+  fi
+
+  echo "[WD][FAIL] $reason -> restarting binance1-orch.service"
+  LAST_RESTART="$ts"
+  FAIL_COUNT=0
+  write_state
+  systemctl --user restart binance1-orch.service
+  exit 0
+}
+
+# -----------------------------
+# Stream helpers
+# -----------------------------
+last_id() {
+  redis-cli XREVRANGE "$1" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
+}
+
+id_ms() {
+  awk -F'-' '{print $1}' <<<"${1:-}" 2>/dev/null || true
+}
+
+# -----------------------------
+# Start
+# -----------------------------
+read_state
 
 # -----------------------------
 # Process health (must exist)
@@ -31,32 +121,21 @@ must_patterns=(
   "orchestration/executor/intent_bridge.py"
 )
 
+missing_proc=()
 for pat in "${must_patterns[@]}"; do
   if ! pgrep -af "$pat" >/dev/null 2>&1; then
-    echo "[WD][FAIL] missing process: $pat -> restarting binance1-orch.service"
-    systemctl --user restart binance1-orch.service
-    exit 0
+    missing_proc+=("$pat")
   fi
 done
 
+if [[ "${#missing_proc[@]}" -gt 0 ]]; then
+  bump_fail
+  do_restart_if_needed "missing process(es): ${missing_proc[*]}"
+fi
+
 # -----------------------------
 # Stream activity (OR logic)
-#   - Prefer IDs (XLEN can go down with trimming)
 # -----------------------------
-last_id() {
-  # prints stream last entry id or empty
-  redis-cli XREVRANGE "$1" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
-}
-
-id_ms() {
-  # from "1769206846267-0" -> "1769206846267"
-  awk -F'-' '{print $1}' <<<"${1:-}" 2>/dev/null || true
-}
-
-now_ms() {
-  date +%s%3N
-}
-
 sig1="$(last_id signals_stream)"
 exe1="$(last_id exec_events_stream)"
 
@@ -65,9 +144,11 @@ sleep "$SLEEP_SEC"
 sig2="$(last_id signals_stream)"
 exe2="$(last_id exec_events_stream)"
 
-# If either stream moved -> OK (OR)
-if [[ -n "${sig1:-}" && -n "${sig2:-}" && "$sig2" != "$sig1" ]] || [[ -n "${exe1:-}" && -n "${exe2:-}" && "$exe2" != "$exe1" ]]; then
+# Either stream moved -> healthy
+if [[ -n "${sig1:-}" && -n "${sig2:-}" && "$sig2" != "$sig1" ]] || \
+   [[ -n "${exe1:-}" && -n "${exe2:-}" && "$exe2" != "$exe1" ]]; then
   echo "[WD][OK] stream activity: signals ${sig1:-na} -> ${sig2:-na}, exec ${exe1:-na} -> ${exe2:-na}"
+  reset_fail
   exit 0
 fi
 
@@ -88,14 +169,19 @@ if [[ -n "${exe2m:-}" ]]; then
 fi
 
 recent_ok=0
-if [[ "$age_sig" != "na" && "$age_sig" -le "$MAX_IDLE_SEC" ]]; then recent_ok=1; fi
-if [[ "$age_exe" != "na" && "$age_exe" -le "$MAX_IDLE_SEC" ]]; then recent_ok=1; fi
+if [[ "$age_sig" != "na" ]]; then
+  if (( age_sig <= MAX_IDLE_SEC )); then recent_ok=1; fi
+fi
+if [[ "$age_exe" != "na" ]]; then
+  if (( age_exe <= MAX_IDLE_SEC )); then recent_ok=1; fi
+fi
 
 if [[ "$recent_ok" -eq 1 ]]; then
-  echo "[WD][OK] no growth in ${SLEEP_SEC}s but recent activity (age_sig=${age_sig}s age_exec=${age_exe}s)"
+  echo "[WD][OK] no growth in ${SLEEP_SEC}s but recent activity (age_sig=${age_sig}s age_exec=${age_exe}s <= ${MAX_IDLE_SEC}s)"
+  reset_fail
   exit 0
 fi
 
-echo "[WD][FAIL] no activity (>${MAX_IDLE_SEC}s) -> restarting binance1-orch.service (age_sig=${age_sig}s age_exec=${age_exe}s)"
-systemctl --user restart binance1-orch.service
-exit 0
+# true fail
+bump_fail
+do_restart_if_needed "no activity (>${MAX_IDLE_SEC}s) (age_sig=${age_sig}s age_exec=${age_exe}s)"
