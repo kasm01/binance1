@@ -12,16 +12,10 @@ flock -n 9 || exit 0
 # Tuning
 # -----------------------------
 SLEEP_SEC="${WATCHDOG_SLEEP_SEC:-2}"
-MAX_IDLE_SEC="${WATCHDOG_MAX_IDLE_SEC:-15}"   # growth yoksa bile son event <=15s ise OK
-
-# restart için 2 kez üst üste fail şartı
-FAIL_THRESHOLD="${WATCHDOG_FAIL_THRESHOLD:-2}"
-
-# restartlar arası minimum süre (sn)
-COOLDOWN_SEC="${WATCHDOG_RESTART_COOLDOWN_SEC:-300}"  # 5 dk
-
-# restart sonrası kısa grace (sn) — process'ler yeni ayağa kalkarken false fail olmasın
-PROC_GRACE_SEC="${WATCHDOG_PROC_GRACE_SEC:-20}"
+MAX_IDLE_SEC="${WATCHDOG_MAX_IDLE_SEC:-15}"          # growth yoksa bile son event <=15s ise OK
+FAIL_THRESHOLD="${WATCHDOG_FAIL_THRESHOLD:-2}"       # restart için ardışık fail
+COOLDOWN_SEC="${WATCHDOG_RESTART_COOLDOWN_SEC:-300}" # restartlar arası min süre
+GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"                # restart/start sonrası grace (false alarm keser)
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/binance1"
 STATE_FILE="$STATE_DIR/orch_watchdog.state"
@@ -35,6 +29,10 @@ need date
 need flock
 need logger
 need systemctl
+need ps
+need grep
+need head
+need tr
 
 now_ts() { date +%s; }
 now_ms() { date +%s%3N; }
@@ -55,7 +53,6 @@ read_state() {
 }
 
 write_state() {
-  # atomic write
   local tmp="${STATE_FILE}.tmp"
   cat >"$tmp" <<EOF
 FAIL_COUNT=$FAIL_COUNT
@@ -117,41 +114,7 @@ id_ms() {
 }
 
 # -----------------------------
-# Start
-# -----------------------------
-read_state
-
-# Restart sonrası grace: process'ler yeni ayağa kalkarken false fail olmasın
-if (( LAST_RESTART > 0 )); then
-  now="$(now_ts)"
-  if (( now - LAST_RESTART < PROC_GRACE_SEC )); then
-    echo "[WD][OK] in grace period after restart (${now}-${LAST_RESTART}<${PROC_GRACE_SEC})"
-    exit 0
-  fi
-fi
-
-GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"
-
-if (( LAST_RESTART > 0 )) && (( $(now_ts) - LAST_RESTART < GRACE_SEC )); then
-  echo "[WD][OK] in grace period (now-LAST_RESTART < ${GRACE_SEC}s)"
-  reset_fail
-  exit 0
-fi
-
-# -----------------------------
-# Grace period (restart sonrası false alarm keser)
-# -----------------------------
-GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"
-ts_now="$(now_ts)"
-
-if (( LAST_RESTART > 0 )) && (( ts_now - LAST_RESTART < GRACE_SEC )); then
-  echo "[WD][OK] in grace period (now-LAST_RESTART < ${GRACE_SEC}s)"
-  reset_fail
-  exit 0
-fi
-
-# -----------------------------
-# Process health (pidfile-aware + heal)
+# Process health helpers (pidfile-aware + heal)
 # -----------------------------
 expected_cmd() {
   local name="${1:-}"
@@ -165,10 +128,11 @@ expected_cmd() {
   esac
 }
 
-# must list: name + expected pattern (pattern, pgrep için)
-must_names=(scanner_w1 scanner_w2 scanner_w3 scanner_w4 scanner_w5 scanner_w6 scanner_w7 scanner_w8 aggregator top_selector master_executor intent_bridge)
-
-missing_proc=()
+find_pid_by_expect() {
+  local expect="$1"
+  # python komut satırında expect geçen ilk PID
+  pgrep -af "python.*${expect}" 2>/dev/null | awk '{print $1}' | head -n1 || true
+}
 
 check_proc_with_pidfile() {
   local name="$1"
@@ -177,69 +141,97 @@ check_proc_with_pidfile() {
   expect="$(expected_cmd "$name")"
   pidfile="run/${name}.pid"
 
-  # pidfile yoksa -> pgrep ile heal dene
+  if [[ -z "${expect:-}" ]]; then
+    echo "[WD][WARN] ${name} no_expected_cmd"
+    return 1
+  fi
+
+  # pidfile yoksa -> pgrep ile heal
   if [[ ! -f "$pidfile" ]]; then
-    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    newpid="$(find_pid_by_expect "$expect")"
     if [[ -n "${newpid:-}" ]]; then
       echo "$newpid" > "$pidfile"
       echo "[WD][WARN] ${name} pidfile_missing -> healed (new=${newpid})"
       return 0
     fi
-    missing_proc+=("${name}:pidfile_missing")
     return 1
   fi
 
   pid="$(cat "$pidfile" 2>/dev/null || true)"
 
-  # boş pid
+  # boş pid -> heal
   if [[ -z "${pid:-}" ]]; then
-    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    newpid="$(find_pid_by_expect "$expect")"
     if [[ -n "${newpid:-}" ]]; then
       echo "$newpid" > "$pidfile"
       echo "[WD][WARN] ${name} pid_empty -> healed (new=${newpid})"
       return 0
     fi
-    missing_proc+=("${name}:pid_empty")
     return 1
   fi
 
-  # pid ölü
+  # pid ölü -> heal
   if ! kill -0 "$pid" 2>/dev/null; then
-    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    newpid="$(find_pid_by_expect "$expect")"
     if [[ -n "${newpid:-}" ]]; then
       echo "$newpid" > "$pidfile"
       echo "[WD][WARN] ${name} pid_dead(${pid}) -> healed (new=${newpid})"
       return 0
     fi
-    missing_proc+=("${name}:pid_dead(${pid})")
     return 1
   fi
 
-  # pid canlı ama cmd mismatch olabilir -> doğrula
+  # pid canlı -> cmd doğrula
   cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
   if [[ -n "${cmd:-}" ]] && echo "$cmd" | grep -Fq "$expect"; then
     return 0
   fi
 
-  # mismatch -> doğru pid'i bulup heal et
-  newpid="$(pgrep -f "$expect" | head -n1 || true)"
+  # mismatch -> heal
+  newpid="$(find_pid_by_expect "$expect")"
   if [[ -n "${newpid:-}" ]]; then
     echo "$newpid" > "$pidfile"
     echo "[WD][WARN] ${name} pid_cmd_mismatch(pid=${pid}) -> healed (new=${newpid})"
     return 0
   fi
 
-  missing_proc+=("${name}:pid_cmd_mismatch(${pid})")
   return 1
 }
 
+# -----------------------------
+# Start
+# -----------------------------
+read_state
+
+# -----------------------------
+# Grace (restart sonrası false alarm keser)
+# -----------------------------
+ts_now="$(now_ts)"
+if (( LAST_RESTART > 0 )) && (( ts_now - LAST_RESTART < GRACE_SEC )); then
+  echo "[WD][OK] in grace period (age=$((ts_now - LAST_RESTART))s < ${GRACE_SEC}s)"
+  reset_fail
+  exit 0
+fi
+
+# -----------------------------
+# Process health FIRST
+# -----------------------------
+must_names=(
+  scanner_w1 scanner_w2 scanner_w3 scanner_w4
+  scanner_w5 scanner_w6 scanner_w7 scanner_w8
+  aggregator top_selector master_executor intent_bridge
+)
+
+missing_proc=()
 for name in "${must_names[@]}"; do
-  # expect boş dönmesin diye güvenlik:
+  # beklenen cmd yoksa direkt fail yaz
   if [[ -z "$(expected_cmd "$name")" ]]; then
     missing_proc+=("${name}:no_expected_cmd")
     continue
   fi
-  check_proc_with_pidfile "$name" >/dev/null 2>&1 || true
+
+  # heal logları görülsün diye redirect YOK
+  check_proc_with_pidfile "$name" || true
 done
 
 if [[ "${#missing_proc[@]}" -gt 0 ]]; then
@@ -259,7 +251,6 @@ sleep "$SLEEP_SEC"
 sig2="$(last_id signals_stream)"
 exe2="$(last_id exec_events_stream)"
 
-# Either stream moved -> healthy
 if [[ -n "${sig1:-}" && -n "${sig2:-}" && "$sig2" != "$sig1" ]] || \
    [[ -n "${exe1:-}" && -n "${exe2:-}" && "$exe2" != "$exe1" ]]; then
   echo "[WD][OK] stream activity: signals ${sig1:-na} -> ${sig2:-na}, exec ${exe1:-na} -> ${exe2:-na}"
@@ -269,19 +260,14 @@ fi
 
 # No movement in window: allow if recent activity exists (either stream)
 nm="$(now_ms)"
-
 sig2m="$(id_ms "$sig2")"
 exe2m="$(id_ms "$exe2")"
 
 age_sig="na"
 age_exe="na"
 
-if [[ -n "${sig2m:-}" ]]; then
-  age_sig=$(( (nm - sig2m) / 1000 ))
-fi
-if [[ -n "${exe2m:-}" ]]; then
-  age_exe=$(( (nm - exe2m) / 1000 ))
-fi
+if [[ -n "${sig2m:-}" ]]; then age_sig=$(( (nm - sig2m) / 1000 )); fi
+if [[ -n "${exe2m:-}" ]]; then age_exe=$(( (nm - exe2m) / 1000 )); fi
 
 recent_ok=0
 if [[ "$age_sig" != "na" ]] && (( age_sig <= MAX_IDLE_SEC )); then recent_ok=1; fi
@@ -293,7 +279,7 @@ if [[ "$recent_ok" -eq 1 ]]; then
   exit 0
 fi
 
-# true fail
 bump_fail
 do_restart_if_needed "no activity (>${MAX_IDLE_SEC}s) (age_sig=${age_sig}s age_exec=${age_exe}s)"
 exit 0
+
