@@ -251,8 +251,18 @@ sleep "$SLEEP_SEC"
 sig2="$(last_id signals_stream)"
 exe2="$(last_id exec_events_stream)"
 
-if [[ -n "${sig1:-}" && -n "${sig2:-}" && "$sig2" != "$sig1" ]] || \
-   [[ -n "${exe1:-}" && -n "${exe2:-}" && "$exe2" != "$exe1" ]]; then
+moved_sig=0
+moved_exe=0
+
+if [[ -n "${sig1:-}" && -n "${sig2:-}" && "${sig2}" != "${sig1}" ]]; then
+  moved_sig=1
+fi
+
+if [[ -n "${exe1:-}" && -n "${exe2:-}" && "${exe2}" != "${exe1}" ]]; then
+  moved_exe=1
+fi
+
+if (( moved_sig == 1 || moved_exe == 1 )); then
   echo "[WD][OK] stream activity: signals ${sig1:-na} -> ${sig2:-na}, exec ${exe1:-na} -> ${exe2:-na}"
   reset_fail
   exit 0
@@ -266,12 +276,21 @@ exe2m="$(id_ms "$exe2")"
 age_sig="na"
 age_exe="na"
 
-if [[ -n "${sig2m:-}" ]]; then age_sig=$(( (nm - sig2m) / 1000 )); fi
-if [[ -n "${exe2m:-}" ]]; then age_exe=$(( (nm - exe2m) / 1000 )); fi
+if [[ -n "${sig2m:-}" ]]; then
+  age_sig=$(( (nm - sig2m) / 1000 ))
+fi
+
+if [[ -n "${exe2m:-}" ]]; then
+  age_exe=$(( (nm - exe2m) / 1000 ))
+fi
 
 recent_ok=0
-if [[ "$age_sig" != "na" ]] && (( age_sig <= MAX_IDLE_SEC )); then recent_ok=1; fi
-if [[ "$age_exe" != "na" ]] && (( age_exe <= MAX_IDLE_SEC )); then recent_ok=1; fi
+if [[ "$age_sig" != "na" ]] && (( age_sig <= MAX_IDLE_SEC )); then
+  recent_ok=1
+fi
+if [[ "$age_exe" != "na" ]] && (( age_exe <= MAX_IDLE_SEC )); then
+  recent_ok=1
+fi
 
 if [[ "$recent_ok" -eq 1 ]]; then
   echo "[WD][OK] no growth in ${SLEEP_SEC}s but recent activity (age_sig=${age_sig}s age_exec=${age_exe}s <= ${MAX_IDLE_SEC}s)"
