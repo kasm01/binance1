@@ -12,7 +12,7 @@ flock -n 9 || exit 0
 # Tuning
 # -----------------------------
 SLEEP_SEC="${WATCHDOG_SLEEP_SEC:-2}"
-MAX_IDLE_SEC="${WATCHDOG_MAX_IDLE_SEC:-15}"          # growth yoksa bile son event <=15s ise OK
+MAX_IDLE_SEC="${WATCHDOG_MAX_IDLE_SEC:-45}"          # growth yoksa bile son event <=45s ise OK (env ile override)
 FAIL_THRESHOLD="${WATCHDOG_FAIL_THRESHOLD:-2}"       # restart için ardışık fail
 COOLDOWN_SEC="${WATCHDOG_RESTART_COOLDOWN_SEC:-300}" # restartlar arası min süre
 GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"                # restart/start sonrası grace (false alarm keser)
@@ -33,6 +33,7 @@ need ps
 need grep
 need head
 need tr
+need sed
 
 now_ts() { date +%s; }
 now_ms() { date +%s%3N; }
@@ -106,7 +107,9 @@ do_restart_if_needed() {
 # Stream helpers
 # -----------------------------
 last_id() {
-  redis-cli XREVRANGE "$1" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
+  # --raw: id satırını temiz alır (1) "..." gibi formatları azaltır
+  # Çıkış boşsa '' döner
+  redis-cli --raw XREVRANGE "$1" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
 }
 
 id_ms() {
@@ -130,7 +133,6 @@ expected_cmd() {
 
 find_pid_by_expect() {
   local expect="$1"
-  # python komut satırında expect geçen ilk PID
   pgrep -af "python.*${expect}" 2>/dev/null | awk '{print $1}' | head -n1 || true
 }
 
@@ -154,6 +156,7 @@ check_proc_with_pidfile() {
       echo "[WD][WARN] ${name} pidfile_missing -> healed (new=${newpid})"
       return 0
     fi
+    echo "[WD][WARN] ${name} pidfile_missing and cannot heal"
     return 1
   fi
 
@@ -167,6 +170,7 @@ check_proc_with_pidfile() {
       echo "[WD][WARN] ${name} pid_empty -> healed (new=${newpid})"
       return 0
     fi
+    echo "[WD][WARN] ${name} pid_empty and cannot heal"
     return 1
   fi
 
@@ -178,6 +182,7 @@ check_proc_with_pidfile() {
       echo "[WD][WARN] ${name} pid_dead(${pid}) -> healed (new=${newpid})"
       return 0
     fi
+    echo "[WD][WARN] ${name} pid_dead(${pid}) and cannot heal"
     return 1
   fi
 
@@ -195,6 +200,7 @@ check_proc_with_pidfile() {
     return 0
   fi
 
+  echo "[WD][WARN] ${name} pid_cmd_mismatch(pid=${pid}) and cannot heal"
   return 1
 }
 
@@ -214,7 +220,7 @@ if (( LAST_RESTART > 0 )) && (( ts_now - LAST_RESTART < GRACE_SEC )); then
 fi
 
 # -----------------------------
-# Process health FIRST
+# Process health FIRST (strict)
 # -----------------------------
 must_names=(
   scanner_w1 scanner_w2 scanner_w3 scanner_w4
@@ -224,14 +230,15 @@ must_names=(
 
 missing_proc=()
 for name in "${must_names[@]}"; do
-  # beklenen cmd yoksa direkt fail yaz
-  if [[ -z "$(expected_cmd "$name")" ]]; then
+  expect="$(expected_cmd "$name")"
+  if [[ -z "${expect:-}" ]]; then
     missing_proc+=("${name}:no_expected_cmd")
     continue
   fi
 
-  # heal logları görülsün diye redirect YOK
-  check_proc_with_pidfile "$name" || true
+  if ! check_proc_with_pidfile "$name"; then
+    missing_proc+=("${name}:missing_or_unhealthy")
+  fi
 done
 
 if [[ "${#missing_proc[@]}" -gt 0 ]]; then
@@ -245,6 +252,14 @@ fi
 # -----------------------------
 sig1="$(last_id signals_stream)"
 exe1="$(last_id exec_events_stream)"
+
+# Redis/stream okunamıyorsa: fail say (boşlukları debug'lamak zor)
+# Not: stream gerçekten boş olabilir; ama senin sistemde normalde akış var. Bu yüzden boşluğu problem sayıyoruz.
+if [[ -z "${sig1:-}" && -z "${exe1:-}" ]]; then
+  bump_fail
+  do_restart_if_needed "redis/streams unreadable or empty (signals_stream and exec_events_stream)"
+  exit 0
+fi
 
 sleep "$SLEEP_SEC"
 
