@@ -6,6 +6,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
+
 import redis
 
 
@@ -79,6 +83,7 @@ class TopSelector:
 
         self.window_sec = _env_int("TOPSEL_WINDOW_SEC", 30)
         self.topk = _env_int("TOPSEL_TOPK", 5)
+        print(f"[TopSelector] started. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} topk={self.topk} env_TOPSEL_TOPK={os.getenv('TOPSEL_TOPK', '')}")
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
         self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
@@ -112,7 +117,7 @@ class TopSelector:
             return
 
     def _score(self, c: Dict[str, Any]) -> float:
-        s = float(c.get("score_total", 0.0) or 0.0)
+        s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
         tags = c.get("risk_tags") or []
         try:
             tags = list(tags)

@@ -101,7 +101,7 @@ class Aggregator:
                     continue
 
                 score, reasons, risk_tags = compute_score(evt)
-                evt["_score_total"] = float(score)
+                evt["_score_total"] = max(0.0, min(1.0, float(score)))
                 evt["_reasons"] = list(reasons or [])
                 evt["_risk_tags"] = list(risk_tags or [])
                 evt["_source_stream_id"] = mid

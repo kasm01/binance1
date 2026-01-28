@@ -25,7 +25,11 @@ class MultiTimeframeHybridEnsemble:
     """
     Çoklu timeframe HybridModel ensemble.
 
-    model.predict_proba(X) -> (proba_arr, debug)
+    Beklenen model arayüzü:
+      model.predict_proba(X) -> (proba_arr, debug)
+
+    Bu sınıf "sadece" interval bazlı proba üretir ve ağırlıklı ortalama yapar.
+    AUC standardize/kalibrasyon işleri HybridMTF tarafında yapılır.
     """
 
     def __init__(self, models_by_interval: Dict[str, Any], logger_: logging.Logger | None = None) -> None:
@@ -58,9 +62,9 @@ class MultiTimeframeHybridEnsemble:
         weight_by_interval: Dict[str, float] | None = None,
     ) -> Tuple[float, Dict[str, Any]]:
         per_interval: Dict[str, Any] = {}
-        probs: list[float] = []
-        weights: list[float] = []
-        intervals_used: list[str] = []
+        probs: List[float] = []
+        weights: List[float] = []
+        intervals_used: List[str] = []
 
         weight_by_interval = weight_by_interval or {}
 
@@ -74,6 +78,7 @@ class MultiTimeframeHybridEnsemble:
             try:
                 proba_arr, dbg = model.predict_proba(X_itv)
                 p_last = self._extract_last_prob(proba_arr)
+
                 weight_raw = weight_by_interval.get(itv, 1.0)
                 weight = self._sanitize_weight(weight_raw)
 
@@ -93,21 +98,23 @@ class MultiTimeframeHybridEnsemble:
 
         if not probs:
             self.logger.warning("[HYBRID-MTF] Hiç interval için geçerli prob üretilemedi, ensemble fallback.")
-            return 0.5, {
+            mtf_debug = {
                 "per_interval": per_interval,
                 "intervals_used": [],
                 "weights_raw": [],
+                "weights_sum_raw": 0.0,
                 "weights_norm": [],
                 "n_used": 0,
                 "ensemble_p": 0.5,
             }
+            return 0.5, mtf_debug
 
         probs_arr = np.asarray(probs, dtype=float)
         weights_arr = np.asarray(weights, dtype=float)
 
         weights_sum = float(weights_arr.sum())
         if weights_sum <= 1e-12:
-            weights_norm = np.ones_like(weights_arr) / len(weights_arr)
+            weights_norm = np.ones_like(weights_arr) / float(len(weights_arr))
         else:
             weights_norm = weights_arr / weights_sum
 
@@ -124,12 +131,9 @@ class MultiTimeframeHybridEnsemble:
         }
         return ensemble_p, mtf_debug
 
-
     # --------------------------------------------------------------
-    # Backward-compat: dışarıya standart API
+    # Backward-compat: eski çağrılar için alias wrapper
     # --------------------------------------------------------------
-    # Backward-compat alias: eski çağrılar için
-
     def predict_mtf(
         self,
         X_by_interval: Dict[str, Any],
@@ -143,7 +147,6 @@ class MultiTimeframeHybridEnsemble:
         )
     # backward-compat alias
     predict_mtf = predict_ensemble
-
 
 class HybridMTF:
     """
@@ -216,7 +219,7 @@ class HybridMTF:
 
         self._ensemble = MultiTimeframeHybridEnsemble(models_by_interval=self.models_by_interval, logger_=self.logger)
 
-        # init: load persisted histories into model.meta (fix n=0 inconsistency)
+        # init: load persisted histories into model.meta
         self._bootstrap_auc_histories_from_disk()
 
     # --------------------------------------------------------------
@@ -264,13 +267,15 @@ class HybridMTF:
                 meta["auc_history"] = hist
                 self.logger.info("[AUC-HIST] Loaded auc_history from disk interval=%s n=%d path=%s", itv, len(hist), path)
             else:
-                # seed ONLY in-memory for calibration/log clarity (write işi retrain sonrası utils'te)
+                # seed ONLY in-memory
                 try:
                     best_auc = float(meta.get("best_auc", 0.0) or 0.0)
                 except Exception:
                     best_auc = 0.0
                 if best_auc > 0.0:
-                    meta["auc_history"] = [{"ts": pd.Timestamp.now(tz="UTC").isoformat(), "auc": float(best_auc), "seed": True}]
+                    meta["auc_history"] = [
+                        {"ts": pd.Timestamp.now(tz="UTC").isoformat(), "auc": float(best_auc), "seed": True}
+                    ]
                     self.logger.info("[AUC-HIST] Seeded in-memory auc_history interval=%s auc=%.6f", itv, best_auc)
 
     # --------------------------------------------------------------
@@ -378,7 +383,6 @@ class HybridMTF:
             auc_max_used = float(max(self.auc_floor + 0.01, self.auc_max))
 
         return auc_max_used
-
     # --------------------------------------------------------------
     # AUC -> weight
     # --------------------------------------------------------------
@@ -520,5 +524,4 @@ class HybridMTF:
             standardize_auc_key=standardize_auc_key,
             standardize_overwrite=standardize_overwrite,
         )
-
 
