@@ -238,17 +238,21 @@ def eval_mtf_ensemble_snapshot(
         logger.error("Ensemble için kullanılabilir hiçbir interval yok.")
         return
 
-    # HybridMultiTFModel'i kur
+    # HybridMultiTFModel'i kur (sadece hazır olan interval'lar)
     mtf_model = HybridMultiTFModel(
         model_dir="models",
         intervals=list(X_dict.keys()),
         logger=logger,
     )
 
-    ensemble_p, debug_mtf = mtf_model.predict_proba_multi(X_dict)
+    ensemble_p, debug_mtf = mtf_model.predict_proba_multi(
+        X_dict=X_dict,
+        standardize_auc_key="auc_used",
+        standardize_overwrite=False,
+    )
 
     logger.info("---------- Per-interval contribs ----------")
-    per_int = debug_mtf.get("per_interval", {})
+    per_int = debug_mtf.get("per_interval", {}) or {}
     for itv, info in per_int.items():
         logger.info(
             "[%s] p_last=%.4f | weight=%.4f | meta_best_auc=%.4f | best_side_meta=%s",
@@ -260,13 +264,12 @@ def eval_mtf_ensemble_snapshot(
         )
 
     logger.info("---------- Ensemble summary ----------")
-    ens = debug_mtf.get("ensemble", {})
+    ens = debug_mtf.get("ensemble", {}) or {}
     logger.info(
         "ensemble_p=%.4f | n_used=%d",
         float(ens.get("p", ensemble_p)),
         int(ens.get("n_used", 0)),
     )
-
 
 # ----------------------------------------------------------------------
 # main

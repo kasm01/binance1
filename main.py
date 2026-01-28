@@ -892,7 +892,7 @@ def create_trading_objects() -> Dict[str, Any]:
 
     try:
         enable_depth_ws = get_bool_env("ENABLE_DEPTH_WS", True)
-        if enable_depth_ws:
+        if enable_depth_ws and list(mtf_intervals):
             market_meta_builder = MarketMetaBuilder(
                 spread_z_window=get_int_env("SPREAD_Z_WINDOW", 120),
                 spread_shock_z_thr=get_float_env("SPREAD_SHOCK_Z_THR", 2.5),
@@ -905,30 +905,30 @@ def create_trading_objects() -> Dict[str, Any]:
                 system_logger.info("[DEPTHWS] enabled | symbol=%s tfs=%s", symbol, list(mtf_intervals))
         else:
             if system_logger:
-                system_logger.info("[DEPTHWS] disabled (ENABLE_DEPTH_WS!=1)")
+                system_logger.info("[DEPTHWS] disabled (ENABLE_DEPTH_WS!=1 or mtf_intervals empty)")
     except Exception as e:
         depth_ws = None
         market_meta_builder = None
         if system_logger:
             system_logger.warning("[DEPTHWS] init failed: %s", e)
 
-    # Fallback: DepthWS kapalıysa veya init fail olursa, whale/mtf tarafı meta üretebilsin
-    if market_meta_builder is None:
-        market_meta_builder = MarketMetaBuilder()
-
+    # Single TF model (main interval)
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
-    models_by_interval = {
-        itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
-        for itv in mtf_intervals
-    }
-
+    # MTF models + ensemble (optional)
     mtf_ensemble = None
+    models_by_interval = {}
+
     if USE_MTF_ENS:
         try:
+            models_by_interval = {
+                itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
+                for itv in mtf_intervals
+            }
+
             mtf_ensemble = HybridMultiTFModel(
                 model_dir=MODELS_DIR,
-                intervals=mtf_intervals,
+                intervals=list(mtf_intervals),
                 logger=system_logger,
                 models_by_interval=models_by_interval,
             )
@@ -936,16 +936,17 @@ def create_trading_objects() -> Dict[str, Any]:
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
 
+            # AUC history seed / optional runtime append
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
 
-                # AUC history runtime append (default OFF)
                 if get_bool_env("AUC_RUNTIME_APPEND", False):
+                    # default OFF: retrain sonrası disk write için
                     append_auc_used_once_per_hour(intervals=list(mtf_intervals), logger=system_logger)
 
             except Exception as e:
                 if system_logger:
-                    system_logger.warning("[AUC-HIST] seed/daily append hata: %s", e)
+                    system_logger.warning("[AUC-HIST] seed/append hata: %s", e)
 
         except Exception as e:
             mtf_ensemble = None
