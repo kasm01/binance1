@@ -130,23 +130,50 @@ class MultiTimeframeHybridEnsemble:
             "ensemble_p": ensemble_p,
         }
         return ensemble_p, mtf_debug
+        # Inject AUC info into per_interval
+        per_interval = mtf_debug.get("per_interval")
+        if isinstance(per_interval, dict):
+            for itv, info in per_interval.items():
+                if not isinstance(info, dict):
+                    continue
+                mi = meta_by_interval.get(itv) or {}
+                info["auc_used"] = mi.get("auc_used")
+                info["auc_key_used"] = mi.get("auc_key_used")
+                info["auc_max_used"] = mi.get("auc_max_used")
+                info["auc_hist_n"] = mi.get("auc_hist_n")
+
+                # --- backward compat fields (offline_mtf_eval / training/mtf_eval logları için) ---
+                # model.meta'dan beklenen isimler:
+                m = self.models_by_interval.get(itv)
+                meta = getattr(m, "meta", {}) or {}
+                info["best_auc_meta"] = float(meta.get("best_auc", 0.0) or 0.0)
+                info["best_side_meta"] = meta.get("best_side", "long")
+
+        mtf_debug["meta_by_interval"] = meta_by_interval
+
+        # --- backward compat: debug_mtf["ensemble"] bekleyen scriptler için ---
+        mtf_debug["ensemble"] = {
+            "p": float(ensemble_p),
+            "n_used": int(mtf_debug.get("n_used", 0) or 0),
+            "intervals_used": list(mtf_debug.get("intervals_used", []) or []),
+            "weights_norm": list(mtf_debug.get("weights_norm", []) or []),
+            "weights_raw": list(mtf_debug.get("weights_raw", []) or []),
+        }
+
 
     # --------------------------------------------------------------
-    # Backward-compat: eski çağrılar için alias wrapper
+    # Backward-compat: eski çağrılar için güvenli wrapper
     # --------------------------------------------------------------
     def predict_mtf(
         self,
         X_by_interval: Dict[str, Any],
-        standardize_auc_key: str | None = "auc_used",
-        standardize_overwrite: bool = False,
+        weight_by_interval: Dict[str, float] | None = None,
+        **_: Any,  # eski/yanlış parametreler gelse bile kırılmasın
     ) -> Tuple[float, Dict[str, Any]]:
         return self.predict_ensemble(
             X_by_interval=X_by_interval,
-            standardize_auc_key=standardize_auc_key,
-            standardize_overwrite=standardize_overwrite,
+            weight_by_interval=weight_by_interval,
         )
-    # backward-compat alias
-    predict_mtf = predict_ensemble
 
 class HybridMTF:
     """

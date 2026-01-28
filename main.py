@@ -889,6 +889,7 @@ def create_trading_objects() -> Dict[str, Any]:
     # --- Market meta (depth-based) ---
     depth_ws = None
     market_meta_builder = None
+
     try:
         enable_depth_ws = get_bool_env("ENABLE_DEPTH_WS", True)
         if enable_depth_ws:
@@ -910,6 +911,10 @@ def create_trading_objects() -> Dict[str, Any]:
         market_meta_builder = None
         if system_logger:
             system_logger.warning("[DEPTHWS] init failed: %s", e)
+
+    # Fallback: DepthWS kapalıysa veya init fail olursa, whale/mtf tarafı meta üretebilsin
+    if market_meta_builder is None:
+        market_meta_builder = MarketMetaBuilder()
 
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
@@ -933,13 +938,10 @@ def create_trading_objects() -> Dict[str, Any]:
 
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
+
+                # AUC history runtime append (default OFF)
                 if get_bool_env("AUC_RUNTIME_APPEND", False):
-                    # AUC history runtime append (default OFF). Retrain sonrası yazmak için run_* scriptleri kullanılır.
-                    if get_bool_env('AUC_RUNTIME_APPEND', False):
-                        append_auc_used_once_per_hour(intervals=list(mtf_intervals), logger=system_logger)
-                    else:
-                        # kapalı: predict/runtime sırasında disk write yapma
-                        pass
+                    append_auc_used_once_per_hour(intervals=list(mtf_intervals), logger=system_logger)
 
             except Exception as e:
                 if system_logger:
@@ -949,7 +951,6 @@ def create_trading_objects() -> Dict[str, Any]:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
-    market_meta_builder = MarketMetaBuilder()
 
 
     whale_detector = None
