@@ -12,6 +12,8 @@ from joblib import load
 from app_paths import MODELS_DIR
 from models.sgd_helper_runtime import SGDHelperRuntime
 from models.hybrid_mtf import HybridMTF
+from features.schema import normalize_to_schema
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 try:
     from tensorflow.keras.models import load_model  # type: ignore
@@ -310,40 +312,29 @@ class HybridModel:
 
     def _normalize_to_schema(self, df: pd.DataFrame, schema: List[str]) -> pd.DataFrame:
         """
-        Tek sözleşme:
-          - alias fix
-          - eksik kolonları 0 ile doldur
-          - fazla kolonları ignore et
-          - schema sırasına göre seç/sırala
-          - numeric coerce + inf/nan temizle
+        Tek sözleşme (tek kaynak): features.schema.normalize_to_schema
+
+        Burada sadece "warn-once" davranışını koruyoruz.
         """
-        out = df.copy()
 
-        aliases = {
-            "taker_buy_base_asset_volume": "taker_buy_base_volume",
-            "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
-        }
-        for src, dst in aliases.items():
-            if src in out.columns and dst not in out.columns:
-                out[dst] = out[src]
-
-        missing = [c for c in schema if c not in out.columns]
-        if missing:
-            key = tuple(schema)
-            if key not in self._schema_missing_warned:
+        def _log_missing_once(missing: List[str]) -> None:
+            # schema başına bir kez uyarı
+            try:
+                key = tuple(schema)
+                if key in self._schema_missing_warned:
+                    return
                 self._schema_missing_warned.add(key)
+            except Exception:
+                # worst-case: log spam yerine loglamayı da geçebilir
+                pass
+
+            try:
                 self._log_startup(logging.WARNING, "[HYBRID] schema missing cols (filled=0): %s", missing)
-            for c in missing:
-                out[c] = 0.0
+            except Exception:
+                pass
 
-        out = out[schema].copy()
-
-        # strict numeric coercion
-        for c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-
-        out = out.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
-        return out
+        # normalize_to_schema: alias + missing=0 + order + numeric cleanup
+        return normalize_to_schema(df, schema, log_missing=_log_missing_once)
 
     @staticmethod
     def _df_to_matrix_strict(df: pd.DataFrame) -> np.ndarray:
