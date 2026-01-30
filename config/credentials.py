@@ -58,6 +58,7 @@ class Credentials:
 
     # --- Telegram (opsiyonel) ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_CHAT_ID: Optional[str] = None
     TELEGRAM_ALLOWED_CHAT_IDS: Optional[str] = None
 
     @staticmethod
@@ -78,7 +79,7 @@ class Credentials:
         cls.OKX_PASSPHRASE = _env_any("OKX_PASSPHRASE")
 
         # Redis
-        cls.REDIS_PASSWORD = (os.getenv("REDIS_PASSWORD") or "").strip() or None
+        cls.REDIS_PASSWORD = _env_any("REDIS_PASSWORD")
 
         # Onchain/providers
         cls.ETHEREUM_API_KEY = _env_any("ETH_API_KEY", "ETHEREUM_API_KEY")
@@ -98,6 +99,7 @@ class Credentials:
 
         # Telegram
         cls.TELEGRAM_BOT_TOKEN = _env_any("TELEGRAM_BOT_TOKEN")
+        cls.TELEGRAM_CHAT_ID = _env_any("TELEGRAM_CHAT_ID")
         cls.TELEGRAM_ALLOWED_CHAT_IDS = _env_any("TELEGRAM_ALLOWED_CHAT_IDS")
 
     @staticmethod
@@ -133,6 +135,7 @@ class Credentials:
 
             # Telegram
             "TELEGRAM_BOT_TOKEN": getattr(cls, "TELEGRAM_BOT_TOKEN", None),
+            "TELEGRAM_CHAT_ID": getattr(cls, "TELEGRAM_CHAT_ID", None),
             "TELEGRAM_ALLOWED_CHAT_IDS": getattr(cls, "TELEGRAM_ALLOWED_CHAT_IDS", None),
         }
 

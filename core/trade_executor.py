@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
 import time
-import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -27,12 +27,12 @@ class TradeExecutor:
 
     Tek tip shutdown kontratı:
       - close() (sync, idempotent)
-      - shutdown() (async, idempotent)  <-- main.ShutdownManager bunu çağırabilir
+      - shutdown(reason) (async, idempotent)  <-- main.ShutdownManager bunu çağırabilir
 
-    BACKTEST yardımcı API (eklendi):
+    BACKTEST yardımcı API:
       - has_open_position(symbol) -> bool
       - close_position(symbol, price, reason="manual", interval="") -> Optional[dict]
-      - pop_closed_trades() -> List[dict]   (backtest trade kayıtları için)
+      - pop_closed_trades() -> List[dict]
     """
 
     def __init__(
@@ -75,6 +75,7 @@ class TradeExecutor:
 
         self.whale_risk_boost = float(whale_risk_boost)
 
+        # /status snapshot için
         self.last_snapshot: Dict[str, Any] = {}
         self._tg_state: Dict[str, Any] = {
             "last_hold_ts": 0.0,
@@ -82,9 +83,10 @@ class TradeExecutor:
             "last_sig_ts": 0.0,
         }
 
+        # PositionManager yoksa local fallback
         self._local_positions: Dict[str, Dict[str, Any]] = {}
 
-        # backtest trade buffer (NEW)
+        # backtest kapanış buffer
         self._closed_buffer: List[Dict[str, Any]] = []
 
         self._closed = False
@@ -112,8 +114,7 @@ class TradeExecutor:
         self._closed = True
 
         try:
-            if getattr(self, "logger", None):
-                self.logger.info("[EXEC] shutdown requested | reason=%s", reason)
+            self.logger.info("[EXEC] shutdown requested | reason=%s", reason)
         except Exception:
             pass
 
@@ -131,13 +132,11 @@ class TradeExecutor:
         except Exception:
             pass
 
-        return
-
     async def aclose(self) -> None:
         return await self.shutdown(reason="close")
 
     # -------------------------
-    # backtest helper API (NEW)
+    # backtest helper API
     # -------------------------
     def has_open_position(self, symbol: str) -> bool:
         pos = self._get_position(symbol)
@@ -147,16 +146,24 @@ class TradeExecutor:
         qty = float(pos.get("qty") or 0.0)
         return (side in ("long", "short")) and (qty > 0)
 
-    def close_position(self, symbol: str, price: float, reason: str = "manual", interval: str = "") -> Optional[Dict[str, Any]]:
-        """Backtest / helper close wrapper."""
-        return self._close_position(symbol=str(symbol).upper(), price=float(price), reason=str(reason), interval=str(interval or ""))
+    def close_position(
+        self,
+        symbol: str,
+        price: float,
+        reason: str = "manual",
+        interval: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        return self._close_position(
+            symbol=str(symbol).upper(),
+            price=float(price),
+            reason=str(reason),
+            interval=str(interval or ""),
+        )
 
     def pop_closed_trades(self) -> List[Dict[str, Any]]:
-        """Backtest: biriken kapanışları alıp buffer'ı temizler."""
         out = list(self._closed_buffer)
         self._closed_buffer.clear()
         return out
-
     # -------------------------
     # helpers
     # -------------------------
@@ -254,7 +261,6 @@ class TradeExecutor:
             f"🐋 whale=`{whale_dir}` score=`{whale_score:.2f}`  dry_run=`{self.dry_run}`"
         )
         self._tg_send(msg)
-
     # -------------------------
     # position access via PositionManager
     # -------------------------
@@ -268,41 +274,15 @@ class TradeExecutor:
         return self._local_positions.get(sym)
 
     def _set_position(self, symbol: str, pos: Dict[str, Any]) -> None:
+        """
+        Not: RiskManager on_position_open/on_position_close çağrıları
+        SADECE execute_decision/_close_position içinde yapılmalı.
+        Burada locals() ile veri toplama gibi yan etkiler kaldırıldı.
+        """
         sym = str(symbol).upper()
         if self.position_manager is not None:
             try:
                 self.position_manager.set_position(sym, pos)
-
-                try:
-                    rm = getattr(self, "risk_manager", None)
-                    if rm:
-                        # symbol/side/qty/notional/price/interval mümkün olduğunca local scope'tan alınır
-                        _symbol = str(locals().get("symbol") or locals().get("sym") or "").upper()
-                        _side = str(locals().get("side") or locals().get("position_side") or "")
-                        _qty = float(locals().get("qty") or locals().get("quantity") or 0.0)
-                        _notional = float(locals().get("notional") or locals().get("usdt_notional") or 0.0)
-                        _price = locals().get("entry_price", None)
-                        if _price is None:
-                            _price = locals().get("price", 0.0)
-                        _price = float(_price or 0.0)
-                        _interval = str(locals().get("interval") or "")
-                        _meta = locals().get("meta") if isinstance(locals().get("meta"), dict) else {}
-                        rm.on_position_open(
-                            symbol=_symbol,
-                            side=_side,
-                            qty=_qty,
-                            notional=_notional,
-                            price=_price,
-                            interval=_interval,
-                            meta={"reason": "EXEC_OPEN", **_meta},
-                        )
-                except Exception:
-                    try:
-                        if getattr(self, "logger", None):
-                            self.logger.exception("[EXEC] risk_manager.on_position_open failed")
-                    except Exception:
-                        pass
-
                 return
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
@@ -316,7 +296,6 @@ class TradeExecutor:
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
         self._local_positions.pop(sym, None)
-
     # -------------------------
     # position dict
     # -------------------------
@@ -409,7 +388,7 @@ class TradeExecutor:
         if self.dry_run:
             self.logger.info("[EXEC] DRY_RUN=True close emri gönderilmeyecek.")
         else:
-            # TODO: gerçek close emri
+            # TODO: gerçek close emri (client ile market close vs.)
             pass
 
         # --- RISK / Telegram notify (position CLOSE) ---
@@ -444,7 +423,6 @@ class TradeExecutor:
 
                 # async method yanlışlıkla coroutine döndürürse
                 try:
-                    import asyncio
                     if asyncio.iscoroutine(out) and getattr(self, "logger", None):
                         self.logger.warning(
                             "[EXEC] risk_manager.on_position_close returned coroutine (not awaited)"
@@ -481,7 +459,12 @@ class TradeExecutor:
         if not pos:
             return None
 
-        side = str(pos.get("side") or "hold")
+        side = str(pos.get("side") or "hold").strip().lower()
+        if side in ("buy", "long"):
+            side = "long"
+        elif side in ("sell", "short"):
+            side = "short"
+
         sl_price = pos.get("sl_price")
         tp_price = pos.get("tp_price")
         trailing_pct = float(pos.get("trailing_pct") or 0.0)
@@ -525,7 +508,6 @@ class TradeExecutor:
                     return self._close_position(symbol, price, reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
-
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
@@ -586,7 +568,6 @@ class TradeExecutor:
 
     async def execute_trade(self, *args, **kwargs):
         return await self.open_position(*args, **kwargs)
-
     # -------------------------
     # MAIN decision entrypoint
     # -------------------------
@@ -711,7 +692,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # SL/TP/trailing check
+        # SL/TP/trailing check (mevcut pozisyonu kapatabilir)
         try:
             self._check_sl_tp_trailing(symbol=str(symbol).upper(), price=float(price), interval=interval)
         except Exception:
@@ -733,7 +714,7 @@ class TradeExecutor:
         if qty <= 0 or float(price) <= 0:
             return
 
-        # open/flip logic:
+        # open/flip logic
         cur = self._get_position(str(symbol).upper())
         cur_side = str(cur.get("side")).lower() if cur else None
 
@@ -769,19 +750,17 @@ class TradeExecutor:
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
-                # side_norm -> risk side
+                # side_norm en doğru kaynak
                 _side = str(side_norm).strip().lower()
                 if _side not in ("long", "short"):
                     _side = "long" if signal_u == "BUY" else ("short" if signal_u == "SELL" else "hold")
 
-                # meta: extra0 içinden güvenli şekilde al
+                # meta: NameError yok; extra0'dan güvenli kopya
+                # NOT: İstersen burada extra0'nun tamamını değil, subset taşırsın.
                 _meta = {}
                 try:
-                    if isinstance(extra0.get("meta"), dict):
-                        _meta = dict(extra0.get("meta"))  # shallow copy
-                    elif isinstance(extra0, dict):
-                        # tüm extra'yı meta gibi taşımak istemezsen bunu kaldırabilirsin
-                        _meta = {}
+                    if isinstance(extra0, dict):
+                        _meta = dict(extra0)
                 except Exception:
                     _meta = {}
 
@@ -797,11 +776,11 @@ class TradeExecutor:
                     meta=payload_meta,
                 )
 
-                # eğer yanlışlıkla coroutine dönerse (async method), burada await edemeyiz
                 try:
-                    import asyncio
                     if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                        self.logger.warning("[EXEC] risk_manager.on_position_open returned coroutine (not awaited)")
+                        self.logger.warning(
+                            "[EXEC] risk_manager.on_position_open returned coroutine (not awaited)"
+                        )
                 except Exception:
                     pass
 
@@ -811,5 +790,26 @@ class TradeExecutor:
                     self.logger.exception("[EXEC] risk_manager.on_position_open failed")
             except Exception:
                 pass
-            pass
+
+        return
+
+    # -------------------------
+    # Bundan sonra yapılacaklar (öneri listesi)
+    # -------------------------
+    # 1) REAL TRADE:
+    #    dry_run=False iken _close_position ve (ileride) gerçek open emri için
+    #    client ile MARKET order + hata/retry + exchange response logging ekle.
+    #
+    # 2) META BOYUTU:
+    #    payload_meta içine full extra0 koymak büyüyebilir.
+    #    İstersen subset yap:
+    #      keep = {"signal_source","p_used","p_single","whale_dir","whale_score","atr","latency_steps"}
+    #
+    # 3) TELEGRAM_CHAT_ID:
+    #    TelegramBot içinde TELEGRAM_CHAT_ID/allowed chat kontrolü var.
+    #    Env’leri doğru set et (yoksa error log spam olur).
+    #
+    # 4) POSITIONMANAGER CONTRACT:
+    #    set_position/get_position/clear_position hata verirse local fallback var.
+    #    Redis/PG tarafında bağlantı kopmalarında retry/backoff eklenebilir.
 
