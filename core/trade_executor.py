@@ -730,34 +730,49 @@ class TradeExecutor:
             # --- RISK / Telegram notify (position OPEN) ---
             try:
                 rm = getattr(self, "risk_manager", None)
-                if rm:
-                    _side = str(side_norm).lower() if 'side_norm' in locals() else str(side).lower()
+                if rm is not None:
+                    # side normalize (side_norm varsa onu kullan, yoksa side)
+                    try:
+                        raw_side = side_norm  # type: ignore[name-defined]
+                    except Exception:
+                        raw_side = side
+
+                    _side = str(raw_side).strip().lower()
                     if _side in ("buy", "long"):
                         _side = "long"
                     elif _side in ("sell", "short"):
                         _side = "short"
-                    rm.on_position_open(
+                    else:
+                        _side = str(side).strip().lower()
+
+                    # meta: NameError + non-dict safe
+                    try:
+                        _meta = dict(meta) if isinstance(meta, dict) else {}  # type: ignore[name-defined]
+                    except Exception:
+                        _meta = {}
+
+                    payload_meta = {"reason": "EXEC_OPEN", **_meta}
+
+                    out = rm.on_position_open(
                         symbol=str(symbol).upper(),
                         side=_side,
                         qty=float(qty),
                         notional=float(notional),
                         price=float(price),
                         interval=str(interval or ""),
-                        meta={"reason": "EXEC_OPEN", **(meta or {})} if isinstance(meta, dict) else {"reason": "EXEC_OPEN"},
+                        meta=payload_meta,
                     )
-            except Exception:
-                try:
-                    if getattr(self, "logger", None):
-                        self.logger.exception("[EXEC] risk_manager.on_position_open failed")
-                except Exception:
-                    pass
 
-                except Exception:
+                    # eğer yanlışlıkla coroutine dönerse (async method), burada await edemeyiz
                     try:
-                        if getattr(self, "logger", None):
-                            self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+                        import asyncio
+                        if asyncio.iscoroutine(out) and getattr(self, "logger", None):
+                            self.logger.warning(
+                                "[EXEC] risk_manager.on_position_open returned coroutine (not awaited)"
+                            )
                     except Exception:
                         pass
 
-        except Exception:
-            pass
+            except Exception:
+                if getattr(self, "logger", None):
+                    self.logger.exception("[EXEC] risk_manager.on_position_open failed")
