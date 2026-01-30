@@ -1,4 +1,3 @@
-
 def _mask_env_presence(keys: list[str]) -> dict:
     import os
     out = {}
@@ -7,12 +6,15 @@ def _mask_env_presence(keys: list[str]) -> dict:
         out[k] = "SET" if (v is not None and str(v).strip() != "") else "MISSING"
     return out
 
+
 def _log_secret_env_presence(logger):
     # Değerleri ASLA basmıyoruz. Sadece SET/MISSING.
     keys = [
         # Telegram
         "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_ALLOWED_CHAT_IDS",        # Binance / OKX
+        "TELEGRAM_ALLOWED_CHAT_IDS",
+
+        # Binance / OKX
         "BINANCE_API_KEY",
         "BINANCE_API_SECRET",
         "OKX_API_KEY",
@@ -39,15 +41,17 @@ def _log_secret_env_presence(logger):
         "SANTIMENT_API_KEY",
     ]
     st = _mask_env_presence(keys)
-    # tek satır, okunur, güvenli
     logger.info("[ENV][SECRETS] %s", st)
+
 
 import asyncio
 import logging
 import os
 
 # TensorFlow / XLA C++ loglarını azalt (TF import edilmeden ÖNCE olmalı)
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")  # 0:all,1:INFO off,2:WARN off,3:ERROR only
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")  # bazı CPU uyarılarını azaltabilir
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")    # GPU'yu tamamen kapat (GPU yoksa zaten güvenli)
 
 import signal
 import json
@@ -195,8 +199,6 @@ class _StepTimer:
 
     def total(self) -> float:
         return float(time.perf_counter() - self.t0)
-
-
 # ----------------------------------------------------------------------
 # Adaptive scan (volatility-based) helpers
 # ----------------------------------------------------------------------
@@ -277,6 +279,8 @@ def _quick_vol_regime(df: pd.DataFrame, window: int = 60) -> float:
         return float(atr / (abs(last_close) + 1e-9))
     except Exception:
         return 0.0
+
+
 def _light_score_from_klines(raw_df: pd.DataFrame) -> float:
     """
     Light scanner score (hızlı):
@@ -357,8 +361,6 @@ HYBRID_MODE: bool = get_bool_env("HYBRID_MODE", True)
 TRAINING_MODE: bool = get_bool_env("TRAINING_MODE", False)
 USE_MTF_ENS: bool = get_bool_env("USE_MTF_ENS", False)
 DRY_RUN: bool = get_bool_env("DRY_RUN", True)
-
-
 # ----------------------------------------------------------------------
 # Basit feature engineering (stabilized)
 # ----------------------------------------------------------------------
@@ -446,6 +448,7 @@ def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     atr = tr.rolling(period).mean().iloc[-1]
     return float(atr)
 
+
 # ----------------------------------------------------------------------
 # OFFLINE LRU cache helpers (raw + normalized_tail)
 # ----------------------------------------------------------------------
@@ -532,8 +535,6 @@ def _offline_klines_tail_cached(path: str, mtime: float, limit: int) -> pd.DataF
         df = df.reset_index(drop=True)
 
     return df
-
-
 # ----------------------------------------------------------------------
 # LIVE fallback: Public REST
 # ----------------------------------------------------------------------
@@ -624,6 +625,8 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
             logger.error("[DATA] LIVE(PUBLIC) REST de başarısız: %s", e)
 
     raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
+
+
 # ----------------------------------------------------------------------
 # Shutdown manager (ws stop + tg stop + http close + pm/te close)
 # ----------------------------------------------------------------------
@@ -635,6 +638,7 @@ class ShutdownManager:
         self._tg_bot: Optional[TelegramBot] = None
         self._binance_ws: Optional[BinanceWS] = None
         self._okx_ws: Optional[OKXWS] = None
+        self._depth_ws: Any = None  # ✅ BUGFIX: daha önce tanımlı değildi
         self._client: Any = None
         self._position_manager: Any = None
         self._trade_executor: Any = None
@@ -773,7 +777,6 @@ class ShutdownManager:
 
 
 _shutdown_mgr = ShutdownManager()
-
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
@@ -885,7 +888,6 @@ def create_trading_objects() -> Dict[str, Any]:
 
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
-
     # --- Market meta (depth-based) ---
     depth_ws = None
     market_meta_builder = None
@@ -917,9 +919,9 @@ def create_trading_objects() -> Dict[str, Any]:
 
     # MTF models + ensemble (optional)
     mtf_ensemble = None
-    models_by_interval = {}
+    models_by_interval: Dict[str, Any] = {}
 
-    if USE_MTF_ENS:
+    if USE_MTF_ENS and list(mtf_intervals):
         try:
             models_by_interval = {
                 itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
@@ -952,7 +954,6 @@ def create_trading_objects() -> Dict[str, Any]:
             mtf_ensemble = None
             if system_logger:
                 system_logger.warning("[MAIN] HybridMultiTFModel init hata, MTF kapandı: %s", e)
-
 
     whale_detector = None
     try:
@@ -1039,7 +1040,7 @@ def create_trading_objects() -> Dict[str, Any]:
         if system_logger:
             system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
 
-    # shutdown manager register (tg + okx + client + pm + te)
+    # shutdown manager register (tg + okx + client + pm + te + depth_ws)
     _shutdown_mgr.register(
         tg_bot=tg_bot,
         okx_ws=okx_ws,
@@ -1066,6 +1067,8 @@ def create_trading_objects() -> Dict[str, Any]:
         "okx_ws": okx_ws,
         "market_meta_builder": market_meta_builder,
     }
+
+
 def _normalize_signal(sig: Any) -> str:
     s = str(sig).strip().lower()
     if s in ("buy", "long"):
@@ -1073,7 +1076,6 @@ def _normalize_signal(sig: Any) -> str:
     if s in ("sell", "short"):
         return "short"
     return "hold"
-
 
 # ----------------------------------------------------------------------
 # Heavy engine
@@ -1099,6 +1101,9 @@ class HeavyEngine:
         self._prob_stab_by_symbol: Dict[str, ProbStabilizer] = {}
         self._prev_signal: Dict[str, str] = {}
         self._prev_notif_ts: Dict[str, float] = {}
+
+        # warn-once cache (schema missing log spam engeli)
+        self._schema_missing_warned_itv: set[str] = set()
 
     def _get_prob_stab(self, symbol: str) -> ProbStabilizer:
         if symbol in self._prob_stab_by_symbol:
@@ -1138,7 +1143,18 @@ class HeavyEngine:
         return None
 
     def _schema_for(self, itv: str) -> Optional[List[str]]:
-        return self._load_schema_from_disk(itv) or self._fallback_schema_from_model()
+        """
+        ✅ ÖNEMLİ:
+        - Her interval için önce kendi meta dosyasından schema arar.
+        - Bulamazsa sadece MAIN interval (self.interval) için model meta fallback yapar.
+        - Başka interval'e yanlış schema vermeyelim (feature mismatch riskini büyütür).
+        """
+        sch = self._load_schema_from_disk(itv)
+        if sch:
+            return sch
+        if str(itv) == str(self.interval):
+            return self._fallback_schema_from_model()
+        return None
 
     def _normalize_feat_df(self, feat_df: pd.DataFrame, itv: str) -> pd.DataFrame:
         sch = self._schema_for(itv)
@@ -1147,8 +1163,14 @@ class HeavyEngine:
                 system_logger.warning("[SCHEMA] No feature_schema for interval=%s (meta missing). Using raw features.", itv)
             return feat_df
 
-        def _log_missing(missing_cols):
-            if system_logger and missing_cols:
+        def _log_missing(missing_cols: list[str]) -> None:
+            # interval başına 1 kez uyar
+            if not missing_cols:
+                return
+            if itv in self._schema_missing_warned_itv:
+                return
+            self._schema_missing_warned_itv.add(itv)
+            if system_logger:
                 system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
 
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
@@ -1194,6 +1216,9 @@ class HeavyEngine:
         mtf_feats: Dict[str, pd.DataFrame] = {interval: feat_df}
         mtf_whale_raw: Dict[str, pd.DataFrame] = {interval: raw_df}
 
+        # -------------------------
+        # MTF prepare (features + anomaly)
+        # -------------------------
         if USE_MTF_ENS and self.mtf_ensemble is not None:
             for itv in self.mtf_intervals:
                 if itv == interval:
@@ -1229,14 +1254,36 @@ class HeavyEngine:
         p_used = p_single
         mtf_debug: Optional[Dict[str, Any]] = None
 
+        # -------------------------
+        # MTF ensemble (X_by_interval hazırlanması)
+        # -------------------------
         if USE_MTF_ENS and self.mtf_ensemble is not None:
             try:
                 X_by_interval: Dict[str, pd.DataFrame] = {}
+                _missing_warned: set[str] = set()
+
                 for itv, df_itv in mtf_feats.items():
                     sch_itv = self._schema_for(itv)
                     if not sch_itv:
                         continue
-                    X_by_interval[itv] = normalize_to_schema(df_itv, sch_itv).tail(500)
+
+                    def _log_missing(missing_cols: list[str], _itv: str = itv) -> None:
+                        # interval başına 1 kez (spam engeli)
+                        if not missing_cols:
+                            return
+                        if _itv in _missing_warned:
+                            return
+                        _missing_warned.add(_itv)
+                        if system_logger:
+                            system_logger.warning("[MTF][%s] schema missing cols (filled=0): %s", _itv, missing_cols)
+
+                    X_norm = normalize_to_schema(df_itv, sch_itv, log_missing=_log_missing)
+                    X_tail = X_norm.tail(500)
+
+                    if len(X_tail) == 0:
+                        continue
+
+                    X_by_interval[itv] = X_tail
 
                 if X_by_interval:
                     p_ens, mtf_debug = self.mtf_ensemble.predict_proba_multi(
@@ -1263,22 +1310,13 @@ class HeavyEngine:
             try:
                 if hasattr(self.whale_detector, "analyze_multiple_timeframes"):
                     market_meta_by_tf = None
-
                     okx_dfs = None
 
                     if self.market_meta_builder is not None:
-
                         try:
-
                             market_meta_by_tf = self.market_meta_builder.build_meta_by_tf(symbol, list(mtf_whale_raw.keys()))
-
                         except Exception:
-
                             market_meta_by_tf = None
-
-                    # OKX df'leri opsiyonel: burada sadece placeholder (WS/REST ile doldurulacak)
-
-                    # okx_dfs = {tf: df} gibi verilirse cross-exchange confirm çalışır.
 
                     whale_signals = self.whale_detector.analyze_multiple_timeframes(
                         mtf_whale_raw,
@@ -1425,6 +1463,8 @@ class HeavyEngine:
             "price": float(last_price),
             "extra": extra,
         }
+
+
 # ----------------------------------------------------------------------
 # Non-scan mode: tek symbol heavy loop
 # ----------------------------------------------------------------------
@@ -1673,6 +1713,7 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 system_logger.exception("[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d", e, backoff, scan_failures)
             await asyncio.sleep(_sleep_jitter(backoff, 0.20))
 
+
 # ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------
@@ -1685,6 +1726,12 @@ async def async_main() -> None:
 
     setup_logger()
     system_logger = logging.getLogger("system")
+
+    # güvenli secret presence log (değer yok)
+    try:
+        _log_secret_env_presence(system_logger)
+    except Exception:
+        pass
 
     try:
         Credentials.refresh_from_env()
@@ -1820,4 +1867,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
