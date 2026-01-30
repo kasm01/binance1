@@ -385,54 +385,90 @@ class TradeExecutor:
         if not pos:
             return None
 
-        side = str(pos.get("side") or "hold")
+        # --- basic fields (safe) ---
+        side_raw = str(pos.get("side") or "hold").strip().lower()
+        if side_raw in ("buy", "long"):
+            side = "long"
+        elif side_raw in ("sell", "short"):
+            side = "short"
+        else:
+            side = side_raw
+
         qty = float(pos.get("qty") or 0.0)
         entry_price = float(pos.get("entry_price") or 0.0)
         notional = float(pos.get("notional") or (qty * entry_price))
 
-        realized_pnl = self._calc_pnl(side=side, entry_price=entry_price, exit_price=price, qty=qty)
+        realized_pnl = self._calc_pnl(
+            side=side,
+            entry_price=entry_price,
+            exit_price=float(price),
+            qty=qty,
+        )
 
+        # --- exchange close (real) ---
         if self.dry_run:
             self.logger.info("[EXEC] DRY_RUN=True close emri gönderilmeyecek.")
         else:
             # TODO: gerçek close emri
             pass
 
+        # --- RISK / Telegram notify (position CLOSE) ---
         try:
-            meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-            probs_dict = meta_dict.get("probs") if isinstance(meta_dict.get("probs"), dict) else {}
-            extra_dict = meta_dict.get("extra") if isinstance(meta_dict.get("extra"), dict) else {}
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
+                probs_dict = meta_dict.get("probs") if isinstance(meta_dict.get("probs"), dict) else {}
+                extra_dict = meta_dict.get("extra") if isinstance(meta_dict.get("extra"), dict) else {}
 
-            self.risk_manager.on_position_close(
-                symbol=str(symbol).upper(),
-                side=side,
-                qty=qty,
-                notional=notional,
-                price=float(price),
-                interval=interval,
-                realized_pnl=float(realized_pnl),
-                meta={
-                    "reason": reason,
-                    "entry_price": entry_price,
-                    "closed_side": side,
-                    "interval": interval,
-                    "qty": qty,
-                    "notional": notional,
+                payload_meta = {
+                    "reason": str(reason),
+                    "entry_price": float(entry_price),
+                    "closed_side": str(side),
+                    "interval": str(interval or ""),
+                    "qty": float(qty),
+                    "notional": float(notional),
                     "probs": probs_dict,
                     "extra": extra_dict,
-                },
-            )
-        except Exception as e:
-            self.logger.warning("[RISK] on_position_close hata: %s", e)
+                }
 
+                out = rm.on_position_close(
+                    symbol=str(symbol).upper(),
+                    side=str(side),
+                    qty=float(qty),
+                    notional=float(notional),
+                    price=float(price),
+                    interval=str(interval or ""),
+                    realized_pnl=float(realized_pnl),
+                    meta=payload_meta,
+                )
+
+                # async method yanlışlıkla coroutine döndürürse
+                try:
+                    import asyncio
+                    if asyncio.iscoroutine(out) and getattr(self, "logger", None):
+                        self.logger.warning(
+                            "[EXEC] risk_manager.on_position_close returned coroutine (not awaited)"
+                        )
+                except Exception:
+                    pass
+
+        except Exception:
+            try:
+                if getattr(self, "logger", None):
+                    self.logger.exception("[RISK] on_position_close failed")
+            except Exception:
+                pass
+
+        # --- clear current position ---
         self._clear_position(symbol)
 
+        # --- finalize pos dict ---
         pos["closed_at"] = datetime.utcnow().isoformat()
         pos["close_price"] = float(price)
         pos["realized_pnl"] = float(realized_pnl)
-        pos["close_reason"] = reason
+        pos["close_reason"] = str(reason)
 
-        # backtest buffer push (NEW)
+        # backtest buffer push
         try:
             self._closed_buffer.append(dict(pos))
         except Exception:
@@ -650,7 +686,7 @@ class TradeExecutor:
         if str(os.getenv("SHADOW_MODE", "false")).lower() in ("1", "true", "yes", "on"):
             return
 
-        # telegram notify
+        # telegram notify (signal)
         try:
             self._notify_telegram(signal_u, str(symbol).upper(), interval, float(price), probs, extra0)
         except Exception:
@@ -726,53 +762,54 @@ class TradeExecutor:
                 "[EXEC] OPEN %s | symbol=%s qty=%.6f price=%.4f notional=%.2f interval=%s dry_run=%s",
                 side_norm.upper(), str(symbol).upper(), float(qty), float(price), float(notional), interval, self.dry_run
             )
+        except Exception:
+            pass
 
-            # --- RISK / Telegram notify (position OPEN) ---
-            try:
-                rm = getattr(self, "risk_manager", None)
-                if rm is not None:
-                    # side normalize (side_norm varsa onu kullan, yoksa side)
-                    try:
-                        raw_side = side_norm  # type: ignore[name-defined]
-                    except Exception:
-                        raw_side = side
+        # --- RISK / Telegram notify (position OPEN) ---
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                # side_norm -> risk side
+                _side = str(side_norm).strip().lower()
+                if _side not in ("long", "short"):
+                    _side = "long" if signal_u == "BUY" else ("short" if signal_u == "SELL" else "hold")
 
-                    _side = str(raw_side).strip().lower()
-                    if _side in ("buy", "long"):
-                        _side = "long"
-                    elif _side in ("sell", "short"):
-                        _side = "short"
-                    else:
-                        _side = str(side).strip().lower()
-
-                    # meta: NameError + non-dict safe
-                    try:
-                        _meta = dict(meta) if isinstance(meta, dict) else {}  # type: ignore[name-defined]
-                    except Exception:
+                # meta: extra0 içinden güvenli şekilde al
+                _meta = {}
+                try:
+                    if isinstance(extra0.get("meta"), dict):
+                        _meta = dict(extra0.get("meta"))  # shallow copy
+                    elif isinstance(extra0, dict):
+                        # tüm extra'yı meta gibi taşımak istemezsen bunu kaldırabilirsin
                         _meta = {}
+                except Exception:
+                    _meta = {}
 
-                    payload_meta = {"reason": "EXEC_OPEN", **_meta}
+                payload_meta = {"reason": "EXEC_OPEN", **_meta}
 
-                    out = rm.on_position_open(
-                        symbol=str(symbol).upper(),
-                        side=_side,
-                        qty=float(qty),
-                        notional=float(notional),
-                        price=float(price),
-                        interval=str(interval or ""),
-                        meta=payload_meta,
-                    )
+                out = rm.on_position_open(
+                    symbol=str(symbol).upper(),
+                    side=_side,
+                    qty=float(qty),
+                    notional=float(notional),
+                    price=float(price),
+                    interval=str(interval or ""),
+                    meta=payload_meta,
+                )
 
-                    # eğer yanlışlıkla coroutine dönerse (async method), burada await edemeyiz
-                    try:
-                        import asyncio
-                        if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                            self.logger.warning(
-                                "[EXEC] risk_manager.on_position_open returned coroutine (not awaited)"
-                            )
-                    except Exception:
-                        pass
+                # eğer yanlışlıkla coroutine dönerse (async method), burada await edemeyiz
+                try:
+                    import asyncio
+                    if asyncio.iscoroutine(out) and getattr(self, "logger", None):
+                        self.logger.warning("[EXEC] risk_manager.on_position_open returned coroutine (not awaited)")
+                except Exception:
+                    pass
 
-            except Exception:
+        except Exception:
+            try:
                 if getattr(self, "logger", None):
                     self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+            except Exception:
+                pass
+            pass
+
