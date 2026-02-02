@@ -1,5 +1,7 @@
 import os
 import re
+import logging
+import traceback
 from typing import Optional
 
 from telegram import Bot
@@ -104,6 +106,14 @@ class TelegramBot:
         İstersen parse_mode="Markdown" vererek çağırabilirsin.
         Parse hatasında otomatik plain text retry yapılır.
         """
+        # Debug: mesajı kimin gönderdiğini stack trace ile logla
+        try:
+            if os.getenv("TG_DEBUG_CALLER", "0").strip().lower() in ("1", "true", "yes", "on"):
+                tb = "".join(traceback.format_stack(limit=12))
+                logging.getLogger("system").info("[TG][CALLER]\n%s", tb)
+        except Exception:
+            pass
+
         if not getattr(self, "bot", None):
             return
 

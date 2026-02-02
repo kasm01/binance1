@@ -12,7 +12,11 @@ def _log_secret_env_presence(logger):
     keys = [
         # Telegram
         "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
         "TELEGRAM_ALLOWED_CHAT_IDS",
+        "TELEGRAM_NOTIFY_SIGNALS",
+        "TELEGRAM_NOTIFY_COOLDOWN_S",
+        "TELEGRAM_ALERTS",
 
         # Binance / OKX
         "BINANCE_API_KEY",
@@ -1715,6 +1719,36 @@ async def scanner_loop(engine: HeavyEngine) -> None:
 
 
 # ----------------------------------------------------------------------
+# Telegram ENV compat (TELEGRAM_* -> TG_*)  [SAFE BACKFILL]
+# ----------------------------------------------------------------------
+def _backfill_telegram_env_compat() -> None:
+    """
+    TradeExecutor._notify_telegram içinde okunan env isimleri ile
+    senin .env içindeki TELEGRAM_* isimlerini uyumlu hale getirir.
+    Var olan TG_* değerlerini ASLA ezmez (setdefault mantığı).
+    """
+    # TG_NOTIFY_TRADES <- TELEGRAM_NOTIFY_SIGNALS
+    if os.getenv("TG_NOTIFY_TRADES") is None:
+        v = os.getenv("TELEGRAM_NOTIFY_SIGNALS")
+        if v is not None and str(v).strip() != "":
+            os.environ["TG_NOTIFY_TRADES"] = str(v).strip()
+
+    # TG_DUPLICATE_SIGNAL_COOLDOWN_SEC <- TELEGRAM_NOTIFY_COOLDOWN_S
+    if os.getenv("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC") is None:
+        v = os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S")
+        if v is not None and str(v).strip() != "":
+            os.environ["TG_DUPLICATE_SIGNAL_COOLDOWN_SEC"] = str(v).strip()
+
+    # TELEGRAM_ALERTS=0 ise trade notify kapatmak isteyebilirsin
+    alerts = os.getenv("TELEGRAM_ALERTS")
+    if alerts is not None and str(alerts).strip().lower() in ("0", "false", "no", "off", ""):
+        os.environ.setdefault("TG_NOTIFY_TRADES", "0")
+
+    # HOLD notify default kapalı kalsın (istersen .env ile açarsın)
+    os.environ.setdefault("TG_NOTIFY_HOLD", "0")
+
+
+# ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------
 async def async_main() -> None:
@@ -1722,27 +1756,37 @@ async def async_main() -> None:
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN
 
+    # 1) load env (.env + secret manager inject vs.)
     load_environment_variables()
 
+    # 1.1) Telegram env isim uyumluluğu (bozmaz, sadece backfill)
+    try:
+        _backfill_telegram_env_compat()
+    except Exception:
+        pass
+
+    # 2) logger init
     setup_logger()
     system_logger = logging.getLogger("system")
 
-    # güvenli secret presence log (değer yok)
+    # 3) güvenli secret presence log (değer yok; sadece SET/MISSING)
     try:
         _log_secret_env_presence(system_logger)
     except Exception:
         pass
 
+    # 4) Credentials cache refresh + missing log
     try:
         Credentials.refresh_from_env()
     except Exception:
         pass
 
     try:
-        Credentials.log_missing(prefix='[ENV]')
+        Credentials.log_missing(prefix="[ENV]")
     except Exception:
         pass
 
+    # 5) refresh globals
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -1756,6 +1800,22 @@ async def async_main() -> None:
         system_logger.info("[MAIN] HYBRID_MODE=%s", HYBRID_MODE)
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
+
+        # İstersen debug: Telegram notify env'leri SET/MISSING (değer yok)
+        try:
+            st = _mask_env_presence([
+                "TELEGRAM_BOT_TOKEN",
+                "TELEGRAM_CHAT_ID",
+                "TELEGRAM_ALLOWED_CHAT_IDS",
+                "TELEGRAM_NOTIFY_SIGNALS",
+                "TELEGRAM_NOTIFY_COOLDOWN_S",
+                "TELEGRAM_ALERTS",
+                "TG_NOTIFY_TRADES",
+                "TG_DUPLICATE_SIGNAL_COOLDOWN_SEC",
+            ])
+            system_logger.info("[ENV][TG-COMPAT] %s", st)
+        except Exception:
+            pass
 
     # ENABLE_WS -> BinanceWS create & register for shutdown
     enable_ws = get_bool_env("ENABLE_WS", False)
@@ -1779,7 +1839,11 @@ async def async_main() -> None:
         await scanner_loop(engine)
         return
 
-    symbol = str(trading_objects.get("symbol") or os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", "BTCUSDT")).upper()
+    symbol = str(
+        trading_objects.get("symbol")
+        or os.getenv("SYMBOL")
+        or getattr(Settings, "SYMBOL", "BTCUSDT")
+    ).upper()
     await bot_loop_single_symbol(engine, symbol)
 
 

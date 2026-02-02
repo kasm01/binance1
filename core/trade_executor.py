@@ -227,12 +227,13 @@ class TradeExecutor:
         if signal_u in ("BUY", "SELL"):
             if not notify_trades:
                 return
-            last_sig = self._tg_state.get("last_sig")
-            last_ts = float(self._tg_state.get("last_sig_ts") or 0.0)
-            if last_sig == signal_u and (now - last_ts) < float(dup_cd):
-                return
-            self._tg_state["last_sig"] = signal_u
-            self._tg_state["last_sig_ts"] = now
+        key = f"{symbol}:{interval}:{signal_u}"
+        last_map = self._tg_state.setdefault("last_sig_map", {})  # dict
+
+        last_ts = float(last_map.get(key, 0.0))
+        if (now - last_ts) < float(dup_cd):
+            return
+        last_map[key] = now
 
         p_used = None
         try:
