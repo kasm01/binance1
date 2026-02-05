@@ -1719,32 +1719,45 @@ async def scanner_loop(engine: HeavyEngine) -> None:
 
 
 # ----------------------------------------------------------------------
-# Telegram ENV compat (TELEGRAM_* -> TG_*)  [SAFE BACKFILL]
+# Telegram ENV compat (TELEGRAM_* -> TG_*)  [OPEN/CLOSE ONLY]
 # ----------------------------------------------------------------------
 def _backfill_telegram_env_compat() -> None:
     """
-    TradeExecutor._notify_telegram içinde okunan env isimleri ile
-    senin .env içindeki TELEGRAM_* isimlerini uyumlu hale getirir.
-    Var olan TG_* değerlerini ASLA ezmez (setdefault mantığı).
+    Eski sürümlerde decision/signal notify vardı ve TG_NOTIFY_TRADES gibi env'ler kullanılıyordu.
+    Artık hedef: Telegram'da SADECE pozisyon OPEN/CLOSE mesajı.
+
+    Bu fonksiyon:
+      - decision/signal backfill yapmaz (TG_NOTIFY_TRADES vs. dokunmaz)
+      - TELEGRAM_ALERTS=0 ise tüm telegram bildirimlerini kapatır
+      - OPEN/CLOSE için yeni env'leri güvenli şekilde setdefault eder
     """
-    # TG_NOTIFY_TRADES <- TELEGRAM_NOTIFY_SIGNALS
-    if os.getenv("TG_NOTIFY_TRADES") is None:
-        v = os.getenv("TELEGRAM_NOTIFY_SIGNALS")
-        if v is not None and str(v).strip() != "":
-            os.environ["TG_NOTIFY_TRADES"] = str(v).strip()
-
-    # TG_DUPLICATE_SIGNAL_COOLDOWN_SEC <- TELEGRAM_NOTIFY_COOLDOWN_S
-    if os.getenv("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC") is None:
-        v = os.getenv("TELEGRAM_NOTIFY_COOLDOWN_S")
-        if v is not None and str(v).strip() != "":
-            os.environ["TG_DUPLICATE_SIGNAL_COOLDOWN_SEC"] = str(v).strip()
-
-    # TELEGRAM_ALERTS=0 ise trade notify kapatmak isteyebilirsin
+    # 0) TELEGRAM_ALERTS=0 ise her şeyi kapat (open/close dahil)
     alerts = os.getenv("TELEGRAM_ALERTS")
     if alerts is not None and str(alerts).strip().lower() in ("0", "false", "no", "off", ""):
+        os.environ.setdefault("TG_NOTIFY_OPEN_CLOSE", "0")
+        os.environ.setdefault("TG_OPEN_CLOSE_ONLY_REAL", "1")  # ekstra güvenlik: dry_run'da da sus
+        # Eski env'leri ezme: sadece default ver
         os.environ.setdefault("TG_NOTIFY_TRADES", "0")
+        os.environ.setdefault("TG_NOTIFY_HOLD", "0")
+        return
 
-    # HOLD notify default kapalı kalsın (istersen .env ile açarsın)
+    # 1) Yeni hedef env'ler: sadece OPEN/CLOSE
+    os.environ.setdefault("TG_NOTIFY_OPEN_CLOSE", os.getenv("TG_NOTIFY_OPEN_CLOSE", "1"))
+    os.environ.setdefault("TG_OPEN_CLOSE_ONLY_REAL", os.getenv("TG_OPEN_CLOSE_ONLY_REAL", "0"))
+
+    # 2) Eski TELEGRAM_NOTIFY_SIGNALS varsa: artık kullanılmıyor (sadece log amaçlı)
+    v = os.getenv("TELEGRAM_NOTIFY_SIGNALS")
+    if v is not None and str(v).strip() != "":
+        try:
+            logging.getLogger("system").info(
+                "[ENV][TG-COMPAT] TELEGRAM_NOTIFY_SIGNALS=%s is set but decision/signal notify is disabled (open/close only).",
+                str(v).strip(),
+            )
+        except Exception:
+            pass
+
+    # 3) Eski decision notify env'leri default kapalı tut (ezmeden)
+    os.environ.setdefault("TG_NOTIFY_TRADES", "0")
     os.environ.setdefault("TG_NOTIFY_HOLD", "0")
 
 
@@ -1810,6 +1823,12 @@ async def async_main() -> None:
                 "TELEGRAM_NOTIFY_SIGNALS",
                 "TELEGRAM_NOTIFY_COOLDOWN_S",
                 "TELEGRAM_ALERTS",
+
+                # yeni OPEN/CLOSE odaklı env’ler
+                "TG_NOTIFY_OPEN_CLOSE",
+                "TG_OPEN_CLOSE_ONLY_REAL",
+
+                # backward / safety
                 "TG_NOTIFY_TRADES",
                 "TG_DUPLICATE_SIGNAL_COOLDOWN_SEC",
             ])

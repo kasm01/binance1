@@ -1,11 +1,9 @@
-# core/trade_executor.py
 from __future__ import annotations
 
 import asyncio
 import csv
 import logging
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -25,14 +23,10 @@ class TradeExecutor:
       - Flip (long -> short, short -> long) durumunda PnL hesaplar
       - DRY_RUN modunda gerçek emir atmadan simüle eder
 
-    Tek tip shutdown kontratı:
-      - close() (sync, idempotent)
-      - shutdown(reason) (async, idempotent)  <-- main.ShutdownManager bunu çağırabilir
-
-    BACKTEST yardımcı API:
-      - has_open_position(symbol) -> bool
-      - close_position(symbol, price, reason="manual", interval="") -> Optional[dict]
-      - pop_closed_trades() -> List[dict]
+    Telegram politikası:
+      ✅ Otomatik mesaj: SADECE pozisyon OPEN/CLOSE
+      ❌ Signal/HOLD/BUT/SELL karar anında mesaj YOK
+      (Diğer bilgiler manuel /status /signal /risk vb. ile bakılır)
     """
 
     def __init__(
@@ -77,11 +71,6 @@ class TradeExecutor:
 
         # /status snapshot için
         self.last_snapshot: Dict[str, Any] = {}
-        self._tg_state: Dict[str, Any] = {
-            "last_hold_ts": 0.0,
-            "last_sig": None,
-            "last_sig_ts": 0.0,
-        }
 
         # PositionManager yoksa local fallback
         self._local_positions: Dict[str, Dict[str, Any]] = {}
@@ -90,6 +79,139 @@ class TradeExecutor:
         self._closed_buffer: List[Dict[str, Any]] = []
 
         self._closed = False
+
+    # -------------------------
+    # helpers (env / cast / normalize)
+    # -------------------------
+    @staticmethod
+    def _truthy_env(name: str, default: str = "0") -> bool:
+        return str(os.getenv(name, default)).strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _clip_float(x: Any, default: Optional[float] = None) -> Optional[float]:
+        try:
+            if x is None:
+                return default
+            return float(x)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _signal_u_from_any(signal: Any) -> str:
+        """
+        Normalize -> BUY / SELL / HOLD
+        """
+        try:
+            s = str(signal or "").strip().lower()
+            if s in ("buy", "long", "1", "true"):
+                return "BUY"
+            if s in ("sell", "short", "-1", "false"):
+                return "SELL"
+            return "HOLD"
+        except Exception:
+            return "HOLD"
+
+    @staticmethod
+    def _ensure_csv_append(path: str, header: List[str], row: Dict[str, Any]) -> None:
+        """
+        Safe CSV append (create header if missing/empty).
+        """
+        try:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            new_file = (not p.exists()) or p.stat().st_size == 0
+            with p.open("a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
+                if new_file:
+                    w.writeheader()
+                w.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in header})
+        except Exception:
+            pass
+
+    def _append_hold_csv(self, row: dict) -> None:
+        path = os.getenv("HOLD_DECISIONS_CSV_PATH", "logs/hold_decisions.csv")
+        header = [
+            "timestamp", "symbol", "interval", "signal",
+            "p", "p_source", "ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw",
+        ]
+        self._ensure_csv_append(path, header, row)
+
+    def _append_trade_csv(self, row: dict) -> None:
+        """
+        BUY/SELL kararlarını logs/trade_decisions.csv içine ekler. (karar anı kaydı)
+        """
+        path = os.getenv("TRADE_DECISIONS_CSV_PATH", "logs/trade_decisions.csv")
+        header = [
+            "timestamp", "symbol", "interval", "signal",
+            "p", "p_source", "ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw",
+        ]
+        self._ensure_csv_append(path, header, row)
+
+    def _normalize_side(self, signal_u: str) -> str:
+        s = str(signal_u or "").strip().lower()
+        if s == "buy":
+            return "long"
+        if s == "sell":
+            return "short"
+        return "hold"
+
+    # -------------------------
+    # Telegram: SADECE OPEN/CLOSE
+    # -------------------------
+    def _tg_send(self, text: str) -> None:
+        try:
+            if self.tg_bot is None:
+                return
+            self.tg_bot.send_message(text)
+        except Exception:
+            pass
+
+    def _notify_position_open(self, symbol: str, interval: str, side: str, qty: float, price: float, extra: Dict[str, Any]) -> None:
+        """
+        ✅ sadece OPEN event
+        """
+        try:
+            if not self._truthy_env("TG_NOTIFY_OPEN_CLOSE", "1"):
+                return
+            if self.dry_run and self._truthy_env("TG_OPEN_CLOSE_ONLY_REAL", "0"):
+                return
+
+            p_used = extra.get("ensemble_p")
+            if p_used is None:
+                p_used = extra.get("p_buy_ema") or extra.get("p_buy_raw")
+
+            p_txt = "?" if p_used is None else f"{float(p_used):.4f}"
+            src = str(extra.get("signal_source") or extra.get("p_buy_source") or "")
+            whale_dir = str(extra.get("whale_dir", "none") or "none")
+            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+
+            msg = (
+                f"🟢 *OPEN* `{symbol}` `{interval}`\n"
+                f"side=`{side}` qty=`{qty:.6f}` price=`{price}`\n"
+                f"p=`{p_txt}` src=`{src}` whale=`{whale_dir}` score=`{whale_score:.2f}` dry_run=`{self.dry_run}`"
+            )
+            self._tg_send(msg)
+        except Exception:
+            pass
+
+    def _notify_position_close(self, symbol: str, interval: str, side: str, qty: float, entry_price: float, exit_price: float, pnl_usdt: float, reason: str) -> None:
+        """
+        ✅ sadece CLOSE event
+        """
+        try:
+            if not self._truthy_env("TG_NOTIFY_OPEN_CLOSE", "1"):
+                return
+            if self.dry_run and self._truthy_env("TG_OPEN_CLOSE_ONLY_REAL", "0"):
+                return
+
+            msg = (
+                f"🔴 *CLOSE* `{symbol}` `{interval}`\n"
+                f"side=`{side}` qty=`{qty:.6f}` entry=`{entry_price}` exit=`{exit_price}`\n"
+                f"pnl_usdt=`{pnl_usdt:.4f}` reason=`{reason}` dry_run=`{self.dry_run}`"
+            )
+            self._tg_send(msg)
+        except Exception:
+            pass
 
     # -------------------------
     # unified shutdown contract
@@ -164,104 +286,7 @@ class TradeExecutor:
         out = list(self._closed_buffer)
         self._closed_buffer.clear()
         return out
-    # -------------------------
-    # helpers
-    # -------------------------
-    def _append_hold_csv(self, row: dict) -> None:
-        try:
-            path = os.getenv("HOLD_DECISIONS_CSV_PATH", "logs/hold_decisions.csv")
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            header = [
-                "timestamp", "symbol", "interval", "signal",
-                "p", "p_source", "ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw",
-            ]
-            new_file = (not Path(path).exists()) or Path(path).stat().st_size == 0
-            with open(path, "a", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=header)
-                if new_file:
-                    w.writeheader()
-                w.writerow({k: row.get(k, "") for k in header})
-        except Exception:
-            pass
 
-    def _normalize_side(self, signal: str) -> str:
-        s = str(signal or "").strip().lower()
-        if s in ("buy", "long", "1", "true"):
-            return "long"
-        if s in ("sell", "short", "-1", "false"):
-            return "short"
-        return "hold"
-
-    def _tg_send(self, text: str) -> None:
-        try:
-            if self.tg_bot is None:
-                return
-            self.tg_bot.send_message(text)
-        except Exception:
-            pass
-
-    def _notify_telegram(
-        self,
-        signal_u: str,
-        symbol: str,
-        interval: str,
-        price: float,
-        probs: Dict[str, float],
-        extra: Dict[str, Any],
-    ) -> None:
-        notify_trades = str(os.getenv("TG_NOTIFY_TRADES", "1")).lower() in ("1", "true", "yes", "on")
-        notify_hold = str(os.getenv("TG_NOTIFY_HOLD", "0")).lower() in ("1", "true", "yes", "on")
-        hold_every = int(os.getenv("HOLD_NOTIFY_EVERY_SEC", "300"))
-        dup_cd = int(os.getenv("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", "20"))
-
-        now = time.time()
-
-        if signal_u == "HOLD":
-            if not notify_hold:
-                return
-            last = float(self._tg_state.get("last_hold_ts") or 0.0)
-            if (now - last) < float(hold_every):
-                return
-            self._tg_state["last_hold_ts"] = now
-
-        if signal_u in ("BUY", "SELL"):
-            if not notify_trades:
-                return
-        key = f"{symbol}:{interval}:{signal_u}"
-        last_map = self._tg_state.setdefault("last_sig_map", {})  # dict
-
-        last_ts = float(last_map.get(key, 0.0))
-        if (now - last_ts) < float(dup_cd):
-            return
-        last_map[key] = now
-
-        p_used = None
-        try:
-            p_used = extra.get("ensemble_p")
-            if p_used is None:
-                p_used = extra.get("p_buy_ema")
-            if p_used is None:
-                p_used = extra.get("p_buy_raw")
-            if p_used is None:
-                p_used = probs.get("p_used") or probs.get("p_single")
-        except Exception:
-            p_used = None
-
-        try:
-            p_txt = f"{float(p_used):.4f}" if p_used is not None else "?"
-        except Exception:
-            p_txt = "?"
-
-        whale_dir = str(extra.get("whale_dir", "none") or "none")
-        whale_score = float(extra.get("whale_score", 0.0) or 0.0)
-        src = str(extra.get("signal_source", extra.get("p_buy_source", "")) or "")
-
-        msg = (
-            f"📣 *{signal_u}*  {symbol} `{interval}`\n"
-            f"price=`{price}`  p=`{p_txt}` src=`{src}`\n"
-            f"🐋 whale=`{whale_dir}` score=`{whale_score:.2f}`  dry_run=`{self.dry_run}`"
-        )
-        self._tg_send(msg)
     # -------------------------
     # position access via PositionManager
     # -------------------------
@@ -278,7 +303,6 @@ class TradeExecutor:
         """
         Not: RiskManager on_position_open/on_position_close çağrıları
         SADECE execute_decision/_close_position içinde yapılmalı.
-        Burada locals() ile veri toplama gibi yan etkiler kaldırıldı.
         """
         sym = str(symbol).upper()
         if self.position_manager is not None:
@@ -297,6 +321,7 @@ class TradeExecutor:
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
         self._local_positions.pop(sym, None)
+
     # -------------------------
     # position dict
     # -------------------------
@@ -365,7 +390,6 @@ class TradeExecutor:
         if not pos:
             return None
 
-        # --- basic fields (safe) ---
         side_raw = str(pos.get("side") or "hold").strip().lower()
         if side_raw in ("buy", "long"):
             side = "long"
@@ -392,7 +416,22 @@ class TradeExecutor:
             # TODO: gerçek close emri (client ile market close vs.)
             pass
 
-        # --- RISK / Telegram notify (position CLOSE) ---
+        # ✅ Telegram: sadece CLOSE
+        try:
+            self._notify_position_close(
+                symbol=str(symbol).upper(),
+                interval=str(interval or pos.get("interval") or ""),
+                side=str(side),
+                qty=float(qty),
+                entry_price=float(entry_price),
+                exit_price=float(price),
+                pnl_usdt=float(realized_pnl),
+                reason=str(reason),
+            )
+        except Exception:
+            pass
+
+        # --- RISK ---
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
@@ -422,12 +461,9 @@ class TradeExecutor:
                     meta=payload_meta,
                 )
 
-                # async method yanlışlıkla coroutine döndürürse
                 try:
                     if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                        self.logger.warning(
-                            "[EXEC] risk_manager.on_position_close returned coroutine (not awaited)"
-                        )
+                        self.logger.warning("[EXEC] risk_manager.on_position_close returned coroutine (not awaited)")
                 except Exception:
                     pass
 
@@ -438,16 +474,13 @@ class TradeExecutor:
             except Exception:
                 pass
 
-        # --- clear current position ---
         self._clear_position(symbol)
 
-        # --- finalize pos dict ---
         pos["closed_at"] = datetime.utcnow().isoformat()
         pos["close_price"] = float(price)
         pos["realized_pnl"] = float(realized_pnl)
         pos["close_reason"] = str(reason)
 
-        # backtest buffer push
         try:
             self._closed_buffer.append(dict(pos))
         except Exception:
@@ -509,6 +542,7 @@ class TradeExecutor:
                     return self._close_position(symbol, price, reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
+
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
@@ -569,9 +603,7 @@ class TradeExecutor:
 
     async def execute_trade(self, *args, **kwargs):
         return await self.open_position(*args, **kwargs)
-    # -------------------------
-    # MAIN decision entrypoint
-    # -------------------------
+
     async def execute_decision(
         self,
         signal: str,
@@ -585,30 +617,25 @@ class TradeExecutor:
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         extra0 = extra if isinstance(extra, dict) else {}
-
-        # signal normalize -> BUY/SELL/HOLD
-        try:
-            _s = str(signal).strip().lower()
-            if _s in ("buy", "long", "1", "true"):
-                signal_u = "BUY"
-            elif _s in ("sell", "short", "-1", "false"):
-                signal_u = "SELL"
-            else:
-                signal_u = "HOLD"
-        except Exception:
-            signal_u = "HOLD"
-
+        signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
+        sym_u = str(symbol).upper()
 
-        # snapshot for telegram /status
+        # snapshot for /status (manual kontrol)
         try:
+            p_used = extra0.get("ensemble_p")
+            if p_used is None:
+                p_used = extra0.get("p_buy_ema") or extra0.get("p_buy_raw")
+            if p_used is None and isinstance(probs, dict):
+                p_used = probs.get("p_used") or probs.get("p_single")
+
             self.last_snapshot = {
                 "ts": datetime.utcnow().isoformat(),
-                "symbol": str(symbol).upper(),
+                "symbol": sym_u,
                 "interval": interval,
                 "signal": signal_u,
-                "signal_source": str(extra0.get("signal_source", extra0.get("p_buy_source", ""))),
-                "p_used": extra0.get("ensemble_p", probs.get("p_used") if isinstance(probs, dict) else None),
+                "signal_source": str(extra0.get("signal_source") or extra0.get("p_buy_source") or ""),
+                "p_used": p_used,
                 "p_single": probs.get("p_single") if isinstance(probs, dict) else None,
                 "p_buy_raw": extra0.get("p_buy_raw"),
                 "p_buy_ema": extra0.get("p_buy_ema"),
@@ -619,36 +646,27 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # HOLD: journal + return
+        # HOLD: sadece CSV + log; telegram yok
         if signal_u == "HOLD":
             try:
-                p_val = None
-                p_src = "none"
                 ens = extra0.get("ensemble_p")
                 mcf = extra0.get("model_confidence_factor")
                 pbe = extra0.get("p_buy_ema")
                 pbr = extra0.get("p_buy_raw")
 
-                for k, v in (("ensemble_p", ens), ("p_buy_ema", pbe), ("p_buy_raw", pbr), ("model_confidence_factor", mcf)):
-                    if v is not None:
-                        p_val = v
-                        p_src = k
-                        break
+                p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
+                p_src = "ensemble_p" if ens is not None else ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
 
-                try:
-                    if p_val is not None:
-                        pv = float(p_val)
-                        pv = 0.0 if pv < 0.0 else (1.0 if pv > 1.0 else pv)
-                        p_val = pv
-                except Exception:
-                    p_val = None
+                pv = self._clip_float(p_val, None)
+                if pv is not None:
+                    pv = max(0.0, min(1.0, pv))
 
                 self._append_hold_csv({
                     "timestamp": datetime.utcnow().isoformat(),
-                    "symbol": str(symbol).upper(),
+                    "symbol": sym_u,
                     "interval": interval,
                     "signal": "HOLD",
-                    "p": p_val,
+                    "p": pv,
                     "p_source": p_src,
                     "ensemble_p": ens,
                     "model_confidence_factor": mcf,
@@ -659,22 +677,14 @@ class TradeExecutor:
                 pass
 
             try:
-                self.logger.info("[EXEC] Signal=HOLD symbol=%s", str(symbol).upper())
+                self.logger.info("[EXEC] Signal=HOLD symbol=%s", sym_u)
             except Exception:
                 pass
             return
 
-        # shadow mode: trade yok
-        if str(os.getenv("SHADOW_MODE", "false")).lower() in ("1", "true", "yes", "on"):
+        # shadow mode / training mode: trade yok
+        if self._truthy_env("SHADOW_MODE", "0"):
             return
-
-        # telegram notify (signal)
-        try:
-            self._notify_telegram(signal_u, str(symbol).upper(), interval, float(price), probs, extra0)
-        except Exception:
-            pass
-
-        # training mode: trade yok
         if training_mode:
             return
 
@@ -695,7 +705,7 @@ class TradeExecutor:
 
         # SL/TP/trailing check (mevcut pozisyonu kapatabilir)
         try:
-            self._check_sl_tp_trailing(symbol=str(symbol).upper(), price=float(price), interval=interval)
+            self._check_sl_tp_trailing(symbol=sym_u, price=float(price), interval=interval)
         except Exception:
             pass
 
@@ -704,32 +714,57 @@ class TradeExecutor:
             qty = float(size)
             notional = qty * float(price)
         else:
-            notional = self._compute_notional(
-                symbol=str(symbol).upper(),
-                signal=side_norm,
-                price=float(price),
-                extra=extra0,
-            )
+            notional = self._compute_notional(sym_u, side_norm, float(price), extra0)
             qty = notional / float(price) if float(price) > 0 else 0.0
 
         if qty <= 0 or float(price) <= 0:
             return
 
         # open/flip logic
-        cur = self._get_position(str(symbol).upper())
+        cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
 
         if cur_side in ("long", "short") and cur_side != side_norm:
-            self._close_position(str(symbol).upper(), float(price), reason="FLIP", interval=interval)
+            self._close_position(sym_u, float(price), reason="FLIP", interval=interval)
 
-        cur2 = self._get_position(str(symbol).upper())
+        cur2 = self._get_position(sym_u)
         cur2_side = str(cur2.get("side")).lower() if cur2 else None
         if cur2_side == side_norm:
             return
 
+        # BUY/SELL karar anı CSV
+        try:
+            ens = extra0.get("ensemble_p")
+            mcf = extra0.get("model_confidence_factor")
+            pbe = extra0.get("p_buy_ema")
+            pbr = extra0.get("p_buy_raw")
+            p_src = str(extra0.get("signal_source") or extra0.get("p_buy_source") or "p_used")
+
+            p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
+            if p_val is None and isinstance(probs, dict):
+                p_val = probs.get("p_used") or probs.get("p_single")
+            pv = self._clip_float(p_val, None)
+            if pv is not None:
+                pv = max(0.0, min(1.0, pv))
+
+            self._append_trade_csv({
+                "timestamp": datetime.utcnow().isoformat(),
+                "symbol": sym_u,
+                "interval": interval,
+                "signal": signal_u,
+                "p": pv,
+                "p_source": p_src,
+                "ensemble_p": ens,
+                "model_confidence_factor": mcf,
+                "p_buy_ema": pbe,
+                "p_buy_raw": pbr,
+            })
+        except Exception:
+            pass
+
         pos, _opened_at = self._create_position_dict(
             signal=side_norm,
-            symbol=str(symbol).upper(),
+            symbol=sym_u,
             price=float(price),
             qty=float(qty),
             notional=float(notional),
@@ -737,27 +772,37 @@ class TradeExecutor:
             probs=probs,
             extra=extra0,
         )
-        self._set_position(str(symbol).upper(), pos)
+        self._set_position(sym_u, pos)
 
         try:
             self.logger.info(
                 "[EXEC] OPEN %s | symbol=%s qty=%.6f price=%.4f notional=%.2f interval=%s dry_run=%s",
-                side_norm.upper(), str(symbol).upper(), float(qty), float(price), float(notional), interval, self.dry_run
+                side_norm.upper(), sym_u, float(qty), float(price), float(notional), interval, self.dry_run
             )
         except Exception:
             pass
 
-        # --- RISK / Telegram notify (position OPEN) ---
+        # ✅ Telegram: sadece OPEN (burada)
+        try:
+            self._notify_position_open(
+                symbol=sym_u,
+                interval=str(interval or ""),
+                side=str(side_norm),
+                qty=float(qty),
+                price=float(price),
+                extra=extra0,
+            )
+        except Exception:
+            pass
+
+        # --- RISK on_position_open ---
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
-                # side_norm en doğru kaynak
                 _side = str(side_norm).strip().lower()
                 if _side not in ("long", "short"):
                     _side = "long" if signal_u == "BUY" else ("short" if signal_u == "SELL" else "hold")
 
-                # meta: NameError yok; extra0'dan güvenli kopya
-                # NOT: İstersen burada extra0'nun tamamını değil, subset taşırsın.
                 _meta = {}
                 try:
                     if isinstance(extra0, dict):
@@ -768,7 +813,7 @@ class TradeExecutor:
                 payload_meta = {"reason": "EXEC_OPEN", **_meta}
 
                 out = rm.on_position_open(
-                    symbol=str(symbol).upper(),
+                    symbol=sym_u,
                     side=_side,
                     qty=float(qty),
                     notional=float(notional),
@@ -779,9 +824,7 @@ class TradeExecutor:
 
                 try:
                     if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                        self.logger.warning(
-                            "[EXEC] risk_manager.on_position_open returned coroutine (not awaited)"
-                        )
+                        self.logger.warning("[EXEC] risk_manager.on_position_open returned coroutine (not awaited)")
                 except Exception:
                     pass
 
@@ -793,24 +836,4 @@ class TradeExecutor:
                 pass
 
         return
-
-    # -------------------------
-    # Bundan sonra yapılacaklar (öneri listesi)
-    # -------------------------
-    # 1) REAL TRADE:
-    #    dry_run=False iken _close_position ve (ileride) gerçek open emri için
-    #    client ile MARKET order + hata/retry + exchange response logging ekle.
-    #
-    # 2) META BOYUTU:
-    #    payload_meta içine full extra0 koymak büyüyebilir.
-    #    İstersen subset yap:
-    #      keep = {"signal_source","p_used","p_single","whale_dir","whale_score","atr","latency_steps"}
-    #
-    # 3) TELEGRAM_CHAT_ID:
-    #    TelegramBot içinde TELEGRAM_CHAT_ID/allowed chat kontrolü var.
-    #    Env’leri doğru set et (yoksa error log spam olur).
-    #
-    # 4) POSITIONMANAGER CONTRACT:
-    #    set_position/get_position/clear_position hata verirse local fallback var.
-    #    Redis/PG tarafında bağlantı kopmalarında retry/backoff eklenebilir.
 

@@ -257,7 +257,7 @@ class MasterExecutor:
         return _safe_float(c.get('_score_total_final', c.get('_score_selected', c.get('score_total', raw.get('_score_total', 0.0)))), 0.0)
 
         def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-        """Best-effort heavy scorer.
+            """Best-effort heavy scorer.
         If no heavy model wired yet, returns fast score.
         Returns: (score_heavy, reasons)
         """
