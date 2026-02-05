@@ -256,18 +256,18 @@ class MasterExecutor:
         raw = c.get("raw") or {}
         return _safe_float(c.get('_score_total_final', c.get('_score_selected', c.get('score_total', raw.get('_score_total', 0.0)))), 0.0)
 
-        def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-            """Best-effort heavy scorer.
+    def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
+        """Best-effort heavy scorer.
         If no heavy model wired yet, returns fast score.
         Returns: (score_heavy, reasons)
         """
-        raw = c.get('raw') or {}
+        raw = c.get("raw") or {}
         # default to fast score
         base = float(self._candidate_score(c))
         # TODO: wire real MTF+SGD+LSTM here (repo-specific)
-        return base, ['heavy_passthrough']
+        return base, ["heavy_passthrough"]
 
-def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
+    def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
         whale_dir = _safe_str(raw.get("whale_dir", "none")).lower()
         whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
         whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
@@ -454,43 +454,66 @@ def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
                     out.append((sid, {}))
         return out
 
-        def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Optionally run heavy scoring on topK items, filter by threshold.
         Adds: _score_heavy, _score_total_final, _reasons_final
         """
-        if not getattr(self, 'heavy_enable', False):
+        if not getattr(self, "heavy_enable", False):
             return items
-        k = max(0, int(getattr(self, 'heavy_topk', 0) or 0))
-        thr = float(getattr(self, 'heavy_discard_below', 0.0) or 0.0)
+
+        k = max(0, int(getattr(self, "heavy_topk", 0) or 0))
+        thr = float(getattr(self, "heavy_discard_below", 0.0) or 0.0)
+
         if k <= 0:
             return items
+
         out: List[Dict[str, Any]] = []
+
         # score topK; rest pass-through
         for i, c in enumerate(items):
             c2 = dict(c)
             fast = float(self._candidate_score(c2))
+
             if i < k:
                 t0 = time.time()
                 hs, hreas = self._heavy_score_one(c2)
                 ms = int(round((time.time() - t0) * 1000.0))
-                sym = _safe_str(c2.get('symbol','')).upper()
-                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
-                c2['_score_heavy'] = float(hs)
+
+                sym = _safe_str(c2.get("symbol", "")).upper()
+                print(
+                    f"[MasterExecutor][HEAVY][LAT] {sym} "
+                    f"{ms}ms heavy={hs:.3f} fast={fast:.3f}"
+                )
+
+                c2["_score_heavy"] = float(hs)
+
                 # choose final score (max for now)
                 final = float(max(fast, float(hs)))
-                c2['_score_total_final'] = final
-                c2['_reasons_final'] = list(_as_list(c2.get('reasons'))) + list(hreas or [])
+                c2["_score_total_final"] = final
+                c2["_reasons_final"] = (
+                    list(_as_list(c2.get("reasons"))) + list(hreas or [])
+                )
+
                 if final < thr:
                     continue
             else:
-                c2['_score_total_final'] = fast
-                c2['_reasons_final'] = list(_as_list(c2.get('reasons')))
+                c2["_score_total_final"] = fast
+                c2["_reasons_final"] = list(_as_list(c2.get("reasons")))
+
             out.append(c2)
+
         # sort by final desc
-        out.sort(key=lambda x: float(x.get('_score_total_final', 0.0)), reverse=True)
+        out.sort(
+            key=lambda x: float(x.get("_score_total_final", 0.0)),
+            reverse=True,
+        )
         return out
 
-def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
+    def _publish_intents(
+        self,
+        source_stream_id: str,
+        intents: List[TradeIntent],
+    ) -> Optional[str]:
         if not getattr(self, "live_allowed", True):
             return None
 
@@ -498,7 +521,10 @@ def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) ->
             return None
 
         now = time.time()
-        if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
+        if (
+            self.publish_cooldown_sec > 0
+            and (now - self._last_publish_ts) < self.publish_cooldown_sec
+        ):
             return None
 
         payload = {
