@@ -6,7 +6,7 @@ source ./scripts/orch_lib.sh
 
 # Optional: load env safely (avoids parse errors)
 if [[ -f ".env" ]]; then
-  ./scripts/load_env.sh .env >/dev/null 2>&1 || true
+    ./scripts/load_env.sh .env >/dev/null 2>&1 || true
 fi
 
 # -----------------------------
@@ -14,36 +14,81 @@ fi
 # -----------------------------
 mkdir -p run logs/orch
 
+# Redis DB (default 0)
+REDIS_DB="${REDIS_DB:-0}"
+
 # -----------------------------
 # Helpers: pidfile heal / cleanup
 # -----------------------------
 heal_pidfile() {
-  # Usage: heal_pidfile <name> <pattern>
-  local name="$1"
-  local pat="$2"
-  local pidfile="run/${name}.pid"
+    # Usage: heal_pidfile <name> <pattern>
+    local name="$1"
+    local pat="$2"
+    local pidfile="run/${name}.pid"
 
-  if [[ -f "$pidfile" ]]; then
-    local pid
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -f "$pidfile" ]]; then
+        local pid
+        pid="$(cat "$pidfile" 2>/dev/null || true)"
 
-    # empty or dead pid -> attempt heal by pgrep, else cleanup
-    if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
-      local newpid
-      newpid="$(pgrep -f "$pat" | head -n1 || true)"
+        # empty or dead pid -> attempt heal by pgrep, else cleanup
+        if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
+            local newpid
+            newpid="$(pgrep -f "$pat" | head -n1 || true)"
 
-      if [[ -n "${newpid:-}" ]]; then
-        echo "$newpid" > "$pidfile"
-        echo "[START][WARN] ${name} pidfile stale -> healed (old=${pid:-na} new=${newpid})"
-      else
-        rm -f "$pidfile" || true
-        echo "[START][WARN] ${name} pidfile stale -> cleaned (old=${pid:-na})"
-      fi
+            if [[ -n "${newpid:-}" ]]; then
+                echo "$newpid" > "$pidfile"
+                echo "[START][WARN] ${name} pidfile stale -> healed (old=${pid:-na} new=${newpid})"
+            else
+                rm -f "$pidfile" || true
+                echo "[START][WARN] ${name} pidfile stale -> cleaned (old=${pid:-na})"
+            fi
+        fi
     fi
-  fi
 }
 
+# -----------------------------
+# Helpers: stream readiness
+# -----------------------------
+_last_stream_id() {
+    # Usage: _last_stream_id <stream>
+    # Returns last entry id or empty.
+    local stream="$1"
+    redis-cli -n "$REDIS_DB" XREVRANGE "$stream" + - COUNT 1 2>/dev/null \
+        | head -n 1 \
+        | tr -d '"' \
+        | tr -d '\r' \
+        || true
+}
+
+_wait_stream_advance_by_id() {
+    # Usage: _wait_stream_advance_by_id <stream> <seconds_total> <sleep_step>
+    # Success if last-id changes within the window.
+    local stream="$1"
+    local seconds_total="${2:-6}"
+    local sleep_step="${3:-1}"
+
+    local a b
+    a="$(_last_stream_id "$stream")"
+    if [[ -z "${a:-}" ]]; then
+        # Stream may not exist yet; give it a chance to appear & advance
+        a=""
+    fi
+
+    local elapsed=0
+    while (( elapsed < seconds_total )); do
+        sleep "$sleep_step"
+        elapsed=$((elapsed + sleep_step))
+        b="$(_last_stream_id "$stream")"
+        if [[ -n "${b:-}" ]] && [[ "${b:-}" != "${a:-}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# -----------------------------
 # Heal critical singleton pidfiles (prevents stale pid_dead alarms)
+# -----------------------------
 heal_pidfile "aggregator"      "orchestration/aggregator/run_aggregator.py"
 heal_pidfile "top_selector"    "orchestration/selector/top_selector.py"
 heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
@@ -53,12 +98,12 @@ heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
 # DRY_RUN reset policy (SAFER)
 # -----------------------------
 if is_truthy "${DRY_RUN:-1}"; then
-  if ! any_orch_running; then
-    echo "[START] DRY_RUN -> resetting open_positions_state"
-    redis-cli DEL open_positions_state >/dev/null 2>&1 || true
-  else
-    echo "[SKIP] DRY_RUN reset (processes already running)"
-  fi
+    if ! any_orch_running; then
+        echo "[START] DRY_RUN -> resetting open_positions_state"
+        redis-cli -n "$REDIS_DB" DEL open_positions_state >/dev/null 2>&1 || true
+    else
+        echo "[SKIP] DRY_RUN reset (processes already running)"
+    fi
 fi
 
 # -----------------------------
@@ -68,19 +113,19 @@ fi
 STERILE="${STERILE:-0}"
 
 if is_truthy "$STERILE"; then
-  echo "[MODE] STERILE=1 -> starting only master_executor + intent_bridge"
+    echo "[MODE] STERILE=1 -> starting only master_executor + intent_bridge"
 
-  # Heal again just in case (sterile runs standalone)
-  heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
-  heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
+    # Heal again just in case (sterile runs standalone)
+    heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
+    heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
 
-  start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
-  start_one "intent_bridge"  "$PY" -u orchestration/executor/intent_bridge.py
+    start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
+    start_one "intent_bridge"  "$PY" -u orchestration/executor/intent_bridge.py
 
-  echo
-  echo "Sterile start commands issued."
-  echo "Tail logs: tail -n 200 -f logs/orch/*.log"
-  exit 0
+    echo
+    echo "Sterile start commands issued."
+    echo "Tail logs: tail -n 200 -f logs/orch/*.log"
+    exit 0
 fi
 
 # -----------------------------
@@ -125,18 +170,34 @@ start_one "intent_bridge"   "$PY" -u orchestration/executor/intent_bridge.py
 # -----------------------------
 WAIT_READY="${WAIT_READY:-1}"
 if is_truthy "$WAIT_READY"; then
-  echo
-  echo "=== Readiness check (best effort) ==="
-  if wait_stream_growth "signals_stream" 1 6; then
-    echo "[OK] signals_stream growing"
-  else
-    echo "[WARN] signals_stream did not grow in time (might still be OK)"
-  fi
-  if wait_stream_growth "exec_events_stream" 1 6; then
-    echo "[OK] exec_events_stream growing"
-  else
-    echo "[WARN] exec_events_stream did not grow in time (might still be OK)"
-  fi
+    echo
+    echo "=== Readiness check (best effort) ==="
+
+    # 1) signals_stream: eski yöntem (len artışı) + yeni yöntem (ID advance)
+    if wait_stream_growth "signals_stream" 1 6; then
+        echo "[OK] signals_stream growing (len)"
+    else
+        if _wait_stream_advance_by_id "signals_stream" 6 1; then
+            echo "[OK] signals_stream advanced (id)"
+        else
+            echo "[WARN] signals_stream did not advance in time (might still be OK)"
+        fi
+    fi
+
+    # 2) trade_intents_stream: master -> bridge hattı
+    if _wait_stream_advance_by_id "trade_intents_stream" 6 1; then
+        echo "[OK] trade_intents_stream advanced (id)"
+    else
+        echo "[WARN] trade_intents_stream did not advance in time (might still be OK)"
+    fi
+
+    # 3) exec_events_stream: bridge output. MAXLEN=5000 olduğundan len sabit kalabilir,
+    # bu yüzden id-advance kontrolü daha doğru.
+    if _wait_stream_advance_by_id "exec_events_stream" 6 1; then
+        echo "[OK] exec_events_stream advanced (id)"
+    else
+        echo "[WARN] exec_events_stream did not advance in time (might still be OK)"
+    fi
 fi
 
 echo

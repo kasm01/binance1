@@ -204,7 +204,13 @@ class MasterExecutor:
         self.arm_token = _env_str("ARM_TOKEN", "")
         self.dry_run_env = _env_bool("DRY_RUN", True)
 
-        self.live_allowed = (not self.dry_run_env) and self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16)
+        self.live_allowed = (
+            (not self.dry_run_env)
+            and self.armed
+            and (not self.kill_switch)
+            and (len(self.arm_token) >= 16)
+        )
+
         if not self.dry_run_env and not self.live_allowed:
             print(
                 f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but "
@@ -244,6 +250,7 @@ class MasterExecutor:
         except Exception:
             return None
         return None
+
     def _normalize_side(self, side: str) -> str:
         s = side.strip().lower()
         if s in ("buy", "long"):
@@ -254,17 +261,20 @@ class MasterExecutor:
 
     def _candidate_score(self, c: Dict[str, Any]) -> float:
         raw = c.get("raw") or {}
-        return _safe_float(c.get('_score_total_final', c.get('_score_selected', c.get('score_total', raw.get('_score_total', 0.0)))), 0.0)
+        return _safe_float(
+            c.get(
+                "_score_total_final",
+                c.get("_score_selected", c.get("score_total", raw.get("_score_total", 0.0))),
+            ),
+            0.0,
+        )
 
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
         """Best-effort heavy scorer.
         If no heavy model wired yet, returns fast score.
         Returns: (score_heavy, reasons)
         """
-        raw = c.get("raw") or {}
-        # default to fast score
         base = float(self._candidate_score(c))
-        # TODO: wire real MTF+SGD+LSTM here (repo-specific)
         return base, ["heavy_passthrough"]
 
     def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
@@ -290,14 +300,14 @@ class MasterExecutor:
             raw.get("micro_score", c.get("micro_score", raw.get("vol_score", 0.0))),
             0.0,
         )
-
-        # mtf_score: heavy’de ayrı hesap olacak; şimdilik eldeki en iyi proxy
         mtf = _safe_float(
-            raw.get("mtf_score", c.get("mtf_score", c.get("fast_model_score", raw.get("p_used", c.get("p_used", 0.0))))),
+            raw.get(
+                "mtf_score",
+                c.get("mtf_score", c.get("fast_model_score", raw.get("p_used", c.get("p_used", 0.0)))),
+            ),
             0.0,
         )
 
-        # clamp to 0..1
         whale = _clamp(whale, 0.0, 1.0)
         micro = _clamp(micro, 0.0, 1.0)
         mtf = _clamp(mtf, 0.0, 1.0)
@@ -314,10 +324,7 @@ class MasterExecutor:
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
         raw = c.get("raw") or {}
 
-        # Final score (whale-first)
         score = self._compute_final_score(c)
-
-        # hard drop by score
         if score < float(self.min_trade_score):
             return None
 
@@ -354,35 +361,53 @@ class MasterExecutor:
         lev = int(round(float(base_lev) * conf_adj * atr_adj * spr_adj * whale_mult_lev))
         lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
 
-        npct = float(base_npct) * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
+        npct = (
+            float(base_npct)
+            * conf_adj
+            * _clamp(atr_adj, 0.6, 1.1)
+            * _clamp(spr_adj, 0.6, 1.1)
+            * whale_mult_npct
+        )
         npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
 
         if self.high_vol_tag in (risk_tags or []):
-            lev = int(_clamp(float(int(round(float(lev) * float(self.high_vol_lev_mult)))), float(self.lev_min), float(self.lev_max)))
-            npct = float(_clamp(float(npct) * float(self.high_vol_npct_mult), float(self.notional_min_pct), float(self.notional_max_pct)))
+            lev = int(
+                _clamp(
+                    float(int(round(float(lev) * float(self.high_vol_lev_mult)))),
+                    float(self.lev_min),
+                    float(self.lev_max),
+                )
+            )
+            npct = float(
+                _clamp(
+                    float(npct) * float(self.high_vol_npct_mult),
+                    float(self.notional_min_pct),
+                    float(self.notional_max_pct),
+                )
+            )
             reasons = reasons + ["master_high_vol_clamp"]
 
         if whale_aligned and whale_score >= float(self.whale_boost_thr):
             lev = max(lev, int(self.whale_lev_floor))
             npct = max(npct, float(self.whale_npct_floor))
 
-        # score_total_final'i raw içine yaz (debug için)
-        c = dict(c)
-        c["_score_total_final"] = float(score)
+        c2 = dict(c)
+        c2["_score_total_final"] = float(score)
 
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
-            symbol=_safe_str(c.get("symbol", "")).upper(),
-            interval=_safe_str(c.get("interval", "")),
+            symbol=_safe_str(c2.get("symbol", "")).upper(),
+            interval=_safe_str(c2.get("interval", "")),
             side=side,
             score=float(score),
             recommended_leverage=int(lev),
             recommended_notional_pct=float(npct),
             reasons=reasons,
             risk_tags=risk_tags,
-            raw=dict(c),
+            raw=dict(c2),
         )
+
 
     def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
         """
@@ -391,7 +416,6 @@ class MasterExecutor:
         """
         t0 = time.time()
 
-        # 1) candidates -> score
         scored: List[Dict[str, Any]] = []
         for c in items:
             if not isinstance(c, dict):
@@ -402,11 +426,9 @@ class MasterExecutor:
 
         scored.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
 
-        # heavy_topk sadece “ön eleme” (latency azaltma için)
         if self.heavy_enable and self.heavy_topk > 0:
             scored = scored[: int(self.heavy_topk)]
 
-        # 2) unique best-by-symbol
         best_by_symbol: Dict[str, Dict[str, Any]] = {}
         for c in scored:
             sym = _safe_str(c.get("symbol", "")).upper()
@@ -417,7 +439,6 @@ class MasterExecutor:
             if (prev is None) or (sc > _safe_float(prev.get("_score_total_final", 0.0), 0.0)):
                 best_by_symbol[sym] = c
 
-        # 3) intents
         intents: List[TradeIntent] = []
         for c in best_by_symbol.values():
             it = self._make_intent(c)
@@ -468,8 +489,6 @@ class MasterExecutor:
             return items
 
         out: List[Dict[str, Any]] = []
-
-        # score topK; rest pass-through
         for i, c in enumerate(items):
             c2 = dict(c)
             fast = float(self._candidate_score(c2))
@@ -480,19 +499,12 @@ class MasterExecutor:
                 ms = int(round((time.time() - t0) * 1000.0))
 
                 sym = _safe_str(c2.get("symbol", "")).upper()
-                print(
-                    f"[MasterExecutor][HEAVY][LAT] {sym} "
-                    f"{ms}ms heavy={hs:.3f} fast={fast:.3f}"
-                )
+                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
 
                 c2["_score_heavy"] = float(hs)
-
-                # choose final score (max for now)
                 final = float(max(fast, float(hs)))
                 c2["_score_total_final"] = final
-                c2["_reasons_final"] = (
-                    list(_as_list(c2.get("reasons"))) + list(hreas or [])
-                )
+                c2["_reasons_final"] = list(_as_list(c2.get("reasons"))) + list(hreas or [])
 
                 if final < thr:
                     continue
@@ -502,18 +514,10 @@ class MasterExecutor:
 
             out.append(c2)
 
-        # sort by final desc
-        out.sort(
-            key=lambda x: float(x.get("_score_total_final", 0.0)),
-            reverse=True,
-        )
+        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
         return out
 
-    def _publish_intents(
-        self,
-        source_stream_id: str,
-        intents: List[TradeIntent],
-    ) -> Optional[str]:
+    def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
         if not getattr(self, "live_allowed", True):
             return None
 
@@ -521,10 +525,7 @@ class MasterExecutor:
             return None
 
         now = time.time()
-        if (
-            self.publish_cooldown_sec > 0
-            and (now - self._last_publish_ts) < self.publish_cooldown_sec
-        ):
+        if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
             return None
 
         payload = {
@@ -569,19 +570,26 @@ class MasterExecutor:
                     break
 
                 mids = [sid for sid, _ in rows]
+
                 for sid, pkg in rows:
                     items = pkg.get("items") or []
-                items = self._apply_heavy_stage(items)
-                items = self._apply_heavy_stage(items)
                     if not isinstance(items, list) or not items:
                         continue
-                    intents = self._select_top_unique(items)
+
+                    # heavy stage (optional) only ONCE
+                    items2 = self._apply_heavy_stage(items)
+
+                    intents = self._select_top_unique(items2)
                     if not intents:
                         continue
+
                     out_id = self._publish_intents(source_stream_id=sid, intents=intents)
                     if out_id:
                         summary = ", ".join(
-                            [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
+                            [
+                                f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}"
+                                for it in intents
+                            ]
                         )
                         print(f"[MasterExecutor] (PEL) published intents={len(intents)} id={out_id} | {summary}")
 
@@ -607,14 +615,18 @@ class MasterExecutor:
                 if not isinstance(items, list) or not items:
                     continue
 
-                intents = self._select_top_unique(items)
+                items2 = self._apply_heavy_stage(items)
+                intents = self._select_top_unique(items2)
                 if not intents:
                     continue
 
                 out_id = self._publish_intents(source_stream_id=sid, intents=intents)
                 if out_id:
                     summary = ", ".join(
-                        [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
+                        [
+                            f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}"
+                            for it in intents
+                        ]
                     )
                     print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
 
