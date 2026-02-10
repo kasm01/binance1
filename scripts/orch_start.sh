@@ -18,6 +18,19 @@ mkdir -p run logs/orch
 REDIS_DB="${REDIS_DB:-0}"
 
 # -----------------------------
+# Hardening: pin Redis stream consumer groups (deterministic)
+# -----------------------------
+# IntentBridge group defaults to "bridge_g" in code, but we pin it here to avoid surprises.
+export BRIDGE_GROUP="${BRIDGE_GROUP:-bridge_g}"
+export BRIDGE_GROUP_START_ID="${BRIDGE_GROUP_START_ID:-$}"
+export BRIDGE_CONSUMER="${BRIDGE_CONSUMER:-bridge_1}"
+
+# MasterExecutor group pin (optional; safe defaults)
+export MASTER_GROUP="${MASTER_GROUP:-master_exec_g}"
+export MASTER_GROUP_START_ID="${MASTER_GROUP_START_ID:-$}"
+export MASTER_CONSUMER="${MASTER_CONSUMER:-master_1}"
+
+# -----------------------------
 # Helpers: pidfile heal / cleanup
 # -----------------------------
 heal_pidfile() {
@@ -53,8 +66,8 @@ _last_stream_id() {
     # Usage: _last_stream_id <stream>
     # Returns last entry id or empty.
     local stream="$1"
-    redis-cli -n "$REDIS_DB" XREVRANGE "$stream" + - COUNT 1 2>/dev/null \
-        | head -n 1 \
+    redis-cli -n "$REDIS_DB" XINFO STREAM "$stream" 2>/dev/null \
+        | awk '$1=="last-generated-id"{print $2; exit}' \
         | tr -d '"' \
         | tr -d '\r' \
         || true
@@ -62,17 +75,14 @@ _last_stream_id() {
 
 _wait_stream_advance_by_id() {
     # Usage: _wait_stream_advance_by_id <stream> <seconds_total> <sleep_step>
-    # Success if last-id changes within the window.
+    # Success if last-generated-id changes within the window.
     local stream="$1"
     local seconds_total="${2:-6}"
     local sleep_step="${3:-1}"
 
     local a b
     a="$(_last_stream_id "$stream")"
-    if [[ -z "${a:-}" ]]; then
-        # Stream may not exist yet; give it a chance to appear & advance
-        a=""
-    fi
+    a="${a:-}"
 
     local elapsed=0
     while (( elapsed < seconds_total )); do
@@ -82,6 +92,44 @@ _wait_stream_advance_by_id() {
         if [[ -n "${b:-}" ]] && [[ "${b:-}" != "${a:-}" ]]; then
             return 0
         fi
+    done
+    return 1
+}
+
+_wait_group_health() {
+    # Usage: _wait_group_health <stream> <group> <seconds_total> <sleep_step>
+    # Success if group exists and lag==0 and pending==0 at least once within window.
+    local stream="$1"
+    local group="$2"
+    local seconds_total="${3:-6}"
+    local sleep_step="${4:-1}"
+
+    local elapsed=0
+    while (( elapsed < seconds_total )); do
+        local out pending lag
+        out="$(redis-cli -n "$REDIS_DB" XINFO GROUPS "$stream" 2>/dev/null || true)"
+        pending="$(printf "%s\n" "$out" \
+            | awk -v g="$group" '
+                $0 ~ "\"name\"" {getline; name=$0; gsub(/"/,"",name)}
+                $0 ~ "\"pending\"" {getline; p=$0}
+                $0 ~ "\"lag\"" {getline; l=$0; if(name==g){print p; exit}}
+            ' | tr -d '\r' | head -n1)"
+        lag="$(printf "%s\n" "$out" \
+            | awk -v g="$group" '
+                $0 ~ "\"name\"" {getline; name=$0; gsub(/"/,"",name)}
+                $0 ~ "\"lag\"" {getline; l=$0; if(name==g){print l; exit}}
+            ' | tr -d '\r' | head -n1)"
+
+        # If group not found, pending/lag will be empty
+        if [[ -n "${pending:-}" ]] && [[ -n "${lag:-}" ]]; then
+            # pending/lag lines look like: (integer) 0
+            if echo "$pending" | grep -q "(integer) 0" && echo "$lag" | grep -q "(integer) 0"; then
+                return 0
+            fi
+        fi
+
+        sleep "$sleep_step"
+        elapsed=$((elapsed + sleep_step))
     done
     return 1
 }
@@ -197,6 +245,19 @@ if is_truthy "$WAIT_READY"; then
         echo "[OK] exec_events_stream advanced (id)"
     else
         echo "[WARN] exec_events_stream did not advance in time (might still be OK)"
+    fi
+
+    # 4) Optional: group health checks
+    if _wait_group_health "trade_intents_stream" "$BRIDGE_GROUP" 6 1; then
+        echo "[OK] trade_intents_stream group healthy (group=$BRIDGE_GROUP pending=0 lag=0)"
+    else
+        echo "[WARN] trade_intents_stream group not healthy/visible yet (group=$BRIDGE_GROUP)"
+    fi
+
+    if _wait_group_health "top5_stream" "$MASTER_GROUP" 6 1; then
+        echo "[OK] top5_stream group healthy (group=$MASTER_GROUP pending=0 lag=0)"
+    else
+        echo "[WARN] top5_stream group not healthy/visible yet (group=$MASTER_GROUP)"
     fi
 fi
 
