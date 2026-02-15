@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 from orchestration.event_bus.redis_bus import RedisBus
@@ -26,6 +27,18 @@ def _clamp01(x: Any) -> float:
     return max(0.0, min(1.0, f))
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off", ""):
+        return False
+    return default
+
+
 class Aggregator:
     """
     signals_stream -> candidates_stream
@@ -35,6 +48,11 @@ class Aggregator:
       - dedup/cooldown (spam-killer)
       - scoring (0..1)
     Publishes CandidateTrade to candidates_stream.
+
+    SignalEvent (input) expects:
+      symbol, interval, side_candidate, score_edge, confidence,
+      atr_pct, spread_pct, liq_score, whale_score(optional),
+      ts_utc, source(w1..w8), dedup_key
 
     CandidateTrade (output):
       symbol, side, score_total, recommended_leverage, recommended_notional_pct,
@@ -46,14 +64,19 @@ class Aggregator:
         bus: RedisBus,
         group: str = "agg_group",
         consumer: str = "agg_0",
-        topk_out: int = 10,        # öneri: candidates_stream'e 10 aday (TopSelector 5'e indirecek)
-        cooldown_sec: int = 45,    # öneri: 20-60s arası
+        topk_out: int = 10,        # candidates_stream'e 10 aday (TopSelector 5'e indirecek)
+        cooldown_sec: int = 45,    # 20-60s arası iyi
+        include_raw_default: bool = True,
     ) -> None:
         self.bus = bus
         self.group = group
         self.consumer = consumer
         self.topk_out = int(topk_out)
         self.dup = DupGuard(bus, prefix="aggdup", default_cooldown_sec=int(cooldown_sec))
+
+        # raw payload stream'i şişirebilir; env ile kapatılabilir
+        # CANDIDATE_INCLUDE_RAW=0 => raw ekleme
+        self.include_raw = _env_bool("CANDIDATE_INCLUDE_RAW", include_raw_default)
 
     def run_forever(self) -> None:
         assert self.bus.ping(), "[Aggregator] Redis ping failed."
@@ -92,6 +115,11 @@ class Aggregator:
                     continue
                 evt["symbol"] = sym
 
+                itv = str(evt.get("interval", "") or "").strip()
+                if not itv:
+                    itv = "5m"
+                    evt["interval"] = itv
+
                 if not evt.get("ts_utc"):
                     evt["ts_utc"] = _ts_from_stream_id(mid)
 
@@ -102,7 +130,6 @@ class Aggregator:
                 # dedup_key preferred (new standard)
                 dk = str(evt.get("dedup_key", "") or "").strip()
                 if not dk:
-                    itv = str(evt.get("interval", "") or "").strip()
                     dk = f"{sym}|{itv}|{side}"
                     evt["dedup_key"] = dk
 
@@ -131,29 +158,35 @@ class Aggregator:
             top = candidates[: self.topk_out]
 
             for evt in top:
-                sym = str(evt.get("symbol", "")).upper()
-                itv = str(evt.get("interval", "") or "").strip()
-                side = str(evt.get("side_candidate", "long")).strip().lower()
+                sym = str(evt.get("symbol", "") or "").upper().strip()
+                itv = str(evt.get("interval", "") or "5m").strip()
+                side = str(evt.get("side_candidate", "long") or "long").strip().lower()
                 ts_utc = str(evt.get("ts_utc") or _ts_from_stream_id(str(evt.get("_source_stream_id") or "")))
 
-                # CandidateTrade (standard)
-                payload = {
+                # WorkerStub standard: source=w1..w8
+                src = str(evt.get("source") or evt.get("producer_id") or "w?").strip()
+
+                payload: Dict[str, Any] = {
                     "candidate_id": str(uuid.uuid4()),
                     "ts_utc": ts_utc,
                     "symbol": sym,
                     "interval": itv,
                     "side": side,
                     "score_total": float(evt.get("_score_total", 0.0)),
+                    # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplayacak
                     "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
                     "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
                     "risk_tags": list(evt.get("_risk_tags", [])),
                     "reason_codes": list(evt.get("_reason_codes", [])),
-                    "source": str(evt.get("source") or evt.get("producer_id") or "w?"),
+                    "source": src,
                     "dedup_key": str(evt.get("dedup_key") or f"{sym}|{itv}|{side}"),
-                    # ops/debug: raw event (istersen kapatırız)
-                    "raw": evt,
                 }
+
+                # ops/debug: raw event (ENV ile kapatılabilir)
+                if self.include_raw:
+                    payload["raw"] = evt
 
                 self.bus.publish_candidate(payload)
 
             time.sleep(0.01)
+

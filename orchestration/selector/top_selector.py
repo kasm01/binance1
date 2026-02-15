@@ -6,11 +6,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import redis
+
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, x))
-
-import redis
+    try:
+        fx = float(x)
+    except Exception:
+        fx = lo
+    return max(lo, min(hi, fx))
 
 
 def _env_int(name: str, default: int) -> int:
@@ -58,13 +62,15 @@ class TopSelector:
     """
     candidates_stream -> top5_stream
 
-    Reads candidate messages (each message is a candidate dict).
-    Selects best topk within a time window, de-dupes by cooldown_key,
-    applies cooldown, then publishes a package:
+    Reads CandidateTrade messages from candidates_stream.
+    Selects best TOPSEL_TOPK candidates within a time window,
+    de-dupes by dedup_key (cooldown key), applies cooldown, then publishes:
 
       {"ts_utc": "...", "topk": N, "items": [candidate,...]}
 
-    Restart-safe via consumer groups.
+    Notes:
+      - Restart-safe via consumer groups.
+      - "0 trade normal" rule supported via TOPSEL_MIN_SCORE (or MIN_TOPSEL_SCORE).
     """
 
     def __init__(self) -> None:
@@ -83,13 +89,19 @@ class TopSelector:
 
         self.window_sec = _env_int("TOPSEL_WINDOW_SEC", 30)
         self.topk = _env_int("TOPSEL_TOPK", 5)
-        print(f"[TopSelector] started. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} topk={self.topk} env_TOPSEL_TOPK={os.getenv('TOPSEL_TOPK', '')}")
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
         self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
 
+        # "0 trade normal" threshold
+        self.min_score = _env_float("TOPSEL_MIN_SCORE", _env_float("MIN_TOPSEL_SCORE", 0.10))
+
+        # Penalties
         self.penalty_wide_spread = _env_float("TOPSEL_PENALTY_WIDE_SPREAD", 0.15)
         self.penalty_high_vol = _env_float("TOPSEL_PENALTY_HIGH_VOL", 0.05)
+
+        # If enabled, drop candidates missing required core fields
+        self.require_fields = _env_bool("TOPSEL_REQUIRE_FIELDS", True)
 
         self.r = redis.Redis(
             host=self.redis_host,
@@ -105,6 +117,11 @@ class TopSelector:
 
         self.last_sent: Dict[str, float] = {}  # cooldown_key -> epoch_sec
 
+        print(
+            f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} "
+            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score}"
+        )
+
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -116,26 +133,60 @@ class TopSelector:
         except Exception:
             return
 
-    def _score(self, c: Dict[str, Any]) -> float:
-        s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
+    def _required_ok(self, c: Dict[str, Any]) -> bool:
+        if not self.require_fields:
+            return True
+        sym = str(c.get("symbol", "") or "").strip()
+        side = str(c.get("side", "") or "").strip().lower()
+        itv = str(c.get("interval", "") or "").strip()
+        if not sym or not itv or side not in ("long", "short"):
+            return False
+        return True
+
+    def _risk_tags(self, c: Dict[str, Any]) -> List[str]:
         tags = c.get("risk_tags") or []
         try:
-            tags = list(tags)
+            return [str(x) for x in list(tags)]
         except Exception:
-            tags = []
+            return []
 
+    def _score(self, c: Dict[str, Any]) -> float:
+        # base
+        s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
+
+        # penalties
+        tags = self._risk_tags(c)
         if "wide_spread" in tags:
             s -= self.penalty_wide_spread
         if "high_vol" in tags:
             s -= self.penalty_high_vol
-        return s
+
+        return _clamp(s, 0.0, 1.0)
 
     def _cooldown_key(self, c: Dict[str, Any]) -> str:
+        # New standard: dedup_key exists on CandidateTrade
+        dk = str(c.get("dedup_key", "") or "").strip()
+        if dk:
+            return dk
+
+        # Fallback: symbol|interval|side
+        sym = str(c.get("symbol", "") or "").strip()
+        itv = str(c.get("interval", "") or "").strip()
+        side = str(c.get("side", "") or "").strip()
+        if sym and itv and side:
+            return f"{sym}|{itv}|{side}"
+
+        # Legacy fallback: raw.cooldown_key (if raw included)
         raw = c.get("raw") or {}
-        ck = raw.get("cooldown_key")
-        if ck:
-            return str(ck)
-        return f"{c.get('symbol','')}|{c.get('interval','')}|{c.get('side','')}"
+        try:
+            ck = (raw or {}).get("cooldown_key")
+            if ck:
+                return str(ck)
+        except Exception:
+            pass
+
+        # last resort
+        return "unknown"
 
     def _normalize_ts(self, c: Dict[str, Any], stream_id: str) -> None:
         if not c.get("ts_utc"):
@@ -195,15 +246,26 @@ class TopSelector:
         for sid, c in items:
             if not c:
                 continue
+            if not isinstance(c, dict):
+                continue
+
+            # time window filter uses stream id
             ms = _stream_id_to_epoch_ms(sid)
             if ms < min_ms:
                 continue
+
             self._normalize_ts(c, sid)
+
+            # optional field sanity
+            if not self._required_ok(c):
+                continue
+
             windowed.append((sid, c))
 
         if not windowed:
             return []
 
+        # best per cooldown key
         best_by_key: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
         for sid, c in windowed:
             ck = self._cooldown_key(c)
@@ -212,8 +274,11 @@ class TopSelector:
             if (prev is None) or (sc > prev[0]):
                 best_by_key[ck] = (sc, sid, c)
 
+        # cooldown filter + min_score
         filtered: List[Tuple[float, str, Dict[str, Any]]] = []
         for ck, (sc, sid, c) in best_by_key.items():
+            if sc < self.min_score:
+                continue
             last = self.last_sent.get(ck, 0.0)
             if (now_sec - last) < self.cooldown_sec:
                 continue
@@ -262,7 +327,7 @@ class TopSelector:
         print(
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s "
+            f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s min_score={self.min_score} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
@@ -302,4 +367,3 @@ class TopSelector:
 
 if __name__ == "__main__":
     TopSelector().run_forever()
-

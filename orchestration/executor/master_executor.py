@@ -62,9 +62,10 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def _safe_str(x: Any, default: str = "") -> str:
     try:
-        return str(x)
+        s = str(x)
     except Exception:
         return default
+    return s
 
 
 def _as_list(x: Any) -> List[Any]:
@@ -84,6 +85,20 @@ def _as_list(x: Any) -> List[Any]:
     return []
 
 
+def _meta_get(raw: Dict[str, Any], key: str, default: Any = None) -> Any:
+    """
+    Worker -> Aggregator raw evt'de bazı alanlar meta altında.
+    raw.meta.whale_dir, raw.meta.p_used, raw.meta.fast_model_score gibi.
+    """
+    try:
+        meta = raw.get("meta") or {}
+        if isinstance(meta, dict) and key in meta:
+            return meta.get(key)
+    except Exception:
+        pass
+    return default
+
+
 @dataclass
 class TradeIntent:
     intent_id: str
@@ -101,10 +116,16 @@ class TradeIntent:
 
 class MasterExecutor:
     """
-    Reads TOP5_STREAM packages, selects topN unique symbols, publishes trade intents.
-
-    IN:  top5_stream (group-based consumption)
+    IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
     OUT: trade_intents_stream
+
+    CandidateTrade expected fields (new standard):
+      symbol, interval, side, score_total, recommended_leverage, recommended_notional_pct,
+      risk_tags, reason_codes, ts_utc, source, dedup_key, raw(optional)
+
+    Notes:
+      - DRY_RUN=1 -> intents ARE published (safe; execution is controlled downstream).
+      - DRY_RUN=0 -> requires ARMED=1, LIVE_KILL_SWITCH=0, ARM_TOKEN>=16.
     """
 
     def __init__(self) -> None:
@@ -122,7 +143,7 @@ class MasterExecutor:
         self.group = os.getenv("MASTER_GROUP", "master_exec_g")
         self.consumer = os.getenv("MASTER_CONSUMER", "master_1")
         self.group_start_id = os.getenv("MASTER_GROUP_START_ID", "$")
-        self.drain_pending = os.getenv("MASTER_DRAIN_PENDING", "0").strip().lower() in ("1", "true", "yes", "on")
+        self.drain_pending = _env_bool("MASTER_DRAIN_PENDING", False)
 
         # Read tuning
         self.read_block_ms = _env_int("MASTER_READ_BLOCK_MS", 2000)
@@ -137,7 +158,7 @@ class MasterExecutor:
         self._last_publish_ts = 0.0
         self._last_published_source_id: Optional[str] = None
 
-        # Global score gate (CRITICAL)
+        # Global score gate ("0 trade normal")
         self.min_trade_score = _env_float("MASTER_MIN_TRADE_SCORE", 0.10)
 
         # Whale-first scoring controls (final score)
@@ -145,12 +166,11 @@ class MasterExecutor:
         self.w_mtf = _env_float("MASTER_W_SCORE_MTF", 0.25)
         self.w_micro = _env_float("MASTER_W_SCORE_MICRO", 0.15)
 
-        # Heavy-on-top5 toggles (stage-2)
+        # Heavy-on-top5 toggles (optional stage)
         self.heavy_enable = _env_bool("MASTER_HEAVY_ENABLE", False)
         self.heavy_topk = _env_int("MASTER_HEAVY_TOPK", 5)
         self.heavy_discard_below = _env_float("MASTER_HEAVY_DISCARD_BELOW", 0.70)
 
-        # Eğer heavy aktifse, score gate’i daha sıkı yap
         if self.heavy_enable:
             self.min_trade_score = max(float(self.min_trade_score), float(self.heavy_discard_below))
 
@@ -162,8 +182,8 @@ class MasterExecutor:
 
         # Whale aggression controls
         self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
-        self.whale_lev_boost = _env_float("MASTER_WHALE_LEV_BOOST", 1.35)      # multiplier
-        self.whale_npct_boost = _env_float("MASTER_WHALE_NPCT_BOOST", 1.20)    # multiplier
+        self.whale_lev_boost = _env_float("MASTER_WHALE_LEV_BOOST", 1.35)
+        self.whale_npct_boost = _env_float("MASTER_WHALE_NPCT_BOOST", 1.20)
         self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)
         self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)
 
@@ -173,12 +193,7 @@ class MasterExecutor:
         self.high_vol_lev_mult = _env_float("HIGH_VOL_LEV_MULT", 0.85)
 
         # Contra whale safety
-        self.drop_if_whale_contra = os.getenv("MASTER_DROP_WHALE_CONTRA", "1").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
 
         self.r = redis.Redis(
             host=self.redis_host,
@@ -186,39 +201,41 @@ class MasterExecutor:
             db=self.redis_db,
             password=self.redis_password,
             decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
         )
 
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+
+        # --- LIVE SAFETY POLICY ---
+        self.dry_run_env = _env_bool("DRY_RUN", True)
+        self.armed = _env_bool("ARMED", False)
+        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
+        self.arm_token = _env_str("ARM_TOKEN", "")
+
+        # IMPORTANT:
+        # DRY_RUN=1 -> publish intents (safe, downstream will not place real orders anyway)
+        # DRY_RUN=0 -> require arming
+        self.publish_allowed = bool(
+            self.dry_run_env or (self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
+        )
+
+        if (not self.dry_run_env) and (not self.publish_allowed):
+            print(
+                f"[MasterExecutor][SAFE] DRY_RUN=0 but publish blocked: "
+                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)}"
+            )
+
+        self._warned_heavy_stub = False
 
         print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
             f"heavy_enable={self.heavy_enable} heavy_topk={self.heavy_topk} "
+            f"publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
-
-        # --- LIVE SAFETY POLICY ---
-        self.armed = _env_bool("ARMED", False)
-        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
-        self.arm_token = _env_str("ARM_TOKEN", "")
-        self.dry_run_env = _env_bool("DRY_RUN", True)
-
-        self.live_allowed = (
-            (not self.dry_run_env)
-            and self.armed
-            and (not self.kill_switch)
-            and (len(self.arm_token) >= 16)
-        )
-
-        if not self.dry_run_env and not self.live_allowed:
-            print(
-                f"[MasterExecutor][SAFE] live blocked: DRY_RUN=0 but "
-                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)} "
-                f"-> will NOT publish intents"
-            )
-
-        self._warned_heavy_stub = False
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
@@ -228,6 +245,8 @@ class MasterExecutor:
             if "BUSYGROUP" in str(e):
                 return
             raise
+        except Exception:
+            return
 
     def _ack(self, ids: List[str]) -> None:
         if not ids:
@@ -252,33 +271,29 @@ class MasterExecutor:
         return None
 
     def _normalize_side(self, side: str) -> str:
-        s = side.strip().lower()
+        s = (side or "").strip().lower()
         if s in ("buy", "long"):
             return "long"
         if s in ("sell", "short"):
             return "short"
         return s or "long"
-
     def _candidate_score(self, c: Dict[str, Any]) -> float:
-        raw = c.get("raw") or {}
+        # CandidateTrade standard: score_total is main
         return _safe_float(
-            c.get(
-                "_score_total_final",
-                c.get("_score_selected", c.get("score_total", raw.get("_score_total", 0.0))),
-            ),
+            c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))),
             0.0,
         )
 
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-        """Best-effort heavy scorer.
-        If no heavy model wired yet, returns fast score.
-        Returns: (score_heavy, reasons)
+        """
+        Best-effort heavy scorer stub.
+        İleride MTF+LSTM vb. burada devreye girecek.
         """
         base = float(self._candidate_score(c))
         return base, ["heavy_passthrough"]
 
-    def _is_whale_contra(self, side: str, raw: Dict[str, Any]) -> bool:
-        whale_dir = _safe_str(raw.get("whale_dir", "none")).lower()
+    def _is_whale_contra(self, side: str, raw_evt: Dict[str, Any]) -> bool:
+        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none"))).lower()
         whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
         whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
         if whale_is_buy and side == "short":
@@ -289,21 +304,29 @@ class MasterExecutor:
 
     def _compute_final_score(self, c: Dict[str, Any]) -> float:
         """
-        Whale-first final score.
-        heavy_enable=True ise ileride burada MTF+LSTM çağrısı eklenecek.
-        Şimdilik: mtf_score kaynağı olarak candidate score/fast_model_score/p_used kullanır.
+        Whale-first final score (0..1).
+        raw_evt: Aggregator'ın CandidateTrade.raw içine koyduğu SignalEvent.
+        raw yoksa meta/alanlardan best-effort toplanır.
         """
-        raw = c.get("raw") or {}
+        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+        if raw_evt is None:
+            raw_evt = {}
 
-        whale = _safe_float(raw.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+        # whale_score: raw_evt.whale_score OR candidate whale_score OR 0
+        whale = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+
+        # micro proxy: meta.micro_score OR raw_evt.micro_score OR 0
         micro = _safe_float(
-            raw.get("micro_score", c.get("micro_score", raw.get("vol_score", 0.0))),
+            _meta_get(raw_evt, "micro_score", raw_evt.get("micro_score", c.get("micro_score", 0.0))),
             0.0,
         )
+
+        # mtf proxy: meta.fast_model_score OR meta.p_used OR candidate.score_total
         mtf = _safe_float(
-            raw.get(
-                "mtf_score",
-                c.get("mtf_score", c.get("fast_model_score", raw.get("p_used", c.get("p_used", 0.0)))),
+            _meta_get(
+                raw_evt,
+                "fast_model_score",
+                _meta_get(raw_evt, "p_used", c.get("score_total", 0.0)),
             ),
             0.0,
         )
@@ -316,37 +339,48 @@ class MasterExecutor:
         score = _clamp(score, 0.0, 1.0)
 
         if self.heavy_enable and not self._warned_heavy_stub:
-            print("[MasterExecutor][HEAVY] enabled but using stub final-score (no MTF+LSTM call yet).")
+            print("[MasterExecutor][HEAVY] enabled but using stub final-score (no real heavy model call yet).")
             self._warned_heavy_stub = True
 
         return float(score)
 
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
-        raw = c.get("raw") or {}
+        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+        if raw_evt is None:
+            raw_evt = {}
 
-        score = self._compute_final_score(c)
+        # if heavy stage already set a final score, reuse it (avoid double work)
+        score = _safe_float(c.get("_score_total_final"), None)  # type: ignore[arg-type]
+        if score is None:
+            score = self._compute_final_score(c)
+
+        score = float(_clamp(float(score), 0.0, 1.0))
         if score < float(self.min_trade_score):
             return None
 
         base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
         base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
 
-        conf = _safe_float(raw.get("confidence", 0.5), 0.5)
-        atr_pct = _safe_float(raw.get("atr_pct", 0.01), 0.01)
-        spread_pct = _safe_float(raw.get("spread_pct", 0.0003), 0.0003)
+        conf = _safe_float(raw_evt.get("confidence", c.get("confidence", 0.5)), 0.5)
+        atr_pct = _safe_float(raw_evt.get("atr_pct", c.get("atr_pct", 0.01)), 0.01)
+        spread_pct = _safe_float(raw_evt.get("spread_pct", c.get("spread_pct", 0.0003)), 0.0003)
 
         conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
         atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
         spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
 
-        side = self._normalize_side(_safe_str(c.get("side", raw.get("side", ""))))
+        side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
 
-        reasons = [str(x) for x in _as_list(c.get("reasons"))]
+        # CandidateTrade standard uses reason_codes; keep backward compatible with reasons
+        reasons = [str(x) for x in _as_list(c.get("reason_codes"))] or [str(x) for x in _as_list(c.get("reasons"))]
         risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
 
+        whale_score = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")))
+        whale_contra = self._is_whale_contra(side, {**raw_evt, "whale_dir": whale_dir})
+
+        # Whale align detection
         whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
-        whale_score = _safe_float(raw.get("whale_score", 0.0), 0.0)
-        whale_contra = self._is_whale_contra(side, raw)
 
         if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
             return None
@@ -408,26 +442,74 @@ class MasterExecutor:
             raw=dict(c2),
         )
 
+    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Optional heavy scoring on first K items.
+        Adds: _score_heavy, _score_total_final, _reasons_final
+        """
+        if not self.heavy_enable:
+            return items
+
+        k = max(0, int(self.heavy_topk))
+        thr = float(self.heavy_discard_below)
+
+        if k <= 0:
+            return items
+
+        out: List[Dict[str, Any]] = []
+        for i, c in enumerate(items):
+            if not isinstance(c, dict):
+                continue
+
+            c2 = dict(c)
+            fast = float(_clamp(self._candidate_score(c2), 0.0, 1.0))
+
+            if i < k:
+                t0 = time.time()
+                hs, hreas = self._heavy_score_one(c2)
+                ms = int(round((time.time() - t0) * 1000.0))
+
+                hs = float(_clamp(float(hs), 0.0, 1.0))
+                sym = _safe_str(c2.get("symbol", "")).upper()
+                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
+
+                c2["_score_heavy"] = float(hs)
+                final = float(max(fast, hs))
+                c2["_score_total_final"] = final
+
+                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
+                c2["_reasons_final"] = reasons + list(hreas or [])
+
+                if final < thr:
+                    continue
+            else:
+                c2["_score_total_final"] = fast
+                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
+                c2["_reasons_final"] = reasons
+
+            out.append(c2)
+
+        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
+        return out
 
     def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
         """
         items: top5 paket içinden gelir.
-        heavy_enable ise: önce final-score’a göre topK seç, sonra unique+intent üret.
+        heavy_enable ise _apply_heavy_stage ile _score_total_final zaten set edilmiş olur.
         """
         t0 = time.time()
 
+        # Ensure each item has _score_total_final
         scored: List[Dict[str, Any]] = []
         for c in items:
             if not isinstance(c, dict):
                 continue
             c2 = dict(c)
-            c2["_score_total_final"] = self._compute_final_score(c2)
+            if c2.get("_score_total_final") is None:
+                c2["_score_total_final"] = self._compute_final_score(c2)
             scored.append(c2)
 
         scored.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
-
-        if self.heavy_enable and self.heavy_topk > 0:
-            scored = scored[: int(self.heavy_topk)]
 
         best_by_symbol: Dict[str, Dict[str, Any]] = {}
         for c in scored:
@@ -453,72 +535,36 @@ class MasterExecutor:
             print(f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out_intents={len(intents)}")
 
         return intents
-
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
-        resp = self.r.xreadgroup(
-            groupname=self.group,
-            consumername=self.consumer,
-            streams={self.in_stream: start_id},
-            count=self.batch_count,
-            block=self.read_block_ms,
-        )
+        try:
+            resp = self.r.xreadgroup(
+                groupname=self.group,
+                consumername=self.consumer,
+                streams={self.in_stream: start_id},
+                count=self.batch_count,
+                block=self.read_block_ms,
+            )
+        except redis.exceptions.ResponseError as e:
+            msg = str(e)
+            if "UNBLOCKED" in msg and "no longer exists" in msg:
+                self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+                return []
+            return []
+        except Exception:
+            return []
+
         out: List[Tuple[str, Dict[str, Any]]] = []
         if not resp:
             return out
 
         for _stream_name, entries in resp:
             for sid, fields in entries:
-                pkg = self._parse_pkg(sid, fields)
-                if pkg:
-                    out.append((sid, pkg))
-                else:
-                    out.append((sid, {}))
-        return out
-
-    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Optionally run heavy scoring on topK items, filter by threshold.
-        Adds: _score_heavy, _score_total_final, _reasons_final
-        """
-        if not getattr(self, "heavy_enable", False):
-            return items
-
-        k = max(0, int(getattr(self, "heavy_topk", 0) or 0))
-        thr = float(getattr(self, "heavy_discard_below", 0.0) or 0.0)
-
-        if k <= 0:
-            return items
-
-        out: List[Dict[str, Any]] = []
-        for i, c in enumerate(items):
-            c2 = dict(c)
-            fast = float(self._candidate_score(c2))
-
-            if i < k:
-                t0 = time.time()
-                hs, hreas = self._heavy_score_one(c2)
-                ms = int(round((time.time() - t0) * 1000.0))
-
-                sym = _safe_str(c2.get("symbol", "")).upper()
-                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
-
-                c2["_score_heavy"] = float(hs)
-                final = float(max(fast, float(hs)))
-                c2["_score_total_final"] = final
-                c2["_reasons_final"] = list(_as_list(c2.get("reasons"))) + list(hreas or [])
-
-                if final < thr:
-                    continue
-            else:
-                c2["_score_total_final"] = fast
-                c2["_reasons_final"] = list(_as_list(c2.get("reasons")))
-
-            out.append(c2)
-
-        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
+                pkg = self._parse_pkg(sid, fields) or {}
+                out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
-        if not getattr(self, "live_allowed", True):
+        if not self.publish_allowed:
             return None
 
         if self._last_published_source_id == source_stream_id:
@@ -550,12 +596,15 @@ class MasterExecutor:
             ],
         }
 
-        sid = self.r.xadd(
-            self.out_stream,
-            {"json": json.dumps(payload, ensure_ascii=False)},
-            maxlen=5000,
-            approximate=True,
-        )
+        try:
+            sid = self.r.xadd(
+                self.out_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=5000,
+                approximate=True,
+            )
+        except Exception:
+            return None
 
         self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
@@ -576,9 +625,7 @@ class MasterExecutor:
                     if not isinstance(items, list) or not items:
                         continue
 
-                    # heavy stage (optional) only ONCE
                     items2 = self._apply_heavy_stage(items)
-
                     intents = self._select_top_unique(items2)
                     if not intents:
                         continue
