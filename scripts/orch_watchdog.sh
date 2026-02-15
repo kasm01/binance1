@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Optional: load env safely
+if [[ -f ".env" ]]; then
+  ./scripts/load_env.sh .env >/dev/null 2>&1 || true
+fi
+
+
 # -----------------------------
 # Single-instance lock
 # -----------------------------
@@ -23,6 +29,7 @@ mkdir -p "$STATE_DIR"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "[WD][FAIL] missing: $1"; exit 2; }; }
 need redis-cli
+need curl
 need pgrep
 need awk
 need date
@@ -34,6 +41,30 @@ need grep
 need head
 need tr
 need sed
+
+
+
+tg_send(){
+  # Send a short alert to Telegram if enabled + token/chat exist
+  local text="$1"
+  local tok="${TELEGRAM_BOT_TOKEN:-}"
+  local chat="${TELEGRAM_CHAT_ID:-}"
+  local enabled="${TELEGRAM_ALERTS:-0}"
+  [[ "${enabled}" == "1" ]] || return 0
+  [[ -n "${tok}" && -n "${chat}" ]] || return 0
+  # minimal newline escape
+  text="${text//$'\n'/%0A}"
+  curl -sS --max-time 5 \
+    -X POST "https://api.telegram.org/bot${tok}/sendMessage" \
+    -d "chat_id=${chat}" \
+    -d "text=${text}" \
+    >/dev/null 2>&1 || true
+}
+
+# WATCHDOG_TEST_ALERT=1 -> always send a test message (manual verification)
+if [[ "${WATCHDOG_TEST_ALERT:-0}" == "1" ]]; then
+  tg_send "🧪 WATCHDOG test alert: orch_watchdog.sh is running"
+fi
 
 now_ts() { date +%s; }
 now_ms() { date +%s%3N; }
@@ -94,6 +125,7 @@ do_restart_if_needed() {
 
   echo "[WD][FAIL] $reason -> restarting binance1-orch.service"
   logger -t binance1-orch "WATCHDOG triggering restart (reason=${reason})"
+  tg_send "⚠️ WATCHDOG restart: ${reason}"
 
   LAST_RESTART="$ts"
   FAIL_COUNT=0
@@ -208,6 +240,16 @@ check_proc_with_pidfile() {
 # Start
 # -----------------------------
 read_state
+
+# -----------------------------
+# TEST: simulate fail alert (NO restart)
+# WATCHDOG_TEST_FAIL_ALERT=1 -> sends telegram once and exits
+# -----------------------------
+if [[ "${WATCHDOG_TEST_FAIL_ALERT:-0}" == "1" ]]; then
+  tg_send "🧪 WATCHDOG simulated FAIL alert: would restart service if threshold met"
+  echo "[WD][TEST] simulated fail alert sent (no restart)."
+  exit 0
+fi
 
 # -----------------------------
 # Grace (restart sonrası false alarm keser)
