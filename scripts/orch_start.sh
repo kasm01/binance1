@@ -178,26 +178,49 @@ fi
 
 # -----------------------------
 # SCANNERS: 24 symbols -> 8 workers (3 symbols each)
+# Priority:
+#   1) Wn_SYMBOLS override (if set)
+#   2) SYMBOLS_24 auto-split
 # -----------------------------
+SYMBOLS_24="${SYMBOLS_24:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,MATICUSDT,DOTUSDT,LTCUSDT,TRXUSDT,ATOMUSDT,OPUSDT,ARBUSDT,APTUSDT,INJUSDT,SUIUSDT,FILUSDT,NEARUSDT,ETCUSDT,UNIUSDT,AAVEUSDT}"
 WORKER_INTERVAL="${WORKER_INTERVAL:-5m}"
+SCANNER_MODE="${SCANNER_MODE:-fast}"
 
-W1="${W1_SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT}"
-W2="${W2_SYMBOLS:-SOLUSDT,XRPUSDT,ADAUSDT}"
-W3="${W3_SYMBOLS:-DOGEUSDT,AVAXUSDT,LINKUSDT}"
-W4="${W4_SYMBOLS:-MATICUSDT,DOTUSDT,LTCUSDT}"
-W5="${W5_SYMBOLS:-TRXUSDT,ATOMUSDT,OPUSDT}"
-W6="${W6_SYMBOLS:-ARBUSDT,APTUSDT,INJUSDT}"
-W7="${W7_SYMBOLS:-SUIUSDT,FILUSDT,NEARUSDT}"
-W8="${W8_SYMBOLS:-ETCUSDT,UNIUSDT,AAVEUSDT}"
+# worker layer spam gates (env override allowed)
+WORKER_MAX_SPREAD_PCT="${WORKER_MAX_SPREAD_PCT:-0.0010}"  # 0.10%
+WORKER_MAX_ATR_PCT="${WORKER_MAX_ATR_PCT:-0.0300}"        # 3.0%
+WORKER_MIN_CONF="${WORKER_MIN_CONF:-0.45}"
 
-start_one "scanner_w1" env WORKER_ID="w1" WORKER_SYMBOLS="$W1" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w2" env WORKER_ID="w2" WORKER_SYMBOLS="$W2" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w3" env WORKER_ID="w3" WORKER_SYMBOLS="$W3" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w4" env WORKER_ID="w4" WORKER_SYMBOLS="$W4" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w5" env WORKER_ID="w5" WORKER_SYMBOLS="$W5" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w6" env WORKER_ID="w6" WORKER_SYMBOLS="$W6" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w7" env WORKER_ID="w7" WORKER_SYMBOLS="$W7" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
-start_one "scanner_w8" env WORKER_ID="w8" WORKER_SYMBOLS="$W8" WORKER_INTERVAL="$WORKER_INTERVAL" WORKER_PUBLISH_HOLD=0 "$PY" -u orchestration/scanners/worker_stub.py
+IFS=',' read -r -a symarr <<<"$SYMBOLS_24"
+
+join3() {
+  local i="$1"
+  local a="${symarr[$i]:-}"
+  local b="${symarr[$((i+1))]:-}"
+  local c="${symarr[$((i+2))]:-}"
+  echo "${a},${b},${c}"
+}
+
+pick_worker_symbols() {
+  local n="$1"
+  local var="W${n}_SYMBOLS"
+  local override="${!var:-}"
+  if [[ -n "${override}" ]]; then
+    echo "${override}"
+    return 0
+  fi
+  local idx=$(( (n-1) * 3 ))
+  join3 "$idx"
+}
+
+start_one "scanner_w1" env WORKER_ID="w1" WORKER_SYMBOLS="$(pick_worker_symbols 1)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w2" env WORKER_ID="w2" WORKER_SYMBOLS="$(pick_worker_symbols 2)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w3" env WORKER_ID="w3" WORKER_SYMBOLS="$(pick_worker_symbols 3)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w4" env WORKER_ID="w4" WORKER_SYMBOLS="$(pick_worker_symbols 4)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w5" env WORKER_ID="w5" WORKER_SYMBOLS="$(pick_worker_symbols 5)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w6" env WORKER_ID="w6" WORKER_SYMBOLS="$(pick_worker_symbols 6)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w7" env WORKER_ID="w7" WORKER_SYMBOLS="$(pick_worker_symbols 7)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
+start_one "scanner_w8" env WORKER_ID="w8" WORKER_SYMBOLS="$(pick_worker_symbols 8)" WORKER_INTERVAL="$WORKER_INTERVAL" SCANNER_MODE="$SCANNER_MODE" WORKER_PUBLISH_HOLD=0 WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" WORKER_MIN_CONF="$WORKER_MIN_CONF" "$PY" -u orchestration/scanners/worker_stub.py
 
 # -----------------------------
 # Downstream (singletons)
