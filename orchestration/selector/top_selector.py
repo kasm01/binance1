@@ -164,29 +164,19 @@ class TopSelector:
         return _clamp(s, 0.0, 1.0)
 
     def _cooldown_key(self, c: Dict[str, Any]) -> str:
-        # New standard: dedup_key exists on CandidateTrade
-        dk = str(c.get("dedup_key", "") or "").strip()
+        # new standard
+        dk = c.get("dedup_key")
         if dk:
-            return dk
+            return str(dk)
 
-        # Fallback: symbol|interval|side
-        sym = str(c.get("symbol", "") or "").strip()
-        itv = str(c.get("interval", "") or "").strip()
-        side = str(c.get("side", "") or "").strip()
-        if sym and itv and side:
-            return f"{sym}|{itv}|{side}"
-
-        # Legacy fallback: raw.cooldown_key (if raw included)
+        # backward-compat
         raw = c.get("raw") or {}
-        try:
-            ck = (raw or {}).get("cooldown_key")
+        if isinstance(raw, dict):
+            ck = raw.get("cooldown_key")
             if ck:
                 return str(ck)
-        except Exception:
-            pass
 
-        # last resort
-        return "unknown"
+        return f"{c.get('symbol','')}|{c.get('interval','')}|{c.get('side','')}"
 
     def _normalize_ts(self, c: Dict[str, Any], stream_id: str) -> None:
         if not c.get("ts_utc"):
