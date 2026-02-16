@@ -36,11 +36,21 @@ GRACE_SEC="${WATCHDOG_GRACE_SEC:-90}"
 WARN_COOLDOWN_SEC="${WATCHDOG_WARN_COOLDOWN_SEC:-120}"
 OK_COOLDOWN_SEC="${WATCHDOG_OK_COOLDOWN_SEC:-600}"
 
+# Telegram WARN gating:
+# - default: only send WARN when FAIL_COUNT reaches threshold-1 (i.e., about to restart)
+# - set WATCHDOG_WARN_AT_FAIL_COUNT=1 to warn earlier
+WARN_AT_FAIL_COUNT="${WATCHDOG_WARN_AT_FAIL_COUNT:-$((FAIL_THRESHOLD-1))}"
+if [[ "$WARN_AT_FAIL_COUNT" -lt 1 ]]; then WARN_AT_FAIL_COUNT=1; fi
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/binance1"
 STATE_FILE="$STATE_DIR/orch_watchdog.state"
 mkdir -p "$STATE_DIR"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "[WD][FAIL] missing: $1"; exit 2; }; }
+need() {
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "[WD][FAIL] missing: $cmd"; exit 2; }
+  done
+}
 need redis-cli curl pgrep awk date flock logger systemctl ps grep head tr sed
 
 now_ts() { date +%s; }
@@ -99,27 +109,6 @@ read_state() {
   LAST_RECOVERY_TS=0
   [[ -f "${STATE_FILE:-}" ]] && source "$STATE_FILE" || true
 }
-# -----------------------------
-# Skip checks if orch service is not active (prevents false alarms during manual stop)
-# -----------------------------
-if systemctl --user is-active --quiet binance1-orch.service 2>/dev/null; then
-  : # active -> continue
-else
-  # service not active -> don't warn/restart
-  exit 0
-fi
-
-# -----------------------------
-# Startup grace: if pidfiles are very new, skip this run (prevents "missing all" during start)
-# -----------------------------
-STARTUP_GRACE_SEC="${WATCHDOG_STARTUP_GRACE_SEC:-60}"
-if ls run/*.pid >/dev/null 2>&1; then
-  newest_pid_mtime="$(stat -c %Y run/*.pid 2>/dev/null | sort -nr | head -n 1 || echo 0)"
-  ts_now="$(date +%s)"
-  if [[ "$newest_pid_mtime" -gt 0 ]] && [[ "$((ts_now - newest_pid_mtime))" -lt "$STARTUP_GRACE_SEC" ]]; then
-    exit 0
-  fi
-fi
 
 write_state() {
   cat >"${STATE_FILE}.tmp" <<EOF
@@ -134,6 +123,37 @@ EOF
 
 bump_fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); write_state; }
 reset_fail() { FAIL_COUNT=0; LAST_OK="$(now_ts)"; write_state; }
+
+# -----------------------------
+# Skip checks if orch service is not active (prevents false alarms during manual stop)
+# -----------------------------
+if systemctl --user is-active --quiet binance1-orch.service 2>/dev/null; then
+  : # active -> continue
+else
+  exit 0
+fi
+
+# -----------------------------
+# Startup grace: if pidfiles are very new, skip this run
+# -----------------------------
+STARTUP_GRACE_SEC="${WATCHDOG_STARTUP_GRACE_SEC:-60}"
+if ls run/*.pid >/dev/null 2>&1; then
+  newest_pid_mtime="$(stat -c %Y run/*.pid 2>/dev/null | sort -nr | head -n 1 || echo 0)"
+  ts_now="$(date +%s)"
+  if [[ "$newest_pid_mtime" -gt 0 ]] && [[ "$((ts_now - newest_pid_mtime))" -lt "$STARTUP_GRACE_SEC" ]]; then
+    exit 0
+  fi
+fi
+
+# -----------------------------
+# DRY_RUN logic:
+# - In DRY_RUN mode exec_events_stream may be sparse; don't require it to advance
+# -----------------------------
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  CHECK_EXEC_STREAM=0
+else
+  CHECK_EXEC_STREAM=1
+fi
 
 # -----------------------------
 # Stream helpers
@@ -156,7 +176,11 @@ stream_age_sec(){
 stream_snapshot(){
   local sig exe age_sig age_exe
   sig="$(last_id signals_stream)"
-  exe="$(last_id exec_events_stream)"
+  if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
+    exe="$(last_id exec_events_stream)"
+  else
+    exe="na"
+  fi
   age_sig="$(stream_age_sec "$sig")"
   age_exe="$(stream_age_sec "$exe")"
   echo "signals=${sig:-na} age_sig=${age_sig}s | exec=${exe:-na} age_exe=${age_exe}s"
@@ -164,6 +188,17 @@ stream_snapshot(){
 
 emit_health_snapshot() {
   echo "missing=(${missing_proc[*]:-none}) | $(stream_snapshot)"
+}
+
+# OK helper: if we were failing before and now recovered, send a recovery message (rate-limited)
+mark_ok_and_reset(){
+  local prev="$FAIL_COUNT"
+  if [[ "$prev" -gt 0 ]]; then
+    tg_ok "✅ WATCHDOG OK recovered
+$(stream_snapshot)
+prev_fail=${prev}/${FAIL_THRESHOLD}"
+  fi
+  reset_fail
 }
 
 # -----------------------------
@@ -205,7 +240,7 @@ check_proc_with_pidfile() {
 # -----------------------------
 do_restart_if_needed() {
   local reason="$1"
-  local ts age
+  local ts age snap
   ts="$(now_ts)"
   age=$((ts - LAST_RESTART))
 
@@ -237,7 +272,7 @@ fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD}"
 # -----------------------------
 read_state
 
-# Grace period
+# Grace period after restart
 ts_now="$(now_ts)"
 if (( LAST_RESTART > 0 )) && (( ts_now - LAST_RESTART < GRACE_SEC )); then
   reset_fail
@@ -262,9 +297,14 @@ done
 
 if [[ "${#missing_proc[@]}" -gt 0 ]]; then
   bump_fail
-  tg_warn "⚠️ WATCHDOG WARN missing: ${missing_proc[*]}
+
+  # Telegram WARN only when we are close to restart threshold (or configured otherwise)
+  if [[ "$FAIL_COUNT" -ge "$WARN_AT_FAIL_COUNT" ]]; then
+    tg_warn "⚠️ WATCHDOG WARN missing: ${missing_proc[*]}
 $(stream_snapshot)
 fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD}"
+  fi
+
   do_restart_if_needed "missing process(es)"
   exit 0
 fi
@@ -273,27 +313,57 @@ fi
 # Stream activity
 # -----------------------------
 sig1="$(last_id signals_stream)"
-exe1="$(last_id exec_events_stream)"
+if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
+  exe1="$(last_id exec_events_stream)"
+else
+  exe1="na"
+fi
 
 sleep "$SLEEP_SEC"
 
 sig2="$(last_id signals_stream)"
-exe2="$(last_id exec_events_stream)"
+if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
+  exe2="$(last_id exec_events_stream)"
+else
+  exe2="na"
+fi
 
-if [[ "$sig2" != "$sig1" || "$exe2" != "$exe1" ]]; then
-  reset_fail
+# Activity rule:
+# - Always accept signals advancing.
+# - Accept exec advancing only if CHECK_EXEC_STREAM=1.
+if [[ "$sig2" != "$sig1" ]]; then
+  mark_ok_and_reset
+  exit 0
+fi
+if [[ "$CHECK_EXEC_STREAM" == "1" && "$exe2" != "$exe1" ]]; then
+  mark_ok_and_reset
   exit 0
 fi
 
 age_sig="$(stream_age_sec "$sig2")"
 age_exe="$(stream_age_sec "$exe2")"
 
-if [[ "$age_sig" != "na" && "$age_sig" -le "$MAX_IDLE_SEC" ]] || \
-   [[ "$age_exe" != "na" && "$age_exe" -le "$MAX_IDLE_SEC" ]]; then
-  reset_fail
+# Age rule:
+# - signals fresh => OK
+# - exec fresh => OK only if CHECK_EXEC_STREAM=1
+if [[ "$age_sig" != "na" && "$age_sig" -le "$MAX_IDLE_SEC" ]]; then
+  mark_ok_and_reset
+  exit 0
+fi
+if [[ "$CHECK_EXEC_STREAM" == "1" && "$age_exe" != "na" && "$age_exe" -le "$MAX_IDLE_SEC" ]]; then
+  mark_ok_and_reset
   exit 0
 fi
 
 bump_fail
+
+# Telegram WARN only when we are close to restart threshold (or configured otherwise)
+if [[ "$FAIL_COUNT" -ge "$WARN_AT_FAIL_COUNT" ]]; then
+  tg_warn "⚠️ WATCHDOG WARN no stream activity
+$(stream_snapshot)
+fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD}"
+fi
+
 do_restart_if_needed "no stream activity"
 exit 0
+

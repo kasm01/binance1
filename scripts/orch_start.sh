@@ -3,10 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
-
-# Optional: load env safely (avoids parse errors)
+# load env safely
 if [[ -f ".env" ]]; then
-    ./scripts/load_env.sh .env >/dev/null 2>&1 || true
+  ./scripts/load_env.sh .env >/dev/null 2>&1 || true
 fi
 
 # -----------------------------
