@@ -4,19 +4,55 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
 # -----------------------------
-# Load .env into THIS shell (and export to children) - deterministic
+# Load .env into THIS shell (export to children) WITHOUT overriding existing env
+# CLI/env vars should win over .env
 # -----------------------------
-if [[ -f ".env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source ".env"
-  set +a
-fi
+load_env_fill_only() {
+  local env_file="${1:-.env}"
+  [[ -f "$env_file" ]] || return 0
 
-# Optional: keep legacy loader (no-op is fine)
-if [[ -x "./scripts/load_env.sh" ]] && [[ -f ".env" ]]; then
-  ./scripts/load_env.sh .env >/dev/null 2>&1 || true
-fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # skip empty/comment
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+    # accept KEY=VALUE (optionally starting with "export ")
+    line="${line#export }"
+
+    # split on first '='
+    local k="${line%%=*}"
+    local v="${line#*=}"
+
+    # trim key
+    k="$(echo "$k" | xargs)"
+    [[ -z "$k" ]] && continue
+
+    # if key already set in environment, do not override
+    if [[ -n "${!k+x}" ]]; then
+      continue
+    fi
+
+    # trim surrounding whitespace of value
+    v="$(echo "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+    # strip surrounding quotes (single or double)
+    if [[ "$v" =~ ^\".*\"$ ]]; then
+      v="${v:1:${#v}-2}"
+    elif [[ "$v" =~ ^\'.*\'$ ]]; then
+      v="${v:1:${#v}-2}"
+    fi
+
+    export "$k=$v"
+  done < "$env_file"
+}
+
+load_env_fill_only ".env"
+
+# Optional legacy loader: only if it also respects "do not override"
+# (If your load_env.sh overrides, KEEP THIS DISABLED)
+# if [[ -x "./scripts/load_env.sh" ]] && [[ -f ".env" ]]; then
+#   ./scripts/load_env.sh .env >/dev/null 2>&1 || true
+# fi
 
 # -----------------------------
 # Ensure dirs exist
