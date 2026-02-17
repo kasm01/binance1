@@ -3,8 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
-# load env safely
+# -----------------------------
+# Load .env into THIS shell (and export to children) - deterministic
+# -----------------------------
 if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
+# Optional: keep legacy loader (no-op is fine)
+if [[ -x "./scripts/load_env.sh" ]] && [[ -f ".env" ]]; then
   ./scripts/load_env.sh .env >/dev/null 2>&1 || true
 fi
 
