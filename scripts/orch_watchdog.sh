@@ -2,8 +2,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Optional: load env safely
+# -----------------------------
+# Load .env into THIS shell (and export to children) - deterministic
+# - This guarantees watchdog sees same env as orch_start.
+# - We do NOT rely solely on load_env.sh (which may be "non-override" and miss vars in systemd context).
+# -----------------------------
 if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
+# Optional: keep legacy loader (no-op is fine)
+if [[ -x "./scripts/load_env.sh" ]] && [[ -f ".env" ]]; then
   ./scripts/load_env.sh .env >/dev/null 2>&1 || true
 fi
 
@@ -51,7 +63,7 @@ need() {
     command -v "$cmd" >/dev/null 2>&1 || { echo "[WD][FAIL] missing: $cmd"; exit 2; }
   done
 }
-need redis-cli curl pgrep awk date flock logger systemctl ps grep head tr sed
+need redis-cli curl pgrep awk date flock logger systemctl ps grep head tr sed stat sort ls
 
 now_ts() { date +%s; }
 now_ms() { date +%s%3N; }
@@ -147,19 +159,32 @@ fi
 
 # -----------------------------
 # DRY_RUN logic:
-# - In DRY_RUN mode exec_events_stream may be sparse; don't require it to advance
+# - In DRY_RUN mode exec_events_stream may still advance, but historically you wanted not to REQUIRE it.
+# - Keep behavior: require exec only when DRY_RUN=0, unless WATCHDOG_CHECK_EXEC_IN_DRYRUN=1.
 # -----------------------------
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  CHECK_EXEC_STREAM=0
+  CHECK_EXEC_STREAM="${WATCHDOG_CHECK_EXEC_IN_DRYRUN:-0}"
 else
   CHECK_EXEC_STREAM=1
 fi
 
 # -----------------------------
-# Stream helpers
+# Stream helpers (robust)
 # -----------------------------
-last_id() {
-  rc --raw XREVRANGE "$1" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
+# Prefer XINFO STREAM last-generated-id (most stable).
+# Fallback to XREVRANGE if XINFO fails for some reason.
+last_generated_id() {
+  local stream="$1"
+  local id
+  id="$(rc XINFO STREAM "$stream" 2>/dev/null \
+        | awk '$1=="last-generated-id"{print $2; exit}' \
+        | tr -d '"' | tr -d '\r' || true)"
+  if [[ -n "${id:-}" ]]; then
+    echo "$id"
+    return 0
+  fi
+  # fallback
+  rc --raw XREVRANGE "$stream" + - COUNT 1 2>/dev/null | head -n 1 | tr -d '\r' || true
 }
 
 id_ms() { awk -F'-' '{print $1}' <<<"${1:-}" 2>/dev/null || true; }
@@ -175,9 +200,9 @@ stream_age_sec(){
 
 stream_snapshot(){
   local sig exe age_sig age_exe
-  sig="$(last_id signals_stream)"
+  sig="$(last_generated_id signals_stream)"
   if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
-    exe="$(last_id exec_events_stream)"
+    exe="$(last_generated_id exec_events_stream)"
   else
     exe="na"
   fi
@@ -298,7 +323,6 @@ done
 if [[ "${#missing_proc[@]}" -gt 0 ]]; then
   bump_fail
 
-  # Telegram WARN only when we are close to restart threshold (or configured otherwise)
   if [[ "$FAIL_COUNT" -ge "$WARN_AT_FAIL_COUNT" ]]; then
     tg_warn "⚠️ WATCHDOG WARN missing: ${missing_proc[*]}
 $(stream_snapshot)
@@ -312,18 +336,18 @@ fi
 # -----------------------------
 # Stream activity
 # -----------------------------
-sig1="$(last_id signals_stream)"
+sig1="$(last_generated_id signals_stream)"
 if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
-  exe1="$(last_id exec_events_stream)"
+  exe1="$(last_generated_id exec_events_stream)"
 else
   exe1="na"
 fi
 
 sleep "$SLEEP_SEC"
 
-sig2="$(last_id signals_stream)"
+sig2="$(last_generated_id signals_stream)"
 if [[ "$CHECK_EXEC_STREAM" == "1" ]]; then
-  exe2="$(last_id exec_events_stream)"
+  exe2="$(last_generated_id exec_events_stream)"
 else
   exe2="na"
 fi
@@ -357,7 +381,6 @@ fi
 
 bump_fail
 
-# Telegram WARN only when we are close to restart threshold (or configured otherwise)
 if [[ "$FAIL_COUNT" -ge "$WARN_AT_FAIL_COUNT" ]]; then
   tg_warn "⚠️ WATCHDOG WARN no stream activity
 $(stream_snapshot)
