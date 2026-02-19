@@ -62,15 +62,14 @@ class TopSelector:
     """
     candidates_stream -> top5_stream
 
-    Reads CandidateTrade messages from candidates_stream.
-    Selects best TOPSEL_TOPK candidates within a time window,
-    de-dupes by dedup_key (cooldown key), applies cooldown, then publishes:
+    Buffers incoming candidates for WINDOW seconds, then selects best TOPK in that window,
+    de-dupes by dedup_key, applies cooldown, then publishes ONE batch event:
 
       {"ts_utc": "...", "topk": N, "items": [candidate,...]}
 
-    Notes:
-      - Restart-safe via consumer groups.
-      - "0 trade normal" rule supported via TOPSEL_MIN_SCORE (or MIN_TOPSEL_SCORE).
+    Important reliability:
+      - Main loop acks AFTER flush (at-least-once). If crash happens, messages remain pending and can be replayed.
+      - Optional TOPSEL_DRAIN_PENDING=1 drains PEL at startup.
     """
 
     def __init__(self) -> None:
@@ -91,17 +90,24 @@ class TopSelector:
         self.topk = _env_int("TOPSEL_TOPK", 5)
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
+
+        # cooldown: prevent repeating same dedup_key too frequently
         self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
 
         # "0 trade normal" threshold
         self.min_score = _env_float("TOPSEL_MIN_SCORE", _env_float("MIN_TOPSEL_SCORE", 0.10))
 
-        # Penalties
+        # penalties
         self.penalty_wide_spread = _env_float("TOPSEL_PENALTY_WIDE_SPREAD", 0.15)
         self.penalty_high_vol = _env_float("TOPSEL_PENALTY_HIGH_VOL", 0.05)
 
-        # If enabled, drop candidates missing required core fields
         self.require_fields = _env_bool("TOPSEL_REQUIRE_FIELDS", True)
+
+        self.out_maxlen = _env_int("TOPSEL_OUT_MAXLEN", 5000)
+        self.buffer_max = _env_int("TOPSEL_BUFFER_MAX", 2000)
+
+        # If 1: ack immediately (at-most-once). Default 0: ack after flush (at-least-once)
+        self.ack_immediate = _env_bool("TOPSEL_ACK_IMMEDIATE", False)
 
         self.r = redis.Redis(
             host=self.redis_host,
@@ -117,9 +123,15 @@ class TopSelector:
 
         self.last_sent: Dict[str, float] = {}  # cooldown_key -> epoch_sec
 
+        # Window buffers
+        self._buf: List[Tuple[str, Dict[str, Any]]] = []   # (sid, candidate)
+        self._buf_ids: List[str] = []                      # sids to ACK after flush
+        self._window_started_at: float = time.time()
+
         print(
             f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} "
-            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score}"
+            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score} "
+            f"ack_immediate={self.ack_immediate}"
         )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
@@ -151,10 +163,8 @@ class TopSelector:
             return []
 
     def _score(self, c: Dict[str, Any]) -> float:
-        # base
         s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
 
-        # penalties
         tags = self._risk_tags(c)
         if "wide_spread" in tags:
             s -= self.penalty_wide_spread
@@ -164,12 +174,10 @@ class TopSelector:
         return _clamp(s, 0.0, 1.0)
 
     def _cooldown_key(self, c: Dict[str, Any]) -> str:
-        # new standard
         dk = c.get("dedup_key")
         if dk:
             return str(dk)
 
-        # backward-compat
         raw = c.get("raw") or {}
         if isinstance(raw, dict):
             ck = raw.get("cooldown_key")
@@ -234,19 +242,15 @@ class TopSelector:
 
         windowed: List[Tuple[str, Dict[str, Any]]] = []
         for sid, c in items:
-            if not c:
-                continue
-            if not isinstance(c, dict):
+            if not c or not isinstance(c, dict):
                 continue
 
-            # time window filter uses stream id
             ms = _stream_id_to_epoch_ms(sid)
             if ms < min_ms:
                 continue
 
             self._normalize_ts(c, sid)
 
-            # optional field sanity
             if not self._required_ok(c):
                 continue
 
@@ -255,7 +259,6 @@ class TopSelector:
         if not windowed:
             return []
 
-        # best per cooldown key
         best_by_key: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
         for sid, c in windowed:
             ck = self._cooldown_key(c)
@@ -264,7 +267,6 @@ class TopSelector:
             if (prev is None) or (sc > prev[0]):
                 best_by_key[ck] = (sc, sid, c)
 
-        # cooldown filter + min_score
         filtered: List[Tuple[float, str, Dict[str, Any]]] = []
         for ck, (sc, sid, c) in best_by_key.items():
             if sc < self.min_score:
@@ -290,17 +292,13 @@ class TopSelector:
         if not top:
             return None
 
-        payload = {
-            "ts_utc": _now_utc_iso(),
-            "topk": len(top),
-            "items": top,
-        }
+        payload = {"ts_utc": _now_utc_iso(), "topk": len(top), "items": top}
 
         try:
             sid = self.r.xadd(
                 self.out_stream,
                 {"json": json.dumps(payload, ensure_ascii=False)},
-                maxlen=2000,
+                maxlen=self.out_maxlen,
                 approximate=True,
             )
         except Exception:
@@ -312,6 +310,50 @@ class TopSelector:
             self.last_sent[ck] = now_sec
 
         return sid
+
+    def _buffer_add(self, rows: List[Tuple[str, Dict[str, Any]]]) -> None:
+        if not rows:
+            return
+
+        for sid, c in rows:
+            if not c or not isinstance(c, dict):
+                continue
+            self._normalize_ts(c, sid)
+            self._buf.append((sid, c))
+            self._buf_ids.append(sid)
+
+        if len(self._buf) > self.buffer_max:
+            self._buf = self._buf[-self.buffer_max :]
+        if len(self._buf_ids) > self.buffer_max:
+            self._buf_ids = self._buf_ids[-self.buffer_max :]
+
+        if self.ack_immediate:
+            self._ack([sid for sid, _ in rows])
+
+    def _window_ready(self) -> bool:
+        return (time.time() - self._window_started_at) >= float(self.window_sec)
+
+    def _flush_window(self) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
+        if not self._buf:
+            self._window_started_at = time.time()
+            self._buf_ids = []
+            return None
+
+        top = self._select_topk(self._buf)
+        out_id = self._publish(top) if top else None
+
+        # ACK AFTER flush (at-least-once)
+        if not self.ack_immediate:
+            self._ack(self._buf_ids)
+
+        # reset window
+        self._buf = []
+        self._buf_ids = []
+        self._window_started_at = time.time()
+
+        if out_id:
+            return out_id, top
+        return None
 
     def run_forever(self) -> None:
         print(
@@ -331,7 +373,7 @@ class TopSelector:
                 top = self._select_topk(rows)
                 out_id = self._publish(top) if top else None
                 if out_id:
-                    syms = ", ".join([f"{x.get('symbol')}:{x.get('side')}" for x in top])
+                    syms = ", ".join([f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top])
                     print(f"[TopSelector] (PEL) published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
 
                 self._ack([sid for sid, _ in rows])
@@ -341,19 +383,21 @@ class TopSelector:
 
         while True:
             rows = self._xreadgroup(">")
-            if not rows:
-                continue
+            if rows:
+                self._buffer_add(rows)
 
-            top = self._select_topk(rows)
-            out_id = self._publish(top) if top else None
+            if self._window_ready():
+                res = self._flush_window()
+                if res:
+                    out_id, top = res
+                    syms = ", ".join(
+                        [f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top]
+                    )
+                    print(f"[TopSelector] published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
 
-            if out_id:
-                syms = ", ".join([f"{x.get('symbol')}:{x.get('side')}" for x in top])
-                print(f"[TopSelector] published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
-
-            self._ack([sid for sid, _ in rows])
             time.sleep(0.05)
 
 
 if __name__ == "__main__":
     TopSelector().run_forever()
+
