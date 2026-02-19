@@ -71,6 +71,7 @@ class IntentBridge:
       - BRIDGE_DRYRUN_BYPASS_GATE=1  -> bypass all open-position gates (dedup/max_open/cooldown)
       - BRIDGE_DRYRUN_BYPASS_GATE=0  -> apply gates in dry-run (recommended for regression tests)
       - BRIDGE_DRYRUN_WRITE_STATE=1  -> keep open_positions_state in dry-run to test gates
+      - BRIDGE_DRYRUN_CALL_EXECUTOR=1 -> DRY_RUN olsa bile executor'u çağır (executor zaten dry_run=True ise emir atmaz)
 
     Close/state cleanup:
       - Close intents remove symbol from open map and write a "closed" cooldown marker
@@ -122,7 +123,6 @@ class IntentBridge:
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
 
         # Key-level TTL (IMPORTANT FIX)
-        # If set, ensures open_positions_state doesn't live forever.
         self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 600)  # <=0 disables key TTL
 
         # TTL-based cleanup (open/closed maps inside state JSON)
@@ -140,6 +140,9 @@ class IntentBridge:
         self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", False)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
+        # NEW: dry-run'da executor çağırma opsiyonu (position state/test için)
+        self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", False)
+
         # Success assumptions (important when executor returns None)
         self.open_assume_success_on_noexc = _env_bool("BRIDGE_OPEN_ASSUME_SUCCESS_ON_NOEXC", True)
         self.close_assume_success_on_noexc = _env_bool("BRIDGE_CLOSE_ASSUME_SUCCESS_ON_NOEXC", True)
@@ -155,7 +158,6 @@ class IntentBridge:
         self.selftest_interval = os.getenv("BRIDGE_SELFTEST_INTERVAL", "5m")
         self.selftest_side = os.getenv("BRIDGE_SELFTEST_SIDE", "long")
         self.selftest_wait_sec = float(_safe_float(os.getenv("BRIDGE_SELFTEST_WAIT_SEC", "2.0"), 2.0))
-
         self.r = redis.Redis(
             host=self.redis_host,
             port=self.redis_port,
@@ -167,19 +169,32 @@ class IntentBridge:
         # Ensure stream+group exist (MKSTREAM) at startup
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
-        # TradeExecutor
+        # TradeExecutor + RiskManager + PositionManager
         from core.trade_executor import TradeExecutor  # noqa
         from core.risk_manager import RiskManager  # noqa
+        from core.position_manager import PositionManager  # noqa
 
         self.risk_manager = RiskManager()
 
-        # IMPORTANT NOTE:
-        # If you want real opens, you must pass a position_manager that actually implements open_position().
-        # Right now position_manager=None means TradeExecutor.open_position() may return None.
+        # PositionManager: Redis üzerinde positions:{SYMBOL} state için
+        # Not: PositionManager kendi içinde redis_url alıyor.
+        redis_url = os.getenv("POSITION_REDIS_URL", f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}")
+        pm_key_prefix = os.getenv("POSITION_KEY_PREFIX", "positions")
+        pm_db = _env_int("POSITION_REDIS_DB", self.redis_db)
+
+        self.position_manager = PositionManager(
+            redis_url=redis_url,
+            redis_db=pm_db,
+            redis_key_prefix=pm_key_prefix,
+            enable_pg=_env_bool("ENABLE_PG_POS_LOG", False),
+            pg_dsn=os.getenv("PG_DSN") or None,
+        )
+
+        # Executor (dry_run flag buradan geçiyor)
         self.executor = TradeExecutor(
             client=None,
             risk_manager=self.risk_manager,
-            position_manager=None,
+            position_manager=self.position_manager,
             dry_run=self.dry_run,
         )
 
@@ -187,11 +202,13 @@ class IntentBridge:
             f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} armed={getattr(self, 'armed', None)} kill_switch={getattr(self, 'kill_switch', None)} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"dry_run={self.dry_run} state_key={self.state_key} state_ttl_sec={self.state_ttl_sec} "
-            f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} "
+            f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} dryrun_call_executor={self.dryrun_call_executor} "
             f"max_open={self.max_open} dedup_symbol={self.dedup_symbol} "
             f"close_cooldown_sec={self.close_cooldown_sec} "
-            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
+            f"pos_redis={redis_url} pos_prefix={pm_key_prefix}"
         )
+
     # -----------------------
     # Redis helpers
     # -----------------------
@@ -266,7 +283,6 @@ class IntentBridge:
         if sl == "short":
             return "SHORT"
         return ""
-
     def _is_close_success(self, res: Any) -> bool:
         """
         Executor close dönüşünü normalize eder.
@@ -289,7 +305,6 @@ class IntentBridge:
                 return True
             return False
 
-        # başka tip => konservatif
         return False
 
     def _is_open_success(self, res: Any) -> bool:
@@ -305,6 +320,9 @@ class IntentBridge:
             st = _safe_str(res.get("status", "")).strip().lower()
             if st in ("success", "ok", "opened", "open", "dry_run"):
                 return True
+            # executor bazen {"status":"skip"} döndürebilir
+            if st in ("skip", "fail", "error"):
+                return False
         return True  # res var ve exception yoksa başarı kabul
 
     # -----------------------
@@ -343,12 +361,10 @@ class IntentBridge:
         ttl = int(self.state_ttl_sec or 0)
         try:
             if ttl > 0:
-                # single command: SET ... EX ttl
                 self.r.set(self.state_key, payload, ex=ttl)
             else:
                 self.r.set(self.state_key, payload)
         except Exception:
-            # best-effort; do not crash bridge
             pass
 
     def _cleanup_map_ttl_inplace(self, m: Dict[str, Any], ttl_sec: int) -> bool:
@@ -399,6 +415,7 @@ class IntentBridge:
                 )
         except Exception:
             pass
+
     # -----------------------
     # Gate logic
     # -----------------------
@@ -527,7 +544,6 @@ class IntentBridge:
                 "state_ttl_sec": int(self.state_ttl_sec or 0),
             },
         )
-
     # -----------------------
     # Parsing / consuming
     # -----------------------
@@ -606,6 +622,7 @@ class IntentBridge:
             return True
 
         return False
+
     # -----------------------
     # Close call helper (unified)
     # -----------------------
@@ -700,16 +717,18 @@ class IntentBridge:
 
         close_price = self._extract_close_price(it)
 
-        # DRY RUN => state kapat + event
-        if self.dry_run:
+        meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
+
+        # DRY RUN behavior:
+        # - default: sadece bridge state kapatır (legacy)
+        # - BRIDGE_DRYRUN_CALL_EXECUTOR=1 ise executor close da çağrılır (executor dry_run=True ise emir yok)
+        if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
                 "close_dry",
                 {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": "dry_run"},
             )
             return
-
-        meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
 
         called_ok, res, method_or_err = self._try_close_executor(
             symbol=symbol,
@@ -722,7 +741,7 @@ class IntentBridge:
         if called_ok and self._is_close_success(res):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
-                "close_ok",
+                "close_ok" if (not self.dry_run) else "close_dry_ok",
                 {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
             )
             return
@@ -748,12 +767,6 @@ class IntentBridge:
             self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why})
             return
 
-        # DRY RUN => state open + event
-        if self.dry_run:
-            self._gate_mark_open(symbol, side, interval, intent_id)
-            self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
-            return
-
         lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
         npct = float(_safe_float(it.get("recommended_notional_pct", 0.05), 0.05))
         score = float(_safe_float(it.get("score", 0.0), 0.0))
@@ -772,6 +785,14 @@ class IntentBridge:
             "source_pkg_id": source_pkg_id,
         }
 
+        # DRY RUN behavior:
+        # - default: sadece bridge state open (legacy)
+        # - BRIDGE_DRYRUN_CALL_EXECUTOR=1 ise executor open da çağrılır (executor dry_run=True ise emir yok)
+        if self.dry_run and (not self.dryrun_call_executor):
+            self._gate_mark_open(symbol, side, interval, intent_id)
+            self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
+            return
+
         err: Optional[str] = None
 
         # Prefer open_position_from_signal if exists
@@ -781,7 +802,10 @@ class IntentBridge:
                 res = fn(symbol=symbol, side=side, interval=interval, meta=meta)
                 if self._is_open_success(res):
                     self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side})
+                    self._publish_event(
+                        "forward_ok" if (not self.dry_run) else "forward_dry_ok",
+                        {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
+                    )
                     return
                 err = "open_position_from_signal returned non-success"
             except Exception as e:
@@ -797,7 +821,10 @@ class IntentBridge:
                     res = asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
                     if self._is_open_success(res):
                         self._gate_mark_open(symbol, side, interval, intent_id)
-                        self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side})
+                        self._publish_event(
+                            "forward_ok" if (not self.dry_run) else "forward_dry_ok",
+                            {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
+                        )
                         return
                     err = f"{name} returned non-success"
                     continue
@@ -805,7 +832,10 @@ class IntentBridge:
                 res = fn2(symbol=symbol, side=side, interval=interval, meta=meta)
                 if self._is_open_success(res):
                     self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event("forward_ok", {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side})
+                    self._publish_event(
+                        "forward_ok" if (not self.dry_run) else "forward_dry_ok",
+                        {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},
+                    )
                     return
                 err = f"{name} returned non-success"
 
@@ -818,6 +848,7 @@ class IntentBridge:
             "forward_skip",
             {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": err or "no callable entrypoint on executor"},
         )
+
     def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
         if self._is_close_intent(it):
             self._forward_close(it, source_pkg_id=source_pkg_id)
@@ -901,7 +932,7 @@ class IntentBridge:
                     continue
 
                 kind = _safe_str(ev.get("kind", ""))
-                if kind == "forward_ok":
+                if kind in ("forward_ok", "forward_dry_ok"):
                     ok += 1
                 elif kind == "forward_dry":
                     dry += 1
@@ -909,7 +940,7 @@ class IntentBridge:
                     skip += 1
                     why = _safe_str(ev.get("why", ""))
                     reasons[why] = reasons.get(why, 0) + 1
-                elif kind == "close_ok":
+                elif kind in ("close_ok", "close_dry_ok"):
                     close_ok += 1
                 elif kind == "close_dry":
                     close_dry += 1
@@ -923,6 +954,7 @@ class IntentBridge:
                     "symbols": self.selftest_symbols[:4],
                     "dry_run": self.dry_run,
                     "dryrun_bypass_gate": self.dryrun_bypass_gate,
+                    "dryrun_call_executor": self.dryrun_call_executor,
                     "max_open": self.max_open,
                     "dedup_symbol": self.dedup_symbol,
                     "close_cooldown_sec": self.close_cooldown_sec,
@@ -1004,4 +1036,3 @@ class IntentBridge:
 
 if __name__ == "__main__":
     IntentBridge().run_forever()
-
