@@ -4,6 +4,7 @@ import asyncio
 import csv
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -20,13 +21,13 @@ class TradeExecutor:
       - RiskManager ile entegre
       - PositionManager ile açık pozisyon state'ini yönetir
       - ATR bazlı SL/TP + trailing stop uygular
-      - Flip (long -> short, short -> long) durumunda PnL hesaplar
-      - DRY_RUN modunda gerçek emir atmadan simüle eder
+      - STALL (kâr ilerlemiyorsa TTL dolunca kapat) uygular
+      - Whale "hold/exit bias" ile trailing/TTL davranışını ayarlar
+      - DRY_RUN modunda gerçek emir atmadan state simüle eder
 
     Telegram politikası:
       ✅ Otomatik mesaj: SADECE pozisyon OPEN/CLOSE
-      ❌ Signal/HOLD/BUT/SELL karar anında mesaj YOK
-      (Diğer bilgiler manuel /status /signal /risk vb. ile bakılır)
+      ❌ Signal/HOLD karar anında mesaj YOK
     """
 
     def __init__(
@@ -39,7 +40,7 @@ class TradeExecutor:
         dry_run: bool = True,
         base_order_notional: float = 50.0,
         max_position_notional: float = 500.0,
-        max_leverage: float = 3.0,
+        max_leverage: float = 30.0,               # <-- 3 yerine 30 (dinamik 3-30 için)
         sl_pct: float = 0.01,
         tp_pct: float = 0.02,
         trailing_pct: float = 0.01,
@@ -68,6 +69,11 @@ class TradeExecutor:
         self.atr_tp_mult = float(atr_tp_mult)
 
         self.whale_risk_boost = float(whale_risk_boost)
+
+        # orchestration knobs (env)
+        self.w_min = float(self._clip_float(os.getenv("W_MIN", "0.58"), 0.58) or 0.58)
+        self.default_trail_pct = float(self._clip_float(os.getenv("TRAIL_PCT", "0.05"), 0.05) or 0.05)
+        self.default_stall_ttl_sec = int(float(self._clip_float(os.getenv("STALL_TTL_SEC", "0"), 0.0) or 0.0))
 
         # /status snapshot için
         self.last_snapshot: Dict[str, Any] = {}
@@ -256,7 +262,6 @@ class TradeExecutor:
 
     async def aclose(self) -> None:
         return await self.shutdown(reason="close")
-
     # -------------------------
     # backtest helper API
     # -------------------------
@@ -323,6 +328,65 @@ class TradeExecutor:
         self._local_positions.pop(sym, None)
 
     # -------------------------
+    # whale bias helpers
+    # -------------------------
+    def _whale_bias(self, side: str, extra: Dict[str, Any]) -> str:
+        """
+        Returns: "hold" | "exit" | "neutral"
+        """
+        try:
+            wdir = str(extra.get("whale_dir", "none") or "none").lower()
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+            if ws < float(self.w_min):
+                return "neutral"
+            if wdir in ("long", "short") and side in ("long", "short"):
+                if wdir == side:
+                    return "hold"
+                else:
+                    return "exit"
+        except Exception:
+            pass
+        return "neutral"
+
+    def _effective_trailing_pct(self, base_trail: float, bias: str) -> float:
+        """
+        hold -> daha gevşek (daha büyük pct)
+        exit -> daha sıkı (daha küçük pct)
+        """
+        bt = float(base_trail or 0.0)
+        if bt <= 0:
+            return 0.0
+        if bias == "hold":
+            return max(bt, bt * 1.25)
+        if bias == "exit":
+            return max(0.001, bt * 0.65)
+        return bt
+
+    def _effective_stall_ttl(self, base_ttl: int, bias: str) -> int:
+        """
+        hold -> TTL uzat
+        exit -> TTL kısalt
+        """
+        t = int(base_ttl or 0)
+        if t <= 0:
+            return 0
+        if bias == "hold":
+            return int(max(60, round(t * 1.50)))
+        if bias == "exit":
+            return int(max(60, round(t * 0.50)))
+        return t
+
+    @staticmethod
+    def _pnl_pct(side: str, entry: float, price: float) -> float:
+        if entry <= 0:
+            return 0.0
+        if side == "long":
+            return (price - entry) / entry
+        if side == "short":
+            return (entry - price) / entry
+        return 0.0
+
+    # -------------------------
     # position dict
     # -------------------------
     def _create_position_dict(
@@ -339,6 +403,21 @@ class TradeExecutor:
         opened_at = datetime.utcnow().isoformat()
         atr_value = float(extra.get("atr", 0.0) or 0.0)
 
+        # per-intent override (or default env)
+        trail_pct = self._clip_float(extra.get("trail_pct"), None)
+        if trail_pct is None:
+            trail_pct = self._clip_float(extra.get("trailing_pct"), None)
+        if trail_pct is None:
+            trail_pct = float(self.default_trail_pct or self.trailing_pct)
+        trail_pct = float(max(0.0, min(0.50, float(trail_pct))))
+
+        stall_ttl = extra.get("stall_ttl_sec", None)
+        try:
+            stall_ttl = int(stall_ttl) if stall_ttl is not None else int(self.default_stall_ttl_sec or 0)
+        except Exception:
+            stall_ttl = int(self.default_stall_ttl_sec or 0)
+        stall_ttl = int(max(0, stall_ttl))
+
         if self.use_atr_sltp and atr_value > 0.0:
             if signal == "long":
                 sl_price = price - self.atr_sl_mult * atr_value
@@ -354,6 +433,8 @@ class TradeExecutor:
                 sl_price = price * (1.0 + self.sl_pct)
                 tp_price = price * (1.0 - self.tp_pct)
 
+        now_ts = time.time()
+
         pos: Dict[str, Any] = {
             "symbol": str(symbol).upper(),
             "side": signal,
@@ -364,7 +445,13 @@ class TradeExecutor:
             "opened_at": opened_at,
             "sl_price": float(sl_price),
             "tp_price": float(tp_price),
-            "trailing_pct": float(self.trailing_pct),
+
+            # trailing / stall
+            "trailing_pct": float(trail_pct),
+            "stall_ttl_sec": int(stall_ttl),
+            "best_pnl_pct": 0.0,
+            "last_best_ts": float(now_ts),
+
             "atr_value": float(atr_value),
             "highest_price": float(price),
             "lowest_price": float(price),
@@ -487,7 +574,6 @@ class TradeExecutor:
             pass
 
         return pos
-
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -501,7 +587,7 @@ class TradeExecutor:
 
         sl_price = pos.get("sl_price")
         tp_price = pos.get("tp_price")
-        trailing_pct = float(pos.get("trailing_pct") or 0.0)
+        trailing_pct_base = float(pos.get("trailing_pct") or 0.0)
 
         sl = float(sl_price) if sl_price is not None else None
         tp = float(tp_price) if tp_price is not None else None
@@ -509,6 +595,40 @@ class TradeExecutor:
         highest = float(pos.get("highest_price", price) or price)
         lowest = float(pos.get("lowest_price", price) or price)
 
+        # --- whale bias ---
+        extra = {}
+        try:
+            meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
+            extra = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
+        except Exception:
+            extra = {}
+        bias = self._whale_bias(side=side, extra=extra)
+        trailing_pct = self._effective_trailing_pct(trailing_pct_base, bias)
+
+        # --- stall tracking ---
+        try:
+            entry = float(pos.get("entry_price") or 0.0)
+            cur_pnl_pct = float(self._pnl_pct(side, entry, float(price)))
+            best = float(pos.get("best_pnl_pct") or 0.0)
+            now_ts = time.time()
+
+            if cur_pnl_pct > best:
+                pos["best_pnl_pct"] = float(cur_pnl_pct)
+                pos["last_best_ts"] = float(now_ts)
+                self._set_position(symbol, pos)
+            else:
+                # stall check only if pnl positive (profit zone)
+                stall_ttl = int(pos.get("stall_ttl_sec") or 0)
+                stall_ttl_eff = self._effective_stall_ttl(stall_ttl, bias)
+                last_best_ts = float(pos.get("last_best_ts") or now_ts)
+
+                if stall_ttl_eff > 0 and cur_pnl_pct > 0.0:
+                    if (now_ts - last_best_ts) >= float(stall_ttl_eff):
+                        return self._close_position(symbol, float(price), reason="STALL_EXIT", interval=interval)
+        except Exception:
+            pass
+
+        # --- SL/TP/TRAIL ---
         if side == "long":
             if sl is not None and price <= sl:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
@@ -586,6 +706,175 @@ class TradeExecutor:
         return float(notional)
 
     # -------------------------
+    # Orchestration entrypoints (IntentBridge uyumlu)
+    # -------------------------
+    def open_position_from_signal(self, symbol: str, side: str, interval: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        IntentBridge bunu sync çağırıyor.
+        meta içinde beklenenler:
+          - recommended_leverage
+          - recommended_notional_pct
+          - score
+          - (opsiyonel) price / mark_price / last_price
+          - (opsiyonel) trail_pct, stall_ttl_sec
+          - (opsiyonel) whale_dir, whale_score
+        """
+        meta0 = meta if isinstance(meta, dict) else {}
+        sym_u = str(symbol).upper()
+        side0 = str(side or "long").strip().lower()
+        if side0 not in ("long", "short"):
+            side0 = "long"
+
+        # fiyat: meta'dan ya da client'tan (best effort)
+        price = None
+        for k in ("price", "mark_price", "last_price"):
+            pv = self._clip_float(meta0.get(k), None)
+            if pv is not None and pv > 0:
+                price = float(pv)
+                break
+
+        if price is None and self.client is not None:
+            # TODO: projendeki client API’sine göre burayı uyarlayabilirsin
+            # (şimdilik sadece best-effort)
+            try:
+                fn = getattr(self.client, "get_price", None)
+                if callable(fn):
+                    out = fn(sym_u)
+                    pv = self._clip_float(out, None)
+                    if pv and pv > 0:
+                        price = float(pv)
+            except Exception:
+                price = None
+
+        if price is None or price <= 0:
+            try:
+                self.logger.warning("[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s", sym_u, side0)
+            except Exception:
+                pass
+            return {"status": "skip", "reason": "missing_price"}
+
+        # notional: recommended_notional_pct varsa onu kullan (equity yoksa base üzerinden ölçekle)
+        npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
+        if npct is None:
+            npct = self._clip_float(meta0.get("notional_pct"), None)
+        npct = float(npct) if npct is not None else None
+
+        # equity (best effort)
+        eq = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
+        notional = None
+        if npct is not None and npct > 0:
+            notional = float(eq) * float(npct)
+
+        if notional is None or notional <= 0:
+            # fallback: eski compute_notional
+            notional = self._compute_notional(sym_u, side0, float(price), meta0)
+
+        notional = float(min(notional, float(self.max_position_notional)))
+        notional = float(max(10.0, notional))
+        qty = notional / float(price) if float(price) > 0 else 0.0
+        if qty <= 0:
+            return {"status": "skip", "reason": "bad_qty"}
+
+        # risk gate (istersen burada devreye al)
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None and hasattr(rm, "can_open_new_trade"):
+                ok = rm.can_open_new_trade(
+                    symbol=sym_u, side=side0, price=float(price), notional=float(notional), interval=str(interval or "")
+                )
+                if not ok:
+                    return {"status": "skip", "reason": "risk_gate"}
+        except Exception:
+            pass
+
+        # zaten açık mı?
+        cur = self._get_position(sym_u)
+        cur_side = str(cur.get("side")).lower() if cur else None
+        if cur_side in ("long", "short"):
+            if cur_side == side0:
+                return {"status": "ok", "reason": "already_open_same_side"}
+            # flip -> close then open
+            self._close_position(sym_u, float(price), reason="FLIP_INTENT", interval=str(interval or ""))
+
+        # position dict
+        probs = {}
+        extra = dict(meta0)
+        extra.setdefault("trail_pct", meta0.get("trail_pct", None))
+        extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
+
+        pos, _opened_at = self._create_position_dict(
+            signal=side0,
+            symbol=sym_u,
+            price=float(price),
+            qty=float(qty),
+            notional=float(notional),
+            interval=str(interval or ""),
+            probs=probs,
+            extra=extra,
+        )
+        self._set_position(sym_u, pos)
+
+        try:
+            self.logger.info(
+                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.6f price=%.6f notional=%.2f npct=%s dry_run=%s",
+                side0.upper(), sym_u, float(qty), float(price), float(notional),
+                ("-" if npct is None else f"{npct:.4f}"),
+                self.dry_run
+            )
+        except Exception:
+            pass
+
+        # telegram open
+        try:
+            self._notify_position_open(sym_u, str(interval or ""), side0, float(qty), float(price), extra)
+        except Exception:
+            pass
+
+        # risk on_open
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                rm.on_position_open(
+                    symbol=sym_u, side=side0, qty=float(qty), notional=float(notional),
+                    price=float(price), interval=str(interval or ""), meta={"reason": "INTENT_OPEN", **extra}
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": "opened" if not self.dry_run else "dry_run",
+            "symbol": sym_u,
+            "side": side0,
+            "qty": float(qty),
+            "price": float(price),
+            "notional": float(notional),
+            "trail_pct": float(pos.get("trailing_pct") or 0.0),
+            "stall_ttl_sec": int(pos.get("stall_ttl_sec") or 0),
+        }
+
+    def close_position_from_signal(self, symbol: str, interval: str = "", meta: Optional[Dict[str, Any]] = None, direction: str = "", price: Any = None, exit_price: Any = None) -> Dict[str, Any]:
+        """
+        IntentBridge close path’i için.
+        """
+        sym_u = str(symbol).upper()
+        pos = self._get_position(sym_u)
+        if not pos:
+            return {"status": "skip", "reason": "no_position"}
+
+        p = self._clip_float(price, None)
+        if p is None:
+            p = self._clip_float(exit_price, None)
+
+        # fiyat yoksa entry fiyat ile kapat (dry-run testlerinde işe yarar)
+        if p is None or p <= 0:
+            p = float(pos.get("entry_price") or 0.0) or 0.0
+
+        out = self._close_position(sym_u, float(p), reason="INTENT_CLOSE", interval=str(interval or pos.get("interval") or ""))
+        if out:
+            return {"status": "closed" if not self.dry_run else "dry_run", "symbol": sym_u, "price": float(p)}
+        return {"status": "skip", "reason": "close_failed"}
+
+    # -------------------------
     # Backward-compat open_position / execute_trade
     # -------------------------
     async def open_position(self, *args, **kwargs):
@@ -621,7 +910,7 @@ class TradeExecutor:
         side_norm = self._normalize_side(signal_u)
         sym_u = str(symbol).upper()
 
-        # snapshot for /status (manual kontrol)
+        # snapshot for /status
         try:
             p_used = extra0.get("ensemble_p")
             if p_used is None:
@@ -646,7 +935,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # HOLD: sadece CSV + log; telegram yok
+        # HOLD
         if signal_u == "HOLD":
             try:
                 ens = extra0.get("ensemble_p")
@@ -682,13 +971,12 @@ class TradeExecutor:
                 pass
             return
 
-        # shadow mode / training mode: trade yok
         if self._truthy_env("SHADOW_MODE", "0"):
             return
         if training_mode:
             return
 
-        # whale veto
+        # whale veto (legacy)
         try:
             whale_dir = str(extra0.get("whale_dir", "none") or "none").lower()
             whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
@@ -703,7 +991,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # SL/TP/trailing check (mevcut pozisyonu kapatabilir)
+        # SL/TP/TRAIL/STALL check (mevcut pozisyonu kapatabilir)
         try:
             self._check_sl_tp_trailing(symbol=sym_u, price=float(price), interval=interval)
         except Exception:
@@ -782,7 +1070,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # ✅ Telegram: sadece OPEN (burada)
+        # ✅ Telegram: sadece OPEN
         try:
             self._notify_position_open(
                 symbol=sym_u,
@@ -836,4 +1124,3 @@ class TradeExecutor:
                 pass
 
         return
-

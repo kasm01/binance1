@@ -58,6 +58,13 @@ def _epoch_ms_to_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
 class TopSelector:
     """
     candidates_stream -> top5_stream
@@ -67,9 +74,9 @@ class TopSelector:
 
       {"ts_utc": "...", "topk": N, "items": [candidate,...]}
 
-    Important reliability:
-      - Main loop acks AFTER flush (at-least-once). If crash happens, messages remain pending and can be replayed.
-      - Optional TOPSEL_DRAIN_PENDING=1 drains PEL at startup.
+    New additions:
+      - MIN_SCORE is now a supported fallback env for min_score
+      - W_MIN / TOPSEL_W_MIN whale gate: candidate must have whale_score >= threshold (if threshold > 0)
     """
 
     def __init__(self) -> None:
@@ -95,7 +102,14 @@ class TopSelector:
         self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
 
         # "0 trade normal" threshold
-        self.min_score = _env_float("TOPSEL_MIN_SCORE", _env_float("MIN_TOPSEL_SCORE", 0.10))
+        # UPDATED: now supports MIN_SCORE as fallback (so your .env habit works)
+        self.min_score = _env_float(
+            "TOPSEL_MIN_SCORE",
+            _env_float("MIN_TOPSEL_SCORE", _env_float("MIN_SCORE", 0.10)),
+        )
+
+        # NEW: whale minimum gate (TopSelector stage)
+        self.w_min = _env_float("TOPSEL_W_MIN", _env_float("W_MIN", 0.0))
 
         # penalties
         self.penalty_wide_spread = _env_float("TOPSEL_PENALTY_WIDE_SPREAD", 0.15)
@@ -131,7 +145,7 @@ class TopSelector:
         print(
             f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} "
             f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score} "
-            f"ack_immediate={self.ack_immediate}"
+            f"w_min={self.w_min} ack_immediate={self.ack_immediate}"
         )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
@@ -161,6 +175,21 @@ class TopSelector:
             return [str(x) for x in list(tags)]
         except Exception:
             return []
+
+    def _extract_whale_score(self, c: Dict[str, Any]) -> float:
+        """
+        Whale score can appear as:
+          - c["whale_score"]
+          - c["raw"]["whale_score"]
+        """
+        ws = _safe_float(c.get("whale_score", 0.0), 0.0)
+        if ws > 0:
+            return float(ws)
+        raw = c.get("raw") or {}
+        if isinstance(raw, dict):
+            ws2 = _safe_float(raw.get("whale_score", 0.0), 0.0)
+            return float(ws2)
+        return 0.0
 
     def _score(self, c: Dict[str, Any]) -> float:
         s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
@@ -232,7 +261,6 @@ class TopSelector:
             self.r.xack(self.in_stream, self.group, *ids)
         except Exception:
             pass
-
     def _select_topk(self, items: List[Tuple[str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         if not items:
             return []
@@ -253,6 +281,12 @@ class TopSelector:
 
             if not self._required_ok(c):
                 continue
+
+            # NEW: whale gate at TopSelector stage (optional)
+            if float(self.w_min) > 0.0:
+                ws = self._extract_whale_score(c)
+                if ws < float(self.w_min):
+                    continue
 
             windowed.append((sid, c))
 
@@ -360,6 +394,7 @@ class TopSelector:
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s min_score={self.min_score} "
+            f"w_min={self.w_min} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
@@ -400,4 +435,3 @@ class TopSelector:
 
 if __name__ == "__main__":
     TopSelector().run_forever()
-

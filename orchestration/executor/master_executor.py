@@ -113,15 +113,15 @@ class TradeIntent:
     risk_tags: List[str]
     raw: Dict[str, Any]
 
+    # NEW: downstream (executor/position manager) can use these
+    trail_pct: float = 0.0
+    stall_ttl_sec: int = 0
+
 
 class MasterExecutor:
     """
     IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
     OUT: trade_intents_stream
-
-    CandidateTrade expected fields (new standard):
-      symbol, interval, side, score_total, recommended_leverage, recommended_notional_pct,
-      risk_tags, reason_codes, ts_utc, source, dedup_key, raw(optional)
 
     Notes:
       - DRY_RUN=1 -> intents ARE published (safe; execution is controlled downstream).
@@ -159,7 +159,19 @@ class MasterExecutor:
         self._last_published_source_id: Optional[str] = None
 
         # Global score gate ("0 trade normal")
-        self.min_trade_score = _env_float("MASTER_MIN_TRADE_SCORE", 0.10)
+        # UPDATED: fallback supports MIN_SCORE too
+        self.min_trade_score = _env_float(
+            "MASTER_MIN_TRADE_SCORE",
+            _env_float("MIN_SCORE", 0.10),
+        )
+
+        # NEW: Whale min gate (second stage safety)
+        # If set (>0), intents require whale_score >= threshold
+        self.w_min = _env_float("MASTER_W_MIN", _env_float("W_MIN", 0.0))
+
+        # NEW: trailing / stall knobs forwarded to downstream executor
+        self.trail_pct = _env_float("TRAIL_PCT", 0.05)  # default 5%
+        self.stall_ttl_sec = _env_int("STALL_TTL_SEC", 0)  # e.g. 7200 for 2h
 
         # Whale-first scoring controls (final score)
         self.w_w = _env_float("MASTER_W_SCORE_WHALE", 0.60)
@@ -213,9 +225,6 @@ class MasterExecutor:
         self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
         self.arm_token = _env_str("ARM_TOKEN", "")
 
-        # IMPORTANT:
-        # DRY_RUN=1 -> publish intents (safe, downstream will not place real orders anyway)
-        # DRY_RUN=0 -> require arming
         self.publish_allowed = bool(
             self.dry_run_env or (self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
         )
@@ -232,11 +241,11 @@ class MasterExecutor:
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
+            f"w_min={self.w_min:.3f} trail_pct={self.trail_pct:.4f} stall_ttl_sec={self.stall_ttl_sec} "
             f"heavy_enable={self.heavy_enable} heavy_topk={self.heavy_topk} "
             f"publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
-
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -277,18 +286,14 @@ class MasterExecutor:
         if s in ("sell", "short"):
             return "short"
         return s or "long"
+
     def _candidate_score(self, c: Dict[str, Any]) -> float:
-        # CandidateTrade standard: score_total is main
         return _safe_float(
             c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))),
             0.0,
         )
 
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-        """
-        Best-effort heavy scorer stub.
-        İleride MTF+LSTM vb. burada devreye girecek.
-        """
         base = float(self._candidate_score(c))
         return base, ["heavy_passthrough"]
 
@@ -303,25 +308,17 @@ class MasterExecutor:
         return False
 
     def _compute_final_score(self, c: Dict[str, Any]) -> float:
-        """
-        Whale-first final score (0..1).
-        raw_evt: Aggregator'ın CandidateTrade.raw içine koyduğu SignalEvent.
-        raw yoksa meta/alanlardan best-effort toplanır.
-        """
         raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
         if raw_evt is None:
             raw_evt = {}
 
-        # whale_score: raw_evt.whale_score OR candidate whale_score OR 0
         whale = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
 
-        # micro proxy: meta.micro_score OR raw_evt.micro_score OR 0
         micro = _safe_float(
             _meta_get(raw_evt, "micro_score", raw_evt.get("micro_score", c.get("micro_score", 0.0))),
             0.0,
         )
 
-        # mtf proxy: meta.fast_model_score OR meta.p_used OR candidate.score_total
         mtf = _safe_float(
             _meta_get(
                 raw_evt,
@@ -349,7 +346,6 @@ class MasterExecutor:
         if raw_evt is None:
             raw_evt = {}
 
-        # if heavy stage already set a final score, reuse it (avoid double work)
         score = _safe_float(c.get("_score_total_final"), None)  # type: ignore[arg-type]
         if score is None:
             score = self._compute_final_score(c)
@@ -371,7 +367,6 @@ class MasterExecutor:
 
         side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
 
-        # CandidateTrade standard uses reason_codes; keep backward compatible with reasons
         reasons = [str(x) for x in _as_list(c.get("reason_codes"))] or [str(x) for x in _as_list(c.get("reasons"))]
         risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
 
@@ -379,7 +374,10 @@ class MasterExecutor:
         whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")))
         whale_contra = self._is_whale_contra(side, {**raw_evt, "whale_dir": whale_dir})
 
-        # Whale align detection
+        # NEW: Whale minimum gate (second stage)
+        if float(self.w_min) > 0.0 and float(whale_score) < float(self.w_min):
+            return None
+
         whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
 
         if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
@@ -428,6 +426,11 @@ class MasterExecutor:
         c2 = dict(c)
         c2["_score_total_final"] = float(score)
 
+        # NEW: add execution-management knobs to raw (downstream can use)
+        c2["trail_pct"] = float(self.trail_pct)
+        c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
+        c2["w_min"] = float(self.w_min)
+
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
@@ -440,13 +443,11 @@ class MasterExecutor:
             reasons=reasons,
             risk_tags=risk_tags,
             raw=dict(c2),
+            trail_pct=float(self.trail_pct),
+            stall_ttl_sec=int(self.stall_ttl_sec),
         )
 
     def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Optional heavy scoring on first K items.
-        Adds: _score_heavy, _score_total_final, _reasons_final
-        """
         if not self.heavy_enable:
             return items
 
@@ -493,13 +494,8 @@ class MasterExecutor:
         return out
 
     def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
-        """
-        items: top5 paket içinden gelir.
-        heavy_enable ise _apply_heavy_stage ile _score_total_final zaten set edilmiş olur.
-        """
         t0 = time.time()
 
-        # Ensure each item has _score_total_final
         scored: List[Dict[str, Any]] = []
         for c in items:
             if not isinstance(c, dict):
@@ -535,6 +531,7 @@ class MasterExecutor:
             print(f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out_intents={len(intents)}")
 
         return intents
+
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -588,9 +585,13 @@ class MasterExecutor:
                     "score": it.score,
                     "recommended_leverage": it.recommended_leverage,
                     "recommended_notional_pct": it.recommended_notional_pct,
+                    "trail_pct": float(it.trail_pct),
+                    "stall_ttl_sec": int(it.stall_ttl_sec),
                     "reasons": it.reasons,
                     "risk_tags": it.risk_tags,
                     "raw": it.raw,
+                    "trail_pct": float(getattr(it, "trail_pct", 0.0) or 0.0),
+                    "stall_ttl_sec": int(getattr(it, "stall_ttl_sec", 0) or 0),
                 }
                 for it in intents
             ],

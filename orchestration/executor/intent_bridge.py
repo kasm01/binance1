@@ -758,12 +758,17 @@ class IntentBridge:
         npct = float(_safe_float(it.get("recommended_notional_pct", 0.05), 0.05))
         score = float(_safe_float(it.get("score", 0.0), 0.0))
 
+        trail_pct = float(_safe_float(it.get("trail_pct", os.getenv("TRAIL_PCT", "0.05")), 0.05))
+        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0")), 0.0))
+
         meta = {
             "reason": "ORCH_INTENT",
             "intent_id": intent_id,
             "score": score,
             "recommended_leverage": lev,
             "recommended_notional_pct": npct,
+            "trail_pct": trail_pct,
+            "stall_ttl_sec": stall_ttl_sec,
             "source_pkg_id": source_pkg_id,
         }
 
