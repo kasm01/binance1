@@ -68,19 +68,13 @@ class IntentBridge:
     Restart-safe: XREADGROUP + XACK
 
     DRY_RUN behavior is configurable:
-      - BRIDGE_DRYRUN_BYPASS_GATE=1  -> bypass all open-position gates (dedup/max_open/cooldown)
-      - BRIDGE_DRYRUN_BYPASS_GATE=0  -> apply gates in dry-run (recommended for regression tests)
-      - BRIDGE_DRYRUN_WRITE_STATE=1  -> keep open_positions_state in dry-run to test gates
+      - BRIDGE_DRYRUN_BYPASS_GATE=1   -> bypass all open-position gates (dedup/max_open/cooldown)
+      - BRIDGE_DRYRUN_WRITE_STATE=1   -> keep open_positions_state in dry-run to test gates
       - BRIDGE_DRYRUN_CALL_EXECUTOR=1 -> DRY_RUN olsa bile executor'u çağır (executor zaten dry_run=True ise emir atmaz)
-
-    Close/state cleanup:
-      - Close intents remove symbol from open map and write a "closed" cooldown marker
-      - Re-open within cooldown is skipped with reason "cooldown: <sec_left>s left"
-      - TTL cleanup can also prune stale open/closed entries
 
     IMPORTANT:
       - Key-level TTL for state is controlled via BRIDGE_STATE_TTL_SEC (default 600).
-        If BRIDGE_STATE_TTL_SEC <= 0, key TTL is disabled (Redis TTL will show -1).
+        If BRIDGE_STATE_TTL_SEC <= 0, key TTL is disabled.
     """
 
     def __init__(self) -> None:
@@ -108,10 +102,6 @@ class IntentBridge:
         self.dry_run = _env_bool("DRY_RUN", True)
 
         # --- LIVE SAFETY POLICY ---
-        # Live trade is only allowed if:
-        #   - DRY_RUN=0
-        #   - ARMED=1
-        # Otherwise force dry_run=True.
         self.armed = _env_bool("ARMED", False)
         self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
         if (not self.armed) or self.kill_switch:
@@ -122,10 +112,10 @@ class IntentBridge:
         self.dedup_symbol = _env_bool("DEDUP_SYMBOL_OPEN", True)
         self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
 
-        # Key-level TTL (IMPORTANT FIX)
+        # Key-level TTL
         self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 600)  # <=0 disables key TTL
 
-        # TTL-based cleanup (open/closed maps inside state JSON)
+        # TTL-based cleanup (maps inside JSON)
         self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)
         self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)
         self.closed_ttl_sec = _env_int(
@@ -140,10 +130,10 @@ class IntentBridge:
         self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", False)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
-        # NEW: dry-run'da executor çağırma opsiyonu (position state/test için)
+        # NEW: dry-run'da executor çağırma opsiyonu
         self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", False)
 
-        # Success assumptions (important when executor returns None)
+        # Success assumptions
         self.open_assume_success_on_noexc = _env_bool("BRIDGE_OPEN_ASSUME_SUCCESS_ON_NOEXC", True)
         self.close_assume_success_on_noexc = _env_bool("BRIDGE_CLOSE_ASSUME_SUCCESS_ON_NOEXC", True)
 
@@ -158,6 +148,7 @@ class IntentBridge:
         self.selftest_interval = os.getenv("BRIDGE_SELFTEST_INTERVAL", "5m")
         self.selftest_side = os.getenv("BRIDGE_SELFTEST_SIDE", "long")
         self.selftest_wait_sec = float(_safe_float(os.getenv("BRIDGE_SELFTEST_WAIT_SEC", "2.0"), 2.0))
+
         self.r = redis.Redis(
             host=self.redis_host,
             port=self.redis_port,
@@ -166,7 +157,7 @@ class IntentBridge:
             decode_responses=True,
         )
 
-        # Ensure stream+group exist (MKSTREAM) at startup
+        # Ensure stream+group exist
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         # TradeExecutor + RiskManager + PositionManager
@@ -176,8 +167,6 @@ class IntentBridge:
 
         self.risk_manager = RiskManager()
 
-        # PositionManager: Redis üzerinde positions:{SYMBOL} state için
-        # Not: PositionManager kendi içinde redis_url alıyor.
         redis_url = os.getenv("POSITION_REDIS_URL", f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}")
         pm_key_prefix = os.getenv("POSITION_KEY_PREFIX", "positions")
         pm_db = _env_int("POSITION_REDIS_DB", self.redis_db)
@@ -190,7 +179,6 @@ class IntentBridge:
             pg_dsn=os.getenv("PG_DSN") or None,
         )
 
-        # Executor (dry_run flag buradan geçiyor)
         self.executor = TradeExecutor(
             client=None,
             risk_manager=self.risk_manager,
@@ -208,15 +196,10 @@ class IntentBridge:
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
             f"pos_redis={redis_url} pos_prefix={pm_key_prefix}"
         )
-
     # -----------------------
     # Redis helpers
     # -----------------------
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
-        """
-        Ensure consumer group exists; create stream if missing (MKSTREAM).
-        Safe to call multiple times.
-        """
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
             print(f"[IntentBridge] XGROUP created: stream={stream} group={group} start_id={start_id}")
@@ -253,11 +236,21 @@ class IntentBridge:
             return "short"
         return s or "long"
 
+    def _extract_open_price(self, it: Dict[str, Any]) -> Optional[float]:
+        """
+        Open intent içinden fiyatı robust şekilde çıkarır.
+        Kabul edilen alanlar: price, mark_price, last_price, entry_price, close_price
+        """
+        for k in ("price", "mark_price", "last_price", "entry_price", "close_price"):
+            v = it.get(k, None)
+            if v is None:
+                continue
+            p = _safe_float(v, 0.0)
+            if p > 0:
+                return float(p)
+        return None
+
     def _extract_close_price(self, it: Dict[str, Any]) -> Optional[float]:
-        """
-        Close intent içinden fiyatı robust şekilde çıkarır.
-        Kabul edilen alanlar: price, exit_price, close_price, fill_price
-        """
         for k in ("price", "exit_price", "close_price", "fill_price"):
             v = it.get(k, None)
             if v is None:
@@ -268,35 +261,23 @@ class IntentBridge:
         return None
 
     def _normalize_direction(self, side_or_dir: str) -> str:
-        """
-        TradeExecutor close için LONG/SHORT normalize eder.
-        """
         s = (side_or_dir or "").strip().upper()
         if s in ("LONG", "BUY"):
             return "LONG"
         if s in ("SHORT", "SELL"):
             return "SHORT"
-
         sl = (side_or_dir or "").strip().lower()
         if sl == "long":
             return "LONG"
         if sl == "short":
             return "SHORT"
         return ""
+
     def _is_close_success(self, res: Any) -> bool:
-        """
-        Executor close dönüşünü normalize eder.
-        Başarılı sayılacaklar:
-          - dict: status in (success, ok, closed, dry_run)
-          - True (bool)
-          - None => BRIDGE_CLOSE_ASSUME_SUCCESS_ON_NOEXC'a göre
-        """
         if res is None:
             return bool(self.close_assume_success_on_noexc)
-
         if isinstance(res, bool):
             return res is True
-
         if isinstance(res, dict):
             st = _safe_str(res.get("status", "")).strip().lower()
             if st in ("success", "ok", "closed", "dry_run"):
@@ -304,14 +285,9 @@ class IntentBridge:
             if _safe_str(res.get("result", "")).strip().lower() in ("success", "ok"):
                 return True
             return False
-
         return False
 
     def _is_open_success(self, res: Any) -> bool:
-        """
-        Open dönüşü çoğu implementasyonda None olabilir.
-        None => BRIDGE_OPEN_ASSUME_SUCCESS_ON_NOEXC'a göre.
-        """
         if res is None:
             return bool(self.open_assume_success_on_noexc)
         if isinstance(res, bool):
@@ -320,11 +296,63 @@ class IntentBridge:
             st = _safe_str(res.get("status", "")).strip().lower()
             if st in ("success", "ok", "opened", "open", "dry_run"):
                 return True
-            # executor bazen {"status":"skip"} döndürebilir
             if st in ("skip", "fail", "error"):
                 return False
-        return True  # res var ve exception yoksa başarı kabul
+        return True
 
+    # -----------------------
+    # Executor helpers (NEW)
+    # -----------------------
+    def _try_open_via_execute_decision(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        price: float,
+        meta: Dict[str, Any],
+    ) -> Tuple[bool, Any, str]:
+        """
+        TradeExecutor.execute_decision varsa onu çağırır.
+        Bu yol positions:* state yazdırır (PositionManager.set_position).
+        """
+        fn = getattr(self.executor, "execute_decision", None)
+        if not callable(fn):
+            return False, None, "no execute_decision"
+
+        signal = "BUY" if side == "long" else "SELL"
+        probs: Dict[str, float] = {}
+
+        try:
+            if inspect.iscoroutinefunction(fn):
+                res = asyncio.run(
+                    fn(
+                        signal=signal,
+                        symbol=symbol,
+                        price=float(price),
+                        size=None,
+                        interval=interval,
+                        training_mode=False,
+                        hybrid_mode=False,
+                        probs=probs,
+                        extra=meta,
+                    )
+                )
+                return True, res, "execute_decision(asyncio.run)"
+            else:
+                res = fn(
+                    signal=signal,
+                    symbol=symbol,
+                    price=float(price),
+                    size=None,
+                    interval=interval,
+                    training_mode=False,
+                    hybrid_mode=False,
+                    probs=probs,
+                    extra=meta,
+                )
+                return True, res, "execute_decision(sync)"
+        except Exception as e:
+            return False, None, f"execute_decision failed: {repr(e)}"
     # -----------------------
     # State helpers
     # -----------------------
@@ -343,13 +371,7 @@ class IntentBridge:
             return {"open": {}, "closed": {}}
 
     def _save_state(self, open_map: Dict[str, Any], closed_map: Optional[Dict[str, Any]] = None) -> None:
-        """
-        IMPORTANT FIX:
-        - State write uses SET with EX (key-level TTL) if BRIDGE_STATE_TTL_SEC > 0.
-        - This guarantees TTL is present; Redis TTL will not show -1 anymore.
-        """
         payload_obj: Dict[str, Any] = {"open": open_map}
-
         if closed_map is not None:
             payload_obj["closed"] = closed_map
         else:
@@ -357,7 +379,6 @@ class IntentBridge:
             payload_obj["closed"] = st.get("closed", {}) if isinstance(st.get("closed"), dict) else {}
 
         payload = json.dumps(payload_obj, ensure_ascii=False)
-
         ttl = int(self.state_ttl_sec or 0)
         try:
             if ttl > 0:
@@ -368,7 +389,6 @@ class IntentBridge:
             pass
 
     def _cleanup_map_ttl_inplace(self, m: Dict[str, Any], ttl_sec: int) -> bool:
-        """Returns True if modified."""
         if not ttl_sec or ttl_sec <= 0:
             return False
         try:
@@ -387,7 +407,6 @@ class IntentBridge:
             return False
 
     def _maybe_periodic_cleanup(self) -> None:
-        """Periodic cleanup loop trigger: safe no-op if disabled."""
         if self.cleanup_every_sec <= 0:
             return
         try:
@@ -434,20 +453,17 @@ class IntentBridge:
         return int(left) if left > 0 else 0
 
     def _gate_allow_open(self, symbol: str) -> Tuple[bool, str]:
-        # DRY-RUN MODE: optionally bypass gates (legacy behavior)
         if self.dry_run and self.dryrun_bypass_gate:
             return True, "dry_run_bypass"
 
         state = self._load_state()
         open_map = state.get("open", {}) if isinstance(state, dict) else {}
         closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
-
         if not isinstance(open_map, dict):
             open_map = {}
         if not isinstance(closed_map, dict):
             closed_map = {}
 
-        # TTL cleanup for maps (inside state JSON)
         dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
         dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
         if dirty_open or dirty_closed:
@@ -461,7 +477,6 @@ class IntentBridge:
                 except Exception:
                     pass
 
-        # cooldown check
         left = self._cooldown_left_sec(closed_map, symbol)
         if left > 0:
             return False, f"cooldown: {left}s left"
@@ -490,14 +505,9 @@ class IntentBridge:
             closed_map.pop(symbol, None)
             self._publish_event("state_closed_cleared", {"state_key": self.state_key, "symbol": symbol})
 
-        open_map[symbol] = {
-            "side": side,
-            "interval": interval,
-            "ts_utc": _now_utc_iso(),
-            "intent_id": intent_id,
-        }
-
+        open_map[symbol] = {"side": side, "interval": interval, "ts_utc": _now_utc_iso(), "intent_id": intent_id}
         self._save_state(open_map, closed_map)
+
         self._publish_event(
             "state_written",
             {
@@ -509,10 +519,6 @@ class IntentBridge:
         )
 
     def _gate_mark_close(self, symbol: str, reason: str, intent_id: str) -> None:
-        """
-        IMPORTANT:
-        Bu fonksiyon SADECE close gerçekten başarılıysa çağrılmalı.
-        """
         if self.dry_run and (not self.dryrun_write_state):
             return
 
@@ -562,15 +568,6 @@ class IntentBridge:
         return None
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
-        """
-        start_id:
-          ">" => new
-          "0" => pending (PEL)
-
-        Important: If stream key is deleted while blocking,
-        Redis can raise: "UNBLOCKED the stream key no longer exists".
-        We recover by recreating stream+group and returning empty batch.
-        """
         try:
             resp = self.r.xreadgroup(
                 groupname=self.group,
@@ -624,72 +621,6 @@ class IntentBridge:
         return False
 
     # -----------------------
-    # Close call helper (unified)
-    # -----------------------
-    def _try_close_executor(
-        self,
-        symbol: str,
-        interval: str,
-        direction: str,
-        price: Any,
-        meta: Dict[str, Any],
-    ) -> Tuple[bool, Any, str]:
-        """
-        Executor üzerinde farklı close entrypoint'lerini dener.
-        Geri dönüş:
-            (called_ok, result, method_name_or_err)
-        """
-        candidates = ("close_position_from_signal", "close_position", "close_trade", "close")
-
-        for name in candidates:
-            fn = getattr(self.executor, name, None)
-            if not callable(fn):
-                continue
-
-            try:
-                # coroutine
-                if inspect.iscoroutinefunction(fn):
-                    kwargs_list = [
-                        {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "price": price},
-                        {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "exit_price": price},
-                        {"symbol": symbol, "interval": interval, "meta": meta},
-                        {"symbol": symbol},
-                    ]
-                    last_te = None
-                    for kwargs in kwargs_list:
-                        try:
-                            res = asyncio.run(fn(**kwargs))
-                            return True, res, f"{name}(asyncio.run)"
-                        except TypeError as te:
-                            last_te = te
-                            continue
-                    return False, None, f"{name} signature mismatch: {last_te}"
-
-                # sync
-                kwargs_list = [
-                    {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "price": price},
-                    {"symbol": symbol, "interval": interval, "meta": meta, "direction": direction, "exit_price": price},
-                    {"symbol": symbol, "direction": direction, "price": price},
-                    {"symbol": symbol, "direction": direction, "exit_price": price},
-                    {"symbol": symbol, "interval": interval, "meta": meta},
-                    {"symbol": symbol},
-                ]
-                last_te = None
-                for kwargs in kwargs_list:
-                    try:
-                        res = fn(**kwargs)
-                        return True, res, f"{name}(sync)"
-                    except TypeError as te:
-                        last_te = te
-                        continue
-                return False, None, f"{name} signature mismatch: {last_te}"
-
-            except Exception as e:
-                return False, None, f"{name} failed: {repr(e)}"
-
-        return False, None, "no close entrypoint on executor"
-
-    # -----------------------
     # Forwarding logic
     # -----------------------
     def _forward_close(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -701,12 +632,9 @@ class IntentBridge:
             self._publish_event("close_skip", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"})
             return
 
-        # direction
         raw_side = _safe_str(it.get("side", "")).strip()
         direction = self._normalize_direction(raw_side)
-
         if not direction:
-            # side verilmemişse state'ten dene
             st = self._load_state()
             open_map = st.get("open", {}) if isinstance(st, dict) else {}
             if isinstance(open_map, dict) and isinstance(open_map.get(symbol), dict):
@@ -719,9 +647,7 @@ class IntentBridge:
 
         meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
 
-        # DRY RUN behavior:
-        # - default: sadece bridge state kapatır (legacy)
-        # - BRIDGE_DRYRUN_CALL_EXECUTOR=1 ise executor close da çağrılır (executor dry_run=True ise emir yok)
+        # DRY RUN: eğer call_executor kapalıysa sadece state
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
@@ -730,26 +656,33 @@ class IntentBridge:
             )
             return
 
-        called_ok, res, method_or_err = self._try_close_executor(
-            symbol=symbol,
-            interval=interval,
-            direction=direction,
-            price=close_price,
-            meta=meta,
-        )
+        # DRY_RUN_CALL_EXECUTOR=1 ise executor close_position dene (state + positions temizlensin)
+        fn = getattr(self.executor, "close_position", None)
+        called_ok = False
+        res: Any = None
+        why = "no close_position on executor"
+        try:
+            if callable(fn):
+                called_ok = True
+                # price None ise 0.0 geç (TradeExecutor zaten float bekliyor)
+                res = fn(symbol=symbol, price=float(close_price or 0.0), reason="intent_close", interval=interval)
+                why = "close_position(sync)"
+        except Exception as e:
+            called_ok = False
+            res = None
+            why = f"close_position failed: {repr(e)}"
 
         if called_ok and self._is_close_success(res):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
                 "close_ok" if (not self.dry_run) else "close_dry_ok",
-                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
+                {"intent_id": intent_id, "method": why, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
             )
             return
 
-        # close çağrılamadıysa / başarısızsa: state'i kapatma
         self._publish_event(
             "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": method_or_err},
+            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": why},
         )
 
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -785,68 +718,40 @@ class IntentBridge:
             "source_pkg_id": source_pkg_id,
         }
 
-        # DRY RUN behavior:
-        # - default: sadece bridge state open (legacy)
-        # - BRIDGE_DRYRUN_CALL_EXECUTOR=1 ise executor open da çağrılır (executor dry_run=True ise emir yok)
+        # DRY RUN: eğer call_executor kapalıysa sadece bridge state
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_open(symbol, side, interval, intent_id)
             self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
             return
 
-        err: Optional[str] = None
+        # NEW: execute_decision yolunu tercih et (positions:* yazsın)
+        open_price = self._extract_open_price(it)
+        if open_price is None or open_price <= 0:
+            self._publish_event(
+                "forward_skip",
+                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_price_for_execute_decision"},
+            )
+            return
 
-        # Prefer open_position_from_signal if exists
-        fn = getattr(self.executor, "open_position_from_signal", None)
-        if callable(fn):
-            try:
-                res = fn(symbol=symbol, side=side, interval=interval, meta=meta)
-                if self._is_open_success(res):
-                    self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event(
-                        "forward_ok" if (not self.dry_run) else "forward_dry_ok",
-                        {"intent_id": intent_id, "method": "open_position_from_signal", "symbol": symbol, "side": side},
-                    )
-                    return
-                err = "open_position_from_signal returned non-success"
-            except Exception as e:
-                err = repr(e)
+        called_ok, res, method_or_err = self._try_open_via_execute_decision(
+            symbol=symbol,
+            side=side,
+            interval=interval,
+            price=float(open_price),
+            meta=meta,
+        )
 
-        # Fallback: open_position / execute_trade
-        for name in ("open_position", "execute_trade"):
-            fn2 = getattr(self.executor, name, None)
-            if not callable(fn2):
-                continue
-            try:
-                if inspect.iscoroutinefunction(fn2):
-                    res = asyncio.run(fn2(symbol=symbol, side=side, interval=interval, meta=meta))
-                    if self._is_open_success(res):
-                        self._gate_mark_open(symbol, side, interval, intent_id)
-                        self._publish_event(
-                            "forward_ok" if (not self.dry_run) else "forward_dry_ok",
-                            {"intent_id": intent_id, "method": f"{name}(asyncio.run)", "symbol": symbol, "side": side},
-                        )
-                        return
-                    err = f"{name} returned non-success"
-                    continue
-
-                res = fn2(symbol=symbol, side=side, interval=interval, meta=meta)
-                if self._is_open_success(res):
-                    self._gate_mark_open(symbol, side, interval, intent_id)
-                    self._publish_event(
-                        "forward_ok" if (not self.dry_run) else "forward_dry_ok",
-                        {"intent_id": intent_id, "method": f"{name}(sync)", "symbol": symbol, "side": side},
-                    )
-                    return
-                err = f"{name} returned non-success"
-
-            except TypeError as e:
-                err = err or f"{name} signature mismatch: {e}"
-            except Exception as e:
-                err = err or f"{name} failed: {repr(e)}"
+        if called_ok and self._is_open_success(res):
+            self._gate_mark_open(symbol, side, interval, intent_id)
+            self._publish_event(
+                "forward_ok" if (not self.dry_run) else "forward_dry_ok",
+                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "side": side, "interval": interval, "price": float(open_price)},
+            )
+            return
 
         self._publish_event(
             "forward_skip",
-            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": err or "no callable entrypoint on executor"},
+            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": method_or_err or "open failed"},
         )
 
     def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -882,7 +787,18 @@ class IntentBridge:
             for i, sym in enumerate(self.selftest_symbols[:4], start=1):
                 iid = f"{expected_prefix}{i}-{sym}"
                 expected_intents.append(iid)
-                pkg = {"items": [{"symbol": sym, "side": self.selftest_side, "interval": self.selftest_interval, "intent_id": iid}]}
+                # selftest'te price koyuyoruz ki execute_decision çalışsın
+                pkg = {
+                    "items": [
+                        {
+                            "symbol": sym,
+                            "side": self.selftest_side,
+                            "interval": self.selftest_interval,
+                            "intent_id": iid,
+                            "price": 1.0,  # dummy price
+                        }
+                    ]
+                }
                 self.r.xadd(self.in_stream, {"json": json.dumps(pkg, ensure_ascii=False)})
 
             deadline = time.time() + float(self.selftest_wait_sec or 2.0)
@@ -898,7 +814,6 @@ class IntentBridge:
                 for sid, pkg in rows:
                     if not pkg:
                         continue
-
                     items = pkg.get("items") or []
                     if isinstance(items, list):
                         for it in items:
@@ -906,7 +821,6 @@ class IntentBridge:
                                 iid = _safe_str(it.get("intent_id", ""))
                                 if iid.startswith(expected_prefix):
                                     seen.add(iid)
-
                     self._process_pkg(sid, pkg)
 
                 self._ack(mids)
@@ -973,12 +887,10 @@ class IntentBridge:
             )
         except Exception as e:
             self._publish_event("selftest_error", {"err": repr(e)})
-
     # -----------------------
     # Main loop
     # -----------------------
     def run_forever(self) -> None:
-        # Ensure group exists even if stream was deleted before start
         try:
             self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
         except Exception:
@@ -1009,11 +921,9 @@ class IntentBridge:
             rows = self._xreadgroup(">")
             if not rows:
                 idle += 1
-
                 if self.cleanup_every_sec > 0 and (time.time() - last_cleanup) >= self.cleanup_every_sec:
                     self._maybe_periodic_cleanup()
                     last_cleanup = time.time()
-
                 if idle % 30 == 0:
                     print("[IntentBridge] idle...")
                 continue
