@@ -85,7 +85,6 @@ class TradeExecutor:
         self._closed_buffer: List[Dict[str, Any]] = []
 
         self._closed = False
-
     # -------------------------
     # helpers (env / cast / normalize)
     # -------------------------
@@ -160,7 +159,6 @@ class TradeExecutor:
         if s == "sell":
             return "short"
         return "hold"
-
     # -------------------------
     # Telegram: SADECE OPEN/CLOSE
     # -------------------------
@@ -234,7 +232,6 @@ class TradeExecutor:
                 pm.close()
         except Exception:
             pass
-
     async def shutdown(self, reason: str = "unknown") -> None:
         """Async shutdown (idempotent)."""
         if getattr(self, "_closed", False):
@@ -262,6 +259,7 @@ class TradeExecutor:
 
     async def aclose(self) -> None:
         return await self.shutdown(reason="close")
+
     # -------------------------
     # backtest helper API
     # -------------------------
@@ -317,7 +315,6 @@ class TradeExecutor:
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
         self._local_positions[sym] = pos
-
     def _clear_position(self, symbol: str) -> None:
         sym = str(symbol).upper()
         if self.position_manager is not None:
@@ -385,7 +382,6 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
-
     # -------------------------
     # position dict
     # -------------------------
@@ -461,7 +457,6 @@ class TradeExecutor:
             },
         }
         return pos, opened_at
-
     @staticmethod
     def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
         if qty <= 0:
@@ -574,6 +569,7 @@ class TradeExecutor:
             pass
 
         return pos
+
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -662,7 +658,6 @@ class TradeExecutor:
                     return self._close_position(symbol, price, reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
-
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
@@ -752,7 +747,6 @@ class TradeExecutor:
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
-
         # notional: recommended_notional_pct varsa onu kullan (equity yoksa base üzerinden ölçekle)
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
@@ -892,7 +886,6 @@ class TradeExecutor:
 
     async def execute_trade(self, *args, **kwargs):
         return await self.open_position(*args, **kwargs)
-
     async def execute_decision(
         self,
         signal: str,
