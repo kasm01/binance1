@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Tuple
 from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 from orchestration.event_bus.redis_bus import RedisBus
 from orchestration.state.dup_guard import DupGuard
+from orchestration.schemas.events import SignalEvent
 
 
 def _ts_from_stream_id(mid: str) -> str:
@@ -158,9 +159,22 @@ class Aggregator:
             "dedup_key": dedup_key,
         }
 
+        # --- raw payload policy ---
+        # include_raw=1 -> full raw
+        # include_raw=0 -> still send "raw_min" so TopSelector/MasterExecutor gates keep working
         if self.include_raw:
             payload["raw"] = evt
-
+        else:
+            meta = evt.get("meta") if isinstance(evt.get("meta"), dict) else {}
+            payload["raw"] = {
+                "whale_score": float(evt.get("whale_score", 0.0) or 0.0),
+                "whale_dir": str(evt.get("whale_dir") or meta.get("whale_dir", "none") or "none"),
+                "meta": {
+                    "p_used": float(meta.get("p_used", 0.0) or 0.0),
+                    "fast_model_score": float(meta.get("fast_model_score", 0.0) or 0.0),
+                    "micro_score": float(meta.get("micro_score", 0.0) or 0.0),
+                },
+            }
         return payload
 
     def run_forever(self) -> None:
@@ -191,6 +205,8 @@ class Aggregator:
                 if not isinstance(evt, dict) or not evt:
                     continue
 
+
+                evt = SignalEvent.normalize(evt)
                 e = self._normalize_event(mid, evt)
 
                 # ignore HOLD/none

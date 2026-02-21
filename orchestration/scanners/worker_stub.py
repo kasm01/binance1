@@ -167,7 +167,6 @@ def main() -> None:
         # ----- SignalEvent (standard) -----
         ts_utc = _utc_now_iso()
         dedup_key = f"{sym}|{interval}|{side_candidate}"
-
         evt = {
             # helpful envelope
             "event_id": str(uuid.uuid4()),
@@ -187,6 +186,9 @@ def main() -> None:
             "atr_pct": float(atr_pct),           # 0..1 (örn 0.012 = %1.2)
             "spread_pct": float(spread_pct),     # 0..1
             "liq_score": float(liq_score),       # 0..1
+
+            # whale (TOP-LEVEL): downstream kolay okusun
+            "whale_dir": str(whale_dir),
 
             # dedup
             "dedup_key": dedup_key,              # symbol|interval|side_candidate

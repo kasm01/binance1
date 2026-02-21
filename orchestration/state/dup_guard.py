@@ -10,14 +10,25 @@ class DupGuard:
     """
     Simple cooldown guard using Redis SETNX + TTL.
     If key exists -> duplicate within cooldown.
+
+    Notes:
+      - cooldown_sec <= 0 => dedup disabled (always allow)
+      - Redis error => fail-open (avoid freezing system)
     """
+
     def __init__(self, bus: RedisBus, prefix: str = "dup", default_cooldown_sec: int = 20) -> None:
         self.bus = bus
         self.prefix = prefix
         self.default_cooldown_sec = int(default_cooldown_sec)
 
     def allow(self, key: str, cooldown_sec: Optional[int] = None) -> bool:
-        cd = int(cooldown_sec or self.default_cooldown_sec)
+        cd_raw = self.default_cooldown_sec if cooldown_sec is None else int(cooldown_sec)
+        cd = int(cd_raw)
+
+        # disable dedup if misconfigured
+        if cd <= 0:
+            return True
+
         rk = f"{self.prefix}:{key}"
         try:
             # SET key value NX EX cd

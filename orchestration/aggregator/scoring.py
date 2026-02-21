@@ -11,6 +11,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
 def _clamp(x: float, lo: float, hi: float) -> float:
     try:
         fx = float(x)
@@ -19,12 +26,42 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, fx))
 
 
+def _meta_get(evt: Dict[str, Any], key: str, default: Any = None) -> Any:
+    try:
+        meta = evt.get("meta") or {}
+        if isinstance(meta, dict) and key in meta:
+            return meta.get(key)
+    except Exception:
+        pass
+    return default
+
+
+def _get_whale_score(evt: Dict[str, Any]) -> float:
+    # whale_score can be top-level or under meta
+    ws = _safe_float(evt.get("whale_score", 0.0), 0.0)
+    if ws > 0:
+        return float(_clamp(ws, 0.0, 1.0))
+    ws2 = _safe_float(_meta_get(evt, "whale_score", 0.0), 0.0)
+    return float(_clamp(ws2, 0.0, 1.0))
+
+
+def _get_whale_dir(evt: Dict[str, Any]) -> str:
+    # whale_dir can be top-level or under meta
+    wd = str(evt.get("whale_dir", "") or "").strip().lower()
+    if wd:
+        return wd
+    wd2 = str(_meta_get(evt, "whale_dir", "") or "").strip().lower()
+    return wd2
+
+
 def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
     """
     SignalEvent -> score_total(0..1), reasons, risk_tags
 
     Primary: score_edge + confidence + liq_score (+ whale_score optional)
     Penalize: spread_pct, atr_pct (vol)
+
+    Inputs may be missing; function is fail-open and clamps to [0..1].
     """
     reasons: List[str] = []
     risk_tags: List[str] = []
@@ -48,26 +85,26 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
     LOW_LIQ_TAG = _env_float("TAG_LOW_LIQ_AT", 0.25)
     WHALE_STRONG_TAG = _env_float("TAG_WHALE_STRONG_AT", 0.35)
 
-    # --- inputs ---
-    edge = float(evt.get("score_edge", 0.0) or 0.0)
-    conf = float(evt.get("confidence", 0.0) or 0.0)
-    liq = float(evt.get("liq_score", 0.0) or 0.0)
-    whale = float(evt.get("whale_score", 0.0) or 0.0)
+    # --- inputs (clamped) ---
+    edge = _clamp(_safe_float(evt.get("score_edge", 0.0), 0.0), 0.0, 1.0)
+    conf = _clamp(_safe_float(evt.get("confidence", 0.0), 0.0), 0.0, 1.0)
+    liq = _clamp(_safe_float(evt.get("liq_score", 0.0), 0.0), 0.0, 1.0)
+    whale = _get_whale_score(evt)
 
-    spread = float(evt.get("spread_pct", 0.0) or 0.0)
-    atr = float(evt.get("atr_pct", 0.0) or 0.0)
+    spread = max(0.0, _safe_float(evt.get("spread_pct", 0.0), 0.0))
+    atr = max(0.0, _safe_float(evt.get("atr_pct", 0.0), 0.0))
 
     # penalties 0..1
     spr_pen = min(1.0, spread / max(SPR_REF, 1e-9)) if spread > 0 else 0.0
     vol_pen = min(1.0, atr / max(ATR_REF, 1e-9)) if atr > 0 else 0.0
 
     score_raw = (
-        W_EDGE * edge +
-        W_CONF * conf +
-        W_LIQ * liq +
-        W_WHALE * whale -
-        (W_SPREAD_PEN * spr_pen) -
-        (W_VOL_PEN * vol_pen)
+        (W_EDGE * edge)
+        + (W_CONF * conf)
+        + (W_LIQ * liq)
+        + (W_WHALE * whale)
+        - (W_SPREAD_PEN * spr_pen)
+        - (W_VOL_PEN * vol_pen)
     )
 
     # reasons
@@ -83,6 +120,8 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
 
     if liq >= 0.60:
         reasons.append("liq_ok")
+    elif liq >= 0.40:
+        reasons.append("liq_mid")
 
     if whale >= 0.20:
         reasons.append("whale_seen")
@@ -93,6 +132,18 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
         reasons.append("tight_spread")
     if vol_pen <= 0.50:
         reasons.append("vol_ok")
+
+    # whale alignment hints (optional; helps downstream)
+    wdir = _get_whale_dir(evt)
+    side = str(evt.get("side_candidate", "none") or "none").strip().lower()
+    if whale >= WHALE_STRONG_TAG and side in ("long", "short") and wdir:
+        # treat buy/long/inflow as long; sell/short/outflow as short
+        w_is_long = wdir in ("buy", "long", "in", "inflow")
+        w_is_short = wdir in ("sell", "short", "out", "outflow")
+        if (w_is_long and side == "long") or (w_is_short and side == "short"):
+            reasons.append("whale_align_" + side)
+        elif (w_is_long and side == "short") or (w_is_short and side == "long"):
+            reasons.append("whale_contra_" + side)
 
     # risk tags
     if spread >= WIDE_SPREAD_TAG:
@@ -115,31 +166,38 @@ def pass_quality_gates(evt: Dict[str, Any]) -> Tuple[bool, str]:
       - spread/atr under max
       - min confidence
       - optional: min liq
+      - optional: min whale score (GATE_MIN_WHALE_SCORE)
     """
     side = str(evt.get("side_candidate", "none") or "none").lower()
     if side not in ("long", "short"):
         return False, "side_none"
 
-    spread = float(evt.get("spread_pct", 0.0) or 0.0)
+    spread = float(_safe_float(evt.get("spread_pct", 0.0), 0.0))
     max_spread = _env_float("GATE_MAX_SPREAD_PCT", 0.0015)
     if spread > max_spread:
         return False, "spread_too_high"
 
-    atr = float(evt.get("atr_pct", 0.0) or 0.0)
+    atr = float(_safe_float(evt.get("atr_pct", 0.0), 0.0))
     max_atr = _env_float("GATE_MAX_ATR_PCT", 0.060)
     if atr > max_atr:
         return False, "atr_too_high"
 
-    conf = float(evt.get("confidence", 0.0) or 0.0)
+    conf = float(_safe_float(evt.get("confidence", 0.0), 0.0))
     min_conf = _env_float("GATE_MIN_CONF", 0.35)
     if conf < min_conf:
         return False, "conf_too_low"
 
     # optional liq gate (fail-open by default with low threshold)
-    liq = float(evt.get("liq_score", 0.0) or 0.0)
+    liq = float(_safe_float(evt.get("liq_score", 0.0), 0.0))
     min_liq = _env_float("GATE_MIN_LIQ", 0.0)
     if liq < min_liq:
         return False, "liq_too_low"
 
-    return True, "ok"
+    # optional whale gate (off by default)
+    min_whale = _env_float("GATE_MIN_WHALE_SCORE", 0.0)
+    if min_whale > 0.0:
+        ws = _get_whale_score(evt)
+        if ws < float(min_whale):
+            return False, "whale_too_low"
 
+    return True, "ok"

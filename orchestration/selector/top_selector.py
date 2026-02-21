@@ -72,6 +72,8 @@ def _norm_side(x: Any) -> str:
     if s in ("sell", "short"):
         return "short"
     return s
+
+
 class TopSelector:
     """
     candidates_stream -> top5_stream
@@ -156,6 +158,7 @@ class TopSelector:
             f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score} "
             f"w_min={self.w_min} ack_immediate={self.ack_immediate}"
         )
+
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -166,7 +169,6 @@ class TopSelector:
             raise
         except Exception:
             return
-
     def _normalize_candidate(self, c: Dict[str, Any], stream_id: str) -> Dict[str, Any]:
         d = dict(c)
 
@@ -188,6 +190,62 @@ class TopSelector:
         if not dk and sym:
             dk = f"{sym}|{itv}|{d.get('side','')}"
             d["dedup_key"] = dk
+
+        # -------------------------
+        # NEW: normalize risk_tags to List[str]
+        # -------------------------
+        rt = d.get("risk_tags", None)
+        if rt is None:
+            d["risk_tags"] = []
+        elif isinstance(rt, list):
+            d["risk_tags"] = [str(x) for x in rt if str(x).strip()]
+        elif isinstance(rt, tuple):
+            d["risk_tags"] = [str(x) for x in list(rt) if str(x).strip()]
+        elif isinstance(rt, str):
+            s = rt.strip()
+            if not s:
+                d["risk_tags"] = []
+            elif "," in s:
+                d["risk_tags"] = [t.strip() for t in s.split(",") if t.strip()]
+            else:
+                d["risk_tags"] = [s]
+        else:
+            # unknown type -> best effort
+            try:
+                d["risk_tags"] = [str(rt)]
+            except Exception:
+                d["risk_tags"] = []
+
+        # -------------------------
+        # NEW: whale_score normalize (top-level) so w_min gate works
+        # -------------------------
+        ws = d.get("whale_score", None)
+        if ws is None:
+            raw = d.get("raw") or {}
+            if isinstance(raw, dict):
+                ws = raw.get("whale_score", None)
+        if ws is not None:
+            d["whale_score"] = _clamp(_safe_float(ws, 0.0), 0.0, 1.0)
+
+        # -------------------------
+        # NEW: score_total fallback normalization
+        # prefer score_total; fallback to _score_total / _score_selected / raw
+        # -------------------------
+        st = d.get("score_total", None)
+        if st is None:
+            st = d.get("_score_total", None)
+        if st is None:
+            st = d.get("_score_selected", None)
+
+        if st is None:
+            raw = d.get("raw") or {}
+            if isinstance(raw, dict):
+                st = raw.get("score_total", None)
+            if st is None and isinstance(raw, dict):
+                st = raw.get("_score_total", None)
+
+        if st is not None:
+            d["score_total"] = _clamp(_safe_float(st, 0.0), 0.0, 1.0)
 
         return d
 

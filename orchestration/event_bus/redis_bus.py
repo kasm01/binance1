@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import redis
@@ -22,6 +24,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stream_id_to_epoch_ms(stream_id: str) -> int:
+    try:
+        return int(str(stream_id).split("-", 1)[0])
+    except Exception:
+        return int(time.time() * 1000)
+
+
+def _epoch_ms_to_iso(ms: int) -> str:
+    try:
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
+    except Exception:
+        return _now_utc_iso()
+
+
 @dataclass
 class RedisBusConfig:
     host: str = _env("REDIS_HOST", "127.0.0.1") or "127.0.0.1"
@@ -36,11 +56,15 @@ class RedisBus:
 
     Default streams:
       - signals_stream: workers -> aggregator
-      - candidates_stream: aggregator -> top selector (or executor)
+      - candidates_stream: aggregator -> top selector
 
     Env overrides:
       - SIGNALS_STREAM
       - CANDIDATES_STREAM
+
+    Extra env:
+      - BUS_XADD_MAXLEN (default 20000)
+        maxlen <= 0 => no trimming
     """
 
     def __init__(
@@ -53,6 +77,8 @@ class RedisBus:
 
         self.signals_stream = signals_stream or _env("SIGNALS_STREAM", "signals_stream") or "signals_stream"
         self.candidates_stream = candidates_stream or _env("CANDIDATES_STREAM", "candidates_stream") or "candidates_stream"
+
+        self.xadd_maxlen_default = _env_int("BUS_XADD_MAXLEN", 20000)
 
         self.r = redis.Redis(
             host=self.cfg.host,
@@ -85,20 +111,30 @@ class RedisBus:
             # fail-open
             return
 
-    def xadd_json(self, stream: str, payload: Dict[str, Any], maxlen: int = 20000) -> str:
+    def xadd_json(self, stream: str, payload: Dict[str, Any], maxlen: Optional[int] = None) -> str:
+        """
+        Best-effort XADD with JSON payload.
+
+        maxlen:
+          - None => BUS_XADD_MAXLEN default
+          - <=0  => no trimming
+        """
         data = {"json": json.dumps(payload, ensure_ascii=False)}
+
+        ml = self.xadd_maxlen_default if maxlen is None else int(maxlen)
         try:
-            return self.r.xadd(stream, data, maxlen=maxlen, approximate=True)
+            if ml <= 0:
+                return self.r.xadd(stream, data)
+            return self.r.xadd(stream, data, maxlen=ml, approximate=True)
         except Exception:
             # fail-open: best effort, return empty id to avoid crashing
             return ""
 
-    def publish_signal(self, payload: Dict[str, Any]) -> str:
-        return self.xadd_json(self.signals_stream, payload)
+    def publish_signal(self, payload: Dict[str, Any], maxlen: Optional[int] = None) -> str:
+        return self.xadd_json(self.signals_stream, payload, maxlen=maxlen)
 
-    def publish_candidate(self, payload: Dict[str, Any]) -> str:
-        return self.xadd_json(self.candidates_stream, payload)
-
+    def publish_candidate(self, payload: Dict[str, Any], maxlen: Optional[int] = None) -> str:
+        return self.xadd_json(self.candidates_stream, payload, maxlen=maxlen)
     def xreadgroup_json(
         self,
         stream: str,
@@ -109,6 +145,8 @@ class RedisBus:
         start_id: str = ">",
         create_group: bool = True,
         group_start_id: str = "$",
+        add_ts_utc_if_missing: bool = True,
+        add_source_stream_id: bool = True,
     ) -> List[Tuple[str, Dict[str, Any]]]:
         """
         Returns list of (message_id, payload_dict)
@@ -116,6 +154,12 @@ class RedisBus:
         start_id:
           ">" => new messages
           "0" => pending (PEL)
+
+        add_ts_utc_if_missing:
+          if payload lacks ts_utc, fill from stream-id timestamp
+
+        add_source_stream_id:
+          add _source_stream_id=mid (useful for tracing)
         """
         if create_group:
             try:
@@ -155,8 +199,17 @@ class RedisBus:
                     continue
                 try:
                     obj = json.loads(raw)
-                    if isinstance(obj, dict):
-                        out.append((mid, obj))
+                    if not isinstance(obj, dict):
+                        continue
+
+                    if add_source_stream_id and ("_source_stream_id" not in obj):
+                        obj["_source_stream_id"] = mid
+
+                    if add_ts_utc_if_missing and (not obj.get("ts_utc")):
+                        ms = _stream_id_to_epoch_ms(mid)
+                        obj["ts_utc"] = _epoch_ms_to_iso(ms)
+
+                    out.append((mid, obj))
                 except Exception:
                     continue
         return out
