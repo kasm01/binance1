@@ -58,6 +58,24 @@ def _parse_iso(ts: str) -> Optional[datetime]:
         return None
 
 
+def _run_coroutine_safely(coro):
+    """
+    asyncio.run() mevcut loop içinde patlayabilir.
+    Bridge tipik olarak loop içinde çalışmaz ama güvenli olsun diye fallback ekliyoruz.
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+
 class IntentBridge:
     """
     Consumes trade_intents_stream (group-based), forwards intents to TradeExecutor.
@@ -130,7 +148,7 @@ class IntentBridge:
         self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", False)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
 
-        # NEW: dry-run'da executor çağırma opsiyonu
+        # dry-run'da executor çağırma opsiyonu
         self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", False)
 
         # Success assumptions
@@ -236,30 +254,6 @@ class IntentBridge:
             return "short"
         return s or "long"
 
-    def _extract_open_price(self, it: Dict[str, Any]) -> Optional[float]:
-        """
-        Open intent içinden fiyatı robust şekilde çıkarır.
-        Kabul edilen alanlar: price, mark_price, last_price, entry_price, close_price
-        """
-        for k in ("price", "mark_price", "last_price", "entry_price", "close_price"):
-            v = it.get(k, None)
-            if v is None:
-                continue
-            p = _safe_float(v, 0.0)
-            if p > 0:
-                return float(p)
-        return None
-
-    def _extract_close_price(self, it: Dict[str, Any]) -> Optional[float]:
-        for k in ("price", "exit_price", "close_price", "fill_price"):
-            v = it.get(k, None)
-            if v is None:
-                continue
-            p = _safe_float(v, 0.0)
-            if p > 0:
-                return float(p)
-        return None
-
     def _normalize_direction(self, side_or_dir: str) -> str:
         s = (side_or_dir or "").strip().upper()
         if s in ("LONG", "BUY"):
@@ -272,6 +266,28 @@ class IntentBridge:
         if sl == "short":
             return "SHORT"
         return ""
+
+    def _extract_open_price(self, it: Dict[str, Any]) -> Optional[float]:
+        # OPEN intent accepted fields:
+        for k in ("price", "mark_price", "last_price", "entry_price", "close_price"):
+            v = it.get(k, None)
+            if v is None:
+                continue
+            p = _safe_float(v, 0.0)
+            if p > 0:
+                return float(p)
+        return None
+
+    def _extract_close_price(self, it: Dict[str, Any]) -> Optional[float]:
+        # CLOSE intent accepted fields:
+        for k in ("price", "exit_price", "close_price", "fill_price"):
+            v = it.get(k, None)
+            if v is None:
+                continue
+            p = _safe_float(v, 0.0)
+            if p > 0:
+                return float(p)
+        return None
 
     def _is_close_success(self, res: Any) -> bool:
         if res is None:
@@ -299,60 +315,6 @@ class IntentBridge:
             if st in ("skip", "fail", "error"):
                 return False
         return True
-
-    # -----------------------
-    # Executor helpers (NEW)
-    # -----------------------
-    def _try_open_via_execute_decision(
-        self,
-        symbol: str,
-        side: str,
-        interval: str,
-        price: float,
-        meta: Dict[str, Any],
-    ) -> Tuple[bool, Any, str]:
-        """
-        TradeExecutor.execute_decision varsa onu çağırır.
-        Bu yol positions:* state yazdırır (PositionManager.set_position).
-        """
-        fn = getattr(self.executor, "execute_decision", None)
-        if not callable(fn):
-            return False, None, "no execute_decision"
-
-        signal = "BUY" if side == "long" else "SELL"
-        probs: Dict[str, float] = {}
-
-        try:
-            if inspect.iscoroutinefunction(fn):
-                res = asyncio.run(
-                    fn(
-                        signal=signal,
-                        symbol=symbol,
-                        price=float(price),
-                        size=None,
-                        interval=interval,
-                        training_mode=False,
-                        hybrid_mode=False,
-                        probs=probs,
-                        extra=meta,
-                    )
-                )
-                return True, res, "execute_decision(asyncio.run)"
-            else:
-                res = fn(
-                    signal=signal,
-                    symbol=symbol,
-                    price=float(price),
-                    size=None,
-                    interval=interval,
-                    training_mode=False,
-                    hybrid_mode=False,
-                    probs=probs,
-                    extra=meta,
-                )
-                return True, res, "execute_decision(sync)"
-        except Exception as e:
-            return False, None, f"execute_decision failed: {repr(e)}"
     # -----------------------
     # State helpers
     # -----------------------
@@ -434,7 +396,6 @@ class IntentBridge:
                 )
         except Exception:
             pass
-
     # -----------------------
     # Gate logic
     # -----------------------
@@ -621,6 +582,84 @@ class IntentBridge:
         return False
 
     # -----------------------
+    # Executor call helpers (TradeExecutor uyumlu)
+    # -----------------------
+    def _call_open_executor(self, symbol: str, side: str, interval: str, meta: Dict[str, Any]) -> Tuple[bool, Any, str]:
+        """
+        Öncelik: TradeExecutor.open_position_from_signal (sync)
+        Fallback: execute_decision (async) (varsa)
+        """
+        fn = getattr(self.executor, "open_position_from_signal", None)
+        if callable(fn):
+            try:
+                res = fn(symbol=symbol, side=side, interval=interval, meta=meta)
+                return True, res, "open_position_from_signal(sync)"
+            except Exception as e:
+                return False, None, f"open_position_from_signal failed: {repr(e)}"
+
+        fn2 = getattr(self.executor, "execute_decision", None)
+        if callable(fn2):
+            signal = "BUY" if side == "long" else "SELL"
+            try:
+                if inspect.iscoroutinefunction(fn2):
+                    res = _run_coroutine_safely(
+                        fn2(
+                            signal=signal,
+                            symbol=symbol,
+                            price=float(meta.get("price") or 0.0),
+                            size=None,
+                            interval=interval,
+                            training_mode=False,
+                            hybrid_mode=False,
+                            probs={},
+                            extra=meta,
+                        )
+                    )
+                    return True, res, "execute_decision(async)"
+                else:
+                    res = fn2(
+                        signal=signal,
+                        symbol=symbol,
+                        price=float(meta.get("price") or 0.0),
+                        size=None,
+                        interval=interval,
+                        training_mode=False,
+                        hybrid_mode=False,
+                        probs={},
+                        extra=meta,
+                    )
+                    return True, res, "execute_decision(sync)"
+            except Exception as e:
+                return False, None, f"execute_decision failed: {repr(e)}"
+
+        return False, None, "no open entrypoint on executor"
+
+    def _call_close_executor(self, symbol: str, interval: str, meta: Dict[str, Any], direction: str, price: Any) -> Tuple[bool, Any, str]:
+        """
+        Öncelik: TradeExecutor.close_position_from_signal (sync)
+        Fallback: TradeExecutor.close_position (sync) (price required)
+        """
+        fn = getattr(self.executor, "close_position_from_signal", None)
+        if callable(fn):
+            try:
+                # signature: close_position_from_signal(symbol, interval="", meta=None, direction="", price=None, exit_price=None)
+                res = fn(symbol=symbol, interval=interval, meta=meta, direction=direction, price=price, exit_price=price)
+                return True, res, "close_position_from_signal(sync)"
+            except Exception as e:
+                return False, None, f"close_position_from_signal failed: {repr(e)}"
+
+        fn2 = getattr(self.executor, "close_position", None)
+        if callable(fn2):
+            try:
+                # signature: close_position(symbol, price, reason="manual", interval="")
+                res = fn2(symbol=symbol, price=float(_safe_float(price, 0.0)), reason="INTENT_CLOSE", interval=interval)
+                return True, res, "close_position(sync)"
+            except Exception as e:
+                return False, None, f"close_position failed: {repr(e)}"
+
+        return False, None, "no close entrypoint on executor"
+
+    # -----------------------
     # Forwarding logic
     # -----------------------
     def _forward_close(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -647,7 +686,7 @@ class IntentBridge:
 
         meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
 
-        # DRY RUN: eğer call_executor kapalıysa sadece state
+        # DRY RUN: call_executor kapalıysa sadece state
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
@@ -656,33 +695,25 @@ class IntentBridge:
             )
             return
 
-        # DRY_RUN_CALL_EXECUTOR=1 ise executor close_position dene (state + positions temizlensin)
-        fn = getattr(self.executor, "close_position", None)
-        called_ok = False
-        res: Any = None
-        why = "no close_position on executor"
-        try:
-            if callable(fn):
-                called_ok = True
-                # price None ise 0.0 geç (TradeExecutor zaten float bekliyor)
-                res = fn(symbol=symbol, price=float(close_price or 0.0), reason="intent_close", interval=interval)
-                why = "close_position(sync)"
-        except Exception as e:
-            called_ok = False
-            res = None
-            why = f"close_position failed: {repr(e)}"
+        called_ok, res, method_or_err = self._call_close_executor(
+            symbol=symbol,
+            interval=interval,
+            meta=meta,
+            direction=direction,
+            price=close_price,
+        )
 
         if called_ok and self._is_close_success(res):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
             self._publish_event(
                 "close_ok" if (not self.dry_run) else "close_dry_ok",
-                {"intent_id": intent_id, "method": why, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
+                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
             )
             return
 
         self._publish_event(
             "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": why},
+            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": method_or_err},
         )
 
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -695,9 +726,9 @@ class IntentBridge:
             self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"})
             return
 
-        allow, why = self._gate_allow_open(symbol)
+        allow, why_gate = self._gate_allow_open(symbol)
         if not allow:
-            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why})
+            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why_gate})
             return
 
         lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
@@ -706,6 +737,8 @@ class IntentBridge:
 
         trail_pct = float(_safe_float(it.get("trail_pct", os.getenv("TRAIL_PCT", "0.05")), 0.05))
         stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0")), 0.0))
+
+        open_price = self._extract_open_price(it)
 
         meta = {
             "reason": "ORCH_INTENT",
@@ -718,26 +751,21 @@ class IntentBridge:
             "source_pkg_id": source_pkg_id,
         }
 
-        # DRY RUN: eğer call_executor kapalıysa sadece bridge state
+        # kritik: TradeExecutor.open_position_from_signal meta’dan price bekliyor
+        if open_price is not None and open_price > 0:
+            meta["price"] = float(open_price)
+
+        # DRY RUN: call_executor kapalıysa sadece bridge state
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_open(symbol, side, interval, intent_id)
             self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
             return
 
-        # NEW: execute_decision yolunu tercih et (positions:* yazsın)
-        open_price = self._extract_open_price(it)
-        if open_price is None or open_price <= 0:
-            self._publish_event(
-                "forward_skip",
-                {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_price_for_execute_decision"},
-            )
-            return
-
-        called_ok, res, method_or_err = self._try_open_via_execute_decision(
+        # call executor (OPEN)
+        called_ok, res, method_or_err = self._call_open_executor(
             symbol=symbol,
             side=side,
             interval=interval,
-            price=float(open_price),
             meta=meta,
         )
 
@@ -745,7 +773,7 @@ class IntentBridge:
             self._gate_mark_open(symbol, side, interval, intent_id)
             self._publish_event(
                 "forward_ok" if (not self.dry_run) else "forward_dry_ok",
-                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "side": side, "interval": interval, "price": float(open_price)},
+                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "side": side, "interval": interval, "price": open_price},
             )
             return
 
@@ -767,7 +795,6 @@ class IntentBridge:
         for it in items:
             if isinstance(it, dict):
                 self._forward_one(it, source_pkg_id=sid)
-
     # -----------------------
     # Selftest
     # -----------------------
@@ -787,7 +814,6 @@ class IntentBridge:
             for i, sym in enumerate(self.selftest_symbols[:4], start=1):
                 iid = f"{expected_prefix}{i}-{sym}"
                 expected_intents.append(iid)
-                # selftest'te price koyuyoruz ki execute_decision çalışsın
                 pkg = {
                     "items": [
                         {
@@ -795,7 +821,7 @@ class IntentBridge:
                             "side": self.selftest_side,
                             "interval": self.selftest_interval,
                             "intent_id": iid,
-                            "price": 1.0,  # dummy price
+                            "price": 1.0,  # dummy price (open_position_from_signal meta price ister)
                         }
                     ]
                 }
@@ -887,6 +913,7 @@ class IntentBridge:
             )
         except Exception as e:
             self._publish_event("selftest_error", {"err": repr(e)})
+
     # -----------------------
     # Main loop
     # -----------------------
