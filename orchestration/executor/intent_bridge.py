@@ -74,8 +74,6 @@ def _run_coroutine_safely(coro):
                 loop.close()
             except Exception:
                 pass
-
-
 class IntentBridge:
     """
     Consumes trade_intents_stream (group-based), forwards intents to TradeExecutor.
@@ -155,9 +153,6 @@ class IntentBridge:
         self.open_assume_success_on_noexc = _env_bool("BRIDGE_OPEN_ASSUME_SUCCESS_ON_NOEXC", True)
         self.close_assume_success_on_noexc = _env_bool("BRIDGE_CLOSE_ASSUME_SUCCESS_ON_NOEXC", True)
 
-        # NEW: if False (default), OPEN requires price (prevents silent executor skip)
-        self.require_open_price = _env_bool("BRIDGE_REQUIRE_OPEN_PRICE", True)
-
         # selftest
         self.selftest = _env_bool("BRIDGE_SELFTEST", False)
         self.selftest_reset_state = _env_bool("BRIDGE_SELFTEST_RESET_STATE", True)
@@ -212,7 +207,6 @@ class IntentBridge:
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"dry_run={self.dry_run} state_key={self.state_key} state_ttl_sec={self.state_ttl_sec} "
             f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} dryrun_call_executor={self.dryrun_call_executor} "
-            f"require_open_price={self.require_open_price} "
             f"max_open={self.max_open} dedup_symbol={self.dedup_symbol} "
             f"close_cooldown_sec={self.close_cooldown_sec} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
@@ -319,14 +313,6 @@ class IntentBridge:
             if st in ("skip", "fail", "error"):
                 return False
         return True
-
-    def _open_result_reason(self, res: Any) -> str:
-        if isinstance(res, dict):
-            st = _safe_str(res.get("status", "")).strip().lower()
-            rs = _safe_str(res.get("reason", "")).strip()
-            if st:
-                return f"{st}:{rs}" if rs else st
-        return ""
     # -----------------------
     # State helpers
     # -----------------------
@@ -408,7 +394,6 @@ class IntentBridge:
                 )
         except Exception:
             pass
-
     # -----------------------
     # Gate logic
     # -----------------------
@@ -462,6 +447,7 @@ class IntentBridge:
             return False, f"max_open: {len(open_map)} >= {self.max_open}"
 
         return True, "ok"
+
     def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
         if self.dry_run and (not self.dryrun_write_state):
             return
@@ -523,7 +509,6 @@ class IntentBridge:
                 "state_ttl_sec": int(self.state_ttl_sec or 0),
             },
         )
-
     # -----------------------
     # Parsing / consuming
     # -----------------------
@@ -593,6 +578,7 @@ class IntentBridge:
             return True
 
         return False
+
     # -----------------------
     # Executor call helpers (TradeExecutor uyumlu)
     # -----------------------
@@ -668,7 +654,6 @@ class IntentBridge:
                 return False, None, f"close_position failed: {repr(e)}"
 
         return False, None, "no close entrypoint on executor"
-
     # -----------------------
     # Forwarding logic
     # -----------------------
@@ -676,6 +661,9 @@ class IntentBridge:
         symbol = _safe_str(it.get("symbol", "")).upper()
         interval = _safe_str(it.get("interval", ""))
         intent_id = _safe_str(it.get("intent_id", ""))
+
+        raw = it.get("raw", {})
+        raw = raw if isinstance(raw, dict) else {}
 
         if not symbol:
             self._publish_event("close_skip", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"})
@@ -693,7 +681,18 @@ class IntentBridge:
                 direction = "LONG"
 
         close_price = self._extract_close_price(it)
-        meta = {"reason": "ORCH_INTENT_CLOSE", "intent_id": intent_id, "source_pkg_id": source_pkg_id}
+
+        meta = {
+            "reason": "ORCH_INTENT_CLOSE",
+            "intent_id": intent_id,
+            "source_pkg_id": source_pkg_id,
+        }
+
+        # whale context (optional)
+        whale_dir = _safe_str(it.get("whale_dir", raw.get("whale_dir", "none")))
+        whale_score = float(_safe_float(it.get("whale_score", raw.get("whale_score", 0.0)), 0.0))
+        meta["whale_dir"] = whale_dir
+        meta["whale_score"] = whale_score
 
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
@@ -719,15 +718,9 @@ class IntentBridge:
             )
             return
 
-        why = method_or_err
-        if isinstance(res, dict):
-            rr = _safe_str(res.get("reason", "")).strip()
-            stt = _safe_str(res.get("status", "")).strip()
-            if stt or rr:
-                why = f"{method_or_err}:{stt}:{rr}".strip(":")
         self._publish_event(
             "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": why},
+            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": method_or_err},
         )
 
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -735,6 +728,9 @@ class IntentBridge:
         interval = _safe_str(it.get("interval", ""))
         side = self._normalize_side(_safe_str(it.get("side", "long")))
         intent_id = _safe_str(it.get("intent_id", ""))
+
+        raw = it.get("raw", {})
+        raw = raw if isinstance(raw, dict) else {}
 
         if not symbol:
             self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"})
@@ -745,28 +741,25 @@ class IntentBridge:
             self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why_gate})
             return
 
-        lev = int(_safe_float(it.get("recommended_leverage", 5), 5))
-        npct = float(_safe_float(it.get("recommended_notional_pct", 0.05), 0.05))
-        score = float(_safe_float(it.get("score", 0.0), 0.0))
+        lev = int(_safe_float(it.get("recommended_leverage", raw.get("recommended_leverage", 5)), 5))
+        npct = float(_safe_float(it.get("recommended_notional_pct", raw.get("recommended_notional_pct", 0.05)), 0.05))
+        score = float(_safe_float(it.get("score", raw.get("score", 0.0)), 0.0))
 
-        trail_pct = float(_safe_float(it.get("trail_pct", os.getenv("TRAIL_PCT", "0.05")), 0.05))
-        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0")), 0.0))
+        # UPDATED: raw fallback (MasterExecutor bazen raw içine de koyuyor)
+        trail_pct = float(_safe_float(it.get("trail_pct", raw.get("trail_pct", os.getenv("TRAIL_PCT", "0.05"))), 0.05))
+        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", raw.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0"))), 0.0))
+
+        # whale context (preferred for TradeExecutor whale bias)
+        whale_dir = _safe_str(it.get("whale_dir", raw.get("whale_dir", "none")))
+        whale_score = float(_safe_float(it.get("whale_score", raw.get("whale_score", 0.0)), 0.0))
+        w_min = float(_safe_float(it.get("w_min", raw.get("w_min", os.getenv("W_MIN", "0.0"))), 0.0))
 
         open_price = self._extract_open_price(it)
-
-        # ✅ hard gate: require price (prevents silent executor skip)
-        if self.require_open_price and (open_price is None or open_price <= 0):
-            self._publish_event(
-                "forward_skip",
-                {
-                    "intent_id": intent_id,
-                    "symbol": symbol,
-                    "side": side,
-                    "interval": interval,
-                    "why": "missing_price_for_execute_decision",
-                },
-            )
-            return
+        if open_price is None:
+            # bazı upstream'ler raw içine price koyabilir
+            rp = _safe_float(raw.get("price", 0.0), 0.0)
+            if rp > 0:
+                open_price = float(rp)
 
         meta = {
             "reason": "ORCH_INTENT",
@@ -776,9 +769,13 @@ class IntentBridge:
             "recommended_notional_pct": npct,
             "trail_pct": trail_pct,
             "stall_ttl_sec": stall_ttl_sec,
+            "whale_dir": whale_dir,
+            "whale_score": whale_score,
+            "w_min": w_min,
             "source_pkg_id": source_pkg_id,
         }
 
+        # kritik: TradeExecutor.open_position_from_signal meta’dan price bekliyor
         if open_price is not None and open_price > 0:
             meta["price"] = float(open_price)
 
@@ -802,13 +799,9 @@ class IntentBridge:
             )
             return
 
-        # better reason
-        rr = self._open_result_reason(res)
-        why = f"{method_or_err}:{rr}".strip(":") if rr else (method_or_err or "open failed")
-
         self._publish_event(
             "forward_skip",
-            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why},
+            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": method_or_err or "open failed"},
         )
 
     def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
@@ -882,6 +875,41 @@ class IntentBridge:
                 self._ack(mids)
                 time.sleep(0.02)
 
+            rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=500)
+
+            ok = dry = skip = 0
+            close_ok = close_dry = close_skip = 0
+            reasons: Dict[str, int] = {}
+
+            for _id, fields in rows:
+                s = fields.get("json")
+                if not s:
+                    continue
+                try:
+                    ev = json.loads(s)
+                except Exception:
+                    continue
+
+                iid = _safe_str(ev.get("intent_id", ""))
+                if not iid.startswith(expected_prefix):
+                    continue
+
+                kind = _safe_str(ev.get("kind", ""))
+                if kind in ("forward_ok", "forward_dry_ok"):
+                    ok += 1
+                elif kind == "forward_dry":
+                    dry += 1
+                elif kind == "forward_skip":
+                    skip += 1
+                    why = _safe_str(ev.get("why", ""))
+                    reasons[why] = reasons.get(why, 0) + 1
+                elif kind in ("close_ok", "close_dry_ok"):
+                    close_ok += 1
+                elif kind == "close_dry":
+                    close_dry += 1
+                elif kind == "close_skip":
+                    close_skip += 1
+
             self._publish_event(
                 "selftest_summary",
                 {
@@ -890,12 +918,20 @@ class IntentBridge:
                     "dry_run": self.dry_run,
                     "dryrun_bypass_gate": self.dryrun_bypass_gate,
                     "dryrun_call_executor": self.dryrun_call_executor,
-                    "require_open_price": self.require_open_price,
                     "max_open": self.max_open,
                     "dedup_symbol": self.dedup_symbol,
                     "close_cooldown_sec": self.close_cooldown_sec,
                     "state_ttl_sec": int(self.state_ttl_sec or 0),
                     "seen_intents": sorted(list(seen)),
+                    "counts": {
+                        "forward_ok": ok,
+                        "forward_dry": dry,
+                        "forward_skip": skip,
+                        "close_ok": close_ok,
+                        "close_dry": close_dry,
+                        "close_skip": close_skip,
+                    },
+                    "skip_reasons": reasons,
                 },
             )
         except Exception as e:

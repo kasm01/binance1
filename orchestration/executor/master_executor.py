@@ -113,14 +113,9 @@ class TradeIntent:
     risk_tags: List[str]
     raw: Dict[str, Any]
 
-    # NEW: downstream (executor/position manager) can use these
+    # downstream (executor/position manager) can use these
     trail_pct: float = 0.0
     stall_ttl_sec: int = 0
-
-    # NEW: critical execution field
-    price: float = 0.0
-
-
 class MasterExecutor:
     """
     IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
@@ -162,19 +157,18 @@ class MasterExecutor:
         self._last_published_source_id: Optional[str] = None
 
         # Global score gate ("0 trade normal")
-        # UPDATED: fallback supports MIN_SCORE too
         self.min_trade_score = _env_float(
             "MASTER_MIN_TRADE_SCORE",
             _env_float("MIN_SCORE", 0.10),
         )
 
-        # NEW: Whale min gate (second stage safety)
+        # Whale min gate (second stage safety)
         # If set (>0), intents require whale_score >= threshold
         self.w_min = _env_float("MASTER_W_MIN", _env_float("W_MIN", 0.0))
 
-        # NEW: trailing / stall knobs forwarded to downstream executor
-        self.trail_pct = _env_float("TRAIL_PCT", 0.05)  # default 5%
-        self.stall_ttl_sec = _env_int("STALL_TTL_SEC", 0)  # e.g. 7200 for 2h
+        # trailing / stall knobs forwarded to downstream executor
+        self.trail_pct = _env_float("TRAIL_PCT", 0.05)      # default 5%
+        self.stall_ttl_sec = _env_int("STALL_TTL_SEC", 0)   # e.g. 7200 for 2h
 
         # Whale-first scoring controls (final score)
         self.w_w = _env_float("MASTER_W_SCORE_WHALE", 0.60)
@@ -296,6 +290,7 @@ class MasterExecutor:
             c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))),
             0.0,
         )
+
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
         base = float(self._candidate_score(c))
         return base, ["heavy_passthrough"]
@@ -309,7 +304,6 @@ class MasterExecutor:
         if whale_is_sell and side == "long":
             return True
         return False
-
     def _compute_final_score(self, c: Dict[str, Any]) -> float:
         raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
         if raw_evt is None:
@@ -344,29 +338,16 @@ class MasterExecutor:
 
         return float(score)
 
-    def _extract_price_best_effort(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
-        # Prefer explicit fields from raw/meta/candidate (best effort)
-        for k in ("price", "mark_price", "last_price", "entry_price", "close_price"):
-            v = None
-            if isinstance(c, dict) and k in c:
-                v = c.get(k)
-            if v is None and isinstance(raw_evt, dict) and k in raw_evt:
-                v = raw_evt.get(k)
-            if v is None and isinstance(raw_evt, dict):
-                v = _meta_get(raw_evt, k, None)
-            p = _safe_float(v, 0.0)
-            if p and p > 0:
-                return float(p)
-        return 0.0
-
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
         raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
         if raw_evt is None:
             raw_evt = {}
 
-        score = _safe_float(c.get("_score_total_final"), None)  # type: ignore[arg-type]
-        if score is None:
+        # score: prefer precomputed, otherwise compute
+        if c.get("_score_total_final") is None:
             score = self._compute_final_score(c)
+        else:
+            score = _safe_float(c.get("_score_total_final", 0.0), 0.0)
 
         score = float(_clamp(float(score), 0.0, 1.0))
         if score < float(self.min_trade_score):
@@ -392,7 +373,7 @@ class MasterExecutor:
         whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")))
         whale_contra = self._is_whale_contra(side, {**raw_evt, "whale_dir": whale_dir})
 
-        # NEW: Whale minimum gate (second stage)
+        # Whale minimum gate (second stage)
         if float(self.w_min) > 0.0 and float(whale_score) < float(self.w_min):
             return None
 
@@ -400,6 +381,7 @@ class MasterExecutor:
 
         if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
             return None
+
         whale_mult_lev = 1.0
         whale_mult_npct = 1.0
         if whale_aligned and whale_score >= float(self.whale_boost_thr):
@@ -443,15 +425,10 @@ class MasterExecutor:
         c2 = dict(c)
         c2["_score_total_final"] = float(score)
 
-        # NEW: add execution-management knobs to raw (downstream can use)
+        # add execution-management knobs to raw (downstream can use)
         c2["trail_pct"] = float(self.trail_pct)
         c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
         c2["w_min"] = float(self.w_min)
-
-        # ✅ CRITICAL: publishable price (IntentBridge expects it)
-        px = float(self._extract_price_best_effort(c2, raw_evt))
-        if px > 0:
-            c2["price"] = float(px)
 
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
@@ -467,9 +444,7 @@ class MasterExecutor:
             raw=dict(c2),
             trail_pct=float(self.trail_pct),
             stall_ttl_sec=int(self.stall_ttl_sec),
-            price=float(px or 0.0),
         )
-
     def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not self.heavy_enable:
             return items
@@ -554,6 +529,7 @@ class MasterExecutor:
             print(f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out_intents={len(intents)}")
 
         return intents
+
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -607,13 +583,8 @@ class MasterExecutor:
                     "score": it.score,
                     "recommended_leverage": it.recommended_leverage,
                     "recommended_notional_pct": it.recommended_notional_pct,
-
-                    # ✅ CRITICAL: intent-level price
-                    "price": float(getattr(it, "price", 0.0) or 0.0),
-
                     "trail_pct": float(getattr(it, "trail_pct", 0.0) or 0.0),
                     "stall_ttl_sec": int(getattr(it, "stall_ttl_sec", 0) or 0),
-
                     "reasons": it.reasons,
                     "risk_tags": it.risk_tags,
                     "raw": it.raw,
@@ -635,7 +606,6 @@ class MasterExecutor:
         self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
         return sid
-
     def run_forever(self) -> None:
         if self.drain_pending:
             print("[MasterExecutor] draining pending (PEL) ...")

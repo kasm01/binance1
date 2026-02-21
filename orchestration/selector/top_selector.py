@@ -65,6 +65,13 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         return default
 
 
+def _norm_side(x: Any) -> str:
+    s = str(x or "").strip().lower()
+    if s in ("buy", "long"):
+        return "long"
+    if s in ("sell", "short"):
+        return "short"
+    return s
 class TopSelector:
     """
     candidates_stream -> top5_stream
@@ -74,8 +81,8 @@ class TopSelector:
 
       {"ts_utc": "...", "topk": N, "items": [candidate,...]}
 
-    New additions:
-      - MIN_SCORE is now a supported fallback env for min_score
+    Notes:
+      - MIN_SCORE fallback supported for min_score
       - W_MIN / TOPSEL_W_MIN whale gate: candidate must have whale_score >= threshold (if threshold > 0)
     """
 
@@ -94,6 +101,9 @@ class TopSelector:
         self.drain_pending = _env_bool("TOPSEL_DRAIN_PENDING", False)
 
         self.window_sec = _env_int("TOPSEL_WINDOW_SEC", 30)
+        if self.window_sec <= 0:
+            self.window_sec = 30
+
         self.topk = _env_int("TOPSEL_TOPK", 5)
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
@@ -102,13 +112,12 @@ class TopSelector:
         self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
 
         # "0 trade normal" threshold
-        # UPDATED: now supports MIN_SCORE as fallback (so your .env habit works)
         self.min_score = _env_float(
             "TOPSEL_MIN_SCORE",
             _env_float("MIN_TOPSEL_SCORE", _env_float("MIN_SCORE", 0.10)),
         )
 
-        # NEW: whale minimum gate (TopSelector stage)
+        # whale minimum gate (TopSelector stage)
         self.w_min = _env_float("TOPSEL_W_MIN", _env_float("W_MIN", 0.0))
 
         # penalties
@@ -147,7 +156,6 @@ class TopSelector:
             f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score} "
             f"w_min={self.w_min} ack_immediate={self.ack_immediate}"
         )
-
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -158,6 +166,30 @@ class TopSelector:
             raise
         except Exception:
             return
+
+    def _normalize_candidate(self, c: Dict[str, Any], stream_id: str) -> Dict[str, Any]:
+        d = dict(c)
+
+        sym = str(d.get("symbol", "") or "").upper().strip()
+        if sym:
+            d["symbol"] = sym
+
+        itv = str(d.get("interval", "") or "").strip() or "5m"
+        d["interval"] = itv
+
+        d["side"] = _norm_side(d.get("side", ""))
+
+        # ts
+        if not d.get("ts_utc"):
+            d["ts_utc"] = _epoch_ms_to_iso(_stream_id_to_epoch_ms(stream_id))
+
+        # dedup_key standard
+        dk = str(d.get("dedup_key", "") or "").strip()
+        if not dk and sym:
+            dk = f"{sym}|{itv}|{d.get('side','')}"
+            d["dedup_key"] = dk
+
+        return d
 
     def _required_ok(self, c: Dict[str, Any]) -> bool:
         if not self.require_fields:
@@ -214,11 +246,6 @@ class TopSelector:
                 return str(ck)
 
         return f"{c.get('symbol','')}|{c.get('interval','')}|{c.get('side','')}"
-
-    def _normalize_ts(self, c: Dict[str, Any], stream_id: str) -> None:
-        if not c.get("ts_utc"):
-            c["ts_utc"] = _epoch_ms_to_iso(_stream_id_to_epoch_ms(stream_id))
-
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -261,6 +288,7 @@ class TopSelector:
             self.r.xack(self.in_stream, self.group, *ids)
         except Exception:
             pass
+
     def _select_topk(self, items: List[Tuple[str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         if not items:
             return []
@@ -277,18 +305,17 @@ class TopSelector:
             if ms < min_ms:
                 continue
 
-            self._normalize_ts(c, sid)
-
-            if not self._required_ok(c):
+            c2 = self._normalize_candidate(c, sid)
+            if not self._required_ok(c2):
                 continue
 
-            # NEW: whale gate at TopSelector stage (optional)
+            # whale gate at TopSelector stage (optional)
             if float(self.w_min) > 0.0:
-                ws = self._extract_whale_score(c)
+                ws = self._extract_whale_score(c2)
                 if ws < float(self.w_min):
                     continue
 
-            windowed.append((sid, c))
+            windowed.append((sid, c2))
 
         if not windowed:
             return []
@@ -303,10 +330,10 @@ class TopSelector:
 
         filtered: List[Tuple[float, str, Dict[str, Any]]] = []
         for ck, (sc, sid, c) in best_by_key.items():
-            if sc < self.min_score:
+            if sc < float(self.min_score):
                 continue
             last = self.last_sent.get(ck, 0.0)
-            if (now_sec - last) < self.cooldown_sec:
+            if float(self.cooldown_sec) > 0 and (now_sec - last) < float(self.cooldown_sec):
                 continue
             filtered.append((sc, sid, c))
 
@@ -316,7 +343,7 @@ class TopSelector:
         filtered.sort(key=lambda t: t[0], reverse=True)
 
         out: List[Dict[str, Any]] = []
-        for sc, sid, c in filtered[: self.topk]:
+        for sc, sid, c in filtered[: max(1, int(self.topk))]:
             c["_score_selected"] = float(sc)
             c["_source_stream_id"] = sid
             out.append(c)
@@ -344,25 +371,27 @@ class TopSelector:
             self.last_sent[ck] = now_sec
 
         return sid
-
     def _buffer_add(self, rows: List[Tuple[str, Dict[str, Any]]]) -> None:
         if not rows:
             return
 
+        ack_ids: List[str] = []
+
         for sid, c in rows:
             if not c or not isinstance(c, dict):
                 continue
-            self._normalize_ts(c, sid)
-            self._buf.append((sid, c))
+            c2 = self._normalize_candidate(c, sid)
+            self._buf.append((sid, c2))
             self._buf_ids.append(sid)
+            ack_ids.append(sid)
 
         if len(self._buf) > self.buffer_max:
             self._buf = self._buf[-self.buffer_max :]
         if len(self._buf_ids) > self.buffer_max:
             self._buf_ids = self._buf_ids[-self.buffer_max :]
 
-        if self.ack_immediate:
-            self._ack([sid for sid, _ in rows])
+        if self.ack_immediate and ack_ids:
+            self._ack(ack_ids)
 
     def _window_ready(self) -> bool:
         return (time.time() - self._window_started_at) >= float(self.window_sec)
@@ -408,7 +437,9 @@ class TopSelector:
                 top = self._select_topk(rows)
                 out_id = self._publish(top) if top else None
                 if out_id:
-                    syms = ", ".join([f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top])
+                    syms = ", ".join(
+                        [f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top]
+                    )
                     print(f"[TopSelector] (PEL) published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
 
                 self._ack([sid for sid, _ in rows])

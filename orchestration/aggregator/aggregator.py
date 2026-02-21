@@ -39,6 +39,30 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return default
+
+
+def _norm_side_candidate(x: Any) -> str:
+    s = str(x or "").strip().lower()
+    if s in ("buy", "long"):
+        return "long"
+    if s in ("sell", "short"):
+        return "short"
+    if s in ("none", "hold", ""):
+        return "none"
+    # unknown -> none (fail closed)
+    return "none"
 class Aggregator:
     """
     signals_stream -> candidates_stream
@@ -64,31 +88,93 @@ class Aggregator:
         bus: RedisBus,
         group: str = "agg_group",
         consumer: str = "agg_0",
-        topk_out: int = 10,        # candidates_stream'e 10 aday (TopSelector 5'e indirecek)
-        cooldown_sec: int = 45,    # 20-60s arası iyi
+        topk_out: int = 10,
+        cooldown_sec: int = 45,
         include_raw_default: bool = True,
     ) -> None:
         self.bus = bus
         self.group = group
         self.consumer = consumer
         self.topk_out = int(topk_out)
+
         self.dup = DupGuard(bus, prefix="aggdup", default_cooldown_sec=int(cooldown_sec))
 
         # raw payload stream'i şişirebilir; env ile kapatılabilir
-        # CANDIDATE_INCLUDE_RAW=0 => raw ekleme
         self.include_raw = _env_bool("CANDIDATE_INCLUDE_RAW", include_raw_default)
+
+        # "0 trade normal" mantığının aggregator versiyonu:
+        # skor bu eşikten küçükse candidates_stream'e basma.
+        self.min_score = float(_env_float("AGG_MIN_SCORE", 0.0))
+
+        # read tuning
+        self.read_count = int(_env_int("AGG_READ_COUNT", 300))
+        self.block_ms = int(_env_int("AGG_BLOCK_MS", 1000))
+
+    def _normalize_event(self, mid: str, evt: Dict[str, Any]) -> Dict[str, Any]:
+        e = dict(evt)
+
+        sym = str(e.get("symbol", "") or "").upper().strip()
+        if sym:
+            e["symbol"] = sym
+
+        itv = str(e.get("interval", "") or "").strip() or "5m"
+        e["interval"] = itv
+
+        e["side_candidate"] = _norm_side_candidate(e.get("side_candidate", "none"))
+
+        if not e.get("ts_utc"):
+            e["ts_utc"] = _ts_from_stream_id(mid)
+
+        # dedup_key standard
+        dk = str(e.get("dedup_key", "") or "").strip()
+        if not dk and sym:
+            dk = f"{sym}|{itv}|{e['side_candidate']}"
+            e["dedup_key"] = dk
+
+        e["_source_stream_id"] = mid
+        return e
+    def _build_candidate_payload(self, evt: Dict[str, Any]) -> Dict[str, Any]:
+        sym = str(evt.get("symbol", "") or "").upper().strip()
+        itv = str(evt.get("interval", "") or "5m").strip()
+        side = str(evt.get("side_candidate", "none") or "none").strip().lower()
+        ts_utc = str(evt.get("ts_utc") or _ts_from_stream_id(str(evt.get("_source_stream_id") or "")))
+
+        src = str(evt.get("source") or evt.get("producer_id") or "w?").strip()
+        dedup_key = str(evt.get("dedup_key") or f"{sym}|{itv}|{side}")
+
+        payload: Dict[str, Any] = {
+            "candidate_id": str(uuid.uuid4()),
+            "ts_utc": ts_utc,
+            "symbol": sym,
+            "interval": itv,
+            "side": side,
+            "score_total": float(_clamp01(evt.get("_score_total", 0.0))),
+            # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplayacak
+            "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
+            "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
+            "risk_tags": list(evt.get("_risk_tags", []) or []),
+            "reason_codes": list(evt.get("_reason_codes", []) or []),
+            "source": src,
+            "dedup_key": dedup_key,
+        }
+
+        if self.include_raw:
+            payload["raw"] = evt
+
+        return payload
 
     def run_forever(self) -> None:
         assert self.bus.ping(), "[Aggregator] Redis ping failed."
-        print(f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream}")
+        print(f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
+              f"topk_out={self.topk_out} min_score={self.min_score:.3f} include_raw={self.include_raw}")
 
         while True:
             msgs = self.bus.xreadgroup_json(
                 stream=self.bus.signals_stream,
                 group=self.group,
                 consumer=self.consumer,
-                count=300,
-                block_ms=1000,
+                count=self.read_count,
+                block_ms=self.block_ms,
                 start_id=">",
                 create_group=True,
                 group_start_id="$",
@@ -105,88 +191,55 @@ class Aggregator:
                 if not isinstance(evt, dict) or not evt:
                     continue
 
-                # ignore HOLD
-                side = str(evt.get("side_candidate", "none") or "none").strip().lower()
-                if side not in ("long", "short"):
+                e = self._normalize_event(mid, evt)
+
+                # ignore HOLD/none
+                if e.get("side_candidate") not in ("long", "short"):
                     continue
 
-                sym = str(evt.get("symbol", "") or "").upper().strip()
-                if not sym:
+                if not e.get("symbol"):
                     continue
-                evt["symbol"] = sym
 
-                itv = str(evt.get("interval", "") or "").strip()
-                if not itv:
-                    itv = "5m"
-                    evt["interval"] = itv
-
-                if not evt.get("ts_utc"):
-                    evt["ts_utc"] = _ts_from_stream_id(mid)
-
-                ok, _reason = pass_quality_gates(evt)
+                ok, _reason = pass_quality_gates(e)
                 if not ok:
                     continue
 
-                # dedup_key preferred (new standard)
-                dk = str(evt.get("dedup_key", "") or "").strip()
-                if not dk:
-                    dk = f"{sym}|{itv}|{side}"
-                    evt["dedup_key"] = dk
-
                 # cooldown (spam killer)
+                dk = str(e.get("dedup_key", "") or "").strip()
+                if not dk:
+                    continue
                 if not self.dup.allow(dk, cooldown_sec=None):
                     continue
 
-                score_total, reason_codes, risk_tags = compute_score(evt)
-                evt["_score_total"] = _clamp01(score_total)
-                evt["_reason_codes"] = list(reason_codes or [])
-                evt["_risk_tags"] = list(risk_tags or [])
-                evt["_source_stream_id"] = mid
-                candidates.append(evt)
+                score_total, reason_codes, risk_tags = compute_score(e)
+                e["_score_total"] = _clamp01(score_total)
+                e["_reason_codes"] = list(reason_codes or [])
+                e["_risk_tags"] = list(risk_tags or [])
 
+                # global min score gate (optional)
+                if float(self.min_score) > 0.0 and float(e["_score_total"]) < float(self.min_score):
+                    continue
+
+                candidates.append(e)
             # ACK everything (fail-open)
-            try:
-                self.bus.xack(self.bus.signals_stream, self.group, mids)
-            except Exception:
-                pass
+            if mids:
+                try:
+                    self.bus.xack(self.bus.signals_stream, self.group, mids)
+                except Exception:
+                    pass
 
             if not candidates:
                 continue
 
             # sort by best score_total
             candidates.sort(key=lambda x: float(x.get("_score_total", 0.0)), reverse=True)
-            top = candidates[: self.topk_out]
+            top = candidates[: max(1, int(self.topk_out))]
 
             for evt in top:
-                sym = str(evt.get("symbol", "") or "").upper().strip()
-                itv = str(evt.get("interval", "") or "5m").strip()
-                side = str(evt.get("side_candidate", "long") or "long").strip().lower()
-                ts_utc = str(evt.get("ts_utc") or _ts_from_stream_id(str(evt.get("_source_stream_id") or "")))
-
-                # WorkerStub standard: source=w1..w8
-                src = str(evt.get("source") or evt.get("producer_id") or "w?").strip()
-
-                payload: Dict[str, Any] = {
-                    "candidate_id": str(uuid.uuid4()),
-                    "ts_utc": ts_utc,
-                    "symbol": sym,
-                    "interval": itv,
-                    "side": side,
-                    "score_total": float(evt.get("_score_total", 0.0)),
-                    # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplayacak
-                    "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
-                    "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
-                    "risk_tags": list(evt.get("_risk_tags", [])),
-                    "reason_codes": list(evt.get("_reason_codes", [])),
-                    "source": src,
-                    "dedup_key": str(evt.get("dedup_key") or f"{sym}|{itv}|{side}"),
-                }
-
-                # ops/debug: raw event (ENV ile kapatılabilir)
-                if self.include_raw:
-                    payload["raw"] = evt
-
-                self.bus.publish_candidate(payload)
+                payload = self._build_candidate_payload(evt)
+                try:
+                    self.bus.publish_candidate(payload)
+                except Exception:
+                    pass
 
             time.sleep(0.01)
-
