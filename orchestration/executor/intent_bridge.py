@@ -74,6 +74,8 @@ def _run_coroutine_safely(coro):
                 loop.close()
             except Exception:
                 pass
+
+
 class IntentBridge:
     """
     Consumes trade_intents_stream (group-based), forwards intents to TradeExecutor.
@@ -313,6 +315,7 @@ class IntentBridge:
             if st in ("skip", "fail", "error"):
                 return False
         return True
+
     # -----------------------
     # State helpers
     # -----------------------
@@ -509,6 +512,7 @@ class IntentBridge:
                 "state_ttl_sec": int(self.state_ttl_sec or 0),
             },
         )
+
     # -----------------------
     # Parsing / consuming
     # -----------------------
@@ -578,7 +582,6 @@ class IntentBridge:
             return True
 
         return False
-
     # -----------------------
     # Executor call helpers (TradeExecutor uyumlu)
     # -----------------------
@@ -654,6 +657,7 @@ class IntentBridge:
                 return False, None, f"close_position failed: {repr(e)}"
 
         return False, None, "no close entrypoint on executor"
+
     # -----------------------
     # Forwarding logic
     # -----------------------
@@ -722,7 +726,6 @@ class IntentBridge:
             "close_skip",
             {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": method_or_err},
         )
-
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
         symbol = _safe_str(it.get("symbol", "")).upper()
         interval = _safe_str(it.get("interval", ""))
@@ -745,7 +748,7 @@ class IntentBridge:
         npct = float(_safe_float(it.get("recommended_notional_pct", raw.get("recommended_notional_pct", 0.05)), 0.05))
         score = float(_safe_float(it.get("score", raw.get("score", 0.0)), 0.0))
 
-        # UPDATED: raw fallback (MasterExecutor bazen raw içine de koyuyor)
+        # raw fallback (MasterExecutor bazen raw içine de koyuyor)
         trail_pct = float(_safe_float(it.get("trail_pct", raw.get("trail_pct", os.getenv("TRAIL_PCT", "0.05"))), 0.05))
         stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", raw.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0"))), 0.0))
 

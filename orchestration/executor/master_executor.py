@@ -116,6 +116,8 @@ class TradeIntent:
     # downstream (executor/position manager) can use these
     trail_pct: float = 0.0
     stall_ttl_sec: int = 0
+
+
 class MasterExecutor:
     """
     IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
@@ -304,6 +306,7 @@ class MasterExecutor:
         if whale_is_sell and side == "long":
             return True
         return False
+
     def _compute_final_score(self, c: Dict[str, Any]) -> float:
         raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
         if raw_evt is None:
@@ -337,11 +340,20 @@ class MasterExecutor:
             self._warned_heavy_stub = True
 
         return float(score)
-
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
         raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
         if raw_evt is None:
             raw_evt = {}
+
+        # --- PRICE extraction (critical) ---
+        # CandidateTrade top-level price OR raw.price OR raw.raw.price
+        price = _safe_float(c.get("price", 0.0), 0.0)
+        if price <= 0:
+            price = _safe_float(raw_evt.get("price", 0.0), 0.0)
+        if price <= 0 and isinstance(raw_evt.get("raw"), dict):
+            price = _safe_float(raw_evt["raw"].get("price", 0.0), 0.0)
+        if price < 0:
+            price = 0.0
 
         # score: prefer precomputed, otherwise compute
         if c.get("_score_total_final") is None:
@@ -430,6 +442,14 @@ class MasterExecutor:
         c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
         c2["w_min"] = float(self.w_min)
 
+        # --- ensure price propagated into raw ---
+        c2["price"] = float(price)
+        try:
+            if isinstance(c2.get("raw"), dict):
+                c2["raw"]["price"] = float(price)
+        except Exception:
+            pass
+
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
@@ -445,6 +465,7 @@ class MasterExecutor:
             trail_pct=float(self.trail_pct),
             stall_ttl_sec=int(self.stall_ttl_sec),
         )
+
     def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not self.heavy_enable:
             return items
@@ -557,7 +578,6 @@ class MasterExecutor:
                 pkg = self._parse_pkg(sid, fields) or {}
                 out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
-
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
         if not self.publish_allowed:
             return None
@@ -580,6 +600,7 @@ class MasterExecutor:
                     "symbol": it.symbol,
                     "interval": it.interval,
                     "side": it.side,
+                    "price": float(_safe_float(it.raw.get("price", 0.0), 0.0)),  # <<< CRITICAL
                     "score": it.score,
                     "recommended_leverage": it.recommended_leverage,
                     "recommended_notional_pct": it.recommended_notional_pct,
@@ -606,6 +627,7 @@ class MasterExecutor:
         self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
         return sid
+
     def run_forever(self) -> None:
         if self.drain_pending:
             print("[MasterExecutor] draining pending (PEL) ...")

@@ -64,6 +64,15 @@ def _norm_side_candidate(x: Any) -> str:
         return "none"
     # unknown -> none (fail closed)
     return "none"
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
 class Aggregator:
     """
     signals_stream -> candidates_stream
@@ -126,6 +135,11 @@ class Aggregator:
         if not e.get("ts_utc"):
             e["ts_utc"] = _ts_from_stream_id(mid)
 
+        # --- PRICE normalize (critical) ---
+        # Worker -> SignalEvent normalize zaten price ekliyor olabilir; burada da garantiye alıyoruz.
+        p = _safe_float(e.get("price", 0.0), 0.0)
+        e["price"] = float(p) if p > 0 else 0.0
+
         # dedup_key standard
         dk = str(e.get("dedup_key", "") or "").strip()
         if not dk and sym:
@@ -134,6 +148,7 @@ class Aggregator:
 
         e["_source_stream_id"] = mid
         return e
+
     def _build_candidate_payload(self, evt: Dict[str, Any]) -> Dict[str, Any]:
         sym = str(evt.get("symbol", "") or "").upper().strip()
         itv = str(evt.get("interval", "") or "5m").strip()
@@ -143,12 +158,18 @@ class Aggregator:
         src = str(evt.get("source") or evt.get("producer_id") or "w?").strip()
         dedup_key = str(evt.get("dedup_key") or f"{sym}|{itv}|{side}")
 
+        # --- PRICE passthrough ---
+        price = _safe_float(evt.get("price", 0.0), 0.0)
+        if price < 0:
+            price = 0.0
+
         payload: Dict[str, Any] = {
             "candidate_id": str(uuid.uuid4()),
             "ts_utc": ts_utc,
             "symbol": sym,
             "interval": itv,
             "side": side,
+            "price": float(price),  # <<< CRITICAL: candidates_stream'e price yaz
             "score_total": float(_clamp01(evt.get("_score_total", 0.0))),
             # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplayacak
             "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
@@ -167,6 +188,7 @@ class Aggregator:
         else:
             meta = evt.get("meta") if isinstance(evt.get("meta"), dict) else {}
             payload["raw"] = {
+                "price": float(price),  # <<< raw_min içinde de tut
                 "whale_score": float(evt.get("whale_score", 0.0) or 0.0),
                 "whale_dir": str(evt.get("whale_dir") or meta.get("whale_dir", "none") or "none"),
                 "meta": {
@@ -175,12 +197,15 @@ class Aggregator:
                     "micro_score": float(meta.get("micro_score", 0.0) or 0.0),
                 },
             }
+
         return payload
 
     def run_forever(self) -> None:
         assert self.bus.ping(), "[Aggregator] Redis ping failed."
-        print(f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
-              f"topk_out={self.topk_out} min_score={self.min_score:.3f} include_raw={self.include_raw}")
+        print(
+            f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
+            f"topk_out={self.topk_out} min_score={self.min_score:.3f} include_raw={self.include_raw}"
+        )
 
         while True:
             msgs = self.bus.xreadgroup_json(
@@ -204,7 +229,6 @@ class Aggregator:
                 mids.append(mid)
                 if not isinstance(evt, dict) or not evt:
                     continue
-
 
                 evt = SignalEvent.normalize(evt)
                 e = self._normalize_event(mid, evt)
@@ -237,6 +261,7 @@ class Aggregator:
                     continue
 
                 candidates.append(e)
+
             # ACK everything (fail-open)
             if mids:
                 try:
@@ -259,7 +284,6 @@ class Aggregator:
                     pass
 
             time.sleep(0.01)
-
 
 
 if __name__ == "__main__":

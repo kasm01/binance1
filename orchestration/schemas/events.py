@@ -86,11 +86,11 @@ class SignalEvent:
 
         # side_candidate normalize
         sc = str(out.get("side_candidate") or "none").strip().lower()
-        if sc in ("buy","long"):
+        if sc in ("buy", "long"):
             sc = "long"
-        elif sc in ("sell","short"):
+        elif sc in ("sell", "short"):
             sc = "short"
-        elif sc not in ("long","short"):
+        elif sc not in ("long", "short"):
             sc = "none"
         out["side_candidate"] = sc
 
@@ -104,14 +104,10 @@ class SignalEvent:
 
         # normalize price (optional)
         try:
-            out[\"price\"] = float(out.get(\"price\", 0.0) or 0.0)
+            out["price"] = float(out.get("price", 0.0) or 0.0)
         except Exception:
-            out[\"price\"] = 0.0
-        # normalize price (optional)
-        try:
-            out[\"price\"] = float(out.get(\"price\", 0.0) or 0.0)
-        except Exception:
-            out[\"price\"] = 0.0
+            out["price"] = 0.0
+
         # keep old field for backward compat
         if not out.get("cooldown_key"):
             out["cooldown_key"] = dk
@@ -175,4 +171,3 @@ class TopKBatchEvent:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-
