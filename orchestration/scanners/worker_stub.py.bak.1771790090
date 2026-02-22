@@ -179,7 +179,6 @@ def main() -> None:
             "side_candidate": side_candidate,  # long|short|none
 
             # scoring inputs (worker-level)
-            "price": float(random.uniform(0.5, 2.0)),  # stub price (replace with mark/last in live)
             "score_edge": float(score_edge),     # 0..1
             "confidence": float(confidence),     # 0..1
 

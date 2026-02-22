@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import redis
 
+from orchestration.schemas.events import TopKBatchEvent
+
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     try:
@@ -411,8 +413,15 @@ class TopSelector:
         if not top:
             return None
 
-        payload = {"ts_utc": _now_utc_iso(), "topk": len(top), "items": top}
-
+        payload = TopKBatchEvent(
+            ts_utc=_now_utc_iso(),
+            topk=len(top),
+            items=top,
+            window_sec=int(self.window_sec),
+            selector_id=str(self.consumer),
+            min_score=float(self.min_score),
+            w_min=float(self.w_min),
+        ).to_dict()
         try:
             sid = self.r.xadd(
                 self.out_stream,

@@ -26,10 +26,6 @@ load_env_fill_only() {
     # trim key
     k="$(echo "$k" | xargs)"
     [[ -z "$k" ]] && continue
-      # guard: only valid bash var names (skip broken .env keys)
-      if [[ ! "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-        continue
-      fi
 
     # if key already set in environment, do not override
     if [[ -n "${!k+x}" ]]; then
