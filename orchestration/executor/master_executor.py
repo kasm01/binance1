@@ -116,8 +116,6 @@ class TradeIntent:
     # downstream (executor/position manager) can use these
     trail_pct: float = 0.0
     stall_ttl_sec: int = 0
-
-
 class MasterExecutor:
     """
     IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
@@ -206,6 +204,10 @@ class MasterExecutor:
         # Contra whale safety
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
 
+        # Require valid price (prevents "missing price" downstream)
+        self.require_price = _env_bool("MASTER_REQUIRE_PRICE", True)
+        self._warned_missing_price: set[str] = set()
+
         self.r = redis.Redis(
             host=self.redis_host,
             port=self.redis_port,
@@ -242,6 +244,7 @@ class MasterExecutor:
             f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
             f"w_min={self.w_min:.3f} trail_pct={self.trail_pct:.4f} stall_ttl_sec={self.stall_ttl_sec} "
             f"heavy_enable={self.heavy_enable} heavy_topk={self.heavy_topk} "
+            f"require_price={self.require_price} "
             f"publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
@@ -278,7 +281,6 @@ class MasterExecutor:
         except Exception:
             return None
         return None
-
     def _normalize_side(self, side: str) -> str:
         s = (side or "").strip().lower()
         if s in ("buy", "long"):
@@ -340,13 +342,24 @@ class MasterExecutor:
             self._warned_heavy_stub = True
 
         return float(score)
-    def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
-        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
-        if raw_evt is None:
-            raw_evt = {}
 
-        # --- PRICE extraction (critical) ---
-        # CandidateTrade top-level price OR raw.price OR raw.raw.price
+    def _warn_missing_price_once(self, symbol: str, interval: str, side: str) -> None:
+        try:
+            key = f"{symbol}|{interval}|{side}"
+            if key in self._warned_missing_price:
+                return
+            self._warned_missing_price.add(key)
+            print(f"[MasterExecutor][WARN] missing/invalid price -> dropping intent | {key}")
+        except Exception:
+            pass
+
+    def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
+        """
+        Robust price extraction:
+          - Candidate top-level: c.price
+          - Candidate raw: raw_evt.price
+          - Candidate raw.raw: raw_evt.raw.price
+        """
         price = _safe_float(c.get("price", 0.0), 0.0)
         if price <= 0:
             price = _safe_float(raw_evt.get("price", 0.0), 0.0)
@@ -354,6 +367,15 @@ class MasterExecutor:
             price = _safe_float(raw_evt["raw"].get("price", 0.0), 0.0)
         if price < 0:
             price = 0.0
+        return float(price)
+
+    def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
+        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+        if raw_evt is None:
+            raw_evt = {}
+
+        # --- PRICE extraction (critical) ---
+        price = self._extract_price(c, raw_evt)
 
         # score: prefer precomputed, otherwise compute
         if c.get("_score_total_final") is None:
@@ -378,6 +400,13 @@ class MasterExecutor:
 
         side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
 
+        # IMPORTANT: if price required and not present -> drop
+        symbol0 = _safe_str(c.get("symbol", "")).upper()
+        interval0 = _safe_str(c.get("interval", ""))
+        if self.require_price and (price <= 0.0):
+            self._warn_missing_price_once(symbol0, interval0, side)
+            return None
+
         reasons = [str(x) for x in _as_list(c.get("reason_codes"))] or [str(x) for x in _as_list(c.get("reasons"))]
         risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
 
@@ -393,7 +422,6 @@ class MasterExecutor:
 
         if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
             return None
-
         whale_mult_lev = 1.0
         whale_mult_npct = 1.0
         if whale_aligned and whale_score >= float(self.whale_boost_thr):
@@ -442,11 +470,13 @@ class MasterExecutor:
         c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
         c2["w_min"] = float(self.w_min)
 
-        # --- ensure price propagated into raw ---
+        # --- ensure price propagated everywhere ---
         c2["price"] = float(price)
         try:
             if isinstance(c2.get("raw"), dict):
                 c2["raw"]["price"] = float(price)
+                if isinstance(c2["raw"].get("raw"), dict):
+                    c2["raw"]["raw"]["price"] = float(price)
         except Exception:
             pass
 
@@ -550,7 +580,6 @@ class MasterExecutor:
             print(f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out_intents={len(intents)}")
 
         return intents
-
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -578,6 +607,31 @@ class MasterExecutor:
                 pkg = self._parse_pkg(sid, fields) or {}
                 out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
+
+    def _intent_price_for_publish(self, it: TradeIntent) -> float:
+        """
+        Publish-time safety: derive price from multiple nested locations.
+        Should not be needed if MASTER_REQUIRE_PRICE=1 and upstream provides it,
+        but it prevents "missing price" regressions.
+        """
+        try:
+            p = _safe_float(it.raw.get("price", 0.0), 0.0)
+            if p > 0:
+                return float(p)
+            raw1 = it.raw.get("raw")
+            if isinstance(raw1, dict):
+                p2 = _safe_float(raw1.get("price", 0.0), 0.0)
+                if p2 > 0:
+                    return float(p2)
+                raw2 = raw1.get("raw")
+                if isinstance(raw2, dict):
+                    p3 = _safe_float(raw2.get("price", 0.0), 0.0)
+                    if p3 > 0:
+                        return float(p3)
+        except Exception:
+            pass
+        return 0.0
+
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
         if not self.publish_allowed:
             return None
@@ -589,18 +643,34 @@ class MasterExecutor:
         if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
             return None
 
-        payload = {
-            "ts_utc": _now_utc_iso(),
-            "source_top5_id": source_stream_id,
-            "count": len(intents),
-            "items": [
+        items_out: List[Dict[str, Any]] = []
+        for it in intents:
+            p = float(self._intent_price_for_publish(it))
+
+            # Ensure raw carries price too (downstream fallback)
+            raw_copy = dict(it.raw) if isinstance(it.raw, dict) else {}
+            try:
+                raw_copy["price"] = float(p)
+                if isinstance(raw_copy.get("raw"), dict):
+                    raw_copy["raw"]["price"] = float(p)
+                    if isinstance(raw_copy["raw"].get("raw"), dict):
+                        raw_copy["raw"]["raw"]["price"] = float(p)
+            except Exception:
+                pass
+
+            # If require_price, never publish missing price
+            if self.require_price and p <= 0.0:
+                self._warn_missing_price_once(it.symbol, it.interval, it.side)
+                continue
+
+            items_out.append(
                 {
                     "intent_id": it.intent_id,
                     "ts_utc": it.ts_utc,
                     "symbol": it.symbol,
                     "interval": it.interval,
                     "side": it.side,
-                    "price": float(_safe_float(it.raw.get("price", 0.0), 0.0)),  # <<< CRITICAL
+                    "price": float(p),  # <<< CRITICAL: top-level for IntentBridge
                     "score": it.score,
                     "recommended_leverage": it.recommended_leverage,
                     "recommended_notional_pct": it.recommended_notional_pct,
@@ -608,10 +678,18 @@ class MasterExecutor:
                     "stall_ttl_sec": int(getattr(it, "stall_ttl_sec", 0) or 0),
                     "reasons": it.reasons,
                     "risk_tags": it.risk_tags,
-                    "raw": it.raw,
+                    "raw": raw_copy,
                 }
-                for it in intents
-            ],
+            )
+
+        if not items_out:
+            return None
+
+        payload = {
+            "ts_utc": _now_utc_iso(),
+            "source_top5_id": source_stream_id,
+            "count": len(items_out),
+            "items": items_out,
         }
 
         try:
