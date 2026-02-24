@@ -127,8 +127,28 @@ class IntentBridge:
 
         # Gate + state
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
-        self.dedup_symbol = _env_bool("DEDUP_SYMBOL_OPEN", True)
-        self.max_open = _env_int("MAX_OPEN_POSITIONS", 3)
+
+        # ✅ Env uyumu: yeni/önerilen isimler + eski fallbacks
+        # Dedup:
+        self.dedup_symbol = _env_bool(
+            "BRIDGE_DEDUP_SYMBOL",
+            _env_bool("DEDUP_SYMBOL_OPEN", True),
+        )
+        # Max open:
+        self.max_open = _env_int(
+            "BRIDGE_MAX_OPEN",
+            _env_int("MAX_OPEN_POSITIONS", 3),
+        )
+
+        # ✅ Price zorunluluğu (executor çağrılacaksa)
+        # MasterExecutor tarafındaki require_price=True ile uyumlu olsun diye default True
+        self.require_price = _env_bool(
+            "BRIDGE_REQUIRE_PRICE",
+            _env_bool("MASTER_REQUIRE_PRICE", True),
+        )
+
+        # ✅ Event içerisine structured gate debug alanları ekle
+        self.event_include_gate_struct = _env_bool("BRIDGE_EVENT_INCLUDE_GATE_STRUCT", True)
 
         # Key-level TTL
         self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 600)  # <=0 disables key TTL
@@ -209,6 +229,7 @@ class IntentBridge:
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"dry_run={self.dry_run} state_key={self.state_key} state_ttl_sec={self.state_ttl_sec} "
             f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} dryrun_call_executor={self.dryrun_call_executor} "
+            f"require_price={self.require_price} event_include_gate_struct={self.event_include_gate_struct} "
             f"max_open={self.max_open} dedup_symbol={self.dedup_symbol} "
             f"close_cooldown_sec={self.close_cooldown_sec} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
@@ -316,6 +337,131 @@ class IntentBridge:
                 return False
         return True
 
+    def _extract_executor_skip_reason(self, res: Any, fallback: str) -> str:
+        """
+        Executor called_ok=True ama "skip" döndürdüğünde sebep method adı olarak kalmasın.
+        res içinden makul bir why/reason/message çıkar.
+        """
+        try:
+            if isinstance(res, dict):
+                for k in ("why", "reason", "message", "msg", "error", "detail"):
+                    v = res.get(k)
+                    if v:
+                        return _safe_str(v)
+                st = _safe_str(res.get("status", "")).strip().lower()
+                if st in ("skip", "fail", "error"):
+                    return f"{st}"
+        except Exception:
+            pass
+        return fallback
+
+    def _summarize_res(self, res: Any, max_len: int = 240) -> Any:
+        """
+        Exec event içine koymak için küçük bir özet.
+        Büyük objeleri şişirmeden "ne döndü?" sorusuna cevap verir.
+        """
+        try:
+            if res is None:
+                return None
+            if isinstance(res, (str, int, float, bool)):
+                s = str(res)
+                return s[:max_len]
+            if isinstance(res, dict):
+                out: Dict[str, Any] = {}
+                for k in ("status", "result", "why", "reason", "message", "msg", "error", "detail"):
+                    if k in res and res.get(k) is not None:
+                        out[k] = res.get(k)
+                if not out:
+                    # çok büyütmeyelim: sadece ilk 12 key
+                    keys = list(res.keys())[:12]
+                    out = {k: res.get(k) for k in keys}
+                return out
+            s = str(res)
+            return s[:max_len]
+        except Exception:
+            try:
+                return str(res)[:max_len]
+            except Exception:
+                return None
+
+    def _risk_snapshot(self, symbol: str, interval: str) -> Dict[str, Any]:
+        """
+        RiskManager içindeki debug alanlarını event'e taşımaya çalışır.
+        RiskManager'da farklı fonksiyon isimleri olabilir -> best-effort.
+        """
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is None:
+                return {}
+            # 1) debug_snapshot(symbol, interval)
+            fn = getattr(rm, "debug_snapshot", None)
+            if callable(fn):
+                out = fn(symbol=symbol, interval=interval)
+                return out if isinstance(out, dict) else {"value": out}
+            # 2) get_debug(symbol, interval)
+            fn = getattr(rm, "get_debug", None)
+            if callable(fn):
+                out = fn(symbol=symbol, interval=interval)
+                return out if isinstance(out, dict) else {"value": out}
+            # 3) snapshot() global
+            fn = getattr(rm, "snapshot", None)
+            if callable(fn):
+                out = fn()
+                return out if isinstance(out, dict) else {"value": out}
+        except Exception:
+            pass
+        return {}
+
+    def _parse_gate_reason_struct(self, reason: str, symbol: str) -> Dict[str, Any]:
+        """
+        Gate reason string -> structured alanlara çevirir.
+        Örnek:
+          "max_open: 3 >= 3"
+          "dedup_symbol: BTCUSDT already open"
+          "cooldown: 12s left"
+          "missing_price"
+        """
+        try:
+            if not reason:
+                return {}
+
+            r = reason.strip()
+            rl = r.lower()
+
+            if rl.startswith("max_open"):
+                # max_open: 3 >= 3
+                parts = r.split(":", 1)
+                expr = parts[1].strip() if len(parts) > 1 else ""
+                # expr: "3 >= 3"
+                nums: List[int] = []
+                for tok in expr.replace(">=", " ").replace(">", " ").replace("=", " ").split():
+                    if tok.isdigit():
+                        nums.append(int(tok))
+                current = nums[0] if len(nums) > 0 else None
+                limit = nums[1] if len(nums) > 1 else None
+                return {"gate_type": "max_open", "gate_current": current, "gate_limit": limit}
+
+            if rl.startswith("dedup_symbol"):
+                return {"gate_type": "dedup_symbol", "gate_symbol": symbol}
+
+            if rl.startswith("cooldown"):
+                # cooldown: 12s left
+                left = None
+                try:
+                    # "cooldown: 12s left"
+                    seg = rl.split(":", 1)[1].strip() if ":" in rl else rl
+                    left_str = seg.split("s", 1)[0].strip()
+                    left = int(left_str)
+                except Exception:
+                    left = None
+                return {"gate_type": "cooldown", "gate_symbol": symbol, "gate_cooldown_left_sec": left}
+
+            if rl == "missing_price" or "missing_price" in rl:
+                return {"gate_type": "missing_price", "gate_symbol": symbol}
+
+        except Exception:
+            pass
+        return {}
     # -----------------------
     # State helpers
     # -----------------------
@@ -397,6 +543,7 @@ class IntentBridge:
                 )
         except Exception:
             pass
+
     # -----------------------
     # Gate logic
     # -----------------------
@@ -512,7 +659,6 @@ class IntentBridge:
                 "state_ttl_sec": int(self.state_ttl_sec or 0),
             },
         )
-
     # -----------------------
     # Parsing / consuming
     # -----------------------
@@ -582,6 +728,7 @@ class IntentBridge:
             return True
 
         return False
+
     # -----------------------
     # Executor call helpers (TradeExecutor uyumlu)
     # -----------------------
@@ -657,7 +804,6 @@ class IntentBridge:
                 return False, None, f"close_position failed: {repr(e)}"
 
         return False, None, "no close entrypoint on executor"
-
     # -----------------------
     # Forwarding logic
     # -----------------------
@@ -670,7 +816,10 @@ class IntentBridge:
         raw = raw if isinstance(raw, dict) else {}
 
         if not symbol:
-            self._publish_event("close_skip", {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"})
+            self._publish_event(
+                "close_skip",
+                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"},
+            )
             return
 
         raw_side = _safe_str(it.get("side", "")).strip()
@@ -722,10 +871,21 @@ class IntentBridge:
             )
             return
 
-        self._publish_event(
-            "close_skip",
-            {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": method_or_err},
-        )
+        why = self._extract_executor_skip_reason(res, method_or_err)
+        data = {
+            "intent_id": intent_id,
+            "symbol": symbol,
+            "interval": interval,
+            "direction": direction,
+            "price": close_price,
+            "why": why,
+            "res_summary": self._summarize_res(res),
+            "risk_snapshot": self._risk_snapshot(symbol, interval),
+        }
+        if self.event_include_gate_struct:
+            data.update(self._parse_gate_reason_struct(why, symbol))
+        self._publish_event("close_skip", data)
+
     def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
         symbol = _safe_str(it.get("symbol", "")).upper()
         interval = _safe_str(it.get("interval", ""))
@@ -741,25 +901,32 @@ class IntentBridge:
 
         allow, why_gate = self._gate_allow_open(symbol)
         if not allow:
-            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": why_gate})
+            data = {
+                "intent_id": intent_id,
+                "symbol": symbol,
+                "side": side,
+                "interval": interval,
+                "why": why_gate,
+                "risk_snapshot": self._risk_snapshot(symbol, interval),
+            }
+            if self.event_include_gate_struct:
+                data.update(self._parse_gate_reason_struct(why_gate, symbol))
+            self._publish_event("forward_skip", data)
             return
 
         lev = int(_safe_float(it.get("recommended_leverage", raw.get("recommended_leverage", 5)), 5))
         npct = float(_safe_float(it.get("recommended_notional_pct", raw.get("recommended_notional_pct", 0.05)), 0.05))
         score = float(_safe_float(it.get("score", raw.get("score", 0.0)), 0.0))
 
-        # raw fallback (MasterExecutor bazen raw içine de koyuyor)
         trail_pct = float(_safe_float(it.get("trail_pct", raw.get("trail_pct", os.getenv("TRAIL_PCT", "0.05"))), 0.05))
         stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", raw.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0"))), 0.0))
 
-        # whale context (preferred for TradeExecutor whale bias)
         whale_dir = _safe_str(it.get("whale_dir", raw.get("whale_dir", "none")))
         whale_score = float(_safe_float(it.get("whale_score", raw.get("whale_score", 0.0)), 0.0))
         w_min = float(_safe_float(it.get("w_min", raw.get("w_min", os.getenv("W_MIN", "0.0"))), 0.0))
 
         open_price = self._extract_open_price(it)
         if open_price is None:
-            # bazı upstream'ler raw içine price koyabilir
             rp = _safe_float(raw.get("price", 0.0), 0.0)
             if rp > 0:
                 open_price = float(rp)
@@ -778,9 +945,26 @@ class IntentBridge:
             "source_pkg_id": source_pkg_id,
         }
 
-        # kritik: TradeExecutor.open_position_from_signal meta’dan price bekliyor
         if open_price is not None and open_price > 0:
             meta["price"] = float(open_price)
+
+        # ✅ Executor çağrılacaksa ve price zorunluysa net skip et
+        will_call_executor = (not self.dry_run) or self.dryrun_call_executor
+        if will_call_executor and self.require_price and (open_price is None or open_price <= 0):
+            print(f"[EXEC][INTENT] missing price -> skip open | symbol={symbol} side={side}")
+            why = "missing_price"
+            data = {
+                "intent_id": intent_id,
+                "symbol": symbol,
+                "side": side,
+                "interval": interval,
+                "why": why,
+                "risk_snapshot": self._risk_snapshot(symbol, interval),
+            }
+            if self.event_include_gate_struct:
+                data.update(self._parse_gate_reason_struct(why, symbol))
+            self._publish_event("forward_skip", data)
+            return
 
         if self.dry_run and (not self.dryrun_call_executor):
             self._gate_mark_open(symbol, side, interval, intent_id)
@@ -802,11 +986,21 @@ class IntentBridge:
             )
             return
 
-        self._publish_event(
-            "forward_skip",
-            {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": method_or_err or "open failed"},
-        )
-
+        # ✅ called_ok=True ama "skip" döndüyse: res içinden neden çıkar
+        why = self._extract_executor_skip_reason(res, method_or_err or "open failed")
+        data = {
+            "intent_id": intent_id,
+            "symbol": symbol,
+            "side": side,
+            "interval": interval,
+            "why": why,
+            "price": open_price,
+            "res_summary": self._summarize_res(res),
+            "risk_snapshot": self._risk_snapshot(symbol, interval),
+        }
+        if self.event_include_gate_struct:
+            data.update(self._parse_gate_reason_struct(why, symbol))
+        self._publish_event("forward_skip", data)
     def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
         if self._is_close_intent(it):
             self._forward_close(it, source_pkg_id=source_pkg_id)
@@ -921,6 +1115,7 @@ class IntentBridge:
                     "dry_run": self.dry_run,
                     "dryrun_bypass_gate": self.dryrun_bypass_gate,
                     "dryrun_call_executor": self.dryrun_call_executor,
+                    "require_price": self.require_price,
                     "max_open": self.max_open,
                     "dedup_symbol": self.dedup_symbol,
                     "close_cooldown_sec": self.close_cooldown_sec,

@@ -196,13 +196,20 @@ heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
 # -----------------------------
 if is_truthy "${DRY_RUN:-1}"; then
     if ! any_orch_running; then
-        echo "[START] DRY_RUN -> resetting open_positions_state"
-        redis-cli -n "$REDIS_DB" DEL open_positions_state >/dev/null 2>&1 || true
+        echo "[START] DRY_RUN -> resetting open_positions_state + positions:* (dry-run safety reset)"
+
+        # 1) reset bridge state key
+        redis-cli -n "$REDIS_DB" DEL "${BRIDGE_STATE_KEY:-open_positions_state}" >/dev/null 2>&1 || true
+
+        # 2) reset positions keys (so risk/open_trades doesn't stay "full" after restart)
+        #    default prefix is "positions" (POSITION_KEY_PREFIX), but keep fallback compatible
+        POS_PREFIX="${POSITION_KEY_PREFIX:-positions}"
+        redis-cli -n "$REDIS_DB" --scan --pattern "${POS_PREFIX}:*" \
+          | xargs -r -n 200 redis-cli -n "$REDIS_DB" DEL >/dev/null 2>&1 || true
     else
         echo "[SKIP] DRY_RUN reset (processes already running)"
     fi
 fi
-
 # -----------------------------
 # Optional: "sterile" mode
 # -----------------------------
