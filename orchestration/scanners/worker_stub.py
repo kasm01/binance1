@@ -55,16 +55,15 @@ def main() -> None:
     scanner_mode = os.getenv("SCANNER_MODE", "fast").strip().lower() or "fast"
 
     # Publish controls
-    publish_hold = _env_bool("WORKER_PUBLISH_HOLD", False)       # side=none bile bas (debug)
+    publish_hold = _env_bool("WORKER_PUBLISH_HOLD", False)  # side=none bile bas (debug)
     simulate_whale = _env_bool("WORKER_SIM_WHALE", True)
-    emit_meta = _env_bool("WORKER_EMIT_META", True)              # meta şişmesini istersen kapat
+    emit_meta = _env_bool("WORKER_EMIT_META", True)  # meta şişmesini istersen kapat
 
     # Pace
     sleep_sec = _env_float("WORKER_SLEEP_SEC", 0.80)
     hold_skip_sleep_sec = _env_float("WORKER_HOLD_SKIP_SLEEP_SEC", 0.30)
 
     # Anti-spam / quality gates (Worker layer)
-    # spread_pct bir oran: 0.0006 = %0.06
     max_spread_pct = _env_float("WORKER_MAX_SPREAD_PCT", 0.0010)  # default %0.10
     max_atr_pct = _env_float("WORKER_MAX_ATR_PCT", 0.0300)        # default %3.0
     min_conf = _env_float("WORKER_MIN_CONF", 0.45)                # default 0.45
@@ -88,7 +87,6 @@ def main() -> None:
         f"gates(min_conf={min_conf} max_spread={max_spread_pct} max_atr={max_atr_pct}) | "
         f"sleep={sleep_sec}s meta={emit_meta}"
     )
-
     while True:
         sym = random.choice(symbols)
 
@@ -139,7 +137,7 @@ def main() -> None:
         # fast_model_score: stub için p
         fast_model_score = float(_clamp(p, 0.0, 1.0))
 
-        # edge signal (0..1): Worker “trade açmaz”, sadece aday kalitesi üretir
+        # edge signal (0..1)
         ws_for_edge = float(whale_score) if whale_score is not None else 0.0
         score_edge = float(
             _clamp(
@@ -152,7 +150,6 @@ def main() -> None:
         confidence = float(random.uniform(0.25, 0.95))
 
         # ----- Worker quality gate (spam kesme) -----
-        # sadece side != none iken gate uygula (hold debug basılabilir)
         if side_candidate != "none":
             if spread_pct > max_spread_pct:
                 time.sleep(min(0.25, sleep_sec))
@@ -168,31 +165,26 @@ def main() -> None:
         ts_utc = _utc_now_iso()
         dedup_key = f"{sym}|{interval}|{side_candidate}"
         evt = {
-            # helpful envelope
             "event_id": str(uuid.uuid4()),
             "ts_utc": ts_utc,
             "source": source,  # w1..w8
 
-            # core
             "symbol": sym,
             "interval": interval,
             "side_candidate": side_candidate,  # long|short|none
 
-            # scoring inputs (worker-level)
-            "price": float(random.uniform(0.5, 2.0)),  # stub price (replace with mark/last in live)
-            "score_edge": float(score_edge),     # 0..1
-            "confidence": float(confidence),     # 0..1
+            # IMPORTANT: price top-level
+            "price": float(random.uniform(0.5, 2.0)),
+            "score_edge": float(score_edge),
+            "confidence": float(confidence),
 
-            # market / risk features
-            "atr_pct": float(atr_pct),           # 0..1 (örn 0.012 = %1.2)
-            "spread_pct": float(spread_pct),     # 0..1
-            "liq_score": float(liq_score),       # 0..1
+            "atr_pct": float(atr_pct),
+            "spread_pct": float(spread_pct),
+            "liq_score": float(liq_score),
 
-            # whale (TOP-LEVEL): downstream kolay okusun
             "whale_dir": str(whale_dir),
 
-            # dedup
-            "dedup_key": dedup_key,              # symbol|interval|side_candidate
+            "dedup_key": dedup_key,
         }
 
         if whale_score is not None:

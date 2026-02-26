@@ -76,6 +76,26 @@ def _norm_side(x: Any) -> str:
     return s
 
 
+def _as_str_list(x: Any) -> List[str]:
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return [str(t) for t in x if str(t).strip()]
+    if isinstance(x, tuple):
+        return [str(t) for t in list(x) if str(t).strip()]
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return []
+        if "," in s:
+            return [t.strip() for t in s.split(",") if t.strip()]
+        return [s]
+    try:
+        return [str(x)]
+    except Exception:
+        return []
+
+
 class TopSelector:
     """
     candidates_stream -> top5_stream
@@ -88,6 +108,7 @@ class TopSelector:
     Notes:
       - MIN_SCORE fallback supported for min_score
       - W_MIN / TOPSEL_W_MIN whale gate: candidate must have whale_score >= threshold (if threshold > 0)
+      - price alanını korur (top-level + raw içinde).
     """
 
     def __init__(self) -> None:
@@ -171,8 +192,9 @@ class TopSelector:
             raise
         except Exception:
             return
+
     def _normalize_candidate(self, c: Dict[str, Any], stream_id: str) -> Dict[str, Any]:
-        d = dict(c)
+        d = dict(c) if isinstance(c, dict) else {}
 
         sym = str(d.get("symbol", "") or "").upper().strip()
         if sym:
@@ -183,44 +205,24 @@ class TopSelector:
 
         d["side"] = _norm_side(d.get("side", ""))
 
-        # ts
         if not d.get("ts_utc"):
             d["ts_utc"] = _epoch_ms_to_iso(_stream_id_to_epoch_ms(stream_id))
 
-        # dedup_key standard
         dk = str(d.get("dedup_key", "") or "").strip()
         if not dk and sym:
             dk = f"{sym}|{itv}|{d.get('side','')}"
             d["dedup_key"] = dk
 
-        # -------------------------
-        # NEW: normalize risk_tags to List[str]
-        # -------------------------
-        rt = d.get("risk_tags", None)
-        if rt is None:
-            d["risk_tags"] = []
-        elif isinstance(rt, list):
-            d["risk_tags"] = [str(x) for x in rt if str(x).strip()]
-        elif isinstance(rt, tuple):
-            d["risk_tags"] = [str(x) for x in list(rt) if str(x).strip()]
-        elif isinstance(rt, str):
-            s = rt.strip()
-            if not s:
-                d["risk_tags"] = []
-            elif "," in s:
-                d["risk_tags"] = [t.strip() for t in s.split(",") if t.strip()]
-            else:
-                d["risk_tags"] = [s]
-        else:
-            # unknown type -> best effort
-            try:
-                d["risk_tags"] = [str(rt)]
-            except Exception:
-                d["risk_tags"] = []
+        # risk_tags normalize
+        d["risk_tags"] = _as_str_list(d.get("risk_tags", []))
 
-        # -------------------------
-        # NEW: whale_score normalize (top-level) so w_min gate works
-        # -------------------------
+        # price normalize (keep top-level)
+        price = _safe_float(d.get("price", 0.0), 0.0)
+        if price < 0:
+            price = 0.0
+        d["price"] = float(price)
+
+        # whale_score normalize (top-level preferred)
         ws = d.get("whale_score", None)
         if ws is None:
             raw = d.get("raw") or {}
@@ -229,25 +231,26 @@ class TopSelector:
         if ws is not None:
             d["whale_score"] = _clamp(_safe_float(ws, 0.0), 0.0, 1.0)
 
-        # -------------------------
-        # NEW: score_total fallback normalization
-        # prefer score_total; fallback to _score_total / _score_selected / raw
-        # -------------------------
+        # score_total fallback normalization
         st = d.get("score_total", None)
         if st is None:
             st = d.get("_score_total", None)
         if st is None:
             st = d.get("_score_selected", None)
-
         if st is None:
             raw = d.get("raw") or {}
             if isinstance(raw, dict):
                 st = raw.get("score_total", None)
-            if st is None and isinstance(raw, dict):
-                st = raw.get("_score_total", None)
-
         if st is not None:
             d["score_total"] = _clamp(_safe_float(st, 0.0), 0.0, 1.0)
+
+        # ensure raw carries price too (downstream fallback)
+        try:
+            raw = d.get("raw")
+            if isinstance(raw, dict):
+                raw["price"] = float(price)
+        except Exception:
+            pass
 
         return d
 
@@ -261,50 +264,33 @@ class TopSelector:
             return False
         return True
 
-    def _risk_tags(self, c: Dict[str, Any]) -> List[str]:
-        tags = c.get("risk_tags") or []
-        try:
-            return [str(x) for x in list(tags)]
-        except Exception:
-            return []
-
     def _extract_whale_score(self, c: Dict[str, Any]) -> float:
-        """
-        Whale score can appear as:
-          - c["whale_score"]
-          - c["raw"]["whale_score"]
-        """
         ws = _safe_float(c.get("whale_score", 0.0), 0.0)
         if ws > 0:
             return float(ws)
         raw = c.get("raw") or {}
         if isinstance(raw, dict):
-            ws2 = _safe_float(raw.get("whale_score", 0.0), 0.0)
-            return float(ws2)
+            return float(_safe_float(raw.get("whale_score", 0.0), 0.0))
         return 0.0
 
     def _score(self, c: Dict[str, Any]) -> float:
         s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
-
-        tags = self._risk_tags(c)
+        tags = c.get("risk_tags") or []
         if "wide_spread" in tags:
-            s -= self.penalty_wide_spread
+            s -= float(self.penalty_wide_spread)
         if "high_vol" in tags:
-            s -= self.penalty_high_vol
-
+            s -= float(self.penalty_high_vol)
         return _clamp(s, 0.0, 1.0)
 
     def _cooldown_key(self, c: Dict[str, Any]) -> str:
         dk = c.get("dedup_key")
         if dk:
             return str(dk)
-
         raw = c.get("raw") or {}
         if isinstance(raw, dict):
             ck = raw.get("cooldown_key")
             if ck:
                 return str(ck)
-
         return f"{c.get('symbol','')}|{c.get('interval','')}|{c.get('side','')}"
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
@@ -335,8 +321,8 @@ class TopSelector:
                     out.append((sid, {}))
                     continue
                 try:
-                    c = json.loads(js)
-                    out.append((sid, c if isinstance(c, dict) else {}))
+                    obj = json.loads(js)
+                    out.append((sid, obj if isinstance(obj, dict) else {}))
                 except Exception:
                     out.append((sid, {}))
         return out
@@ -354,7 +340,7 @@ class TopSelector:
             return []
 
         now_sec = time.time()
-        min_ms = int((now_sec - self.window_sec) * 1000)
+        min_ms = int((now_sec - float(self.window_sec)) * 1000)
 
         windowed: List[Tuple[str, Dict[str, Any]]] = []
         for sid, c in items:
@@ -369,7 +355,7 @@ class TopSelector:
             if not self._required_ok(c2):
                 continue
 
-            # whale gate at TopSelector stage (optional)
+            # whale gate (optional)
             if float(self.w_min) > 0.0:
                 ws = self._extract_whale_score(c2)
                 if ws < float(self.w_min):
@@ -380,6 +366,7 @@ class TopSelector:
         if not windowed:
             return []
 
+        # best per cooldown key
         best_by_key: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
         for sid, c in windowed:
             ck = self._cooldown_key(c)
@@ -422,6 +409,7 @@ class TopSelector:
             min_score=float(self.min_score),
             w_min=float(self.w_min),
         ).to_dict()
+
         try:
             sid = self.r.xadd(
                 self.out_stream,
@@ -438,12 +426,12 @@ class TopSelector:
             self.last_sent[ck] = now_sec
 
         return sid
+
     def _buffer_add(self, rows: List[Tuple[str, Dict[str, Any]]]) -> None:
         if not rows:
             return
 
         ack_ids: List[str] = []
-
         for sid, c in rows:
             if not c or not isinstance(c, dict):
                 continue
@@ -472,8 +460,8 @@ class TopSelector:
         top = self._select_topk(self._buf)
         out_id = self._publish(top) if top else None
 
-        # ACK AFTER flush (at-least-once)
-        if not self.ack_immediate:
+        # ACK after flush (at-least-once)
+        if not self.ack_immediate and self._buf_ids:
             self._ack(self._buf_ids)
 
         # reset window
@@ -482,7 +470,7 @@ class TopSelector:
         self._window_started_at = time.time()
 
         if out_id:
-            return out_id, top
+            return str(out_id), top
         return None
 
     def run_forever(self) -> None:
@@ -490,8 +478,7 @@ class TopSelector:
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
             f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s min_score={self.min_score} "
-            f"w_min={self.w_min} "
-            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"w_min={self.w_min} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
         if self.drain_pending:

@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import asyncio
-import inspect
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +15,25 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _env_bool(k: str, default: bool = False) -> bool:
+    v = os.getenv(k)
+    if v is None:
+        return default
+    t = str(v).strip().lower()
+    if t in ("1", "true", "yes", "y", "on"):
+        return True
+    if t in ("0", "false", "no", "n", "off", ""):
+        return False
+    return default
+
+
+def _env_str(k: str, default: str = "") -> str:
+    v = os.getenv(k)
+    if v is None:
+        return default
+    return str(v).strip()
+
+
 def _env_int(k: str, default: int) -> int:
     try:
         return int(str(os.getenv(k, str(default))).strip())
@@ -23,16 +41,11 @@ def _env_int(k: str, default: int) -> int:
         return default
 
 
-def _env_bool(k: str, default: bool = False) -> bool:
-    v = os.getenv(k)
-    if v is None:
+def _env_float(k: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(k, str(default))).strip())
+    except Exception:
         return default
-    s = str(v).strip().lower()
-    if s in ("1", "true", "yes", "y", "on"):
-        return True
-    if s in ("0", "false", "no", "n", "off", ""):
-        return False
-    return default
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -49,62 +62,94 @@ def _safe_str(x: Any, default: str = "") -> str:
         return default
 
 
-def _parse_iso(ts: str) -> Optional[datetime]:
-    try:
-        if not ts:
-            return None
-        return datetime.fromisoformat(ts)
-    except Exception:
-        return None
+def _as_list(x: Any) -> List[Any]:
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return []
+        if "," in s:
+            return [t.strip() for t in s.split(",") if t.strip()]
+        return [s]
+    return []
 
 
-def _run_coroutine_safely(coro):
+@dataclass
+class ExecEvent:
     """
-    asyncio.run() mevcut loop içinde patlayabilir.
-    Bridge tipik olarak loop içinde çalışmaz ama güvenli olsun diye fallback ekliyoruz.
+    What IntentBridge publishes to exec_events_stream
     """
-    try:
-        return asyncio.run(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
+    ts_utc: str
+    kind: str                      # "open_intent" | "close_intent" | "reject_intent" | "noop"
+    intent_id: str
+    symbol: str
+    interval: str
+    side: str                      # "long" | "short" | "close"
+    price: float
+    score: float
+    trail_pct: float = 0.0
+    stall_ttl_sec: int = 0
+    reason: str = ""
+    raw: Dict[str, Any] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ts_utc": self.ts_utc,
+            "kind": self.kind,
+            "intent_id": self.intent_id,
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "side": self.side,
+            "price": float(self.price),
+            "score": float(self.score),
+            "trail_pct": float(self.trail_pct or 0.0),
+            "stall_ttl_sec": int(self.stall_ttl_sec or 0),
+            "reason": self.reason,
+            "raw": self.raw or {},
+        }
 
 
 class IntentBridge:
     """
-    Consumes trade_intents_stream (group-based), forwards intents to TradeExecutor.
+    IN:  trade_intents_stream (MasterExecutor publishes {"ts_utc","count","items":[...]} )
+    OUT: exec_events_stream   (downstream executor consumes)
+    STATE: open_positions_state (hash/json; best-effort)
 
-    IN:  trade_intents_stream
-    OUT: exec_events_stream (log/trace)
+    Safety:
+      - DRY_RUN=1: still emits exec_events_stream, but tags as dry_run in raw.
+      - DRY_RUN=0: requires ARMED=1 and LIVE_KILL_SWITCH=0 and ARM_TOKEN>=16.
 
-    Restart-safe: XREADGROUP + XACK
-
-    DRY_RUN behavior is configurable:
-      - BRIDGE_DRYRUN_BYPASS_GATE=1   -> bypass all open-position gates (dedup/max_open/cooldown)
-      - BRIDGE_DRYRUN_WRITE_STATE=1   -> keep open_positions_state in dry-run to test gates
-      - BRIDGE_DRYRUN_CALL_EXECUTOR=1 -> DRY_RUN olsa bile executor'u çağır (executor zaten dry_run=True ise emir atmaz)
-
-    IMPORTANT:
-      - Key-level TTL for state is controlled via BRIDGE_STATE_TTL_SEC (default 600).
-        If BRIDGE_STATE_TTL_SEC <= 0, key TTL is disabled.
+    Consumer group is pinned via env:
+      BRIDGE_GROUP (default bridge_g)
+      BRIDGE_CONSUMER (default bridge_1)
+      BRIDGE_GROUP_START_ID (default "$")
     """
 
     def __init__(self) -> None:
-        # Redis connection
+        # Redis
         self.redis_host = os.getenv("REDIS_HOST", "127.0.0.1")
         self.redis_port = _env_int("REDIS_PORT", 6379)
         self.redis_db = _env_int("REDIS_DB", 0)
         self.redis_password = os.getenv("REDIS_PASSWORD") or None
 
+        self.r = redis.Redis(
+            host=self.redis_host,
+            port=self.redis_port,
+            db=self.redis_db,
+            password=self.redis_password,
+            decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
+        )
+
         # Streams
         self.in_stream = os.getenv("BRIDGE_IN_STREAM", os.getenv("TRADE_INTENTS_STREAM", "trade_intents_stream"))
-        self.out_stream = os.getenv("BRIDGE_OUT_STREAM", "exec_events_stream")
+        self.out_stream = os.getenv("BRIDGE_OUT_STREAM", os.getenv("EXEC_EVENTS_STREAM", "exec_events_stream"))
 
         # Consumer group
         self.group = os.getenv("BRIDGE_GROUP", "bridge_g")
@@ -114,130 +159,42 @@ class IntentBridge:
 
         # Read tuning
         self.read_block_ms = _env_int("BRIDGE_READ_BLOCK_MS", 2000)
-        self.batch_count = _env_int("BRIDGE_BATCH_COUNT", 20)
+        self.batch_count = _env_int("BRIDGE_BATCH_COUNT", 50)
 
-        # Runtime flags
-        self.dry_run = _env_bool("DRY_RUN", True)
+        # Output trim
+        self.out_maxlen = _env_int("BRIDGE_OUT_MAXLEN", 5000)
 
-        # --- LIVE SAFETY POLICY ---
-        self.armed = _env_bool("ARMED", False)
-        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
-        if (not self.armed) or self.kill_switch:
-            self.dry_run = True
-
-        # Gate + state
+        # State
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
 
-        # ✅ Env uyumu: yeni/önerilen isimler + eski fallbacks
-        # Dedup:
-        self.dedup_symbol = _env_bool(
-            "BRIDGE_DEDUP_SYMBOL",
-            _env_bool("DEDUP_SYMBOL_OPEN", True),
-        )
-        # Max open:
-        self.max_open = _env_int(
-            "BRIDGE_MAX_OPEN",
-            _env_int("MAX_OPEN_POSITIONS", 3),
-        )
+        # Policy knobs
+        self.require_price = _env_bool("BRIDGE_REQUIRE_PRICE", True)
 
-        # ✅ Price zorunluluğu (executor çağrılacaksa)
-        # MasterExecutor tarafındaki require_price=True ile uyumlu olsun diye default True
-        self.require_price = _env_bool(
-            "BRIDGE_REQUIRE_PRICE",
-            _env_bool("MASTER_REQUIRE_PRICE", True),
+        # Live safety policy
+        self.dry_run_env = _env_bool("DRY_RUN", True)
+        self.armed = _env_bool("ARMED", False)
+        self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
+        self.arm_token = _env_str("ARM_TOKEN", "")
+
+        self.publish_allowed = bool(
+            self.dry_run_env or (self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
         )
 
-        # ✅ Event içerisine structured gate debug alanları ekle
-        self.event_include_gate_struct = _env_bool("BRIDGE_EVENT_INCLUDE_GATE_STRUCT", True)
+        if (not self.dry_run_env) and (not self.publish_allowed):
+            print(
+                f"[IntentBridge][SAFE] DRY_RUN=0 but publish blocked: "
+                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)}"
+            )
 
-        # Key-level TTL
-        self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 600)  # <=0 disables key TTL
-
-        # TTL-based cleanup (maps inside JSON)
-        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 0)
-        self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)
-        self.closed_ttl_sec = _env_int(
-            "BRIDGE_CLOSED_TTL_SEC",
-            max(0, int(self.close_cooldown_sec) * 10) if self.close_cooldown_sec > 0 else 0,
-        )
-
-        # periodic cleanup loop
-        self.cleanup_every_sec = _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5)
-
-        # DRY_RUN gating knobs
-        self.dryrun_bypass_gate = _env_bool("BRIDGE_DRYRUN_BYPASS_GATE", False)
-        self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", True)
-
-        # dry-run'da executor çağırma opsiyonu
-        self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", False)
-
-        # Success assumptions
-        self.open_assume_success_on_noexc = _env_bool("BRIDGE_OPEN_ASSUME_SUCCESS_ON_NOEXC", True)
-        self.close_assume_success_on_noexc = _env_bool("BRIDGE_CLOSE_ASSUME_SUCCESS_ON_NOEXC", True)
-
-        # selftest
-        self.selftest = _env_bool("BRIDGE_SELFTEST", False)
-        self.selftest_reset_state = _env_bool("BRIDGE_SELFTEST_RESET_STATE", True)
-        self.selftest_symbols = [
-            s.strip().upper()
-            for s in os.getenv("BRIDGE_SELFTEST_SYMBOLS", "BTCUSDT,ETHUSDT,XRPUSDT,BNBUSDT").split(",")
-            if s.strip()
-        ]
-        self.selftest_interval = os.getenv("BRIDGE_SELFTEST_INTERVAL", "5m")
-        self.selftest_side = os.getenv("BRIDGE_SELFTEST_SIDE", "long")
-        self.selftest_wait_sec = float(_safe_float(os.getenv("BRIDGE_SELFTEST_WAIT_SEC", "2.0"), 2.0))
-
-        self.r = redis.Redis(
-            host=self.redis_host,
-            port=self.redis_port,
-            db=self.redis_db,
-            password=self.redis_password,
-            decode_responses=True,
-        )
-
-        # Ensure stream+group exist
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
-        # TradeExecutor + RiskManager + PositionManager
-        from core.trade_executor import TradeExecutor  # noqa
-        from core.risk_manager import RiskManager  # noqa
-        from core.position_manager import PositionManager  # noqa
-
-        self.risk_manager = RiskManager()
-
-        redis_url = os.getenv("POSITION_REDIS_URL", f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}")
-        pm_key_prefix = os.getenv("POSITION_KEY_PREFIX", "positions")
-        pm_db = _env_int("POSITION_REDIS_DB", self.redis_db)
-
-        self.position_manager = PositionManager(
-            redis_url=redis_url,
-            redis_db=pm_db,
-            redis_key_prefix=pm_key_prefix,
-            enable_pg=_env_bool("ENABLE_PG_POS_LOG", False),
-            pg_dsn=os.getenv("PG_DSN") or None,
-        )
-
-        self.executor = TradeExecutor(
-            client=None,
-            risk_manager=self.risk_manager,
-            position_manager=self.position_manager,
-            dry_run=self.dry_run,
-        )
-
         print(
-            f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} armed={getattr(self, 'armed', None)} kill_switch={getattr(self, 'kill_switch', None)} "
+            f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"dry_run={self.dry_run} state_key={self.state_key} state_ttl_sec={self.state_ttl_sec} "
-            f"dryrun_bypass_gate={self.dryrun_bypass_gate} dryrun_write_state={self.dryrun_write_state} dryrun_call_executor={self.dryrun_call_executor} "
-            f"require_price={self.require_price} event_include_gate_struct={self.event_include_gate_struct} "
-            f"max_open={self.max_open} dedup_symbol={self.dedup_symbol} "
-            f"close_cooldown_sec={self.close_cooldown_sec} "
-            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
-            f"pos_redis={redis_url} pos_prefix={pm_key_prefix}"
+            f"require_price={self.require_price} publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
-    # -----------------------
-    # Redis helpers
-    # -----------------------
+
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -246,6 +203,8 @@ class IntentBridge:
             if "BUSYGROUP" in str(e):
                 return
             raise
+        except Exception:
+            return
 
     def _ack(self, ids: List[str]) -> None:
         if not ids:
@@ -254,427 +213,6 @@ class IntentBridge:
             self.r.xack(self.in_stream, self.group, *ids)
         except Exception:
             pass
-
-    def _publish_event(self, kind: str, data: Dict[str, Any]) -> None:
-        payload = {"ts_utc": _now_utc_iso(), "kind": kind, **data}
-        try:
-            self.r.xadd(
-                self.out_stream,
-                {"json": json.dumps(payload, ensure_ascii=False)},
-                maxlen=5000,
-                approximate=True,
-            )
-        except Exception:
-            pass
-
-    def _normalize_side(self, side: str) -> str:
-        s = (side or "").strip().lower()
-        if s in ("buy", "long"):
-            return "long"
-        if s in ("sell", "short"):
-            return "short"
-        return s or "long"
-
-    def _normalize_direction(self, side_or_dir: str) -> str:
-        s = (side_or_dir or "").strip().upper()
-        if s in ("LONG", "BUY"):
-            return "LONG"
-        if s in ("SHORT", "SELL"):
-            return "SHORT"
-        sl = (side_or_dir or "").strip().lower()
-        if sl == "long":
-            return "LONG"
-        if sl == "short":
-            return "SHORT"
-        return ""
-
-    def _extract_open_price(self, it: Dict[str, Any]) -> Optional[float]:
-        # OPEN intent accepted fields:
-        for k in ("price", "mark_price", "last_price", "entry_price", "close_price"):
-            v = it.get(k, None)
-            if v is None:
-                continue
-            p = _safe_float(v, 0.0)
-            if p > 0:
-                return float(p)
-        return None
-
-    def _extract_close_price(self, it: Dict[str, Any]) -> Optional[float]:
-        # CLOSE intent accepted fields:
-        for k in ("price", "exit_price", "close_price", "fill_price"):
-            v = it.get(k, None)
-            if v is None:
-                continue
-            p = _safe_float(v, 0.0)
-            if p > 0:
-                return float(p)
-        return None
-
-    def _is_close_success(self, res: Any) -> bool:
-        if res is None:
-            return bool(self.close_assume_success_on_noexc)
-        if isinstance(res, bool):
-            return res is True
-        if isinstance(res, dict):
-            st = _safe_str(res.get("status", "")).strip().lower()
-            if st in ("success", "ok", "closed", "dry_run"):
-                return True
-            if _safe_str(res.get("result", "")).strip().lower() in ("success", "ok"):
-                return True
-            return False
-        return False
-
-    def _is_open_success(self, res: Any) -> bool:
-        if res is None:
-            return bool(self.open_assume_success_on_noexc)
-        if isinstance(res, bool):
-            return res is True
-        if isinstance(res, dict):
-            st = _safe_str(res.get("status", "")).strip().lower()
-            if st in ("success", "ok", "opened", "open", "dry_run"):
-                return True
-            if st in ("skip", "fail", "error"):
-                return False
-        return True
-
-    def _extract_executor_skip_reason(self, res: Any, fallback: str) -> str:
-        """
-        Executor called_ok=True ama "skip" döndürdüğünde sebep method adı olarak kalmasın.
-        res içinden makul bir why/reason/message çıkar.
-        """
-        try:
-            if isinstance(res, dict):
-                for k in ("why", "reason", "message", "msg", "error", "detail"):
-                    v = res.get(k)
-                    if v:
-                        return _safe_str(v)
-                st = _safe_str(res.get("status", "")).strip().lower()
-                if st in ("skip", "fail", "error"):
-                    return f"{st}"
-        except Exception:
-            pass
-        return fallback
-
-    def _summarize_res(self, res: Any, max_len: int = 240) -> Any:
-        """
-        Exec event içine koymak için küçük bir özet.
-        Büyük objeleri şişirmeden "ne döndü?" sorusuna cevap verir.
-        """
-        try:
-            if res is None:
-                return None
-            if isinstance(res, (str, int, float, bool)):
-                s = str(res)
-                return s[:max_len]
-            if isinstance(res, dict):
-                out: Dict[str, Any] = {}
-                for k in ("status", "result", "why", "reason", "message", "msg", "error", "detail"):
-                    if k in res and res.get(k) is not None:
-                        out[k] = res.get(k)
-                if not out:
-                    # çok büyütmeyelim: sadece ilk 12 key
-                    keys = list(res.keys())[:12]
-                    out = {k: res.get(k) for k in keys}
-                return out
-            s = str(res)
-            return s[:max_len]
-        except Exception:
-            try:
-                return str(res)[:max_len]
-            except Exception:
-                return None
-
-    def _risk_snapshot(self, symbol: str, interval: str) -> Dict[str, Any]:
-        """
-        RiskManager içindeki debug alanlarını event'e taşımaya çalışır.
-        RiskManager'da farklı fonksiyon isimleri olabilir -> best-effort.
-        """
-        try:
-            rm = getattr(self, "risk_manager", None)
-            if rm is None:
-                return {}
-            # 1) debug_snapshot(symbol, interval)
-            fn = getattr(rm, "debug_snapshot", None)
-            if callable(fn):
-                out = fn(symbol=symbol, interval=interval)
-                return out if isinstance(out, dict) else {"value": out}
-            # 2) get_debug(symbol, interval)
-            fn = getattr(rm, "get_debug", None)
-            if callable(fn):
-                out = fn(symbol=symbol, interval=interval)
-                return out if isinstance(out, dict) else {"value": out}
-            # 3) snapshot() global
-            fn = getattr(rm, "snapshot", None)
-            if callable(fn):
-                out = fn()
-                return out if isinstance(out, dict) else {"value": out}
-        except Exception:
-            pass
-        return {}
-
-    def _parse_gate_reason_struct(self, reason: str, symbol: str) -> Dict[str, Any]:
-        """
-        Gate reason string -> structured alanlara çevirir.
-        Örnek:
-          "max_open: 3 >= 3"
-          "dedup_symbol: BTCUSDT already open"
-          "cooldown: 12s left"
-          "missing_price"
-        """
-        try:
-            if not reason:
-                return {}
-
-            r = reason.strip()
-            rl = r.lower()
-
-            if rl.startswith("max_open"):
-                # max_open: 3 >= 3
-                parts = r.split(":", 1)
-                expr = parts[1].strip() if len(parts) > 1 else ""
-                # expr: "3 >= 3"
-                nums: List[int] = []
-                for tok in expr.replace(">=", " ").replace(">", " ").replace("=", " ").split():
-                    if tok.isdigit():
-                        nums.append(int(tok))
-                current = nums[0] if len(nums) > 0 else None
-                limit = nums[1] if len(nums) > 1 else None
-                return {"gate_type": "max_open", "gate_current": current, "gate_limit": limit}
-
-            if rl.startswith("dedup_symbol"):
-                return {"gate_type": "dedup_symbol", "gate_symbol": symbol}
-
-            if rl.startswith("cooldown"):
-                # cooldown: 12s left
-                left = None
-                try:
-                    # "cooldown: 12s left"
-                    seg = rl.split(":", 1)[1].strip() if ":" in rl else rl
-                    left_str = seg.split("s", 1)[0].strip()
-                    left = int(left_str)
-                except Exception:
-                    left = None
-                return {"gate_type": "cooldown", "gate_symbol": symbol, "gate_cooldown_left_sec": left}
-
-            if rl == "missing_price" or "missing_price" in rl:
-                return {"gate_type": "missing_price", "gate_symbol": symbol}
-
-        except Exception:
-            pass
-        return {}
-    # -----------------------
-    # State helpers
-    # -----------------------
-    def _load_state(self) -> Dict[str, Any]:
-        try:
-            raw_state = self.r.get(self.state_key)
-            st = json.loads(raw_state) if raw_state else {}
-            if not isinstance(st, dict):
-                return {"open": {}, "closed": {}}
-            if "open" not in st or not isinstance(st.get("open"), dict):
-                st["open"] = {}
-            if "closed" not in st or not isinstance(st.get("closed"), dict):
-                st["closed"] = {}
-            return st
-        except Exception:
-            return {"open": {}, "closed": {}}
-
-    def _save_state(self, open_map: Dict[str, Any], closed_map: Optional[Dict[str, Any]] = None) -> None:
-        payload_obj: Dict[str, Any] = {"open": open_map}
-        if closed_map is not None:
-            payload_obj["closed"] = closed_map
-        else:
-            st = self._load_state()
-            payload_obj["closed"] = st.get("closed", {}) if isinstance(st.get("closed"), dict) else {}
-
-        payload = json.dumps(payload_obj, ensure_ascii=False)
-        ttl = int(self.state_ttl_sec or 0)
-        try:
-            if ttl > 0:
-                self.r.set(self.state_key, payload, ex=ttl)
-            else:
-                self.r.set(self.state_key, payload)
-        except Exception:
-            pass
-
-    def _cleanup_map_ttl_inplace(self, m: Dict[str, Any], ttl_sec: int) -> bool:
-        if not ttl_sec or ttl_sec <= 0:
-            return False
-        try:
-            now = datetime.now(timezone.utc)
-            dirty = False
-            for sym, info in list(m.items()):
-                ts = ""
-                if isinstance(info, dict):
-                    ts = str(info.get("ts_utc") or "")
-                t0 = _parse_iso(ts) if ts else None
-                if (t0 is None) or ((now - t0).total_seconds() > ttl_sec):
-                    m.pop(sym, None)
-                    dirty = True
-            return dirty
-        except Exception:
-            return False
-
-    def _maybe_periodic_cleanup(self) -> None:
-        if self.cleanup_every_sec <= 0:
-            return
-        try:
-            state = self._load_state()
-            open_map = state.get("open", {})
-            closed_map = state.get("closed", {})
-            if not isinstance(open_map, dict) or not isinstance(closed_map, dict):
-                return
-
-            dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
-            dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
-
-            if dirty_open or dirty_closed:
-                self._save_state(open_map, closed_map)
-                self._publish_event(
-                    "state_cleanup_ttl",
-                    {
-                        "state_key": self.state_key,
-                        "len_open": len(open_map),
-                        "len_closed": len(closed_map),
-                        "open_ttl_sec": int(self.open_ttl_sec),
-                        "closed_ttl_sec": int(self.closed_ttl_sec),
-                        "state_ttl_sec": int(self.state_ttl_sec or 0),
-                    },
-                )
-        except Exception:
-            pass
-
-    # -----------------------
-    # Gate logic
-    # -----------------------
-    def _cooldown_left_sec(self, closed_map: Dict[str, Any], symbol: str) -> int:
-        if not self.close_cooldown_sec or self.close_cooldown_sec <= 0:
-            return 0
-        info = closed_map.get(symbol)
-        if not isinstance(info, dict):
-            return 0
-        t0 = _parse_iso(_safe_str(info.get("ts_utc", "")))
-        if t0 is None:
-            return 0
-        now = datetime.now(timezone.utc)
-        elapsed = (now - t0).total_seconds()
-        left = float(self.close_cooldown_sec) - elapsed
-        return int(left) if left > 0 else 0
-
-    def _gate_allow_open(self, symbol: str) -> Tuple[bool, str]:
-        if self.dry_run and self.dryrun_bypass_gate:
-            return True, "dry_run_bypass"
-
-        state = self._load_state()
-        open_map = state.get("open", {}) if isinstance(state, dict) else {}
-        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
-        if not isinstance(open_map, dict):
-            open_map = {}
-        if not isinstance(closed_map, dict):
-            closed_map = {}
-
-        dirty_open = self._cleanup_map_ttl_inplace(open_map, int(self.open_ttl_sec))
-        dirty_closed = self._cleanup_map_ttl_inplace(closed_map, int(self.closed_ttl_sec))
-        if dirty_open or dirty_closed:
-            if (not self.dry_run) or self.dryrun_write_state:
-                try:
-                    self._save_state(open_map, closed_map)
-                    self._publish_event(
-                        "state_cleanup_ttl",
-                        {"state_key": self.state_key, "len_open": len(open_map), "len_closed": len(closed_map)},
-                    )
-                except Exception:
-                    pass
-
-        left = self._cooldown_left_sec(closed_map, symbol)
-        if left > 0:
-            return False, f"cooldown: {left}s left"
-
-        if self.dedup_symbol and symbol in open_map:
-            return False, f"dedup_symbol: {symbol} already open"
-
-        if len(open_map) >= int(self.max_open):
-            return False, f"max_open: {len(open_map)} >= {self.max_open}"
-
-        return True, "ok"
-
-    def _gate_mark_open(self, symbol: str, side: str, interval: str, intent_id: str) -> None:
-        if self.dry_run and (not self.dryrun_write_state):
-            return
-
-        state = self._load_state()
-        open_map = state.get("open", {}) if isinstance(state, dict) else {}
-        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
-        if not isinstance(open_map, dict):
-            open_map = {}
-        if not isinstance(closed_map, dict):
-            closed_map = {}
-
-        if symbol in closed_map:
-            closed_map.pop(symbol, None)
-            self._publish_event("state_closed_cleared", {"state_key": self.state_key, "symbol": symbol})
-
-        open_map[symbol] = {"side": side, "interval": interval, "ts_utc": _now_utc_iso(), "intent_id": intent_id}
-        self._save_state(open_map, closed_map)
-
-        self._publish_event(
-            "state_written",
-            {
-                "state_key": self.state_key,
-                "len_open": len(open_map),
-                "len_closed": len(closed_map),
-                "state_ttl_sec": int(self.state_ttl_sec or 0),
-            },
-        )
-
-    def _gate_mark_close(self, symbol: str, reason: str, intent_id: str) -> None:
-        if self.dry_run and (not self.dryrun_write_state):
-            return
-
-        state = self._load_state()
-        open_map = state.get("open", {}) if isinstance(state, dict) else {}
-        closed_map = state.get("closed", {}) if isinstance(state, dict) else {}
-        if not isinstance(open_map, dict):
-            open_map = {}
-        if not isinstance(closed_map, dict):
-            closed_map = {}
-
-        existed = symbol in open_map
-        open_map.pop(symbol, None)
-
-        if self.close_cooldown_sec and self.close_cooldown_sec > 0:
-            closed_map[symbol] = {"ts_utc": _now_utc_iso(), "reason": reason, "intent_id": intent_id}
-
-        self._save_state(open_map, closed_map)
-        self._publish_event(
-            "state_closed",
-            {
-                "state_key": self.state_key,
-                "symbol": symbol,
-                "existed": existed,
-                "reason": reason,
-                "len_open": len(open_map),
-                "len_closed": len(closed_map),
-                "intent_id": intent_id,
-                "state_ttl_sec": int(self.state_ttl_sec or 0),
-            },
-        )
-    # -----------------------
-    # Parsing / consuming
-    # -----------------------
-    def _parse_pkg(self, sid: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        s = fields.get("json")
-        if not s:
-            return None
-        try:
-            d = json.loads(s)
-            if isinstance(d, dict):
-                d.setdefault("ts_utc", _now_utc_iso())
-                d["_source_stream_id"] = sid
-                return d
-        except Exception:
-            return None
-        return None
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
@@ -688,13 +226,9 @@ class IntentBridge:
         except redis.exceptions.ResponseError as e:
             msg = str(e)
             if "UNBLOCKED" in msg and "no longer exists" in msg:
-                print(f"[IntentBridge] WARN: stream disappeared during blocking read; recreating group. err={msg}")
-                try:
-                    self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
-                except Exception:
-                    pass
+                self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
                 return []
-            raise
+            return []
         except Exception:
             return []
 
@@ -702,493 +236,249 @@ class IntentBridge:
         if not resp:
             return out
 
-        for _name, entries in resp:
+        for _stream_name, entries in resp:
             for sid, fields in entries:
-                pkg = self._parse_pkg(sid, fields)
-                out.append((sid, pkg or {}))
-        return out
-
-    # -----------------------
-    # Intent semantics: open vs close
-    # -----------------------
-    def _is_close_intent(self, it: Dict[str, Any]) -> bool:
-        action = _safe_str(it.get("action", "")).strip().lower()
-        intent_type = _safe_str(it.get("intent_type", "")).strip().lower()
-        close_flag = it.get("close", None)
-
-        if action in ("close", "close_position", "exit"):
-            return True
-        if intent_type in ("close", "close_position", "exit"):
-            return True
-        if isinstance(close_flag, bool) and close_flag is True:
-            return True
-
-        side = _safe_str(it.get("side", "")).strip().lower()
-        if side in ("close", "exit"):
-            return True
-
-        return False
-
-    # -----------------------
-    # Executor call helpers (TradeExecutor uyumlu)
-    # -----------------------
-    def _call_open_executor(self, symbol: str, side: str, interval: str, meta: Dict[str, Any]) -> Tuple[bool, Any, str]:
-        """
-        Öncelik: TradeExecutor.open_position_from_signal (sync)
-        Fallback: execute_decision (async) (varsa)
-        """
-        fn = getattr(self.executor, "open_position_from_signal", None)
-        if callable(fn):
-            try:
-                res = fn(symbol=symbol, side=side, interval=interval, meta=meta)
-                return True, res, "open_position_from_signal(sync)"
-            except Exception as e:
-                return False, None, f"open_position_from_signal failed: {repr(e)}"
-
-        fn2 = getattr(self.executor, "execute_decision", None)
-        if callable(fn2):
-            signal = "BUY" if side == "long" else "SELL"
-            try:
-                if inspect.iscoroutinefunction(fn2):
-                    res = _run_coroutine_safely(
-                        fn2(
-                            signal=signal,
-                            symbol=symbol,
-                            price=float(meta.get("price") or 0.0),
-                            size=None,
-                            interval=interval,
-                            training_mode=False,
-                            hybrid_mode=False,
-                            probs={},
-                            extra=meta,
-                        )
-                    )
-                    return True, res, "execute_decision(async)"
-                else:
-                    res = fn2(
-                        signal=signal,
-                        symbol=symbol,
-                        price=float(meta.get("price") or 0.0),
-                        size=None,
-                        interval=interval,
-                        training_mode=False,
-                        hybrid_mode=False,
-                        probs={},
-                        extra=meta,
-                    )
-                    return True, res, "execute_decision(sync)"
-            except Exception as e:
-                return False, None, f"execute_decision failed: {repr(e)}"
-
-        return False, None, "no open entrypoint on executor"
-
-    def _call_close_executor(self, symbol: str, interval: str, meta: Dict[str, Any], direction: str, price: Any) -> Tuple[bool, Any, str]:
-        """
-        Öncelik: TradeExecutor.close_position_from_signal (sync)
-        Fallback: TradeExecutor.close_position (sync) (price required)
-        """
-        fn = getattr(self.executor, "close_position_from_signal", None)
-        if callable(fn):
-            try:
-                res = fn(symbol=symbol, interval=interval, meta=meta, direction=direction, price=price, exit_price=price)
-                return True, res, "close_position_from_signal(sync)"
-            except Exception as e:
-                return False, None, f"close_position_from_signal failed: {repr(e)}"
-
-        fn2 = getattr(self.executor, "close_position", None)
-        if callable(fn2):
-            try:
-                res = fn2(symbol=symbol, price=float(_safe_float(price, 0.0)), reason="INTENT_CLOSE", interval=interval)
-                return True, res, "close_position(sync)"
-            except Exception as e:
-                return False, None, f"close_position failed: {repr(e)}"
-
-        return False, None, "no close entrypoint on executor"
-    # -----------------------
-    # Forwarding logic
-    # -----------------------
-    def _forward_close(self, it: Dict[str, Any], source_pkg_id: str) -> None:
-        symbol = _safe_str(it.get("symbol", "")).upper()
-        interval = _safe_str(it.get("interval", ""))
-        intent_id = _safe_str(it.get("intent_id", ""))
-
-        raw = it.get("raw", {})
-        raw = raw if isinstance(raw, dict) else {}
-
-        if not symbol:
-            self._publish_event(
-                "close_skip",
-                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "why": "missing_symbol"},
-            )
-            return
-
-        raw_side = _safe_str(it.get("side", "")).strip()
-        direction = self._normalize_direction(raw_side)
-        if not direction:
-            st = self._load_state()
-            open_map = st.get("open", {}) if isinstance(st, dict) else {}
-            if isinstance(open_map, dict) and isinstance(open_map.get(symbol), dict):
-                prev = _safe_str(open_map[symbol].get("side", "long")).lower()
-                direction = "LONG" if prev == "long" else "SHORT"
-            else:
-                direction = "LONG"
-
-        close_price = self._extract_close_price(it)
-
-        meta = {
-            "reason": "ORCH_INTENT_CLOSE",
-            "intent_id": intent_id,
-            "source_pkg_id": source_pkg_id,
-        }
-
-        # whale context (optional)
-        whale_dir = _safe_str(it.get("whale_dir", raw.get("whale_dir", "none")))
-        whale_score = float(_safe_float(it.get("whale_score", raw.get("whale_score", 0.0)), 0.0))
-        meta["whale_dir"] = whale_dir
-        meta["whale_score"] = whale_score
-
-        if self.dry_run and (not self.dryrun_call_executor):
-            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
-            self._publish_event(
-                "close_dry",
-                {"intent_id": intent_id, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price, "why": "dry_run"},
-            )
-            return
-
-        called_ok, res, method_or_err = self._call_close_executor(
-            symbol=symbol,
-            interval=interval,
-            meta=meta,
-            direction=direction,
-            price=close_price,
-        )
-
-        if called_ok and self._is_close_success(res):
-            self._gate_mark_close(symbol, reason="intent_close", intent_id=intent_id)
-            self._publish_event(
-                "close_ok" if (not self.dry_run) else "close_dry_ok",
-                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "interval": interval, "direction": direction, "price": close_price},
-            )
-            return
-
-        why = self._extract_executor_skip_reason(res, method_or_err)
-        data = {
-            "intent_id": intent_id,
-            "symbol": symbol,
-            "interval": interval,
-            "direction": direction,
-            "price": close_price,
-            "why": why,
-            "res_summary": self._summarize_res(res),
-            "risk_snapshot": self._risk_snapshot(symbol, interval),
-        }
-        if self.event_include_gate_struct:
-            data.update(self._parse_gate_reason_struct(why, symbol))
-        self._publish_event("close_skip", data)
-
-    def _forward_open(self, it: Dict[str, Any], source_pkg_id: str) -> None:
-        symbol = _safe_str(it.get("symbol", "")).upper()
-        interval = _safe_str(it.get("interval", ""))
-        side = self._normalize_side(_safe_str(it.get("side", "long")))
-        intent_id = _safe_str(it.get("intent_id", ""))
-
-        raw = it.get("raw", {})
-        raw = raw if isinstance(raw, dict) else {}
-
-        if not symbol:
-            self._publish_event("forward_skip", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "missing_symbol"})
-            return
-
-        allow, why_gate = self._gate_allow_open(symbol)
-        if not allow:
-            data = {
-                "intent_id": intent_id,
-                "symbol": symbol,
-                "side": side,
-                "interval": interval,
-                "why": why_gate,
-                "risk_snapshot": self._risk_snapshot(symbol, interval),
-            }
-            if self.event_include_gate_struct:
-                data.update(self._parse_gate_reason_struct(why_gate, symbol))
-            self._publish_event("forward_skip", data)
-            return
-
-        lev = int(_safe_float(it.get("recommended_leverage", raw.get("recommended_leverage", 5)), 5))
-        npct = float(_safe_float(it.get("recommended_notional_pct", raw.get("recommended_notional_pct", 0.05)), 0.05))
-        score = float(_safe_float(it.get("score", raw.get("score", 0.0)), 0.0))
-
-        trail_pct = float(_safe_float(it.get("trail_pct", raw.get("trail_pct", os.getenv("TRAIL_PCT", "0.05"))), 0.05))
-        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", raw.get("stall_ttl_sec", os.getenv("STALL_TTL_SEC", "0"))), 0.0))
-
-        whale_dir = _safe_str(it.get("whale_dir", raw.get("whale_dir", "none")))
-        whale_score = float(_safe_float(it.get("whale_score", raw.get("whale_score", 0.0)), 0.0))
-        w_min = float(_safe_float(it.get("w_min", raw.get("w_min", os.getenv("W_MIN", "0.0"))), 0.0))
-
-        open_price = self._extract_open_price(it)
-        if open_price is None:
-            rp = _safe_float(raw.get("price", 0.0), 0.0)
-            if rp > 0:
-                open_price = float(rp)
-
-        meta = {
-            "reason": "ORCH_INTENT",
-            "intent_id": intent_id,
-            "score": score,
-            "recommended_leverage": lev,
-            "recommended_notional_pct": npct,
-            "trail_pct": trail_pct,
-            "stall_ttl_sec": stall_ttl_sec,
-            "whale_dir": whale_dir,
-            "whale_score": whale_score,
-            "w_min": w_min,
-            "source_pkg_id": source_pkg_id,
-        }
-
-        if open_price is not None and open_price > 0:
-            meta["price"] = float(open_price)
-
-        # ✅ Executor çağrılacaksa ve price zorunluysa net skip et
-        will_call_executor = (not self.dry_run) or self.dryrun_call_executor
-        if will_call_executor and self.require_price and (open_price is None or open_price <= 0):
-            print(f"[EXEC][INTENT] missing price -> skip open | symbol={symbol} side={side}")
-            why = "missing_price"
-            data = {
-                "intent_id": intent_id,
-                "symbol": symbol,
-                "side": side,
-                "interval": interval,
-                "why": why,
-                "risk_snapshot": self._risk_snapshot(symbol, interval),
-            }
-            if self.event_include_gate_struct:
-                data.update(self._parse_gate_reason_struct(why, symbol))
-            self._publish_event("forward_skip", data)
-            return
-
-        if self.dry_run and (not self.dryrun_call_executor):
-            self._gate_mark_open(symbol, side, interval, intent_id)
-            self._publish_event("forward_dry", {"intent_id": intent_id, "symbol": symbol, "side": side, "interval": interval, "why": "dry_run"})
-            return
-
-        called_ok, res, method_or_err = self._call_open_executor(
-            symbol=symbol,
-            side=side,
-            interval=interval,
-            meta=meta,
-        )
-
-        if called_ok and self._is_open_success(res):
-            self._gate_mark_open(symbol, side, interval, intent_id)
-            self._publish_event(
-                "forward_ok" if (not self.dry_run) else "forward_dry_ok",
-                {"intent_id": intent_id, "method": method_or_err, "symbol": symbol, "side": side, "interval": interval, "price": open_price},
-            )
-            return
-
-        # ✅ called_ok=True ama "skip" döndüyse: res içinden neden çıkar
-        why = self._extract_executor_skip_reason(res, method_or_err or "open failed")
-        data = {
-            "intent_id": intent_id,
-            "symbol": symbol,
-            "side": side,
-            "interval": interval,
-            "why": why,
-            "price": open_price,
-            "res_summary": self._summarize_res(res),
-            "risk_snapshot": self._risk_snapshot(symbol, interval),
-        }
-        if self.event_include_gate_struct:
-            data.update(self._parse_gate_reason_struct(why, symbol))
-        self._publish_event("forward_skip", data)
-    def _forward_one(self, it: Dict[str, Any], source_pkg_id: str) -> None:
-        if self._is_close_intent(it):
-            self._forward_close(it, source_pkg_id=source_pkg_id)
-        else:
-            self._forward_open(it, source_pkg_id=source_pkg_id)
-
-    def _process_pkg(self, sid: str, pkg: Dict[str, Any]) -> None:
-        items = pkg.get("items") or []
-        if not isinstance(items, list) or not items:
-            return
-        for it in items:
-            if isinstance(it, dict):
-                self._forward_one(it, source_pkg_id=sid)
-
-    # -----------------------
-    # Selftest
-    # -----------------------
-    def _selftest_run(self) -> None:
-        try:
-            if self.selftest_reset_state:
-                try:
-                    self.r.delete(self.state_key)
-                    self._publish_event("selftest_reset_state", {"state_key": self.state_key})
-                except Exception:
-                    pass
-
-            stamp = str(int(time.time()))
-            expected_prefix = f"selftest-{stamp}-"
-            expected_intents: List[str] = []
-
-            for i, sym in enumerate(self.selftest_symbols[:4], start=1):
-                iid = f"{expected_prefix}{i}-{sym}"
-                expected_intents.append(iid)
-                pkg = {
-                    "items": [
-                        {
-                            "symbol": sym,
-                            "side": self.selftest_side,
-                            "interval": self.selftest_interval,
-                            "intent_id": iid,
-                            "price": 1.0,
-                        }
-                    ]
-                }
-                self.r.xadd(self.in_stream, {"json": json.dumps(pkg, ensure_ascii=False)})
-
-            deadline = time.time() + float(self.selftest_wait_sec or 2.0)
-            seen: set[str] = set()
-
-            while time.time() < deadline and len(seen) < len(expected_intents):
-                rows = self._xreadgroup(">")
-                if not rows:
-                    time.sleep(0.05)
-                    continue
-
-                mids = [sid for sid, _ in rows]
-                for sid, pkg in rows:
-                    if not pkg:
-                        continue
-                    items = pkg.get("items") or []
-                    if isinstance(items, list):
-                        for it in items:
-                            if isinstance(it, dict):
-                                iid = _safe_str(it.get("intent_id", ""))
-                                if iid.startswith(expected_prefix):
-                                    seen.add(iid)
-                    self._process_pkg(sid, pkg)
-
-                self._ack(mids)
-                time.sleep(0.02)
-
-            rows = self.r.xrevrange(self.out_stream, max="+", min="-", count=500)
-
-            ok = dry = skip = 0
-            close_ok = close_dry = close_skip = 0
-            reasons: Dict[str, int] = {}
-
-            for _id, fields in rows:
                 s = fields.get("json")
                 if not s:
+                    out.append((sid, {}))
                     continue
                 try:
-                    ev = json.loads(s)
+                    pkg = json.loads(s)
+                    out.append((sid, pkg if isinstance(pkg, dict) else {}))
                 except Exception:
-                    continue
+                    out.append((sid, {}))
+        return out
 
-                iid = _safe_str(ev.get("intent_id", ""))
-                if not iid.startswith(expected_prefix):
-                    continue
+    def _extract_items(self, pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
+        items = pkg.get("items") if isinstance(pkg, dict) else None
+        if isinstance(items, list):
+            return [x for x in items if isinstance(x, dict)]
+        return []
 
-                kind = _safe_str(ev.get("kind", ""))
-                if kind in ("forward_ok", "forward_dry_ok"):
-                    ok += 1
-                elif kind == "forward_dry":
-                    dry += 1
-                elif kind == "forward_skip":
-                    skip += 1
-                    why = _safe_str(ev.get("why", ""))
-                    reasons[why] = reasons.get(why, 0) + 1
-                elif kind in ("close_ok", "close_dry_ok"):
-                    close_ok += 1
-                elif kind == "close_dry":
-                    close_dry += 1
-                elif kind == "close_skip":
-                    close_skip += 1
+    def _norm_side(self, side: Any) -> str:
+        s = str(side or "").strip().lower()
+        if s in ("buy", "long"):
+            return "long"
+        if s in ("sell", "short"):
+            return "short"
+        if s in ("close", "flat", "exit"):
+            return "close"
+        return s or "long"
 
-            self._publish_event(
-                "selftest_summary",
-                {
-                    "stamp": stamp,
-                    "symbols": self.selftest_symbols[:4],
-                    "dry_run": self.dry_run,
-                    "dryrun_bypass_gate": self.dryrun_bypass_gate,
-                    "dryrun_call_executor": self.dryrun_call_executor,
-                    "require_price": self.require_price,
-                    "max_open": self.max_open,
-                    "dedup_symbol": self.dedup_symbol,
-                    "close_cooldown_sec": self.close_cooldown_sec,
-                    "state_ttl_sec": int(self.state_ttl_sec or 0),
-                    "seen_intents": sorted(list(seen)),
-                    "counts": {
-                        "forward_ok": ok,
-                        "forward_dry": dry,
-                        "forward_skip": skip,
-                        "close_ok": close_ok,
-                        "close_dry": close_dry,
-                        "close_skip": close_skip,
-                    },
-                    "skip_reasons": reasons,
-                },
-            )
-        except Exception as e:
-            self._publish_event("selftest_error", {"err": repr(e)})
+    def _intent_price(self, it: Dict[str, Any]) -> float:
+        # price may appear in multiple locations; prefer top-level
+        p = _safe_float(it.get("price", 0.0), 0.0)
+        if p > 0:
+            return float(p)
+        raw1 = it.get("raw")
+        if isinstance(raw1, dict):
+            p2 = _safe_float(raw1.get("price", 0.0), 0.0)
+            if p2 > 0:
+                return float(p2)
+            raw2 = raw1.get("raw")
+            if isinstance(raw2, dict):
+                p3 = _safe_float(raw2.get("price", 0.0), 0.0)
+                if p3 > 0:
+                    return float(p3)
+        return 0.0
 
-    # -----------------------
-    # Main loop
-    # -----------------------
-    def run_forever(self) -> None:
+    def _state_get_open(self) -> Dict[str, Any]:
         try:
-            self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+            s = self.r.get(self.state_key)
+            if not s:
+                return {}
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def _state_set_open(self, obj: Dict[str, Any]) -> None:
+        try:
+            self.r.set(self.state_key, json.dumps(obj, ensure_ascii=False))
+        except Exception:
+            pass
+    def _publish_exec_event(self, ev: ExecEvent) -> Optional[str]:
+        if not self.publish_allowed:
+            return None
+
+        payload = ev.to_dict()
+        # tag dry_run for downstream observability
+        try:
+            payload["raw"] = payload.get("raw") or {}
+            payload["raw"]["dry_run"] = bool(self.dry_run_env)
         except Exception:
             pass
 
+        try:
+            sid = self.r.xadd(
+                self.out_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=self.out_maxlen,
+                approximate=True,
+            )
+            return sid
+        except Exception:
+            return None
+
+    def _handle_one_intent(self, it: Dict[str, Any], state: Dict[str, Any]) -> Optional[ExecEvent]:
+        intent_id = _safe_str(it.get("intent_id", ""), "")
+        symbol = _safe_str(it.get("symbol", "")).upper()
+        interval = _safe_str(it.get("interval", ""), "5m")
+        side = self._norm_side(it.get("side", "long"))
+        score = float(_safe_float(it.get("score", 0.0), 0.0))
+
+        trail_pct = float(_safe_float(it.get("trail_pct", 0.0), 0.0))
+        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", 0), 0))
+
+        price = float(self._intent_price(it))
+
+        if not intent_id:
+            # fallback: accept missing id but generate one
+            intent_id = _safe_str(it.get("id", ""), "") or _safe_str(it.get("uuid", ""), "")
+            if not intent_id:
+                intent_id = _safe_str(f"bridge-{int(time.time()*1000)}", "")
+
+        if self.require_price and side != "close" and price <= 0.0:
+            return ExecEvent(
+                ts_utc=_now_utc_iso(),
+                kind="reject_intent",
+                intent_id=intent_id,
+                symbol=symbol,
+                interval=interval,
+                side=side,
+                price=float(price),
+                score=float(score),
+                trail_pct=trail_pct,
+                stall_ttl_sec=stall_ttl_sec,
+                reason="missing_price",
+                raw={"intent": it},
+            )
+
+        # very simple open/close state:
+        # state is a dict keyed by symbol -> {"side": "...", "ts_utc": "...", "intent_id": "..."}
+        opened = state.get(symbol) if isinstance(state.get(symbol), dict) else None
+
+        if side == "close":
+            if not opened:
+                return ExecEvent(
+                    ts_utc=_now_utc_iso(),
+                    kind="noop",
+                    intent_id=intent_id,
+                    symbol=symbol,
+                    interval=interval,
+                    side="close",
+                    price=float(price),
+                    score=float(score),
+                    reason="close_no_open",
+                    raw={"intent": it},
+                )
+            # close existing
+            try:
+                state.pop(symbol, None)
+            except Exception:
+                pass
+            return ExecEvent(
+                ts_utc=_now_utc_iso(),
+                kind="close_intent",
+                intent_id=intent_id,
+                symbol=symbol,
+                interval=interval,
+                side="close",
+                price=float(price),
+                score=float(score),
+                reason="close",
+                raw={"intent": it, "prev_open": opened or {}},
+            )
+
+        # open intent:
+        # if already open on symbol => noop (or could replace; for now noop)
+        if opened:
+            return ExecEvent(
+                ts_utc=_now_utc_iso(),
+                kind="noop",
+                intent_id=intent_id,
+                symbol=symbol,
+                interval=interval,
+                side=side,
+                price=float(price),
+                score=float(score),
+                trail_pct=trail_pct,
+                stall_ttl_sec=stall_ttl_sec,
+                reason="already_open",
+                raw={"intent": it, "open": opened},
+            )
+
+        # mark open
+        state[symbol] = {"side": side, "ts_utc": _now_utc_iso(), "intent_id": intent_id, "interval": interval}
+        return ExecEvent(
+            ts_utc=_now_utc_iso(),
+            kind="open_intent",
+            intent_id=intent_id,
+            symbol=symbol,
+            interval=interval,
+            side=side,
+            price=float(price),
+            score=float(score),
+            trail_pct=trail_pct,
+            stall_ttl_sec=stall_ttl_sec,
+            reason="open",
+            raw={"intent": it},
+        )
+
+    def _handle_pkg(self, sid: str, pkg: Dict[str, Any]) -> int:
+        items = self._extract_items(pkg)
+        if not items:
+            return 0
+
+        state = self._state_get_open()
+
+        n_pub = 0
+        for it in items:
+            ev = self._handle_one_intent(it, state)
+            if ev is None:
+                continue
+            out_id = self._publish_exec_event(ev)
+            if out_id:
+                n_pub += 1
+
+        # persist state (best-effort)
+        self._state_set_open(state)
+        return n_pub
+    def run_forever(self) -> None:
         if self.drain_pending:
             print("[IntentBridge] draining pending (PEL) ...")
             while True:
                 rows = self._xreadgroup("0")
                 if not rows:
                     break
+
                 mids = [sid for sid, _ in rows]
                 for sid, pkg in rows:
-                    if pkg:
-                        self._process_pkg(sid, pkg)
+                    n = self._handle_pkg(sid, pkg)
+                    if n:
+                        print(f"[IntentBridge] (PEL) published {n} -> {self.out_stream} source={sid}")
                 self._ack(mids)
                 time.sleep(0.05)
+
             print("[IntentBridge] pending drained.")
 
-        if self.selftest:
-            self._publish_event("selftest_start", {"enabled": True})
-            self._selftest_run()
-
         idle = 0
-        last_cleanup = time.time()
-
         while True:
             rows = self._xreadgroup(">")
             if not rows:
                 idle += 1
-                if self.cleanup_every_sec > 0 and (time.time() - last_cleanup) >= self.cleanup_every_sec:
-                    self._maybe_periodic_cleanup()
-                    last_cleanup = time.time()
                 if idle % 30 == 0:
                     print("[IntentBridge] idle...")
                 continue
-
             idle = 0
-            mids = [sid for sid, _ in rows]
 
+            mids = [sid for sid, _ in rows]
             for sid, pkg in rows:
-                if pkg:
-                    self._process_pkg(sid, pkg)
+                n = self._handle_pkg(sid, pkg)
+                if n:
+                    print(f"[IntentBridge] published {n} -> {self.out_stream} source={sid}")
 
             self._ack(mids)
-
-            if self.cleanup_every_sec > 0 and (time.time() - last_cleanup) >= self.cleanup_every_sec:
-                self._maybe_periodic_cleanup()
-                last_cleanup = time.time()
-
             time.sleep(0.05)
 
 

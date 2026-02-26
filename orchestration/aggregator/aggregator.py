@@ -1,14 +1,14 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 from orchestration.event_bus.redis_bus import RedisBus
-from orchestration.state.dup_guard import DupGuard
 from orchestration.schemas.events import SignalEvent
 
 
@@ -81,16 +81,11 @@ class Aggregator:
       - quality gates (hard)
       - dedup/cooldown (spam-killer)
       - scoring (0..1)
-    Publishes CandidateTrade to candidates_stream.
+    Publishes CandidateTrade-like dict to candidates_stream.
 
-    SignalEvent (input) expects:
-      symbol, interval, side_candidate, score_edge, confidence,
-      atr_pct, spread_pct, liq_score, whale_score(optional),
-      ts_utc, source(w1..w8), dedup_key
-
-    CandidateTrade (output):
-      symbol, side, score_total, recommended_leverage, recommended_notional_pct,
-      risk_tags, reason_codes, ts_utc, source, dedup_key
+    NOTE:
+      - price passthrough is CRITICAL (downstream needs it).
+      - run as module: python -m orchestration.aggregator.aggregator
     """
 
     def __init__(
@@ -103,11 +98,15 @@ class Aggregator:
         include_raw_default: bool = True,
     ) -> None:
         self.bus = bus
-        self.group = group
-        self.consumer = consumer
-        self.topk_out = int(topk_out)
+        self.group = str(os.getenv("AGG_GROUP", group))
+        self.consumer = str(os.getenv("AGG_CONSUMER", consumer))
+        self.topk_out = int(_env_int("AGG_TOPK_OUT", int(topk_out)))
 
-        self.dup = DupGuard(bus, prefix="aggdup", default_cooldown_sec=int(cooldown_sec))
+        # cooldown / dedup
+        # NOTE: DupGuard lives in orchestration/state/dup_guard.py (existing in your repo)
+        from orchestration.state.dup_guard import DupGuard  # local import: avoids import cycle
+
+        self.dup = DupGuard(bus, prefix=os.getenv("AGG_DUP_PREFIX", "aggdup"), default_cooldown_sec=int(cooldown_sec))
 
         # raw payload stream'i şişirebilir; env ile kapatılabilir
         self.include_raw = _env_bool("CANDIDATE_INCLUDE_RAW", include_raw_default)
@@ -119,6 +118,9 @@ class Aggregator:
         # read tuning
         self.read_count = int(_env_int("AGG_READ_COUNT", 300))
         self.block_ms = int(_env_int("AGG_BLOCK_MS", 1000))
+
+        # debug: neden drop oldu görmek için (smoke testte kullandın)
+        self.debug_drops = _env_bool("AGG_DEBUG_DROPS", False)
 
     def _normalize_event(self, mid: str, evt: Dict[str, Any]) -> Dict[str, Any]:
         e = dict(evt)
@@ -136,7 +138,6 @@ class Aggregator:
             e["ts_utc"] = _ts_from_stream_id(mid)
 
         # --- PRICE normalize (critical) ---
-        # Worker -> SignalEvent normalize zaten price ekliyor olabilir; burada da garantiye alıyoruz.
         p = _safe_float(e.get("price", 0.0), 0.0)
         e["price"] = float(p) if p > 0 else 0.0
 
@@ -169,9 +170,9 @@ class Aggregator:
             "symbol": sym,
             "interval": itv,
             "side": side,
-            "price": float(price),  # <<< CRITICAL: candidates_stream'e price yaz
+            "price": float(price),  # <<< CRITICAL
             "score_total": float(_clamp01(evt.get("_score_total", 0.0))),
-            # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplayacak
+            # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplar
             "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
             "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
             "risk_tags": list(evt.get("_risk_tags", []) or []),
@@ -180,15 +181,15 @@ class Aggregator:
             "dedup_key": dedup_key,
         }
 
-        # --- raw payload policy ---
+        # raw payload policy:
         # include_raw=1 -> full raw
-        # include_raw=0 -> still send "raw_min" so TopSelector/MasterExecutor gates keep working
+        # include_raw=0 -> send "raw_min" (TopSelector/Master still can gate whale)
         if self.include_raw:
             payload["raw"] = evt
         else:
             meta = evt.get("meta") if isinstance(evt.get("meta"), dict) else {}
             payload["raw"] = {
-                "price": float(price),  # <<< raw_min içinde de tut
+                "price": float(price),
                 "whale_score": float(evt.get("whale_score", 0.0) or 0.0),
                 "whale_dir": str(evt.get("whale_dir") or meta.get("whale_dir", "none") or "none"),
                 "meta": {
@@ -199,12 +200,14 @@ class Aggregator:
             }
 
         return payload
-
     def run_forever(self) -> None:
         assert self.bus.ping(), "[Aggregator] Redis ping failed."
         print(
             f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
-            f"topk_out={self.topk_out} min_score={self.min_score:.3f} include_raw={self.include_raw}"
+            f"group={self.group} consumer={self.consumer} topk_out={self.topk_out} "
+            f"min_score={self.min_score:.3f} include_raw={self.include_raw} "
+            f"dup_prefix={getattr(self.dup, 'prefix', 'aggdup')} debug_drops={self.debug_drops}",
+            flush=True,
         )
 
         while True:
@@ -227,28 +230,57 @@ class Aggregator:
 
             for mid, evt in msgs:
                 mids.append(mid)
+
                 if not isinstance(evt, dict) or not evt:
+                    if self.debug_drops:
+                        print(f"[Aggregator][DROP] invalid_evt mid={mid}", flush=True)
                     continue
 
+                # schema normalize + local normalize
                 evt = SignalEvent.normalize(evt)
                 e = self._normalize_event(mid, evt)
 
                 # ignore HOLD/none
                 if e.get("side_candidate") not in ("long", "short"):
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] side_none symbol={e.get('symbol')} itv={e.get('interval')} "
+                            f"side={e.get('side_candidate')} mid={mid}",
+                            flush=True,
+                        )
                     continue
 
                 if not e.get("symbol"):
+                    if self.debug_drops:
+                        print(f"[Aggregator][DROP] no_symbol mid={mid}", flush=True)
                     continue
 
-                ok, _reason = pass_quality_gates(e)
+                ok, reason = pass_quality_gates(e)
                 if not ok:
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] gate_fail reason={reason} "
+                            f"sym={e.get('symbol')} itv={e.get('interval')} side={e.get('side_candidate')} mid={mid}",
+                            flush=True,
+                        )
                     continue
 
                 # cooldown (spam killer)
                 dk = str(e.get("dedup_key", "") or "").strip()
                 if not dk:
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] no_dedup_key sym={e.get('symbol')} itv={e.get('interval')} mid={mid}",
+                            flush=True,
+                        )
                     continue
+
                 if not self.dup.allow(dk, cooldown_sec=None):
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] dup_cooldown dk={dk} sym={e.get('symbol')} itv={e.get('interval')} mid={mid}",
+                            flush=True,
+                        )
                     continue
 
                 score_total, reason_codes, risk_tags = compute_score(e)
@@ -258,6 +290,13 @@ class Aggregator:
 
                 # global min score gate (optional)
                 if float(self.min_score) > 0.0 and float(e["_score_total"]) < float(self.min_score):
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] min_score "
+                            f"score={float(e['_score_total']):.3f} < {float(self.min_score):.3f} "
+                            f"sym={e.get('symbol')} itv={e.get('interval')} side={e.get('side_candidate')} mid={mid}",
+                            flush=True,
+                        )
                     continue
 
                 candidates.append(e)

@@ -76,7 +76,9 @@ class RedisBus:
         self.cfg = cfg or RedisBusConfig()
 
         self.signals_stream = signals_stream or _env("SIGNALS_STREAM", "signals_stream") or "signals_stream"
-        self.candidates_stream = candidates_stream or _env("CANDIDATES_STREAM", "candidates_stream") or "candidates_stream"
+        self.candidates_stream = (
+            candidates_stream or _env("CANDIDATES_STREAM", "candidates_stream") or "candidates_stream"
+        )
 
         self.xadd_maxlen_default = _env_int("BUS_XADD_MAXLEN", 20000)
 
@@ -135,6 +137,7 @@ class RedisBus:
 
     def publish_candidate(self, payload: Dict[str, Any], maxlen: Optional[int] = None) -> str:
         return self.xadd_json(self.candidates_stream, payload, maxlen=maxlen)
+
     def xreadgroup_json(
         self,
         stream: str,
@@ -220,5 +223,55 @@ class RedisBus:
             return 0
         try:
             return int(self.r.xack(stream, group, *ids))
+        except Exception:
+            return 0
+    def xrevrange_json(
+        self,
+        stream: str,
+        count: int = 1,
+        require_json_field: bool = True,
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """
+        Read last N messages from a stream, parse {"json": "..."} payloads.
+        Returns [(mid, obj), ...] newest-first.
+        """
+        try:
+            rows = self.r.xrevrange(stream, max="+", min="-", count=int(count))
+        except Exception:
+            return []
+
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        for mid, fields in rows:
+            if not isinstance(fields, dict):
+                continue
+            raw = fields.get("json")
+            if not raw:
+                if require_json_field:
+                    continue
+                out.append((mid, dict(fields)))
+                continue
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    out.append((mid, obj))
+            except Exception:
+                continue
+        return out
+
+    def xlen_safe(self, stream: str) -> int:
+        try:
+            return int(self.r.xlen(stream))
+        except Exception:
+            return 0
+
+    def delete_keys(self, *keys: str) -> int:
+        """
+        Best-effort DEL; returns deleted count (0 on error).
+        """
+        ks = [k for k in keys if k]
+        if not ks:
+            return 0
+        try:
+            return int(self.r.delete(*ks))
         except Exception:
             return 0

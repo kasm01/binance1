@@ -35,14 +35,12 @@ def _env_int(name: str, default: int) -> int:
 def _try_load_env() -> None:
     """
     Optional: load .env (if present) using scripts/load_env.sh
-    Bu dosya doğrudan python ile çalıştırılabildiği için,
-    systemd EnvironmentFile olsa bile "manuel run"larda hayat kurtarır.
+    Manuel run'larda hayat kurtarır.
     """
     if not os.path.exists(".env"):
         return
     loader = os.path.join("scripts", "load_env.sh")
     if os.path.exists(loader) and os.access(loader, os.X_OK):
-        # stdout/stderr istemiyoruz: sessiz geçsin
         os.system(f'./{loader} .env >/dev/null 2>&1 || true')
 
 
@@ -57,20 +55,16 @@ class _ShutdownFlag:
             self.signal_name = signal.Signals(signum).name
         except Exception:
             self.signal_name = str(signum)
-
-
 def main() -> None:
     _try_load_env()
 
-    # Controls
     crash_retry = _env_bool("AGG_CRASH_RETRY", True)
     retry_max_sleep = _env_int("AGG_RETRY_MAX_SLEEP", 30)
-    startup_sleep = _env_int("AGG_STARTUP_SLEEP", 0)  # debugging için
+    startup_sleep = _env_int("AGG_STARTUP_SLEEP", 0)
 
     if startup_sleep > 0:
         time.sleep(max(0, startup_sleep))
 
-    # Shutdown handling
     sd = _ShutdownFlag()
     signal.signal(signal.SIGINT, sd.handler)
     signal.signal(signal.SIGTERM, sd.handler)
@@ -94,7 +88,6 @@ def main() -> None:
 
         try:
             Aggregator(bus).run_forever()
-            # run_forever normal şekilde dönerse: çık (genelde beklenmez)
             print("[AggregatorRunner] run_forever() returned normally. exiting.", flush=True)
             return
         except KeyboardInterrupt:
@@ -104,8 +97,6 @@ def main() -> None:
             print(f"[AggregatorRunner][ERROR] crashed: {e!r}", file=sys.stderr, flush=True)
             if not crash_retry:
                 raise
-
-            # simple backoff (1,2,4,8.. capped)
             time.sleep(sleep_s)
             sleep_s = min(retry_max_sleep, max(1, sleep_s * 2))
 
