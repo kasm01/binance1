@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
 
@@ -7,7 +8,7 @@ LOGTAG="${LOGTAG:-[STOP]}"
 QUIET_STOP="${QUIET_STOP:-0}"
 
 msg() {
-  if [[ "$QUIET_STOP" == "1" ]]; then
+  if [[ "${QUIET_STOP}" == "1" ]]; then
     return 0
   fi
   echo "$@"
@@ -16,15 +17,14 @@ msg() {
 stop_from_pidfiles() {
   shopt -s nullglob
 
-  # 1) Downstream önce (daha güvenli)
+  # 1) Downstream önce (daha güvenli): intent_bridge -> master -> selector -> aggregator
   local name pidfile pid
   for name in intent_bridge master_executor top_selector aggregator; do
     pidfile="${RUNDIR}/${name}.pid"
-    if [[ -f "$pidfile" ]]; then
-      pid="$(cat "$pidfile" 2>/dev/null || true)"
-      # stop_pid zaten QUIET_STOP'u dikkate alıyor
-      stop_pid "$name" "$pid"
-      rm -f "$pidfile" || true
+    if [[ -f "${pidfile}" ]]; then
+      pid="$(cat "${pidfile}" 2>/dev/null || true)"
+      stop_pid "${name}" "${pid}"
+      rm -f "${pidfile}" || true
     else
       msg "${LOGTAG} ${name} pidfile missing"
     fi
@@ -32,10 +32,10 @@ stop_from_pidfiles() {
 
   # 2) scanner_w* pidfile'ları
   for pidfile in "${RUNDIR}"/scanner_*.pid; do
-    name="$(basename "$pidfile" .pid)"
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
-    stop_pid "$name" "$pid"
-    rm -f "$pidfile" || true
+    name="$(basename "${pidfile}" .pid)"
+    pid="$(cat "${pidfile}" 2>/dev/null || true)"
+    stop_pid "${name}" "${pid}"
+    rm -f "${pidfile}" || true
   done
 
   shopt -u nullglob
@@ -52,17 +52,20 @@ stop_from_pgrep() {
     "orchestration/aggregator/run_aggregator.py"
     "Aggregator\\(RedisBus\\(\\)\\)\\.run_forever"
     "orchestration/scanners/worker_stub.py"
+    "python -m orchestration\\.executor\\.intent_bridge"
+    "python -m orchestration\\.executor\\.master_executor"
+    "python -m orchestration\\.selector\\.top_selector"
   )
 
   local pat
   for pat in "${patterns[@]}"; do
     # shellcheck disable=SC2207
-    local pids=($(pgrep -af "$pat" | awk '{print $1}' | sort -u || true))
+    local pids=($(pgrep -af "${pat}" | awk '{print $1}' | sort -u || true))
     [[ "${#pids[@]}" -gt 0 ]] || continue
 
     local pid
     for pid in "${pids[@]}"; do
-      stop_pid "pgrep:${pat}" "$pid"
+      stop_pid "pgrep:${pat}" "${pid}"
     done
   done
 }

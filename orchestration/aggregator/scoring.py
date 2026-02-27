@@ -37,7 +37,10 @@ def _meta_get(evt: Dict[str, Any], key: str, default: Any = None) -> Any:
 
 
 def _get_whale_score(evt: Dict[str, Any]) -> float:
-    # whale_score can be top-level or under meta
+    """
+    whale_score: top-level or meta
+    returns 0..1
+    """
     ws = _safe_float(evt.get("whale_score", 0.0), 0.0)
     if ws > 0:
         return float(_clamp(ws, 0.0, 1.0))
@@ -46,7 +49,9 @@ def _get_whale_score(evt: Dict[str, Any]) -> float:
 
 
 def _get_whale_dir(evt: Dict[str, Any]) -> str:
-    # whale_dir can be top-level or under meta
+    """
+    whale_dir: top-level or meta, normalized lower
+    """
     wd = str(evt.get("whale_dir", "") or "").strip().lower()
     if wd:
         return wd
@@ -56,12 +61,12 @@ def _get_whale_dir(evt: Dict[str, Any]) -> str:
 
 def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
     """
-    SignalEvent -> score_total(0..1), reasons, risk_tags
+    SignalEvent -> (score_total 0..1, reasons, risk_tags)
 
-    Primary: score_edge + confidence + liq_score (+ whale_score optional)
+    Primary (positive): edge + confidence + liq (+ whale)
     Penalize: spread_pct, atr_pct (vol)
 
-    Inputs may be missing; function is fail-open and clamps to [0..1].
+    Fail-open: missing fields treated as 0 and clamped.
     """
     reasons: List[str] = []
     risk_tags: List[str] = []
@@ -94,7 +99,7 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
     spread = max(0.0, _safe_float(evt.get("spread_pct", 0.0), 0.0))
     atr = max(0.0, _safe_float(evt.get("atr_pct", 0.0), 0.0))
 
-    # penalties 0..1
+    # penalties 0..1 (relative to refs)
     spr_pen = min(1.0, spread / max(SPR_REF, 1e-9)) if spread > 0 else 0.0
     vol_pen = min(1.0, atr / max(ATR_REF, 1e-9)) if atr > 0 else 0.0
 
@@ -106,7 +111,6 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
         - (W_SPREAD_PEN * spr_pen)
         - (W_VOL_PEN * vol_pen)
     )
-
     # reasons
     if edge >= 0.55:
         reasons.append("edge_strong")
@@ -137,7 +141,6 @@ def compute_score(evt: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
     wdir = _get_whale_dir(evt)
     side = str(evt.get("side_candidate", "none") or "none").strip().lower()
     if whale >= WHALE_STRONG_TAG and side in ("long", "short") and wdir:
-        # treat buy/long/inflow as long; sell/short/outflow as short
         w_is_long = wdir in ("buy", "long", "in", "inflow")
         w_is_short = wdir in ("sell", "short", "out", "outflow")
         if (w_is_long and side == "long") or (w_is_short and side == "short"):
@@ -187,13 +190,11 @@ def pass_quality_gates(evt: Dict[str, Any]) -> Tuple[bool, str]:
     if conf < min_conf:
         return False, "conf_too_low"
 
-    # optional liq gate (fail-open by default with low threshold)
     liq = float(_safe_float(evt.get("liq_score", 0.0), 0.0))
     min_liq = _env_float("GATE_MIN_LIQ", 0.0)
     if liq < min_liq:
         return False, "liq_too_low"
 
-    # optional whale gate (off by default)
     min_whale = _env_float("GATE_MIN_WHALE_SCORE", 0.0)
     if min_whale > 0.0:
         ws = _get_whale_score(evt)

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,6 +12,13 @@ import redis
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _env_int(k: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(k, str(default))).strip())
+    except Exception:
+        return default
 
 
 def _env_bool(k: str, default: bool = False) -> bool:
@@ -34,20 +40,6 @@ def _env_str(k: str, default: str = "") -> str:
     return str(v).strip()
 
 
-def _env_int(k: str, default: int) -> int:
-    try:
-        return int(str(os.getenv(k, str(default))).strip())
-    except Exception:
-        return default
-
-
-def _env_float(k: str, default: float) -> float:
-    try:
-        return float(str(os.getenv(k, str(default))).strip())
-    except Exception:
-        return default
-
-
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         return float(x)
@@ -57,7 +49,8 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def _safe_str(x: Any, default: str = "") -> str:
     try:
-        return str(x)
+        s = str(x)
+        return s
     except Exception:
         return default
 
@@ -69,65 +62,20 @@ def _as_list(x: Any) -> List[Any]:
         return x
     if isinstance(x, tuple):
         return list(x)
-    if isinstance(x, str):
-        s = x.strip()
-        if not s:
-            return []
-        if "," in s:
-            return [t.strip() for t in s.split(",") if t.strip()]
-        return [s]
-    return []
-
-
-@dataclass
-class ExecEvent:
-    """
-    What IntentBridge publishes to exec_events_stream
-    """
-    ts_utc: str
-    kind: str                      # "open_intent" | "close_intent" | "reject_intent" | "noop"
-    intent_id: str
-    symbol: str
-    interval: str
-    side: str                      # "long" | "short" | "close"
-    price: float
-    score: float
-    trail_pct: float = 0.0
-    stall_ttl_sec: int = 0
-    reason: str = ""
-    raw: Dict[str, Any] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "ts_utc": self.ts_utc,
-            "kind": self.kind,
-            "intent_id": self.intent_id,
-            "symbol": self.symbol,
-            "interval": self.interval,
-            "side": self.side,
-            "price": float(self.price),
-            "score": float(self.score),
-            "trail_pct": float(self.trail_pct or 0.0),
-            "stall_ttl_sec": int(self.stall_ttl_sec or 0),
-            "reason": self.reason,
-            "raw": self.raw or {},
-        }
+    return [x]
 
 
 class IntentBridge:
     """
-    IN:  trade_intents_stream (MasterExecutor publishes {"ts_utc","count","items":[...]} )
-    OUT: exec_events_stream   (downstream executor consumes)
-    STATE: open_positions_state (hash/json; best-effort)
+    IN : trade_intents_stream  (MasterExecutor publishes {"ts_utc","count","items":[TradeIntent,...]})
+    OUT: exec_events_stream    (Executor consumes)
 
-    Safety:
-      - DRY_RUN=1: still emits exec_events_stream, but tags as dry_run in raw.
-      - DRY_RUN=0: requires ARMED=1 and LIVE_KILL_SWITCH=0 and ARM_TOKEN>=16.
-
-    Consumer group is pinned via env:
-      BRIDGE_GROUP (default bridge_g)
-      BRIDGE_CONSUMER (default bridge_1)
-      BRIDGE_GROUP_START_ID (default "$")
+    Responsibilities:
+      - Maintain open_positions_state with TTL
+      - Enforce max_open
+      - Dedup per symbol (optional)
+      - Apply close cooldown (avoid immediate reopen spam)
+      - Publish intents downstream (safe-gated)
     """
 
     def __init__(self) -> None:
@@ -161,37 +109,48 @@ class IntentBridge:
         self.read_block_ms = _env_int("BRIDGE_READ_BLOCK_MS", 2000)
         self.batch_count = _env_int("BRIDGE_BATCH_COUNT", 50)
 
-        # Output trim
-        self.out_maxlen = _env_int("BRIDGE_OUT_MAXLEN", 5000)
-
         # State
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
+        self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 900)
+        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 900)  # per-symbol "expires_at"
+        self.cleanup_every_sec = max(1, _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5))
 
-        # Policy knobs
+        # Limits / dedup
+        self.max_open = _env_int("BRIDGE_MAX_OPEN", _env_int("MAX_OPEN_POSITIONS", 3))
+        self.dedup_symbol_open = _env_bool("DEDUP_SYMBOL_OPEN", True)
+
+        # Close cooldown
+        self.close_cooldown_sec = _env_int("BRIDGE_CLOSE_COOLDOWN_SEC", 30)
+        self.close_cd_key = f"{self.state_key}:close_cd"
+
+        # Require valid price for publish (default true)
         self.require_price = _env_bool("BRIDGE_REQUIRE_PRICE", True)
 
-        # Live safety policy
+        # Dry-run behavior knobs
         self.dry_run_env = _env_bool("DRY_RUN", True)
+        self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", True)
+        self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", False)
+
+        # LIVE safety (publish gate)
         self.armed = _env_bool("ARMED", False)
         self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
         self.arm_token = _env_str("ARM_TOKEN", "")
 
         self.publish_allowed = bool(
-            self.dry_run_env or (self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
+            (self.dry_run_env and self.dryrun_call_executor)
+            or ((not self.dry_run_env) and self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
         )
 
-        if (not self.dry_run_env) and (not self.publish_allowed):
-            print(
-                f"[IntentBridge][SAFE] DRY_RUN=0 but publish blocked: "
-                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)}"
-            )
-
+        self._last_cleanup_ts = 0.0
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         print(
-            f"[IntentBridge] started. in={self.in_stream} out={self.out_stream} "
-            f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"require_price={self.require_price} publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
+            f"[IntentBridge] init ok. in={self.in_stream} out={self.out_stream} "
+            f"group={self.group} consumer={self.consumer} start_id={self.group_start_id} "
+            f"drain_pending={self.drain_pending} max_open={self.max_open} dedup_symbol_open={self.dedup_symbol_open} "
+            f"state_key={self.state_key} ttl={self.state_ttl_sec}s prune_every={self.cleanup_every_sec}s "
+            f"require_price={self.require_price} publish_allowed={self.publish_allowed} "
+            f"dry_run={self.dry_run_env} dryrun_write_state={self.dryrun_write_state} "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
@@ -205,7 +164,6 @@ class IntentBridge:
             raise
         except Exception:
             return
-
     def _ack(self, ids: List[str]) -> None:
         if not ids:
             return
@@ -213,6 +171,216 @@ class IntentBridge:
             self.r.xack(self.in_stream, self.group, *ids)
         except Exception:
             pass
+
+    def _parse_pkg(self, stream_id: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        s = fields.get("json")
+        if not s:
+            return None
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                obj.setdefault("ts_utc", _now_utc_iso())
+                obj["_source_stream_id"] = stream_id
+                return obj
+        except Exception:
+            return None
+        return None
+
+    def _get_state(self) -> Dict[str, Any]:
+        try:
+            s = self.r.get(self.state_key)
+            if not s:
+                return {}
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def _set_state(self, st: Dict[str, Any]) -> None:
+        # In DRY_RUN we may want to not touch state (configurable)
+        if self.dry_run_env and (not self.dryrun_write_state):
+            return
+        try:
+            payload = json.dumps(st or {}, ensure_ascii=False)
+            self.r.set(self.state_key, payload, ex=max(1, int(self.state_ttl_sec)))
+        except Exception:
+            pass
+
+    def _open_count(self, st: Dict[str, Any]) -> int:
+        try:
+            return len([1 for _k, v in (st or {}).items() if isinstance(v, dict)])
+        except Exception:
+            return 0
+
+    def _is_open(self, st: Dict[str, Any], symbol: str) -> bool:
+        try:
+            return isinstance((st or {}).get(symbol), dict)
+        except Exception:
+            return False
+
+    def _action_of(self, item: Dict[str, Any]) -> str:
+        # fail-open detection: OPEN if long/short; CLOSE if explicit close
+        side = _safe_str(item.get("side", "")).strip().lower()
+        action = _safe_str(item.get("action", "")).strip().lower()
+        itype = _safe_str(item.get("intent_type", "")).strip().lower()
+
+        if side == "close" or action == "close" or itype == "close":
+            return "close"
+        if side in ("long", "short", "buy", "sell"):
+            return "open"
+        # default: open (safe for backward compatibility)
+        return "open"
+
+    def _norm_side(self, item: Dict[str, Any]) -> str:
+        s = _safe_str(item.get("side", "long")).strip().lower()
+        if s in ("buy", "long"):
+            return "long"
+        if s in ("sell", "short"):
+            return "short"
+        if s == "close":
+            return "close"
+        return s or "long"
+
+    def _price_of(self, item: Dict[str, Any]) -> float:
+        p = _safe_float(item.get("price", 0.0), 0.0)
+        return float(p) if p > 0 else 0.0
+
+    def _close_cd_get(self, symbol: str) -> float:
+        try:
+            v = self.r.hget(self.close_cd_key, symbol)
+            return float(v) if v else 0.0
+        except Exception:
+            return 0.0
+
+    def _close_cd_set(self, symbol: str, ts: float) -> None:
+        try:
+            self.r.hset(self.close_cd_key, symbol, str(float(ts)))
+            # keep cooldown hash small; expire > cooldown
+            self.r.expire(self.close_cd_key, max(10, int(self.close_cooldown_sec * 2)))
+        except Exception:
+            pass
+
+    def _prune_state(self, st: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        """
+        Remove expired symbols based on per-symbol expires_at.
+        Returns: (new_state, removed_count)
+        """
+        now = time.time()
+        removed = 0
+        out: Dict[str, Any] = {}
+        for sym, v in (st or {}).items():
+            if not isinstance(v, dict):
+                continue
+            exp = _safe_float(v.get("expires_at", 0.0), 0.0)
+            if exp > 0.0 and exp < now:
+                removed += 1
+                continue
+            out[sym] = v
+        return out, removed
+
+    def _maybe_cleanup(self) -> None:
+        now = time.time()
+        if (now - self._last_cleanup_ts) < float(self.cleanup_every_sec):
+            return
+        self._last_cleanup_ts = now
+
+        st = self._get_state()
+        st2, removed = self._prune_state(st)
+        if removed > 0:
+            self._set_state(st2)
+
+    def _apply_state_update(self, item: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Update open state based on item.
+        Returns: (state_changed, reason)
+        """
+        sym = _safe_str(item.get("symbol", "")).upper().strip()
+        interval = _safe_str(item.get("interval", "5m")).strip()
+        intent_id = _safe_str(item.get("intent_id", "")).strip()
+        action = self._action_of(item)
+        side = self._norm_side(item)
+
+        if not sym:
+            return False, "no_symbol"
+
+        st = self._get_state()
+        st, _ = self._prune_state(st)
+
+        if action == "close":
+            if self._is_open(st, sym):
+                st.pop(sym, None)
+                self._close_cd_set(sym, time.time())
+                self._set_state(st)
+                return True, "closed"
+            # still set cooldown to reduce spam, but don't rewrite big state
+            self._close_cd_set(sym, time.time())
+            return False, "close_not_open"
+
+        # OPEN path
+        # close cooldown gate
+        last_close = self._close_cd_get(sym)
+        if last_close > 0 and (time.time() - last_close) < float(self.close_cooldown_sec):
+            return False, "cooldown"
+
+        if self.dedup_symbol_open and self._is_open(st, sym):
+            return False, "dedup_open"
+
+        if self._open_count(st) >= int(self.max_open):
+            return False, "max_open"
+
+        st[sym] = {
+            "side": side if side in ("long", "short") else "long",
+            "ts_utc": _now_utc_iso(),
+            "intent_id": intent_id or "",
+            "interval": interval,
+            "expires_at": float(time.time() + max(1, int(self.open_ttl_sec))),
+        }
+        self._set_state(st)
+        return True, "opened"
+    def _publish_exec(self, source_stream_id: str, item: Dict[str, Any]) -> Optional[str]:
+        if not self.publish_allowed:
+            return None
+
+        sym = _safe_str(item.get("symbol", "")).upper().strip()
+        interval = _safe_str(item.get("interval", "5m")).strip()
+        side = self._norm_side(item)
+        intent_id = _safe_str(item.get("intent_id", "")).strip()
+        score = _safe_float(item.get("score", 0.0), 0.0)
+        price = self._price_of(item)
+
+        if self.require_price and price <= 0.0 and (side != "close"):
+            return None
+
+        payload = {
+            "ts_utc": _now_utc_iso(),
+            "source_intents_id": source_stream_id,
+            "count": 1,
+            "items": [
+                {
+                    "symbol": sym,
+                    "interval": interval,
+                    "side": side,
+                    "intent_id": intent_id,
+                    "score": float(score),
+                    "price": float(price),
+                    # pass-through knobs if exist
+                    "trail_pct": _safe_float(item.get("trail_pct", 0.0), 0.0),
+                    "stall_ttl_sec": _env_int("STALL_TTL_SEC", _env_int("STALL_TTL_SEC", 0)),
+                    "raw": dict(item),
+                }
+            ],
+        }
+
+        try:
+            sid = self.r.xadd(
+                self.out_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=5000,
+                approximate=True,
+            )
+            return sid
+        except Exception:
+            return None
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
@@ -238,212 +406,10 @@ class IntentBridge:
 
         for _stream_name, entries in resp:
             for sid, fields in entries:
-                s = fields.get("json")
-                if not s:
-                    out.append((sid, {}))
-                    continue
-                try:
-                    pkg = json.loads(s)
-                    out.append((sid, pkg if isinstance(pkg, dict) else {}))
-                except Exception:
-                    out.append((sid, {}))
+                pkg = self._parse_pkg(sid, fields) or {}
+                out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
 
-    def _extract_items(self, pkg: Dict[str, Any]) -> List[Dict[str, Any]]:
-        items = pkg.get("items") if isinstance(pkg, dict) else None
-        if isinstance(items, list):
-            return [x for x in items if isinstance(x, dict)]
-        return []
-
-    def _norm_side(self, side: Any) -> str:
-        s = str(side or "").strip().lower()
-        if s in ("buy", "long"):
-            return "long"
-        if s in ("sell", "short"):
-            return "short"
-        if s in ("close", "flat", "exit"):
-            return "close"
-        return s or "long"
-
-    def _intent_price(self, it: Dict[str, Any]) -> float:
-        # price may appear in multiple locations; prefer top-level
-        p = _safe_float(it.get("price", 0.0), 0.0)
-        if p > 0:
-            return float(p)
-        raw1 = it.get("raw")
-        if isinstance(raw1, dict):
-            p2 = _safe_float(raw1.get("price", 0.0), 0.0)
-            if p2 > 0:
-                return float(p2)
-            raw2 = raw1.get("raw")
-            if isinstance(raw2, dict):
-                p3 = _safe_float(raw2.get("price", 0.0), 0.0)
-                if p3 > 0:
-                    return float(p3)
-        return 0.0
-
-    def _state_get_open(self) -> Dict[str, Any]:
-        try:
-            s = self.r.get(self.state_key)
-            if not s:
-                return {}
-            obj = json.loads(s)
-            return obj if isinstance(obj, dict) else {}
-        except Exception:
-            return {}
-
-    def _state_set_open(self, obj: Dict[str, Any]) -> None:
-        try:
-            self.r.set(self.state_key, json.dumps(obj, ensure_ascii=False))
-        except Exception:
-            pass
-    def _publish_exec_event(self, ev: ExecEvent) -> Optional[str]:
-        if not self.publish_allowed:
-            return None
-
-        payload = ev.to_dict()
-        # tag dry_run for downstream observability
-        try:
-            payload["raw"] = payload.get("raw") or {}
-            payload["raw"]["dry_run"] = bool(self.dry_run_env)
-        except Exception:
-            pass
-
-        try:
-            sid = self.r.xadd(
-                self.out_stream,
-                {"json": json.dumps(payload, ensure_ascii=False)},
-                maxlen=self.out_maxlen,
-                approximate=True,
-            )
-            return sid
-        except Exception:
-            return None
-
-    def _handle_one_intent(self, it: Dict[str, Any], state: Dict[str, Any]) -> Optional[ExecEvent]:
-        intent_id = _safe_str(it.get("intent_id", ""), "")
-        symbol = _safe_str(it.get("symbol", "")).upper()
-        interval = _safe_str(it.get("interval", ""), "5m")
-        side = self._norm_side(it.get("side", "long"))
-        score = float(_safe_float(it.get("score", 0.0), 0.0))
-
-        trail_pct = float(_safe_float(it.get("trail_pct", 0.0), 0.0))
-        stall_ttl_sec = int(_safe_float(it.get("stall_ttl_sec", 0), 0))
-
-        price = float(self._intent_price(it))
-
-        if not intent_id:
-            # fallback: accept missing id but generate one
-            intent_id = _safe_str(it.get("id", ""), "") or _safe_str(it.get("uuid", ""), "")
-            if not intent_id:
-                intent_id = _safe_str(f"bridge-{int(time.time()*1000)}", "")
-
-        if self.require_price and side != "close" and price <= 0.0:
-            return ExecEvent(
-                ts_utc=_now_utc_iso(),
-                kind="reject_intent",
-                intent_id=intent_id,
-                symbol=symbol,
-                interval=interval,
-                side=side,
-                price=float(price),
-                score=float(score),
-                trail_pct=trail_pct,
-                stall_ttl_sec=stall_ttl_sec,
-                reason="missing_price",
-                raw={"intent": it},
-            )
-
-        # very simple open/close state:
-        # state is a dict keyed by symbol -> {"side": "...", "ts_utc": "...", "intent_id": "..."}
-        opened = state.get(symbol) if isinstance(state.get(symbol), dict) else None
-
-        if side == "close":
-            if not opened:
-                return ExecEvent(
-                    ts_utc=_now_utc_iso(),
-                    kind="noop",
-                    intent_id=intent_id,
-                    symbol=symbol,
-                    interval=interval,
-                    side="close",
-                    price=float(price),
-                    score=float(score),
-                    reason="close_no_open",
-                    raw={"intent": it},
-                )
-            # close existing
-            try:
-                state.pop(symbol, None)
-            except Exception:
-                pass
-            return ExecEvent(
-                ts_utc=_now_utc_iso(),
-                kind="close_intent",
-                intent_id=intent_id,
-                symbol=symbol,
-                interval=interval,
-                side="close",
-                price=float(price),
-                score=float(score),
-                reason="close",
-                raw={"intent": it, "prev_open": opened or {}},
-            )
-
-        # open intent:
-        # if already open on symbol => noop (or could replace; for now noop)
-        if opened:
-            return ExecEvent(
-                ts_utc=_now_utc_iso(),
-                kind="noop",
-                intent_id=intent_id,
-                symbol=symbol,
-                interval=interval,
-                side=side,
-                price=float(price),
-                score=float(score),
-                trail_pct=trail_pct,
-                stall_ttl_sec=stall_ttl_sec,
-                reason="already_open",
-                raw={"intent": it, "open": opened},
-            )
-
-        # mark open
-        state[symbol] = {"side": side, "ts_utc": _now_utc_iso(), "intent_id": intent_id, "interval": interval}
-        return ExecEvent(
-            ts_utc=_now_utc_iso(),
-            kind="open_intent",
-            intent_id=intent_id,
-            symbol=symbol,
-            interval=interval,
-            side=side,
-            price=float(price),
-            score=float(score),
-            trail_pct=trail_pct,
-            stall_ttl_sec=stall_ttl_sec,
-            reason="open",
-            raw={"intent": it},
-        )
-
-    def _handle_pkg(self, sid: str, pkg: Dict[str, Any]) -> int:
-        items = self._extract_items(pkg)
-        if not items:
-            return 0
-
-        state = self._state_get_open()
-
-        n_pub = 0
-        for it in items:
-            ev = self._handle_one_intent(it, state)
-            if ev is None:
-                continue
-            out_id = self._publish_exec_event(ev)
-            if out_id:
-                n_pub += 1
-
-        # persist state (best-effort)
-        self._state_set_open(state)
-        return n_pub
     def run_forever(self) -> None:
         if self.drain_pending:
             print("[IntentBridge] draining pending (PEL) ...")
@@ -451,15 +417,21 @@ class IntentBridge:
                 rows = self._xreadgroup("0")
                 if not rows:
                     break
-
                 mids = [sid for sid, _ in rows]
                 for sid, pkg in rows:
-                    n = self._handle_pkg(sid, pkg)
-                    if n:
-                        print(f"[IntentBridge] (PEL) published {n} -> {self.out_stream} source={sid}")
+                    items = pkg.get("items") or []
+                    if not isinstance(items, list):
+                        continue
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        self._maybe_cleanup()
+                        self._apply_state_update(it)
+                        out_id = self._publish_exec(source_stream_id=sid, item=it)
+                        if out_id:
+                            print(f"[IntentBridge] (PEL) published 1 -> {self.out_stream} source={sid}")
                 self._ack(mids)
                 time.sleep(0.05)
-
             print("[IntentBridge] pending drained.")
 
         idle = 0
@@ -469,14 +441,25 @@ class IntentBridge:
                 idle += 1
                 if idle % 30 == 0:
                     print("[IntentBridge] idle...")
+                self._maybe_cleanup()
                 continue
             idle = 0
 
             mids = [sid for sid, _ in rows]
             for sid, pkg in rows:
-                n = self._handle_pkg(sid, pkg)
-                if n:
-                    print(f"[IntentBridge] published {n} -> {self.out_stream} source={sid}")
+                items = pkg.get("items") or []
+                if not isinstance(items, list):
+                    continue
+
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+
+                    self._maybe_cleanup()
+                    _changed, _reason = self._apply_state_update(it)
+                    out_id = self._publish_exec(source_stream_id=sid, item=it)
+                    if out_id:
+                        print(f"[IntentBridge] published 1 -> {self.out_stream} source={sid}")
 
             self._ack(mids)
             time.sleep(0.05)

@@ -20,10 +20,10 @@ def _env_bool(k: str, default: bool = False) -> bool:
     v = os.getenv(k)
     if v is None:
         return default
-    t = str(v).strip().lower()
-    if t in ("1", "true", "yes", "y", "on"):
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
         return True
-    if t in ("0", "false", "no", "n", "off", ""):
+    if s in ("0", "false", "f", "no", "n", "off", ""):
         return False
     return default
 
@@ -49,10 +49,6 @@ def _env_float(k: str, default: float) -> float:
         return default
 
 
-def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         return float(x)
@@ -62,9 +58,18 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def _safe_str(x: Any, default: str = "") -> str:
     try:
-        return str(x)
+        s = str(x)
+        return s if s else default
     except Exception:
         return default
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    try:
+        fx = float(x)
+    except Exception:
+        fx = lo
+    return max(lo, min(hi, fx))
 
 
 def _as_list(x: Any) -> List[Any]:
@@ -101,6 +106,7 @@ class TradeIntent:
     symbol: str
     interval: str
     side: str
+    price: float
     score: float
     recommended_leverage: int
     recommended_notional_pct: float
@@ -114,11 +120,12 @@ class TradeIntent:
 class MasterExecutor:
     """
     IN:  top5_stream  (TopSelector publishes {"ts_utc","topk","items":[CandidateTrade,...]})
-    OUT: trade_intents_stream
+    OUT: trade_intents_stream (IntentBridge consumes)
 
-    Safety policy:
-      - DRY_RUN=1 -> publish intents OK (execution downstream controlled)
-      - DRY_RUN=0 -> requires ARMED=1, LIVE_KILL_SWITCH=0, ARM_TOKEN>=16
+    Position policy:
+      - MAX open positions enforced (MASTER_MAX_POS / MAX_OPEN_POSITIONS / MAX_OPEN_TRADES)
+      - Optional: same symbol single position (DEDUP_SYMBOL_OPEN=1)
+      - Reads state from Redis key (BRIDGE_STATE_KEY default open_positions_state)
     """
 
     def __init__(self) -> None:
@@ -127,6 +134,16 @@ class MasterExecutor:
         self.redis_port = _env_int("REDIS_PORT", 6379)
         self.redis_db = _env_int("REDIS_DB", 0)
         self.redis_password = os.getenv("REDIS_PASSWORD") or None
+
+        self.r = redis.Redis(
+            host=self.redis_host,
+            port=self.redis_port,
+            db=self.redis_db,
+            password=self.redis_password,
+            decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
+        )
 
         # Streams
         self.in_stream = os.getenv("MASTER_IN_STREAM", os.getenv("TOP5_STREAM", "top5_stream"))
@@ -142,22 +159,30 @@ class MasterExecutor:
         self.read_block_ms = _env_int("MASTER_READ_BLOCK_MS", 2000)
         self.batch_count = _env_int("MASTER_BATCH_COUNT", 50)
 
-        # Selection / limits
-        self.topn = _env_int("MASTER_TOPN", 3)
-        self.max_pos = _env_int("MASTER_MAX_POS", 3)
+        # Select / limits
+        self.topn = _env_int("MASTER_TOPN", _env_int("BRIDGE_MAX_OPEN", 3))
+        self.max_pos = _env_int(
+            "MASTER_MAX_POS",
+            _env_int("MAX_OPEN_POSITIONS", _env_int("MAX_OPEN_TRADES", 3)),
+        )
+
+        # Same-symbol single position
+        self.dedup_symbol_open = _env_bool("DEDUP_SYMBOL_OPEN", True)
+
+        # State key shared with bridge (IMPORTANT)
+        self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
 
         # Publish cooldown
         self.publish_cooldown_sec = _env_int("MASTER_PUBLISH_COOLDOWN_SEC", 2)
         self._last_publish_ts = 0.0
         self._last_published_source_id: Optional[str] = None
 
-        # Global score gate
+        # Gates
         self.min_trade_score = _env_float("MASTER_MIN_TRADE_SCORE", _env_float("MIN_SCORE", 0.10))
-
-        # Whale min gate (optional)
         self.w_min = _env_float("MASTER_W_MIN", _env_float("W_MIN", 0.0))
+        self.require_price = _env_bool("MASTER_REQUIRE_PRICE", True)
 
-        # forwarded knobs
+        # Forwarded exec knobs
         self.trail_pct = _env_float("TRAIL_PCT", 0.05)
         self.stall_ttl_sec = _env_int("STALL_TTL_SEC", 0)
 
@@ -165,13 +190,6 @@ class MasterExecutor:
         self.w_w = _env_float("MASTER_W_SCORE_WHALE", 0.60)
         self.w_mtf = _env_float("MASTER_W_SCORE_MTF", 0.25)
         self.w_micro = _env_float("MASTER_W_SCORE_MICRO", 0.15)
-
-        # Heavy (stub)
-        self.heavy_enable = _env_bool("MASTER_HEAVY_ENABLE", False)
-        self.heavy_topk = _env_int("MASTER_HEAVY_TOPK", 5)
-        self.heavy_discard_below = _env_float("MASTER_HEAVY_DISCARD_BELOW", 0.70)
-        if self.heavy_enable:
-            self.min_trade_score = max(float(self.min_trade_score), float(self.heavy_discard_below))
 
         # Risk sizing clamp
         self.lev_min = _env_int("LEV_MIN", 3)
@@ -186,7 +204,7 @@ class MasterExecutor:
         self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)
         self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)
 
-        # High-volatility clamp
+        # High-vol clamp
         self.high_vol_tag = os.getenv("HIGH_VOL_TAG", "high_vol")
         self.high_vol_npct_mult = _env_float("HIGH_VOL_NPCT_MULT", 0.80)
         self.high_vol_lev_mult = _env_float("HIGH_VOL_LEV_MULT", 0.85)
@@ -194,50 +212,33 @@ class MasterExecutor:
         # Contra whale safety
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
 
-        # Require valid price
-        self.require_price = _env_bool("MASTER_REQUIRE_PRICE", True)
-        self._warned_missing_price: set[str] = set()
-
-        self.r = redis.Redis(
-            host=self.redis_host,
-            port=self.redis_port,
-            db=self.redis_db,
-            password=self.redis_password,
-            decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5,
-        )
-
-        self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+        # Heavy (stub)
+        self.heavy_enable = _env_bool("MASTER_HEAVY_ENABLE", False)
+        self.heavy_topk = _env_int("MASTER_HEAVY_TOPK", 5)
+        self.heavy_discard_below = _env_float("MASTER_HEAVY_DISCARD_BELOW", 0.70)
+        self._warned_heavy_stub = False
 
         # LIVE safety
         self.dry_run_env = _env_bool("DRY_RUN", True)
         self.armed = _env_bool("ARMED", False)
         self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
         self.arm_token = _env_str("ARM_TOKEN", "")
-
         self.publish_allowed = bool(
             self.dry_run_env or (self.armed and (not self.kill_switch) and (len(self.arm_token) >= 16))
         )
 
-        if (not self.dry_run_env) and (not self.publish_allowed):
-            print(
-                f"[MasterExecutor][SAFE] DRY_RUN=0 but publish blocked: "
-                f"ARMED={self.armed} KILL={self.kill_switch} ARM_TOKEN_len={len(self.arm_token)}"
-            )
-
-        self._warned_heavy_stub = False
+        self._warned_missing_price: set[str] = set()
+        self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"topn={self.topn} max_pos={self.max_pos} min_trade_score={self.min_trade_score:.3f} "
-            f"w_min={self.w_min:.3f} trail_pct={self.trail_pct:.4f} stall_ttl_sec={self.stall_ttl_sec} "
-            f"heavy_enable={self.heavy_enable} heavy_topk={self.heavy_topk} "
-            f"require_price={self.require_price} publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
-            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"topn={self.topn} max_pos={self.max_pos} dedup_symbol_open={self.dedup_symbol_open} "
+            f"min_trade_score={self.min_trade_score:.3f} w_min={self.w_min:.3f} "
+            f"trail_pct={self.trail_pct:.4f} stall_ttl_sec={self.stall_ttl_sec} "
+            f"publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
+            f"state_key={self.state_key} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
-
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
@@ -248,6 +249,7 @@ class MasterExecutor:
             raise
         except Exception:
             return
+
     def _ack(self, ids: List[str]) -> None:
         if not ids:
             return
@@ -255,287 +257,6 @@ class MasterExecutor:
             self.r.xack(self.in_stream, self.group, *ids)
         except Exception:
             pass
-
-    def _parse_pkg(self, stream_id: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        s = fields.get("json")
-        if not s:
-            return None
-        try:
-            pkg = json.loads(s)
-            if isinstance(pkg, dict):
-                pkg.setdefault("ts_utc", _now_utc_iso())
-                pkg["_source_stream_id"] = stream_id
-                return pkg
-        except Exception:
-            return None
-        return None
-
-    def _normalize_side(self, side: str) -> str:
-        s = (side or "").strip().lower()
-        if s in ("buy", "long"):
-            return "long"
-        if s in ("sell", "short"):
-            return "short"
-        return s or "long"
-
-    def _candidate_score(self, c: Dict[str, Any]) -> float:
-        return _safe_float(c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))), 0.0)
-
-    def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-        base = float(self._candidate_score(c))
-        return base, ["heavy_passthrough"]
-
-    def _is_whale_contra(self, side: str, raw_evt: Dict[str, Any]) -> bool:
-        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none"))).lower()
-        whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
-        whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
-        if whale_is_buy and side == "short":
-            return True
-        if whale_is_sell and side == "long":
-            return True
-        return False
-
-    def _compute_final_score(self, c: Dict[str, Any]) -> float:
-        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
-        if raw_evt is None:
-            raw_evt = {}
-
-        whale = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
-        micro = _safe_float(_meta_get(raw_evt, "micro_score", raw_evt.get("micro_score", c.get("micro_score", 0.0))), 0.0)
-        mtf = _safe_float(
-            _meta_get(raw_evt, "fast_model_score", _meta_get(raw_evt, "p_used", c.get("score_total", 0.0))),
-            0.0,
-        )
-
-        whale = _clamp(whale, 0.0, 1.0)
-        micro = _clamp(micro, 0.0, 1.0)
-        mtf = _clamp(mtf, 0.0, 1.0)
-
-        score = (self.w_w * whale) + (self.w_mtf * mtf) + (self.w_micro * micro)
-        score = _clamp(score, 0.0, 1.0)
-
-        if self.heavy_enable and not self._warned_heavy_stub:
-            print("[MasterExecutor][HEAVY] enabled but using stub final-score (no real heavy model call yet).")
-            self._warned_heavy_stub = True
-
-        return float(score)
-
-    def _warn_missing_price_once(self, symbol: str, interval: str, side: str) -> None:
-        try:
-            key = f"{symbol}|{interval}|{side}"
-            if key in self._warned_missing_price:
-                return
-            self._warned_missing_price.add(key)
-            print(f"[MasterExecutor][WARN] missing/invalid price -> dropping intent | {key}")
-        except Exception:
-            pass
-
-    def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
-        price = _safe_float(c.get("price", 0.0), 0.0)
-        if price <= 0:
-            price = _safe_float(raw_evt.get("price", 0.0), 0.0)
-        if price <= 0 and isinstance(raw_evt.get("raw"), dict):
-            price = _safe_float(raw_evt["raw"].get("price", 0.0), 0.0)
-        if price < 0:
-            price = 0.0
-        return float(price)
-
-    def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
-        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
-        if raw_evt is None:
-            raw_evt = {}
-
-        price = self._extract_price(c, raw_evt)
-
-        # score
-        if c.get("_score_total_final") is None:
-            score = self._compute_final_score(c)
-        else:
-            score = _safe_float(c.get("_score_total_final", 0.0), 0.0)
-
-        score = float(_clamp(float(score), 0.0, 1.0))
-        if score < float(self.min_trade_score):
-            return None
-
-        base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
-        base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
-
-        conf = _safe_float(raw_evt.get("confidence", c.get("confidence", 0.5)), 0.5)
-        atr_pct = _safe_float(raw_evt.get("atr_pct", c.get("atr_pct", 0.01)), 0.01)
-        spread_pct = _safe_float(raw_evt.get("spread_pct", c.get("spread_pct", 0.0003)), 0.0003)
-
-        conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
-        atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
-        spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
-
-        side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
-
-        symbol0 = _safe_str(c.get("symbol", "")).upper()
-        interval0 = _safe_str(c.get("interval", ""))
-
-        if self.require_price and (price <= 0.0):
-            self._warn_missing_price_once(symbol0, interval0, side)
-            return None
-
-        reasons = [str(x) for x in _as_list(c.get("reason_codes"))] or [str(x) for x in _as_list(c.get("reasons"))]
-        risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
-
-        whale_score = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
-        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")))
-        whale_contra = self._is_whale_contra(side, {**raw_evt, "whale_dir": whale_dir})
-
-        if float(self.w_min) > 0.0 and float(whale_score) < float(self.w_min):
-            return None
-
-        whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
-
-        if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
-            return None
-
-        whale_mult_lev = 1.0
-        whale_mult_npct = 1.0
-        if whale_aligned and whale_score >= float(self.whale_boost_thr):
-            whale_mult_lev = float(self.whale_lev_boost)
-            whale_mult_npct = float(self.whale_npct_boost)
-            reasons = reasons + ["master_whale_boost"]
-
-        lev = int(round(float(base_lev) * conf_adj * atr_adj * spr_adj * whale_mult_lev))
-        lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
-
-        npct = (
-            float(base_npct)
-            * conf_adj
-            * _clamp(atr_adj, 0.6, 1.1)
-            * _clamp(spr_adj, 0.6, 1.1)
-            * whale_mult_npct
-        )
-        npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
-
-        if self.high_vol_tag in (risk_tags or []):
-            lev = int(_clamp(float(int(round(float(lev) * float(self.high_vol_lev_mult)))), float(self.lev_min), float(self.lev_max)))
-            npct = float(_clamp(float(npct) * float(self.high_vol_npct_mult), float(self.notional_min_pct), float(self.notional_max_pct)))
-            reasons = reasons + ["master_high_vol_clamp"]
-
-        if whale_aligned and whale_score >= float(self.whale_boost_thr):
-            lev = max(lev, int(self.whale_lev_floor))
-            npct = max(npct, float(self.whale_npct_floor))
-
-        c2 = dict(c)
-        c2["_score_total_final"] = float(score)
-
-        # add exec knobs
-        c2["trail_pct"] = float(self.trail_pct)
-        c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
-        c2["w_min"] = float(self.w_min)
-
-        # ensure price everywhere
-        c2["price"] = float(price)
-        try:
-            if isinstance(c2.get("raw"), dict):
-                c2["raw"]["price"] = float(price)
-                if isinstance(c2["raw"].get("raw"), dict):
-                    c2["raw"]["raw"]["price"] = float(price)
-        except Exception:
-            pass
-
-        return TradeIntent(
-            intent_id=str(uuid.uuid4()),
-            ts_utc=_now_utc_iso(),
-            symbol=_safe_str(c2.get("symbol", "")).upper(),
-            interval=_safe_str(c2.get("interval", "")),
-            side=side,
-            score=float(score),
-            recommended_leverage=int(lev),
-            recommended_notional_pct=float(npct),
-            reasons=reasons,
-            risk_tags=risk_tags,
-            raw=dict(c2),
-            trail_pct=float(self.trail_pct),
-            stall_ttl_sec=int(self.stall_ttl_sec),
-        )
-    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not self.heavy_enable:
-            return items
-
-        k = max(0, int(self.heavy_topk))
-        thr = float(self.heavy_discard_below)
-        if k <= 0:
-            return items
-
-        out: List[Dict[str, Any]] = []
-        for i, c in enumerate(items):
-            if not isinstance(c, dict):
-                continue
-
-            c2 = dict(c)
-            fast = float(_clamp(self._candidate_score(c2), 0.0, 1.0))
-
-            if i < k:
-                t0 = time.time()
-                hs, hreas = self._heavy_score_one(c2)
-                ms = int(round((time.time() - t0) * 1000.0))
-
-                hs = float(_clamp(float(hs), 0.0, 1.0))
-                sym = _safe_str(c2.get("symbol", "")).upper()
-                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
-
-                c2["_score_heavy"] = float(hs)
-                final = float(max(fast, hs))
-                c2["_score_total_final"] = final
-
-                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
-                c2["_reasons_final"] = reasons + list(hreas or [])
-
-                if final < thr:
-                    continue
-            else:
-                c2["_score_total_final"] = fast
-                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
-                c2["_reasons_final"] = reasons
-
-            out.append(c2)
-
-        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
-        return out
-
-    def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
-        t0 = time.time()
-
-        scored: List[Dict[str, Any]] = []
-        for c in items:
-            if not isinstance(c, dict):
-                continue
-            c2 = dict(c)
-            if c2.get("_score_total_final") is None:
-                c2["_score_total_final"] = self._compute_final_score(c2)
-            scored.append(c2)
-
-        scored.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
-
-        best_by_symbol: Dict[str, Dict[str, Any]] = {}
-        for c in scored:
-            sym = _safe_str(c.get("symbol", "")).upper()
-            if not sym:
-                continue
-            sc = _safe_float(c.get("_score_total_final", 0.0), 0.0)
-            prev = best_by_symbol.get(sym)
-            if (prev is None) or (sc > _safe_float(prev.get("_score_total_final", 0.0), 0.0)):
-                best_by_symbol[sym] = c
-
-        intents: List[TradeIntent] = []
-        for c in best_by_symbol.values():
-            it = self._make_intent(c)
-            if it is not None:
-                intents.append(it)
-
-        intents.sort(key=lambda x: float(x.score), reverse=True)
-        intents = intents[: max(0, int(self.topn))]
-
-        dt_ms = int(round((time.time() - t0) * 1000.0))
-        if intents:
-            print(f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out_intents={len(intents)}")
-
-        return intents
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
@@ -561,28 +282,308 @@ class MasterExecutor:
 
         for _stream_name, entries in resp:
             for sid, fields in entries:
-                pkg = self._parse_pkg(sid, fields) or {}
-                out.append((sid, pkg if isinstance(pkg, dict) else {}))
+                s = fields.get("json")
+                if not s:
+                    out.append((sid, {}))
+                    continue
+                try:
+                    pkg = json.loads(s)
+                    if isinstance(pkg, dict):
+                        pkg.setdefault("ts_utc", _now_utc_iso())
+                        pkg["_source_stream_id"] = sid
+                        out.append((sid, pkg))
+                    else:
+                        out.append((sid, {}))
+                except Exception:
+                    out.append((sid, {}))
         return out
 
-    def _intent_price_for_publish(self, it: TradeIntent) -> float:
+    # ---------- OPEN STATE ----------
+    def _get_open_state(self) -> Dict[str, Any]:
         try:
-            p = _safe_float(it.raw.get("price", 0.0), 0.0)
-            if p > 0:
-                return float(p)
-            raw1 = it.raw.get("raw")
-            if isinstance(raw1, dict):
-                p2 = _safe_float(raw1.get("price", 0.0), 0.0)
-                if p2 > 0:
-                    return float(p2)
-                raw2 = raw1.get("raw")
-                if isinstance(raw2, dict):
-                    p3 = _safe_float(raw2.get("price", 0.0), 0.0)
-                    if p3 > 0:
-                        return float(p3)
+            s = self.r.get(self.state_key)
+            if not s:
+                return {}
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def _open_count(self, st: Dict[str, Any]) -> int:
+        try:
+            return len([1 for _k, v in (st or {}).items() if isinstance(v, dict)])
+        except Exception:
+            return 0
+
+    def _is_symbol_open(self, st: Dict[str, Any], symbol: str) -> bool:
+        try:
+            return isinstance((st or {}).get(symbol), dict)
+        except Exception:
+            return False
+
+    # ---------- SCORING ----------
+    def _normalize_side(self, side: Any) -> str:
+        s = str(side or "").strip().lower()
+        if s in ("buy", "long"):
+            return "long"
+        if s in ("sell", "short"):
+            return "short"
+        return s or "long"
+
+    def _candidate_score(self, c: Dict[str, Any]) -> float:
+        return _safe_float(c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))), 0.0)
+
+    def _is_whale_contra(self, side: str, raw_evt: Dict[str, Any]) -> bool:
+        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none"))).lower()
+        whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
+        whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
+        return (whale_is_buy and side == "short") or (whale_is_sell and side == "long")
+
+    def _compute_final_score(self, c: Dict[str, Any]) -> float:
+        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+        raw_evt = raw_evt or {}
+
+        whale = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+        micro = _safe_float(_meta_get(raw_evt, "micro_score", raw_evt.get("micro_score", c.get("micro_score", 0.0))), 0.0)
+        mtf = _safe_float(_meta_get(raw_evt, "fast_model_score", _meta_get(raw_evt, "p_used", c.get("score_total", 0.0))), 0.0)
+
+        whale = _clamp(whale, 0.0, 1.0)
+        micro = _clamp(micro, 0.0, 1.0)
+        mtf = _clamp(mtf, 0.0, 1.0)
+
+        score = (self.w_w * whale) + (self.w_mtf * mtf) + (self.w_micro * micro)
+        score = _clamp(score, 0.0, 1.0)
+
+        if self.heavy_enable and not self._warned_heavy_stub:
+            print("[MasterExecutor][HEAVY] enabled but using stub heavy stage (no external model call).")
+            self._warned_heavy_stub = True
+
+        return float(score)
+
+    def _warn_missing_price_once(self, symbol: str, interval: str, side: str) -> None:
+        try:
+            key = f"{symbol}|{interval}|{side}"
+            if key in self._warned_missing_price:
+                return
+            self._warned_missing_price.add(key)
+            print(f"[MasterExecutor][WARN] missing/invalid price -> dropping | {key}")
         except Exception:
             pass
-        return 0.0
+
+    def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
+        price = _safe_float(c.get("price", 0.0), 0.0)
+        if price <= 0:
+            price = _safe_float(raw_evt.get("price", 0.0), 0.0)
+        if price <= 0 and isinstance(raw_evt.get("raw"), dict):
+            price = _safe_float(raw_evt["raw"].get("price", 0.0), 0.0)
+        return float(max(0.0, price))
+
+    def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
+        base = float(_clamp(self._candidate_score(c), 0.0, 1.0))
+        return base, ["heavy_passthrough"]
+    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not self.heavy_enable:
+            return items
+
+        k = max(0, int(self.heavy_topk))
+        thr = float(self.heavy_discard_below)
+        if k <= 0:
+            return items
+
+        out: List[Dict[str, Any]] = []
+        for i, c in enumerate(items):
+            if not isinstance(c, dict):
+                continue
+            c2 = dict(c)
+            fast = float(_clamp(self._candidate_score(c2), 0.0, 1.0))
+            if i < k:
+                t0 = time.time()
+                hs, hreas = self._heavy_score_one(c2)
+                ms = int(round((time.time() - t0) * 1000.0))
+                hs = float(_clamp(float(hs), 0.0, 1.0))
+                sym = _safe_str(c2.get("symbol", "")).upper()
+                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
+
+                c2["_score_heavy"] = float(hs)
+                final = float(max(fast, hs))
+                c2["_score_total_final"] = final
+
+                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
+                c2["_reasons_final"] = reasons + list(hreas or [])
+
+                if final < thr:
+                    continue
+            else:
+                c2["_score_total_final"] = fast
+                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))] or [str(x) for x in _as_list(c2.get("reasons"))]
+                c2["_reasons_final"] = reasons
+
+            out.append(c2)
+
+        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
+        return out
+
+    def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
+        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+        raw_evt = raw_evt or {}
+
+        price = self._extract_price(c, raw_evt)
+
+        score = _safe_float(c.get("_score_total_final", None), -1.0)
+        if score < 0:
+            score = self._compute_final_score(c)
+
+        score = float(_clamp(float(score), 0.0, 1.0))
+        if score < float(self.min_trade_score):
+            return None
+
+        side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
+        symbol0 = _safe_str(c.get("symbol", "")).upper()
+        interval0 = _safe_str(c.get("interval", ""), "5m")
+
+        if self.require_price and (price <= 0.0):
+            self._warn_missing_price_once(symbol0, interval0, side)
+            return None
+
+        reasons = [str(x) for x in _as_list(c.get("reason_codes"))] or [str(x) for x in _as_list(c.get("reasons"))]
+        risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
+
+        whale_score = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+        whale_dir = _safe_str(raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")))
+        whale_contra = self._is_whale_contra(side, {**raw_evt, "whale_dir": whale_dir})
+
+        if float(self.w_min) > 0.0 and float(whale_score) < float(self.w_min):
+            return None
+
+        whale_aligned = ("whale_align_long" in reasons) or ("whale_align_short" in reasons)
+        if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
+            return None
+
+        base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
+        base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
+
+        conf = _safe_float(raw_evt.get("confidence", c.get("confidence", 0.5)), 0.5)
+        atr_pct = _safe_float(raw_evt.get("atr_pct", c.get("atr_pct", 0.01)), 0.01)
+        spread_pct = _safe_float(raw_evt.get("spread_pct", c.get("spread_pct", 0.0003)), 0.0003)
+
+        conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
+        atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
+        spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
+
+        whale_mult_lev = 1.0
+        whale_mult_npct = 1.0
+        if whale_aligned and whale_score >= float(self.whale_boost_thr):
+            whale_mult_lev = float(self.whale_lev_boost)
+            whale_mult_npct = float(self.whale_npct_boost)
+            reasons = reasons + ["master_whale_boost"]
+
+        lev = int(round(float(base_lev) * conf_adj * atr_adj * spr_adj * whale_mult_lev))
+        lev = int(_clamp(float(lev), float(self.lev_min), float(self.lev_max)))
+
+        npct = float(base_npct) * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
+        npct = float(_clamp(float(npct), float(self.notional_min_pct), float(self.notional_max_pct)))
+
+        if self.high_vol_tag in (risk_tags or []):
+            lev = int(_clamp(float(int(round(float(lev) * float(self.high_vol_lev_mult)))), float(self.lev_min), float(self.lev_max)))
+            npct = float(_clamp(float(npct) * float(self.high_vol_npct_mult), float(self.notional_min_pct), float(self.notional_max_pct)))
+            reasons = reasons + ["master_high_vol_clamp"]
+
+        if whale_aligned and whale_score >= float(self.whale_boost_thr):
+            lev = max(lev, int(self.whale_lev_floor))
+            npct = max(npct, float(self.whale_npct_floor))
+
+        c2 = dict(c)
+        c2["_score_total_final"] = float(score)
+        c2["trail_pct"] = float(self.trail_pct)
+        c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
+        c2["w_min"] = float(self.w_min)
+        c2["price"] = float(price)
+        try:
+            if isinstance(c2.get("raw"), dict):
+                c2["raw"]["price"] = float(price)
+                if isinstance(c2["raw"].get("raw"), dict):
+                    c2["raw"]["raw"]["price"] = float(price)
+        except Exception:
+            pass
+
+        return TradeIntent(
+            intent_id=str(uuid.uuid4()),
+            ts_utc=_now_utc_iso(),
+            symbol=symbol0,
+            interval=interval0,
+            side=side,
+            price=float(price),
+            score=float(score),
+            recommended_leverage=int(lev),
+            recommended_notional_pct=float(npct),
+            reasons=reasons,
+            risk_tags=risk_tags,
+            raw=dict(c2),
+            trail_pct=float(self.trail_pct),
+            stall_ttl_sec=int(self.stall_ttl_sec),
+        )
+
+    def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
+        t0 = time.time()
+
+        scored: List[Dict[str, Any]] = []
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            c2 = dict(c)
+            if c2.get("_score_total_final") is None:
+                c2["_score_total_final"] = self._compute_final_score(c2)
+            scored.append(c2)
+
+        scored.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
+
+        st = self._get_open_state()
+        open_count = self._open_count(st)
+        slots = max(0, int(self.max_pos) - int(open_count))
+        if slots <= 0:
+            return []
+
+        best_by_symbol: Dict[str, Dict[str, Any]] = {}
+        for c in scored:
+            sym = _safe_str(c.get("symbol", "")).upper()
+            if not sym:
+                continue
+            if self.dedup_symbol_open and self._is_symbol_open(st, sym):
+                continue
+
+            sc = _safe_float(c.get("_score_total_final", 0.0), 0.0)
+            prev = best_by_symbol.get(sym)
+            if (prev is None) or (sc > _safe_float(prev.get("_score_total_final", 0.0), 0.0)):
+                best_by_symbol[sym] = c
+
+        intents: List[TradeIntent] = []
+        for c in best_by_symbol.values():
+            it = self._make_intent(c)
+            if it is not None:
+                intents.append(it)
+
+        intents.sort(key=lambda x: float(x.score), reverse=True)
+        intents = intents[: max(0, int(self.topn))]
+        intents = intents[:slots]
+
+        dt_ms = int(round((time.time() - t0) * 1000.0))
+        if intents:
+            print(
+                f"[LAT][master] select+intent dt={dt_ms}ms in_items={len(items)} out={len(intents)} "
+                f"open_count={open_count} slots={slots} dedup_symbol_open={self.dedup_symbol_open}"
+            )
+        return intents
+
+    def _intent_price_for_publish(self, it: TradeIntent) -> float:
+        # Already has it.price, but keep robust
+        p = float(_safe_float(it.price, 0.0))
+        if p > 0:
+            return p
+        try:
+            p2 = float(_safe_float((it.raw or {}).get("price", 0.0), 0.0))
+            return p2 if p2 > 0 else 0.0
+        except Exception:
+            return 0.0
 
     def _publish_intents(self, source_stream_id: str, intents: List[TradeIntent]) -> Optional[str]:
         if not self.publish_allowed:
@@ -597,6 +598,9 @@ class MasterExecutor:
         items_out: List[Dict[str, Any]] = []
         for it in intents:
             p = float(self._intent_price_for_publish(it))
+            if self.require_price and p <= 0.0:
+                self._warn_missing_price_once(it.symbol, it.interval, it.side)
+                continue
 
             raw_copy = dict(it.raw) if isinstance(it.raw, dict) else {}
             try:
@@ -608,10 +612,6 @@ class MasterExecutor:
             except Exception:
                 pass
 
-            if self.require_price and p <= 0.0:
-                self._warn_missing_price_once(it.symbol, it.interval, it.side)
-                continue
-
             items_out.append(
                 {
                     "intent_id": it.intent_id,
@@ -620,11 +620,11 @@ class MasterExecutor:
                     "interval": it.interval,
                     "side": it.side,
                     "price": float(p),  # CRITICAL
-                    "score": it.score,
-                    "recommended_leverage": it.recommended_leverage,
-                    "recommended_notional_pct": it.recommended_notional_pct,
-                    "trail_pct": float(getattr(it, "trail_pct", 0.0) or 0.0),
-                    "stall_ttl_sec": int(getattr(it, "stall_ttl_sec", 0) or 0),
+                    "score": float(it.score),
+                    "recommended_leverage": int(it.recommended_leverage),
+                    "recommended_notional_pct": float(it.recommended_notional_pct),
+                    "trail_pct": float(it.trail_pct or 0.0),
+                    "stall_ttl_sec": int(it.stall_ttl_sec or 0),
                     "reasons": it.reasons,
                     "risk_tags": it.risk_tags,
                     "raw": raw_copy,
@@ -662,7 +662,6 @@ class MasterExecutor:
                 rows = self._xreadgroup("0")
                 if not rows:
                     break
-
                 mids = [sid for sid, _ in rows]
                 for sid, pkg in rows:
                     items = pkg.get("items") or []
@@ -670,18 +669,12 @@ class MasterExecutor:
                         continue
                     items2 = self._apply_heavy_stage(items)
                     intents = self._select_top_unique(items2)
-                    if not intents:
-                        continue
-                    out_id = self._publish_intents(source_stream_id=sid, intents=intents)
+                    out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
                     if out_id:
-                        summary = ", ".join(
-                            [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
-                        )
+                        summary = ", ".join([f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents])
                         print(f"[MasterExecutor] (PEL) published intents={len(intents)} id={out_id} | {summary}")
-
                 self._ack(mids)
                 time.sleep(0.05)
-
             print("[MasterExecutor] pending drained.")
 
         idle = 0
@@ -701,14 +694,9 @@ class MasterExecutor:
                     continue
                 items2 = self._apply_heavy_stage(items)
                 intents = self._select_top_unique(items2)
-                if not intents:
-                    continue
-
-                out_id = self._publish_intents(source_stream_id=sid, intents=intents)
+                out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
                 if out_id:
-                    summary = ", ".join(
-                        [f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents]
-                    )
+                    summary = ", ".join([f"{it.symbol}:{it.side}@L{it.recommended_leverage} npct={it.recommended_notional_pct:.3f}" for it in intents])
                     print(f"[MasterExecutor] published intents={len(intents)} -> {self.out_stream} id={out_id} | {summary}")
 
             self._ack(mids)
