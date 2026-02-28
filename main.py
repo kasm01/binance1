@@ -5,7 +5,7 @@ def _mask_env_presence(keys: list[str]) -> dict:
         v = os.getenv(k)
         out[k] = "SET" if (v is not None and str(v).strip() != "") else "MISSING"
     return out
-
+print("### RUNNING FILE:", __file__)
 
 def _log_secret_env_presence(logger):
     # Değerleri ASLA basmıyoruz. Sadece SET/MISSING.
@@ -18,9 +18,17 @@ def _log_secret_env_presence(logger):
         "TELEGRAM_NOTIFY_COOLDOWN_S",
         "TELEGRAM_ALERTS",
 
-        # Binance / OKX
+        # Binance / OKX (PROD)
         "BINANCE_API_KEY",
         "BINANCE_API_SECRET",
+
+        # Binance Futures Testnet (senin naming + alternatif naming)
+        "BINANCETESTNET_API_KEY",
+        "BINANCETESTNET_API_SECRET",
+        "BINANCE_TESTNET_API_KEY",
+        "BINANCE_TESTNET_API_SECRET",
+
+        # OKX
         "OKX_API_KEY",
         "OKX_API_SECRET",
         "OKX_PASSPHRASE",
@@ -112,7 +120,16 @@ except Exception:
 # ----------------------------------------------------------------------
 # Global config / flags
 # ----------------------------------------------------------------------
-USE_TESTNET = getattr(Settings, "USE_TESTNET", True)
+def get_bool_env(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+# ✅ Tek kaynak: env (default 0)  -> canlıya geçerken yanlışlıkla testnet'e düşme riskini azaltır
+USE_TESTNET = get_bool_env("BINANCE_TESTNET", False)
+
 SYMBOL = getattr(Settings, "SYMBOL", "BTCUSDT")
 
 system_logger: Optional[logging.Logger] = None
@@ -121,15 +138,6 @@ LOOP_SLEEP_SECONDS = int(os.getenv("LOOP_SLEEP_SECONDS", "60"))
 
 # Default (env parse ile override edilecek)
 MTF_INTERVALS_DEFAULT = ["1m", "3m", "5m", "15m", "30m", "1h"]
-
-
-def get_bool_env(name: str, default: bool = False) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
-
-
 def get_float_env(name: str, default: float) -> float:
     """ENV float okuyucu (hatalarda default döner)."""
     try:
@@ -203,6 +211,8 @@ class _StepTimer:
 
     def total(self) -> float:
         return float(time.perf_counter() - self.t0)
+
+
 # ----------------------------------------------------------------------
 # Adaptive scan (volatility-based) helpers
 # ----------------------------------------------------------------------
@@ -254,8 +264,6 @@ def _adaptive_scan_params(base_every: float, base_topk: int, vol_score: float) -
     topk = max(topk_min, min(topk_max, topk))
 
     return {"scan_every": every, "topk": topk, "vol_score": v}
-
-
 def _quick_vol_regime(df: pd.DataFrame, window: int = 60) -> float:
     """
     Çok hızlı vol rejimi proxy:
@@ -355,6 +363,29 @@ def _compute_adaptive_alpha(atr_value: float) -> float:
     alpha = a_min + (a_max - a_min) * (x / 2.0)
     alpha = max(a_min, min(a_max, alpha))
     return float(alpha)
+
+
+# ----------------------------------------------------------------------
+# ✅ Binance key seçimi: PROD vs TESTNET (env tek otorite)
+# ----------------------------------------------------------------------
+def _select_binance_keys_for_mode() -> tuple[Optional[str], Optional[str], bool]:
+    """
+    BINANCE_TESTNET=1 ise:
+      - BINANCETESTNET_API_KEY/SECRET (senin naming) öncelikli
+      - fallback: BINANCE_TESTNET_API_KEY/SECRET
+
+    BINANCE_TESTNET!=1 ise:
+      - BINANCE_API_KEY/SECRET
+    """
+    is_testnet = get_bool_env("BINANCE_TESTNET", False)
+    if is_testnet:
+        k = (os.getenv("BINANCETESTNET_API_KEY") or os.getenv("BINANCE_TESTNET_API_KEY") or "").strip()
+        s = (os.getenv("BINANCETESTNET_API_SECRET") or os.getenv("BINANCE_TESTNET_API_SECRET") or "").strip()
+        return (k or None, s or None, True)
+
+    k = (os.getenv("BINANCE_API_KEY") or "").strip()
+    s = (os.getenv("BINANCE_API_SECRET") or "").strip()
+    return (k or None, s or None, False)
 
 
 # Global env flag’ler (async_main içinde tekrar güncellenecek)
@@ -466,8 +497,6 @@ _KLINE_FLOAT_COLS = [
     "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
 ]
 _KLINE_INT_COLS = ["open_time", "close_time", "number_of_trades", "ignore"]
-
-
 def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     12 kolon kline DF normalize:
@@ -539,13 +568,17 @@ def _offline_klines_tail_cached(path: str, mtime: float, limit: int) -> pd.DataF
         df = df.reset_index(drop=True)
 
     return df
+
+
 # ----------------------------------------------------------------------
 # LIVE fallback: Public REST
 # ----------------------------------------------------------------------
 def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
     import requests
+    is_testnet = (os.getenv("BINANCE_TESTNET") == "1")
+    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
+    url = f"{base}/fapi/v1/klines"
 
-    url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": int(limit)}
 
     try:
@@ -554,21 +587,26 @@ def _fetch_klines_public_rest(symbol: str, interval: str, limit: int, logger: Op
         klines = r.json()
     except Exception as e:
         if logger:
-            logger.error("[DATA] Public REST klines fetch hatası: %s", e)
+            logger.error("[DATA] Public FUTURES REST klines fetch hatası: %s", e)
         raise
 
     df = pd.DataFrame(klines, columns=_KLINE_COLUMNS)
     df = _normalize_kline_df(df)
 
     if logger:
-        logger.info("[DATA] LIVE(PUBLIC) REST kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
+        logger.info("[DATA] LIVE(PUBLIC) FUTURES REST kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
     return df
-
 
 # ----------------------------------------------------------------------
 # fetch_klines (OFFLINE cached + LIVE client/rest)
 # ----------------------------------------------------------------------
-async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: Optional[logging.Logger]) -> pd.DataFrame:
+async def fetch_klines(
+    client,
+    symbol: str,
+    interval: str,
+    limit: int,
+    logger: Optional[logging.Logger],
+) -> pd.DataFrame:
     data_mode = str(os.getenv("DATA_MODE", "OFFLINE")).upper().strip()
 
     # -------------------------
@@ -589,15 +627,63 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
         except Exception:
             mtime = 0.0
 
-        # ✅ normalize + tail(limit) cached
+        # normalize + tail(limit) cached
         df = _offline_klines_tail_cached(csv_path, mtime, int(limit)).copy()
 
         if logger:
-            logger.info("[DATA] OFFLINE mod: %s dosyasından kline yüklendi(CACHED_TAIL). shape=%s", csv_path, df.shape)
+            logger.info(
+                "[DATA] OFFLINE mod: %s dosyasından kline yüklendi(CACHED_TAIL). shape=%s",
+                csv_path,
+                df.shape,
+            )
             if not {"open", "high", "low", "close"}.issubset(df.columns):
-                logger.warning("[DATA] OFFLINE normalize sonrası kolonlar eksik: cols=%s", list(df.columns))
+                logger.warning(
+                    "[DATA] OFFLINE normalize sonrası kolonlar eksik: cols=%s",
+                    list(df.columns),
+                )
 
         return df
+
+    # -------------------------
+    # LIVE (client first, fallback public REST)
+    # -------------------------
+    last_err: Optional[Exception] = None
+
+    if client is not None:
+        try:
+            import asyncio
+            import inspect
+
+            fn = getattr(client, "get_klines", None)
+            if fn is None:
+                raise AttributeError("client.get_klines not found")
+
+            if inspect.iscoroutinefunction(fn):
+                klines = await fn(symbol=symbol, interval=interval, limit=limit)
+            else:
+                klines = await asyncio.to_thread(
+                    fn, symbol=symbol, interval=interval, limit=limit
+                )
+
+            df = pd.DataFrame(klines, columns=_KLINE_COLUMNS)
+            df = _normalize_kline_df(df)
+
+            if logger:
+                logger.info(
+                    "[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s",
+                    symbol,
+                    interval,
+                    df.shape,
+                )
+            return df
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as e:
+            last_err = e
+            if logger:
+                logger.error("[DATA] LIVE(CLIENT) client.get_klines hatası: %s", e)
 
     # -------------------------
     # LIVE (client -> fallback rest)
@@ -606,19 +692,32 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
 
     if client is not None:
         try:
-            klines = await client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            import inspect
+            import asyncio
+
+            fn = getattr(client, "get_klines", None)
+            if fn is None:
+                raise RuntimeError("client.get_klines not found")
+
+            if inspect.iscoroutinefunction(fn):
+                klines = await fn(symbol=symbol, interval=interval, limit=limit)
+            else:
+                klines = await asyncio.to_thread(fn, symbol=symbol, interval=interval, limit=limit)
+
             df = pd.DataFrame(klines, columns=_KLINE_COLUMNS)
             df = _normalize_kline_df(df)
 
             if logger:
-                logger.info("[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s", symbol, interval, df.shape)
+                logger.info(
+                    "[DATA] LIVE(CLIENT) kline çekildi. symbol=%s interval=%s shape=%s",
+                    symbol, interval, df.shape
+                )
             return df
 
         except Exception as e:
             last_err = e
             if logger:
                 logger.error("[DATA] LIVE(CLIENT) client.get_klines hatası: %s", e)
-
     try:
         df = _fetch_klines_public_rest(symbol, interval, limit, logger)
         df = _normalize_kline_df(df)
@@ -629,8 +728,6 @@ async def fetch_klines(client, symbol: str, interval: str, limit: int, logger: O
             logger.error("[DATA] LIVE(PUBLIC) REST de başarısız: %s", e)
 
     raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
-
-
 # ----------------------------------------------------------------------
 # Shutdown manager (ws stop + tg stop + http close + pm/te close)
 # ----------------------------------------------------------------------
@@ -642,7 +739,7 @@ class ShutdownManager:
         self._tg_bot: Optional[TelegramBot] = None
         self._binance_ws: Optional[BinanceWS] = None
         self._okx_ws: Optional[OKXWS] = None
-        self._depth_ws: Any = None  # ✅ BUGFIX: daha önce tanımlı değildi
+        self._depth_ws: Any = None
         self._client: Any = None
         self._position_manager: Any = None
         self._trade_executor: Any = None
@@ -677,7 +774,6 @@ class ShutdownManager:
     async def shutdown(self, reason: str = "unknown") -> None:
         log = system_logger
 
-        # idempotent
         with self._lock:
             if self._done:
                 return
@@ -694,7 +790,6 @@ class ShutdownManager:
         if log:
             log.info("[SHUTDOWN] starting cleanup | reason=%s", reason)
 
-        # 1) WS stop (Binance)
         try:
             if bws is not None and hasattr(bws, "stop"):
                 bws.stop(timeout=5.0)  # type: ignore
@@ -704,7 +799,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] BinanceWS stop failed: %s", e)
 
-        # 2) WS stop (OKX)
         try:
             if okx is not None and hasattr(okx, "stop"):
                 okx.stop(timeout=5.0)  # type: ignore
@@ -714,7 +808,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] OKXWS stop failed: %s", e)
 
-        # 2.5) Depth WS stop (Binance Futures depth)
         try:
             if dws is not None and hasattr(dws, "stop"):
                 dws.stop(timeout=5.0)  # type: ignore
@@ -724,7 +817,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] DepthWS stop failed: %s", e)
 
-        # 3) Telegram stop
         try:
             if tg_bot is not None and hasattr(tg_bot, "stop_polling"):
                 tg_bot.stop_polling()  # type: ignore
@@ -734,7 +826,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] Telegram stop failed: %s", e)
 
-        # 4) TradeExecutor finalize (shutdown/close/stop/finalize/flush)
         try:
             if te is not None:
                 for m in ("shutdown", "close", "stop", "finalize", "flush"):
@@ -749,7 +840,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] TradeExecutor finalize failed: %s", e)
 
-        # 5) PositionManager close/shutdown
         try:
             if pm is not None:
                 for m in ("shutdown", "close", "stop"):
@@ -764,7 +854,6 @@ class ShutdownManager:
             if log:
                 log.warning("[SHUTDOWN] PositionManager close failed: %s", e)
 
-        # 6) HTTP session close (binance client)
         try:
             if client is not None and hasattr(client, "close"):
                 maybe = client.close()
@@ -781,6 +870,7 @@ class ShutdownManager:
 
 
 _shutdown_mgr = ShutdownManager()
+
 def create_trading_objects() -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
@@ -788,6 +878,20 @@ def create_trading_objects() -> Dict[str, Any]:
 
     symbol = os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", None) or "BTCUSDT"
     interval = os.getenv("INTERVAL") or getattr(Settings, "INTERVAL", None) or "5m"
+
+    # ✅ moda göre key seç (prod/testnet)
+    k, s, is_testnet = _select_binance_keys_for_mode()
+    BINANCE_API_KEY, BINANCE_API_SECRET = k, s
+    USE_TESTNET = bool(is_testnet)
+
+    if system_logger:
+        system_logger.info(
+            "[MODE] DRY_RUN=%s ARMED=%s LIVE_KILL_SWITCH=%s BINANCE_TESTNET=%s",
+            os.getenv("DRY_RUN"),
+            os.getenv("ARMED"),
+            os.getenv("LIVE_KILL_SWITCH"),
+            os.getenv("BINANCE_TESTNET"),
+        )
 
     client = create_binance_client(
         api_key=BINANCE_API_KEY,
@@ -815,7 +919,6 @@ def create_trading_objects() -> Dict[str, Any]:
     tg_bot = None
     try:
         tg_bot = TelegramBot()
-
         try:
             risk_manager.set_telegram_bot(tg_bot)
         except Exception:
@@ -845,11 +948,9 @@ def create_trading_objects() -> Dict[str, Any]:
                 name="telegram-polling",
                 daemon=True,
             ).start()
-
         else:
             if system_logger:
                 system_logger.warning("[MAIN] Telegram dispatcher yok. TELEGRAM_BOT_TOKEN ayarlı değilse komutlar çalışmaz.")
-
     except Exception as e:
         tg_bot = None
         if system_logger:
@@ -864,7 +965,6 @@ def create_trading_objects() -> Dict[str, Any]:
 
     if system_logger:
         system_logger.info("[POS][ENV] ENABLE_PG_POS_LOG=%s enable_pg_flag=%s", enable_pg, enable_pg_flag)
-
         pg = (pg_dsn or "").strip()
         masked = pg
         if pg and "://" in pg and "@" in pg:
@@ -873,7 +973,6 @@ def create_trading_objects() -> Dict[str, Any]:
                 masked = re.sub(r":([^:@/]+)@", r":***@", pg)
             except Exception:
                 masked = "***"
-
         system_logger.info("[POS][ENV] PG_DSN=%s", masked if masked else "(empty)")
 
     if enable_pg_flag and not pg_dsn:
@@ -889,13 +988,11 @@ def create_trading_objects() -> Dict[str, Any]:
     )
 
     registry = ModelRegistry(model_dir=MODELS_DIR)
-
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
     # --- Market meta (depth-based) ---
     depth_ws = None
     market_meta_builder = None
-
     try:
         enable_depth_ws = get_bool_env("ENABLE_DEPTH_WS", True)
         if enable_depth_ws and list(mtf_intervals):
@@ -918,42 +1015,31 @@ def create_trading_objects() -> Dict[str, Any]:
         if system_logger:
             system_logger.warning("[DEPTHWS] init failed: %s", e)
 
-    # Single TF model (main interval)
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
-    # MTF models + ensemble (optional)
     mtf_ensemble = None
     models_by_interval: Dict[str, Any] = {}
-
     if USE_MTF_ENS and list(mtf_intervals):
         try:
             models_by_interval = {
                 itv: registry.get_hybrid(itv, model_dir=MODELS_DIR, logger=system_logger)
                 for itv in mtf_intervals
             }
-
             mtf_ensemble = HybridMultiTFModel(
                 model_dir=MODELS_DIR,
                 intervals=list(mtf_intervals),
                 logger=system_logger,
                 models_by_interval=models_by_interval,
             )
-
             if system_logger:
                 system_logger.info("[MAIN] MTF ensemble aktif: intervals=%s", list(mtf_intervals))
-
-            # AUC history seed / optional runtime append
             try:
                 seed_auc_history_if_missing(intervals=list(mtf_intervals), logger=system_logger)
-
                 if get_bool_env("AUC_RUNTIME_APPEND", False):
-                    # default OFF: retrain sonrası disk write için
                     append_auc_used_once_per_hour(intervals=list(mtf_intervals), logger=system_logger)
-
             except Exception as e:
                 if system_logger:
                     system_logger.warning("[AUC-HIST] seed/append hata: %s", e)
-
         except Exception as e:
             mtf_ensemble = None
             if system_logger:
@@ -1003,8 +1089,6 @@ def create_trading_objects() -> Dict[str, Any]:
     )
 
     okx_ws = None
-
-    # Telegram bot_data inject + OKXWS create
     try:
         if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
             tg_bot.dispatcher.bot_data["risk_manager"] = risk_manager  # type: ignore
@@ -1014,11 +1098,7 @@ def create_trading_objects() -> Dict[str, Any]:
             tg_bot.dispatcher.bot_data["interval"] = interval  # type: ignore
 
             if system_logger:
-                try:
-                    _okx_en = str(os.getenv("OKX_WS_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
-                except Exception:
-                    _okx_en = False
-
+                _okx_en = str(os.getenv("OKX_WS_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
                 if _okx_en:
                     try:
                         okx_ws = OKXWS(logger_=system_logger)
@@ -1044,7 +1124,6 @@ def create_trading_objects() -> Dict[str, Any]:
         if system_logger:
             system_logger.warning("[MAIN] Telegram bot_data inject error: %s", e)
 
-    # shutdown manager register (tg + okx + client + pm + te + depth_ws)
     _shutdown_mgr.register(
         tg_bot=tg_bot,
         okx_ws=okx_ws,
@@ -1097,7 +1176,10 @@ class HeavyEngine:
         self.market_meta_builder = objs.get("market_meta_builder")
         self.interval = objs.get("interval", os.getenv("INTERVAL", "5m"))
         self.data_limit = int(os.getenv("DATA_LIMIT", "500"))
-        self.mtf_intervals: List[str] = objs.get("mtf_intervals") or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
+        self.mtf_intervals: List[str] = (
+            objs.get("mtf_intervals")
+            or parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
+        )
 
         self.anomaly_detector = AnomalyDetector(logger=system_logger)
 
@@ -1164,7 +1246,10 @@ class HeavyEngine:
         sch = self._schema_for(itv)
         if not sch:
             if system_logger:
-                system_logger.warning("[SCHEMA] No feature_schema for interval=%s (meta missing). Using raw features.", itv)
+                system_logger.warning(
+                    "[SCHEMA] No feature_schema for interval=%s (meta missing). Using raw features.",
+                    itv,
+                )
             return feat_df
 
         def _log_missing(missing_cols: list[str]) -> None:
@@ -1175,7 +1260,11 @@ class HeavyEngine:
                 return
             self._schema_missing_warned_itv.add(itv)
             if system_logger:
-                system_logger.warning("[SCHEMA] interval=%s missing cols (filled=0): %s", itv, missing_cols)
+                system_logger.warning(
+                    "[SCHEMA] interval=%s missing cols (filled=0): %s",
+                    itv,
+                    missing_cols,
+                )
 
         return normalize_to_schema(feat_df, sch, log_missing=_log_missing)
 
@@ -1257,7 +1346,6 @@ class HeavyEngine:
 
         p_used = p_single
         mtf_debug: Optional[Dict[str, Any]] = None
-
         # -------------------------
         # MTF ensemble (X_by_interval hazırlanması)
         # -------------------------
@@ -1272,14 +1360,17 @@ class HeavyEngine:
                         continue
 
                     def _log_missing(missing_cols: list[str], _itv: str = itv) -> None:
-                        # interval başına 1 kez (spam engeli)
                         if not missing_cols:
                             return
                         if _itv in _missing_warned:
                             return
                         _missing_warned.add(_itv)
                         if system_logger:
-                            system_logger.warning("[MTF][%s] schema missing cols (filled=0): %s", _itv, missing_cols)
+                            system_logger.warning(
+                                "[MTF][%s] schema missing cols (filled=0): %s",
+                                _itv,
+                                missing_cols,
+                            )
 
                     X_norm = normalize_to_schema(df_itv, sch_itv, log_missing=_log_missing)
                     X_tail = X_norm.tail(500)
@@ -1318,7 +1409,9 @@ class HeavyEngine:
 
                     if self.market_meta_builder is not None:
                         try:
-                            market_meta_by_tf = self.market_meta_builder.build_meta_by_tf(symbol, list(mtf_whale_raw.keys()))
+                            market_meta_by_tf = self.market_meta_builder.build_meta_by_tf(
+                                symbol, list(mtf_whale_raw.keys())
+                            )
                         except Exception:
                             market_meta_by_tf = None
 
@@ -1332,7 +1425,11 @@ class HeavyEngine:
                     best_score = 0.0
 
                     for tf, sig in whale_signals.items():
-                        whale_meta["per_tf"][tf] = {"direction": sig.direction, "score": sig.score, "reason": sig.reason}
+                        whale_meta["per_tf"][tf] = {
+                            "direction": sig.direction,
+                            "score": sig.score,
+                            "reason": sig.reason,
+                        }
                         if sig.direction != "none" and sig.score > best_score:
                             best_score = sig.score
                             best_tf = tf
@@ -1340,12 +1437,24 @@ class HeavyEngine:
                     if best_tf is not None:
                         best_sig = whale_signals[best_tf]
                         whale_meta.update(
-                            {"direction": best_sig.direction, "score": best_sig.score, "best_tf": best_tf, "best_reason": best_sig.reason}
+                            {
+                                "direction": best_sig.direction,
+                                "score": best_sig.score,
+                                "best_tf": best_tf,
+                                "best_reason": best_sig.reason,
+                            }
                         )
 
                 elif hasattr(self.whale_detector, "from_klines"):
                     ws = self.whale_detector.from_klines(raw_df)
-                    whale_meta.update({"direction": ws.direction, "score": ws.score, "reason": ws.reason, "meta": ws.meta})
+                    whale_meta.update(
+                        {
+                            "direction": ws.direction,
+                            "score": ws.score,
+                            "reason": ws.reason,
+                            "meta": ws.meta,
+                        }
+                    )
 
                 whale_dir = str(whale_meta.get("direction", "none") or "none")
                 whale_score = float(whale_meta.get("score", 0.0) or 0.0)
@@ -1456,7 +1565,9 @@ class HeavyEngine:
         if system_logger and get_bool_env("LOG_LATENCY", False):
             system_logger.info(
                 "[LATENCY] %s total=%.4fs steps=%s",
-                symbol, float(extra["latency_total_sec"]), {k: round(v, 4) for k, v in timer.steps.items()}
+                symbol,
+                float(extra["latency_total_sec"]),
+                {k: round(v, 4) for k, v in timer.steps.items()},
             )
 
         return {
@@ -1467,8 +1578,6 @@ class HeavyEngine:
             "price": float(last_price),
             "extra": extra,
         }
-
-
 # ----------------------------------------------------------------------
 # Non-scan mode: tek symbol heavy loop
 # ----------------------------------------------------------------------
@@ -1476,7 +1585,11 @@ async def bot_loop_single_symbol(engine: HeavyEngine, symbol: str) -> None:
     if system_logger:
         system_logger.info(
             "[MAIN] Bot loop started for %s (%s, TRAINING_MODE=%s, HYBRID_MODE=%s, USE_MTF_ENS=%s)",
-            symbol, engine.interval, TRAINING_MODE, HYBRID_MODE, USE_MTF_ENS
+            symbol,
+            engine.interval,
+            TRAINING_MODE,
+            HYBRID_MODE,
+            USE_MTF_ENS,
         )
 
     while True:
@@ -1581,16 +1694,36 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 except Exception:
                     last_px = None
 
-                return {"symbol": sym, "score": float(score), "reason": reason, "last": last_px, "vol_reg": float(vol_reg)}
+                return {
+                    "symbol": sym,
+                    "score": float(score),
+                    "reason": reason,
+                    "last": last_px,
+                    "vol_reg": float(vol_reg),
+                }
             except Exception as e:
                 if system_logger:
                     system_logger.debug("[SCAN] %s failed: %s", sym, e)
-                return {"symbol": sym, "score": 0.0, "reason": None, "last": None, "vol_reg": 0.0, "err": str(e)}
+                return {
+                    "symbol": sym,
+                    "score": 0.0,
+                    "reason": None,
+                    "last": None,
+                    "vol_reg": 0.0,
+                    "err": str(e),
+                }
 
     if system_logger:
         system_logger.info(
             "[SCAN] enabled | symbols=%d interval=%s topk=%d every=%.1fs conc=%d fast=%s aggressive=%s adaptive=%s",
-            len(symbols), scan_interval, topk, scan_every, conc, scan_fast, scan_aggressive, adaptive
+            len(symbols),
+            scan_interval,
+            topk,
+            scan_every,
+            conc,
+            scan_fast,
+            scan_aggressive,
+            adaptive,
         )
 
     while True:
@@ -1606,14 +1739,14 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     rows.append(r)
 
             rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
-
             # -------------------------
             # FAST adaptive scan config
             # -------------------------
             scan_every_eff = float(scan_every)
             topk_eff = int(topk)
+
             if scan_fast and rows:
-                vol_regs = [float(r.get("vol_reg", 0.0) or 0.0) for r in rows[:min(10, len(rows))]]
+                vol_regs = [float(r.get("vol_reg", 0.0) or 0.0) for r in rows[: min(10, len(rows))]]
                 vol_regs = [v for v in vol_regs if v > 0]
                 vol_med = float(pd.Series(vol_regs).median()) if vol_regs else 0.0
 
@@ -1636,10 +1769,13 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 if system_logger and get_bool_env("LOG_SCAN_FAST", True):
                     system_logger.info(
                         "[SCAN-FAST] vol_med=%.6f ref=%.6f -> every=%.2fs topk=%d",
-                        vol_med, fast_ref_vol, scan_every_eff, topk_eff
+                        vol_med,
+                        fast_ref_vol,
+                        scan_every_eff,
+                        topk_eff,
                     )
 
-            candidates = [r for r in rows[:max(1, topk_eff)] if float(r.get("score", 0.0) or 0.0) > 0.0]
+            candidates = [r for r in rows[: max(1, topk_eff)] if float(r.get("score", 0.0) or 0.0) > 0.0]
             if not candidates:
                 candidates = rows[:1] if rows else []
 
@@ -1649,7 +1785,10 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                 system_logger.info(
                     "[SCAN] candidates=%s | scores(top10)=%s",
                     cand_syms,
-                    [(r["symbol"], round(float(r.get("score", 0.0) or 0.0), 2)) for r in rows[:min(10, len(rows))]],
+                    [
+                        (r["symbol"], round(float(r.get("score", 0.0) or 0.0), 2))
+                        for r in rows[: min(10, len(rows))]
+                    ],
                 )
 
             # Legacy adaptive: probe candidate[0] üzerinden parametre güncelle (opsiyonel)
@@ -1669,7 +1808,9 @@ async def scanner_loop(engine: HeavyEngine) -> None:
                     if system_logger and get_bool_env("LOG_SCAN_ADAPT", True):
                         system_logger.info(
                             "[SCAN-ADAPT] v=%.3f -> every=%.2fs topk=%d",
-                            float(p["vol_score"]), scan_every_eff, topk_eff
+                            float(p["vol_score"]),
+                            scan_every_eff,
+                            topk_eff,
                         )
                 except Exception:
                     pass
@@ -1678,10 +1819,7 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             if scan_fast and warm_cache and cand_syms:
                 try:
                     await asyncio.gather(
-                        *[
-                            fetch_klines(engine.client, s, scan_interval, scan_limit, None)
-                            for s in cand_syms
-                        ],
+                        *[fetch_klines(engine.client, s, scan_interval, scan_limit, None) for s in cand_syms],
                         return_exceptions=True,
                     )
                 except Exception:
@@ -1714,10 +1852,13 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             scan_failures += 1
             backoff = min(err_backoff_max, err_backoff_base * (2 ** max(0, scan_failures - 1)))
             if system_logger:
-                system_logger.exception("[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d", e, backoff, scan_failures)
+                system_logger.exception(
+                    "[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d",
+                    e,
+                    backoff,
+                    scan_failures,
+                )
             await asyncio.sleep(_sleep_jitter(backoff, 0.20))
-
-
 # ----------------------------------------------------------------------
 # Telegram ENV compat (TELEGRAM_* -> TG_*)  [OPEN/CLOSE ONLY]
 # ----------------------------------------------------------------------
@@ -1736,7 +1877,6 @@ def _backfill_telegram_env_compat() -> None:
     if alerts is not None and str(alerts).strip().lower() in ("0", "false", "no", "off", ""):
         os.environ.setdefault("TG_NOTIFY_OPEN_CLOSE", "0")
         os.environ.setdefault("TG_OPEN_CLOSE_ONLY_REAL", "1")  # ekstra güvenlik: dry_run'da da sus
-        # Eski env'leri ezme: sadece default ver
         os.environ.setdefault("TG_NOTIFY_TRADES", "0")
         os.environ.setdefault("TG_NOTIFY_HOLD", "0")
         return
@@ -1814,24 +1954,22 @@ async def async_main() -> None:
         system_logger.info("[MAIN] USE_MTF_ENS=%s", USE_MTF_ENS)
         system_logger.info("[MAIN] DRY_RUN=%s", DRY_RUN)
 
-        # İstersen debug: Telegram notify env'leri SET/MISSING (değer yok)
+        # Debug: Telegram notify env'leri SET/MISSING (değer yok)
         try:
-            st = _mask_env_presence([
-                "TELEGRAM_BOT_TOKEN",
-                "TELEGRAM_CHAT_ID",
-                "TELEGRAM_ALLOWED_CHAT_IDS",
-                "TELEGRAM_NOTIFY_SIGNALS",
-                "TELEGRAM_NOTIFY_COOLDOWN_S",
-                "TELEGRAM_ALERTS",
-
-                # yeni OPEN/CLOSE odaklı env’ler
-                "TG_NOTIFY_OPEN_CLOSE",
-                "TG_OPEN_CLOSE_ONLY_REAL",
-
-                # backward / safety
-                "TG_NOTIFY_TRADES",
-                "TG_DUPLICATE_SIGNAL_COOLDOWN_SEC",
-            ])
+            st = _mask_env_presence(
+                [
+                    "TELEGRAM_BOT_TOKEN",
+                    "TELEGRAM_CHAT_ID",
+                    "TELEGRAM_ALLOWED_CHAT_IDS",
+                    "TELEGRAM_NOTIFY_SIGNALS",
+                    "TELEGRAM_NOTIFY_COOLDOWN_S",
+                    "TELEGRAM_ALERTS",
+                    "TG_NOTIFY_OPEN_CLOSE",
+                    "TG_OPEN_CLOSE_ONLY_REAL",
+                    "TG_NOTIFY_TRADES",
+                    "TG_DUPLICATE_SIGNAL_COOLDOWN_SEC",
+                ]
+            )
             system_logger.info("[ENV][TG-COMPAT] %s", st)
         except Exception:
             pass
@@ -1895,12 +2033,42 @@ def main() -> None:
             return_when=asyncio.FIRST_COMPLETED,
         )
 
+        # Stop sinyali geldiyse main_task hala çalışıyorsa iptal et
         if stop_task in done and not main_task.done():
             try:
                 main_task.cancel()
             except Exception:
                 pass
 
+        # cleanup resources (ws/tg/http/pm/te)
+        try:
+            await _shutdown_mgr.shutdown(reason="signal_or_exit")
+        except Exception:
+            pass
+
+        # pending task'ları iptal et
+        for t in pending:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+        try:
+            await asyncio.gather(*pending, return_exceptions=True)
+        except Exception:
+            pass
+
+        # ✅ main_task exception'ını yutma, logla (ASIL FIX)
+        try:
+            await main_task
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if system_logger:
+                system_logger.exception("[MAIN] async_main crashed: %s", e)
+            else:
+                import traceback
+                traceback.print_exc()
         # cleanup resources (ws/tg/http/pm/te)
         try:
             await _shutdown_mgr.shutdown(reason="signal_or_exit")
@@ -1925,6 +2093,15 @@ def main() -> None:
 
     try:
         loop.run_until_complete(_runner())
+
+    except KeyboardInterrupt:
+        # Ctrl+C normal kapatma
+        pass
+
+    except asyncio.CancelledError:
+        # Shutdown sırasında task iptali normal
+        pass
+
     finally:
         try:
             pending = asyncio.all_tasks(loop=loop)
@@ -1932,21 +2109,28 @@ def main() -> None:
             pending = asyncio.all_tasks()
 
         for task in pending:
-            task.cancel()
+            if task is not asyncio.current_task(loop=loop) if hasattr(asyncio, "current_task") else True:
+                task.cancel()
 
         try:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
         # Son güvenlik: shutdown bir daha çağrılsa bile idempotent
         try:
             loop.run_until_complete(_shutdown_mgr.shutdown(reason="loop_finally"))
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
-        loop.close()
-
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

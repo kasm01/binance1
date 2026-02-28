@@ -59,8 +59,21 @@ REDIS_DB="${REDIS_DB:-0}"
 PY="${PY:-python}"
 
 # -----------------------------
+# Streams (prefer .env)
+# -----------------------------
+SIGNALS_STREAM="${SIGNALS_STREAM:-signals_stream}"
+CANDIDATES_STREAM="${CANDIDATES_STREAM:-candidates_stream}"
+TOP5_STREAM="${TOP5_STREAM:-top5_stream}"
+TRADE_INTENTS_STREAM="${TRADE_INTENTS_STREAM:-trade_intents_stream}"
+EXEC_EVENTS_STREAM="${EXEC_EVENTS_STREAM:-exec_events_stream}"
+
+# -----------------------------
 # Hardening: pin consumer groups (deterministic)
 # -----------------------------
+export TOPSEL_GROUP="${TOPSEL_GROUP:-topsel_g}"
+export TOPSEL_GROUP_START_ID="${TOPSEL_GROUP_START_ID:-$}"
+export TOPSEL_CONSUMER="${TOPSEL_CONSUMER:-topsel_1}"
+
 export BRIDGE_GROUP="${BRIDGE_GROUP:-bridge_g}"
 export BRIDGE_GROUP_START_ID="${BRIDGE_GROUP_START_ID:-$}"
 export BRIDGE_CONSUMER="${BRIDGE_CONSUMER:-bridge_1}"
@@ -75,19 +88,19 @@ export MASTER_CONSUMER="${MASTER_CONSUMER:-master_1}"
 redis_xgroup_create() {
   local stream="$1" group="$2" start_id="${3:-$}"
   need redis-cli || return 0
-  # mkstream + busygroup tolerant
   redis-cli -n "$REDIS_DB" XGROUP CREATE "$stream" "$group" "$start_id" MKSTREAM >/dev/null 2>&1 || true
 }
 
 bootstrap_redis() {
   # pipeline streams
-  redis_xgroup_create "candidates_stream" "${TOPSEL_GROUP:-topsel_g}" "${TOPSEL_GROUP_START_ID:-$}"
-  redis_xgroup_create "top5_stream"       "$MASTER_GROUP"            "$MASTER_GROUP_START_ID"
-  redis_xgroup_create "trade_intents_stream" "$BRIDGE_GROUP"         "$BRIDGE_GROUP_START_ID"
-  # other streams may be xadd-only; ensure they exist (harmless)
+  redis_xgroup_create "$CANDIDATES_STREAM" "$TOPSEL_GROUP" "$TOPSEL_GROUP_START_ID"
+  redis_xgroup_create "$TOP5_STREAM"       "$MASTER_GROUP" "$MASTER_GROUP_START_ID"
+  redis_xgroup_create "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP" "$BRIDGE_GROUP_START_ID"
+
+  # ensure these streams exist (harmless)
   need redis-cli || return 0
-  redis-cli -n "$REDIS_DB" XADD "signals_stream" "*" ping "1" >/dev/null 2>&1 || true
-  redis-cli -n "$REDIS_DB" XADD "exec_events_stream" "*" ping "1" >/dev/null 2>&1 || true
+  redis-cli -n "$REDIS_DB" XADD "$SIGNALS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
+  redis-cli -n "$REDIS_DB" XADD "$EXEC_EVENTS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
 }
 bootstrap_redis
 
@@ -115,19 +128,33 @@ heal_pidfile() {
 }
 
 # -----------------------------
-# DRY_RUN reset policy (safer)
+# DRY_RUN reset policy (configurable)
+#   - DRYRUN_RESET_STATE=1  => allow reset (default)
+#   - DRYRUN_RESET_STATE=0  => never reset
+#   - If BRIDGE_DRYRUN_WRITE_STATE=1, default behavior is to NOT reset (keep state)
 # -----------------------------
-if is_truthy "${DRY_RUN:-1}"; then
-  if ! any_orch_running; then
-    echo "[START] DRY_RUN -> resetting open_positions_state + positions:* (dry-run safety reset)"
-    need redis-cli || true
+DRYRUN_RESET_STATE="${DRYRUN_RESET_STATE:-1}"
 
-    redis-cli -n "$REDIS_DB" DEL "${BRIDGE_STATE_KEY:-open_positions_state}" >/dev/null 2>&1 || true
-    POS_PREFIX="${POSITION_KEY_PREFIX:-positions}"
-    redis-cli -n "$REDIS_DB" --scan --pattern "${POS_PREFIX}:*" \
-      | xargs -r -n 200 redis-cli -n "$REDIS_DB" DEL >/dev/null 2>&1 || true
+# If user explicitly wants dry-run write-state, default to preserving state unless overridden.
+if is_truthy "${BRIDGE_DRYRUN_WRITE_STATE:-0}"; then
+  DRYRUN_RESET_STATE="${DRYRUN_RESET_STATE_OVERRIDE_WHEN_WRITE_STATE:-0}"
+fi
+
+if is_truthy "${DRY_RUN:-1}"; then
+  if is_truthy "$DRYRUN_RESET_STATE"; then
+    if ! any_orch_running; then
+      echo "[START] DRY_RUN -> resetting open_positions_state + positions:* (dry-run safety reset)"
+      need redis-cli || true
+
+      redis-cli -n "$REDIS_DB" DEL "${BRIDGE_STATE_KEY:-open_positions_state}" >/dev/null 2>&1 || true
+      POS_PREFIX="${POSITION_KEY_PREFIX:-positions}"
+      redis-cli -n "$REDIS_DB" --scan --pattern "${POS_PREFIX}:*" \
+        | xargs -r -n 200 redis-cli -n "$REDIS_DB" DEL >/dev/null 2>&1 || true
+    else
+      echo "[SKIP] DRY_RUN reset (processes already running)"
+    fi
   else
-    echo "[SKIP] DRY_RUN reset (processes already running)"
+    echo "[SKIP] DRY_RUN reset disabled (DRYRUN_RESET_STATE=0)"
   fi
 fi
 
@@ -150,10 +177,10 @@ if is_truthy "$STERILE"; then
 fi
 
 # -----------------------------
-# SCANNERS: 24 symbols -> 8 workers (3 symbols each)
+# SCANNERS: symbols -> 8 workers (3 symbols each)
 # Priority:
 #   1) Wn_SYMBOLS override
-#   2) SYMBOLS_24 split
+#   2) SYMBOLS_24 split (can be >24; we'll just take sequential triplets)
 # -----------------------------
 SYMBOLS_24="${SYMBOLS_24:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,MATICUSDT,DOTUSDT,LTCUSDT,TRXUSDT,ATOMUSDT,OPUSDT,ARBUSDT,APTUSDT,INJUSDT,SUIUSDT,FILUSDT,NEARUSDT,ETCUSDT,UNIUSDT,AAVEUSDT}"
 WORKER_INTERVAL="${WORKER_INTERVAL:-5m}"
@@ -165,12 +192,15 @@ WORKER_MIN_CONF="${WORKER_MIN_CONF:-0.45}"
 
 IFS=',' read -r -a symarr <<<"$SYMBOLS_24"
 
-join3() {
-  local i="$1"
-  local a="${symarr[$i]:-}"
-  local b="${symarr[$((i+1))]:-}"
-  local c="${symarr[$((i+2))]:-}"
-  echo "${a},${b},${c}"
+_join_nonempty_csv() {
+  local out=""
+  local x
+  for x in "$@"; do
+    x="$(echo "$x" | xargs)"
+    [[ -z "$x" ]] && continue
+    if [[ -z "$out" ]]; then out="$x"; else out="${out},${x}"; fi
+  done
+  echo "$out"
 }
 
 pick_worker_symbols() {
@@ -181,14 +211,22 @@ pick_worker_symbols() {
     echo "${override}"
     return 0
   fi
+
   local idx=$(( (n-1) * 3 ))
-  join3 "$idx"
+  _join_nonempty_csv "${symarr[$idx]:-}" "${symarr[$((idx+1))]:-}" "${symarr[$((idx+2))]:-}"
 }
-# Start scanners (looped, less duplication)
+
+# Start scanners
 for n in 1 2 3 4 5 6 7 8; do
   wid="w${n}"
   name="scanner_${wid}"
   syms="$(pick_worker_symbols "$n")"
+
+  # if worker gets empty (not enough symbols), skip
+  if [[ -z "${syms:-}" ]]; then
+    echo "[SKIP] ${name} (no symbols assigned)"
+    continue
+  fi
 
   start_one "$name" env \
     WORKER_ID="$wid" \
@@ -201,7 +239,6 @@ for n in 1 2 3 4 5 6 7 8; do
     WORKER_MIN_CONF="$WORKER_MIN_CONF" \
     "$PY" -u orchestration/scanners/worker_stub.py
 done
-
 # -----------------------------
 # Downstream singletons (ordered)
 # -----------------------------
@@ -221,9 +258,9 @@ start_one "intent_bridge"   "$PY" -u orchestration/executor/intent_bridge.py
 _last_stream_id() {
   local stream="$1"
   need redis-cli || { echo ""; return 0; }
-  redis-cli -n "$REDIS_DB" XINFO STREAM "$stream" 2>/dev/null \
-    | awk '$1=="last-generated-id"{print $2; exit}' \
-    | tr -d '"' | tr -d '\r' || true
+  redis-cli -n "$REDIS_DB" --raw XINFO STREAM "$stream" 2>/dev/null \
+    | awk 'BEGIN{FS="\n"}{for(i=1;i<=NF;i++){if($i=="last-generated-id"){print $(i+1); exit}}}' \
+    | tr -d '\r' || true
 }
 
 _wait_stream_advance_by_id() {
@@ -254,28 +291,37 @@ _wait_group_health() {
 
   need redis-cli || return 0
   local elapsed=0
-  while (( elapsed < seconds_total )); do
-    local out pending lag
-    out="$(redis-cli -n "$REDIS_DB" XINFO GROUPS "$stream" 2>/dev/null || true)"
-    pending="$(printf "%s\n" "$out" | awk -v g="$group" '
-      $0 ~ "\"name\"" {getline; name=$0; gsub(/"/,"",name)}
-      $0 ~ "\"pending\"" {getline; p=$0}
-      $0 ~ "\"lag\"" {getline; l=$0; if(name==g){print p; exit}}
-    ' | tr -d '\r' | head -n1)"
-    lag="$(printf "%s\n" "$out" | awk -v g="$group" '
-      $0 ~ "\"name\"" {getline; name=$0; gsub(/"/,"",name)}
-      $0 ~ "\"lag\"" {getline; l=$0; if(name==g){print l; exit}}
-    ' | tr -d '\r' | head -n1)"
 
-    if [[ -n "${pending:-}" ]] && [[ -n "${lag:-}" ]]; then
-      if echo "$pending" | grep -q "(integer) 0" && echo "$lag" | grep -q "(integer) 0"; then
-        return 0
+  while (( elapsed < seconds_total )); do
+    # Use --raw for stable parsing: fields are alternating key/value lines
+    local raw
+    raw="$(redis-cli -n "$REDIS_DB" --raw XINFO GROUPS "$stream" 2>/dev/null || true)"
+    if [[ -n "${raw:-}" ]]; then
+      # Extract pending+lag for the given group
+      local pending lag
+      pending="$(printf "%s\n" "$raw" | awk -v g="$group" '
+        $0=="name"{getline; name=$0}
+        $0=="pending"{getline; p=$0}
+        $0=="lag"{getline; l=$0; if(name==g){print p; exit}}
+      ' | tr -d '\r' | head -n1 || true)"
+
+      lag="$(printf "%s\n" "$raw" | awk -v g="$group" '
+        $0=="name"{getline; name=$0}
+        $0=="lag"{getline; l=$0; if(name==g){print l; exit}}
+      ' | tr -d '\r' | head -n1 || true)"
+
+      if [[ -n "${pending:-}" ]] && [[ -n "${lag:-}" ]]; then
+        # numeric check
+        if [[ "${pending}" == "0" && "${lag}" == "0" ]]; then
+          return 0
+        fi
       fi
     fi
 
     sleep "$sleep_step"
     elapsed=$((elapsed + sleep_step))
   done
+
   return 1
 }
 
@@ -284,34 +330,34 @@ if is_truthy "$WAIT_READY"; then
   echo
   echo "=== Readiness check (best effort) ==="
 
-  if _wait_stream_advance_by_id "signals_stream" 6 1; then
-    echo "[OK] signals_stream advanced (id)"
+  if _wait_stream_advance_by_id "$SIGNALS_STREAM" 6 1; then
+    echo "[OK] ${SIGNALS_STREAM} advanced (id)"
   else
-    echo "[WARN] signals_stream did not advance in time (might still be OK)"
+    echo "[WARN] ${SIGNALS_STREAM} did not advance in time (might still be OK)"
   fi
 
-  if _wait_stream_advance_by_id "trade_intents_stream" 6 1; then
-    echo "[OK] trade_intents_stream advanced (id)"
+  if _wait_stream_advance_by_id "$TRADE_INTENTS_STREAM" 6 1; then
+    echo "[OK] ${TRADE_INTENTS_STREAM} advanced (id)"
   else
-    echo "[WARN] trade_intents_stream did not advance in time (might still be OK)"
+    echo "[WARN] ${TRADE_INTENTS_STREAM} did not advance in time (might still be OK)"
   fi
 
-  if _wait_stream_advance_by_id "exec_events_stream" 6 1; then
-    echo "[OK] exec_events_stream advanced (id)"
+  if _wait_stream_advance_by_id "$EXEC_EVENTS_STREAM" 6 1; then
+    echo "[OK] ${EXEC_EVENTS_STREAM} advanced (id)"
   else
-    echo "[WARN] exec_events_stream did not advance in time (might still be OK)"
+    echo "[WARN] ${EXEC_EVENTS_STREAM} did not advance in time (might still be OK)"
   fi
 
-  if _wait_group_health "trade_intents_stream" "$BRIDGE_GROUP" 6 1; then
-    echo "[OK] trade_intents_stream group healthy (group=$BRIDGE_GROUP pending=0 lag=0)"
+  if _wait_group_health "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP" 6 1; then
+    echo "[OK] ${TRADE_INTENTS_STREAM} group healthy (group=$BRIDGE_GROUP pending=0 lag=0)"
   else
-    echo "[WARN] trade_intents_stream group not healthy/visible yet (group=$BRIDGE_GROUP)"
+    echo "[WARN] ${TRADE_INTENTS_STREAM} group not healthy/visible yet (group=$BRIDGE_GROUP)"
   fi
 
-  if _wait_group_health "top5_stream" "$MASTER_GROUP" 6 1; then
-    echo "[OK] top5_stream group healthy (group=$MASTER_GROUP pending=0 lag=0)"
+  if _wait_group_health "$TOP5_STREAM" "$MASTER_GROUP" 6 1; then
+    echo "[OK] ${TOP5_STREAM} group healthy (group=$MASTER_GROUP pending=0 lag=0)"
   else
-    echo "[WARN] top5_stream group not healthy/visible yet (group=$MASTER_GROUP)"
+    echo "[WARN] ${TOP5_STREAM} group not healthy/visible yet (group=$MASTER_GROUP)"
   fi
 fi
 
