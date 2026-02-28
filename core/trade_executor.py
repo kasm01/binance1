@@ -40,7 +40,7 @@ class TradeExecutor:
         dry_run: bool = True,
         base_order_notional: float = 50.0,
         max_position_notional: float = 500.0,
-        max_leverage: float = 30.0,               # <-- 3 yerine 30 (dinamik 3-30 için)
+        max_leverage: float = 30.0,
         sl_pct: float = 0.01,
         tp_pct: float = 0.02,
         trailing_pct: float = 0.01,
@@ -85,6 +85,7 @@ class TradeExecutor:
         self._closed_buffer: List[Dict[str, Any]] = []
 
         self._closed = False
+
     # -------------------------
     # helpers (env / cast / normalize)
     # -------------------------
@@ -159,6 +160,84 @@ class TradeExecutor:
         if s == "sell":
             return "short"
         return "hold"
+
+    # -------------------------
+    # Equity helpers (LIVE cap için)
+    # -------------------------
+    async def _get_futures_equity_usdt(self) -> float:
+        """
+        Futures USDT equity (wallet/margin) best-effort.
+        DRY_RUN=True iken 0 döner (cap devreye girmesin).
+        """
+        try:
+            if bool(getattr(self, "dry_run", True)):
+                return 0.0
+
+            client = getattr(self, "client", None)
+            if client is None:
+                return 0.0
+
+            import inspect
+
+            fn = getattr(client, "futures_account", None)
+            if fn is None:
+                return 0.0
+
+            if inspect.iscoroutinefunction(fn):
+                acc = await fn()
+            else:
+                acc = await asyncio.to_thread(fn)
+
+            return float(self._extract_equity_from_futures_account(acc))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return 0.0
+
+    def _get_futures_equity_usdt_sync(self) -> float:
+        """
+        Sync path (open_position_from_signal) için best-effort equity.
+        DRY_RUN=True iken 0 döner.
+        """
+        try:
+            if bool(getattr(self, "dry_run", True)):
+                return 0.0
+
+            client = getattr(self, "client", None)
+            if client is None:
+                return 0.0
+
+            fn = getattr(client, "futures_account", None)
+            if not callable(fn):
+                return 0.0
+
+            acc = fn()
+            return float(self._extract_equity_from_futures_account(acc))
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _extract_equity_from_futures_account(acc: Any) -> float:
+        """
+        futures_account dict içinden equity seçimi.
+        Öncelik: totalWalletBalance -> totalMarginBalance -> availableBalance
+        """
+        try:
+            if not isinstance(acc, dict):
+                return 0.0
+
+            for k in ("totalWalletBalance", "totalMarginBalance", "availableBalance"):
+                v = acc.get(k)
+                if v is None:
+                    continue
+                try:
+                    eq = float(v)
+                    return float(max(0.0, eq))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return 0.0
     # -------------------------
     # Telegram: SADECE OPEN/CLOSE
     # -------------------------
@@ -170,7 +249,15 @@ class TradeExecutor:
         except Exception:
             pass
 
-    def _notify_position_open(self, symbol: str, interval: str, side: str, qty: float, price: float, extra: Dict[str, Any]) -> None:
+    def _notify_position_open(
+        self,
+        symbol: str,
+        interval: str,
+        side: str,
+        qty: float,
+        price: float,
+        extra: Dict[str, Any],
+    ) -> None:
         """
         ✅ sadece OPEN event
         """
@@ -198,7 +285,17 @@ class TradeExecutor:
         except Exception:
             pass
 
-    def _notify_position_close(self, symbol: str, interval: str, side: str, qty: float, entry_price: float, exit_price: float, pnl_usdt: float, reason: str) -> None:
+    def _notify_position_close(
+        self,
+        symbol: str,
+        interval: str,
+        side: str,
+        qty: float,
+        entry_price: float,
+        exit_price: float,
+        pnl_usdt: float,
+        reason: str,
+    ) -> None:
         """
         ✅ sadece CLOSE event
         """
@@ -232,6 +329,7 @@ class TradeExecutor:
                 pm.close()
         except Exception:
             pass
+
     async def shutdown(self, reason: str = "unknown") -> None:
         """Async shutdown (idempotent)."""
         if getattr(self, "_closed", False):
@@ -315,6 +413,7 @@ class TradeExecutor:
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
         self._local_positions[sym] = pos
+
     def _clear_position(self, symbol: str) -> None:
         sym = str(symbol).upper()
         if self.position_manager is not None:
@@ -323,7 +422,6 @@ class TradeExecutor:
             except Exception as e:
                 self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
         self._local_positions.pop(sym, None)
-
     # -------------------------
     # whale bias helpers
     # -------------------------
@@ -339,8 +437,7 @@ class TradeExecutor:
             if wdir in ("long", "short") and side in ("long", "short"):
                 if wdir == side:
                     return "hold"
-                else:
-                    return "exit"
+                return "exit"
         except Exception:
             pass
         return "neutral"
@@ -382,6 +479,7 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
+
     # -------------------------
     # position dict
     # -------------------------
@@ -399,7 +497,6 @@ class TradeExecutor:
         opened_at = datetime.utcnow().isoformat()
         atr_value = float(extra.get("atr", 0.0) or 0.0)
 
-        # per-intent override (or default env)
         trail_pct = self._clip_float(extra.get("trail_pct"), None)
         if trail_pct is None:
             trail_pct = self._clip_float(extra.get("trailing_pct"), None)
@@ -441,13 +538,10 @@ class TradeExecutor:
             "opened_at": opened_at,
             "sl_price": float(sl_price),
             "tp_price": float(tp_price),
-
-            # trailing / stall
             "trailing_pct": float(trail_pct),
             "stall_ttl_sec": int(stall_ttl),
             "best_pnl_pct": 0.0,
             "last_best_ts": float(now_ts),
-
             "atr_value": float(atr_value),
             "highest_price": float(price),
             "lowest_price": float(price),
@@ -457,6 +551,7 @@ class TradeExecutor:
             },
         }
         return pos, opened_at
+
     @staticmethod
     def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
         if qty <= 0:
@@ -491,14 +586,12 @@ class TradeExecutor:
             qty=qty,
         )
 
-        # --- exchange close (real) ---
         if self.dry_run:
             self.logger.info("[EXEC] DRY_RUN=True close emri gönderilmeyecek.")
         else:
             # TODO: gerçek close emri (client ile market close vs.)
             pass
 
-        # ✅ Telegram: sadece CLOSE
         try:
             self._notify_position_close(
                 symbol=str(symbol).upper(),
@@ -513,7 +606,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # --- RISK ---
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
@@ -548,7 +640,6 @@ class TradeExecutor:
                         self.logger.warning("[EXEC] risk_manager.on_position_close returned coroutine (not awaited)")
                 except Exception:
                     pass
-
         except Exception:
             try:
                 if getattr(self, "logger", None):
@@ -569,7 +660,6 @@ class TradeExecutor:
             pass
 
         return pos
-
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -591,17 +681,16 @@ class TradeExecutor:
         highest = float(pos.get("highest_price", price) or price)
         lowest = float(pos.get("lowest_price", price) or price)
 
-        # --- whale bias ---
         extra = {}
         try:
             meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
             extra = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
         except Exception:
             extra = {}
+
         bias = self._whale_bias(side=side, extra=extra)
         trailing_pct = self._effective_trailing_pct(trailing_pct_base, bias)
 
-        # --- stall tracking ---
         try:
             entry = float(pos.get("entry_price") or 0.0)
             cur_pnl_pct = float(self._pnl_pct(side, entry, float(price)))
@@ -613,7 +702,6 @@ class TradeExecutor:
                 pos["last_best_ts"] = float(now_ts)
                 self._set_position(symbol, pos)
             else:
-                # stall check only if pnl positive (profit zone)
                 stall_ttl = int(pos.get("stall_ttl_sec") or 0)
                 stall_ttl_eff = self._effective_stall_ttl(stall_ttl, bias)
                 last_best_ts = float(pos.get("last_best_ts") or now_ts)
@@ -624,7 +712,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # --- SL/TP/TRAIL ---
         if side == "long":
             if sl is not None and price <= sl:
                 return self._close_position(symbol, price, reason="SL_HIT", interval=interval)
@@ -658,6 +745,7 @@ class TradeExecutor:
                     return self._close_position(symbol, price, reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
+
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
@@ -696,11 +784,10 @@ class TradeExecutor:
         try:
             dry_run = bool(getattr(self, "dry_run", True))
             equity_usdt = float(extra.get("equity_usdt", 0.0) or 0.0)
+            alloc_pct = float(os.getenv("LIVE_EQUITY_ALLOC_PCT", "0.30"))
 
-            if (not dry_run) and equity_usdt > 0.0:
-                alloc_pct = 0.30  # toplam equity'nin %30'u
+            if (not dry_run) and equity_usdt > 0.0 and alloc_pct > 0.0:
                 cap = equity_usdt * alloc_pct
-
                 if notional > cap:
                     notional = cap
         except Exception:
@@ -715,7 +802,7 @@ class TradeExecutor:
                 whale_dir,
                 whale_score,
                 float(extra.get("equity_usdt", 0.0) or 0.0),
-                notional
+                notional,
             )
         except Exception:
             pass
@@ -725,23 +812,12 @@ class TradeExecutor:
     # Orchestration entrypoints (IntentBridge uyumlu)
     # -------------------------
     def open_position_from_signal(self, symbol: str, side: str, interval: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        IntentBridge bunu sync çağırıyor.
-        meta içinde beklenenler:
-          - recommended_leverage
-          - recommended_notional_pct
-          - score
-          - (opsiyonel) price / mark_price / last_price
-          - (opsiyonel) trail_pct, stall_ttl_sec
-          - (opsiyonel) whale_dir, whale_score
-        """
         meta0 = meta if isinstance(meta, dict) else {}
         sym_u = str(symbol).upper()
         side0 = str(side or "long").strip().lower()
         if side0 not in ("long", "short"):
             side0 = "long"
 
-        # fiyat: meta'dan ya da client'tan (best effort)
         price = None
         for k in ("price", "mark_price", "last_price"):
             pv = self._clip_float(meta0.get(k), None)
@@ -750,8 +826,6 @@ class TradeExecutor:
                 break
 
         if price is None and self.client is not None:
-            # TODO: projendeki client API’sine göre burayı uyarlayabilirsin
-            # (şimdilik sadece best-effort)
             try:
                 fn = getattr(self.client, "get_price", None)
                 if callable(fn):
@@ -768,20 +842,29 @@ class TradeExecutor:
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
-        # notional: recommended_notional_pct varsa onu kullan (equity yoksa base üzerinden ölçekle)
+
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
         npct = float(npct) if npct is not None else None
 
-        # equity (best effort)
-        eq = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
+        # equity (best effort) -> meta içine koy ki _compute_notional cap'i çalışsın
+        try:
+            eq_live = self._get_futures_equity_usdt_sync()
+            if eq_live > 0:
+                meta0["equity_usdt"] = float(eq_live)
+        except Exception:
+            pass
+
+        # eski fallback equity (sync intentler için)
+        eq_fallback = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
+
         notional = None
         if npct is not None and npct > 0:
-            notional = float(eq) * float(npct)
+            base_eq = float(meta0.get("equity_usdt") or eq_fallback)
+            notional = float(base_eq) * float(npct)
 
         if notional is None or notional <= 0:
-            # fallback: eski compute_notional
             notional = self._compute_notional(sym_u, side0, float(price), meta0)
 
         notional = float(min(notional, float(self.max_position_notional)))
@@ -790,7 +873,6 @@ class TradeExecutor:
         if qty <= 0:
             return {"status": "skip", "reason": "bad_qty"}
 
-        # risk gate (istersen burada devreye al)
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None and hasattr(rm, "can_open_new_trade"):
@@ -802,16 +884,13 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # zaten açık mı?
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
         if cur_side in ("long", "short"):
             if cur_side == side0:
                 return {"status": "ok", "reason": "already_open_same_side"}
-            # flip -> close then open
             self._close_position(sym_u, float(price), reason="FLIP_INTENT", interval=str(interval or ""))
 
-        # position dict
         probs = {}
         extra = dict(meta0)
         extra.setdefault("trail_pct", meta0.get("trail_pct", None))
@@ -832,26 +911,33 @@ class TradeExecutor:
         try:
             self.logger.info(
                 "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.6f price=%.6f notional=%.2f npct=%s dry_run=%s",
-                side0.upper(), sym_u, float(qty), float(price), float(notional),
+                side0.upper(),
+                sym_u,
+                float(qty),
+                float(price),
+                float(notional),
                 ("-" if npct is None else f"{npct:.4f}"),
-                self.dry_run
+                self.dry_run,
             )
         except Exception:
             pass
 
-        # telegram open
         try:
             self._notify_position_open(sym_u, str(interval or ""), side0, float(qty), float(price), extra)
         except Exception:
             pass
 
-        # risk on_open
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
                 rm.on_position_open(
-                    symbol=sym_u, side=side0, qty=float(qty), notional=float(notional),
-                    price=float(price), interval=str(interval or ""), meta={"reason": "INTENT_OPEN", **extra}
+                    symbol=sym_u,
+                    side=side0,
+                    qty=float(qty),
+                    notional=float(notional),
+                    price=float(price),
+                    interval=str(interval or ""),
+                    meta={"reason": "INTENT_OPEN", **extra},
                 )
         except Exception:
             pass
@@ -868,9 +954,6 @@ class TradeExecutor:
         }
 
     def close_position_from_signal(self, symbol: str, interval: str = "", meta: Optional[Dict[str, Any]] = None, direction: str = "", price: Any = None, exit_price: Any = None) -> Dict[str, Any]:
-        """
-        IntentBridge close path’i için.
-        """
         sym_u = str(symbol).upper()
         pos = self._get_position(sym_u)
         if not pos:
@@ -880,7 +963,6 @@ class TradeExecutor:
         if p is None:
             p = self._clip_float(exit_price, None)
 
-        # fiyat yoksa entry fiyat ile kapat (dry-run testlerinde işe yarar)
         if p is None or p <= 0:
             p = float(pos.get("entry_price") or 0.0) or 0.0
 
@@ -889,9 +971,6 @@ class TradeExecutor:
             return {"status": "closed" if not self.dry_run else "dry_run", "symbol": sym_u, "price": float(p)}
         return {"status": "skip", "reason": "close_failed"}
 
-    # -------------------------
-    # Backward-compat open_position / execute_trade
-    # -------------------------
     async def open_position(self, *args, **kwargs):
         pm = getattr(self, "position_manager", None)
         if pm is not None and hasattr(pm, "open_position"):
@@ -907,6 +986,7 @@ class TradeExecutor:
 
     async def execute_trade(self, *args, **kwargs):
         return await self.open_position(*args, **kwargs)
+
     async def execute_decision(
         self,
         signal: str,
@@ -924,7 +1004,6 @@ class TradeExecutor:
         side_norm = self._normalize_side(signal_u)
         sym_u = str(symbol).upper()
 
-        # snapshot for /status
         try:
             p_used = extra0.get("ensemble_p")
             if p_used is None:
@@ -949,7 +1028,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # HOLD
         if signal_u == "HOLD":
             try:
                 ens = extra0.get("ensemble_p")
@@ -990,7 +1068,6 @@ class TradeExecutor:
         if training_mode:
             return
 
-        # whale veto (legacy)
         try:
             whale_dir = str(extra0.get("whale_dir", "none") or "none").lower()
             whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
@@ -999,13 +1076,12 @@ class TradeExecutor:
                 if whale_dir != side_norm and whale_score >= veto_thr:
                     self.logger.info(
                         "[EXEC][VETO] WHALE_VETO | side=%s whale_dir=%s whale_score=%.3f thr=%.2f -> SKIP",
-                        side_norm, whale_dir, whale_score, veto_thr
+                        side_norm, whale_dir, whale_score, veto_thr,
                     )
                     return
         except Exception:
             pass
 
-        # SL/TP/TRAIL/STALL check (mevcut pozisyonu kapatabilir)
         try:
             self._check_sl_tp_trailing(symbol=sym_u, price=float(price), interval=interval)
         except Exception:
@@ -1016,13 +1092,19 @@ class TradeExecutor:
             qty = float(size)
             notional = qty * float(price)
         else:
+            # ✅ LIVE equity cap için equity_usdt doldur
+            try:
+                if "equity_usdt" not in extra0 or not float(extra0.get("equity_usdt") or 0.0) > 0.0:
+                    extra0["equity_usdt"] = await self._get_futures_equity_usdt()
+            except Exception:
+                pass
+
             notional = self._compute_notional(sym_u, side_norm, float(price), extra0)
             qty = notional / float(price) if float(price) > 0 else 0.0
 
         if qty <= 0 or float(price) <= 0:
             return
 
-        # open/flip logic
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
 
@@ -1034,7 +1116,6 @@ class TradeExecutor:
         if cur2_side == side_norm:
             return
 
-        # BUY/SELL karar anı CSV
         try:
             ens = extra0.get("ensemble_p")
             mcf = extra0.get("model_confidence_factor")
@@ -1079,12 +1160,11 @@ class TradeExecutor:
         try:
             self.logger.info(
                 "[EXEC] OPEN %s | symbol=%s qty=%.6f price=%.4f notional=%.2f interval=%s dry_run=%s",
-                side_norm.upper(), sym_u, float(qty), float(price), float(notional), interval, self.dry_run
+                side_norm.upper(), sym_u, float(qty), float(price), float(notional), interval, self.dry_run,
             )
         except Exception:
             pass
 
-        # ✅ Telegram: sadece OPEN
         try:
             self._notify_position_open(
                 symbol=sym_u,
@@ -1097,7 +1177,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # --- RISK on_position_open ---
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
@@ -1129,7 +1208,6 @@ class TradeExecutor:
                         self.logger.warning("[EXEC] risk_manager.on_position_open returned coroutine (not awaited)")
                 except Exception:
                     pass
-
         except Exception:
             try:
                 if getattr(self, "logger", None):
