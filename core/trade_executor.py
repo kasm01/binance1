@@ -690,16 +690,37 @@ class TradeExecutor:
         notional = min(notional, float(self.max_position_notional))
         notional = max(notional, 10.0)
 
+        # -------------------------------------------------
+        # EQUITY %30 CAP (LIVE only)
+        # -------------------------------------------------
+        try:
+            dry_run = bool(getattr(self, "dry_run", True))
+            equity_usdt = float(extra.get("equity_usdt", 0.0) or 0.0)
+
+            if (not dry_run) and equity_usdt > 0.0:
+                alloc_pct = 0.30  # toplam equity'nin %30'u
+                cap = equity_usdt * alloc_pct
+
+                if notional > cap:
+                    notional = cap
+        except Exception:
+            pass
+
         try:
             self.logger.info(
-                "[EXEC][NOTIONAL] base=%.2f aggr=%.3f mc=%.3f whale_dir=%s whale_score=%.3f notional=%.2f",
-                base, aggr_factor, model_conf, whale_dir, whale_score, notional
+                "[EXEC][NOTIONAL] base=%.2f aggr=%.3f mc=%.3f whale_dir=%s whale_score=%.3f equity=%.2f notional=%.2f",
+                base,
+                aggr_factor,
+                model_conf,
+                whale_dir,
+                whale_score,
+                float(extra.get("equity_usdt", 0.0) or 0.0),
+                notional
             )
         except Exception:
             pass
 
         return float(notional)
-
     # -------------------------
     # Orchestration entrypoints (IntentBridge uyumlu)
     # -------------------------
