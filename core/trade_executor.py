@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 
+from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
+
 from config import config
 from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
@@ -93,6 +95,15 @@ class TradeExecutor:
 
         self._closed = False
 
+        # Best-effort: python-binance requests timeout (bazı sürümlerde client bunu kullanır)
+        try:
+            if self.client is not None and hasattr(self.client, "__dict__"):
+                # bazı client sürümlerinde requests_params alanı okunur
+                if not getattr(self.client, "requests_params", None):
+                    self.client.requests_params = {"timeout": (3.05, 10)}  # connect, read
+        except Exception:
+            pass
+
     # -------------------------
     # helpers (env / cast / normalize)
     # -------------------------
@@ -123,7 +134,6 @@ class TradeExecutor:
             return "HOLD"
         except Exception:
             return "HOLD"
-
     @staticmethod
     def _ensure_csv_append(path: str, header: List[str], row: Dict[str, Any]) -> None:
         """
@@ -167,6 +177,7 @@ class TradeExecutor:
         if s == "sell":
             return "short"
         return "hold"
+
     # -------------------------
     # Order debug helpers (latency / summary / clientOrderId)
     # -------------------------
@@ -217,6 +228,84 @@ class TradeExecutor:
         s = str(symbol).upper()
         rid = uuid.uuid4().hex[:12]
         return f"b1_{tag}_{s}_{rid}"[:36]
+    # -------------------------
+    # Order retry helpers
+    # -------------------------
+    @staticmethod
+    def _is_empty_invalid_response_err(e: Exception) -> bool:
+        """
+        python-binance bazen response body boş geldiğinde:
+          BinanceRequestException: Invalid Response:
+          + altında RequestsJSONDecodeError fırlatıyor.
+        Bu durumda retry etmek mantıklı.
+        """
+        msg = str(e) or ""
+        msg_l = msg.lower()
+        if "invalid response" in msg_l:
+            return True
+        if "jsondecodeerror" in msg_l:
+            return True
+        return False
+
+    def _sleep_s(self, s: float) -> None:
+        try:
+            time.sleep(max(0.0, float(s)))
+        except Exception:
+            pass
+
+    def _call_with_retry(
+        self,
+        fn,
+        payload: Dict[str, Any],
+        *,
+        attempts: int = 3,
+        base_sleep: float = 0.6,
+    ):
+        """
+        Order fonksiyonlarını retry ile çağırır.
+        Boş response / decode hatalarında retry yapar.
+        Diğer hataları direkt yükseltir.
+        """
+        last_exc: Optional[Exception] = None
+        attempts_i = max(1, int(attempts))
+
+        for i in range(attempts_i):
+            try:
+                return fn(**payload)
+            except (RequestsJSONDecodeError,) as e:
+                last_exc = e
+                if i < attempts_i - 1:
+                    try:
+                        self.logger.warning(
+                            "[EXEC][ORDER][RETRY] JSONDecodeError -> retry %d/%d | payload=%s",
+                            i + 1,
+                            attempts_i,
+                            self._safe_json(payload, limit=650),
+                        )
+                    except Exception:
+                        pass
+                    self._sleep_s(float(base_sleep) * (2 ** i))
+                    continue
+                raise
+            except Exception as e:
+                last_exc = e
+                if self._is_empty_invalid_response_err(e) and i < attempts_i - 1:
+                    try:
+                        self.logger.warning(
+                            "[EXEC][ORDER][RETRY] Invalid/empty response -> retry %d/%d | err=%s",
+                            i + 1,
+                            attempts_i,
+                            str(e)[:200],
+                        )
+                    except Exception:
+                        pass
+                    self._sleep_s(float(base_sleep) * (2 ** i))
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("retry failed with unknown state")
 
     def _verify_position_sync(self, symbol: str) -> Dict[str, Any]:
         """
@@ -265,7 +354,6 @@ class TradeExecutor:
             }
         except Exception as e:
             return {"verify": "error", "symbol": sym, "err": str(e)[:300]}
-
     def _poll_order_status(
         self,
         symbol: str,
@@ -309,9 +397,14 @@ class TradeExecutor:
                         break
                 time.sleep(0.25)
             except Exception as e:
+                # bazı anlarda boş response geliyor; poll kritik değil -> kısa retry + devam
+                if self._is_empty_invalid_response_err(e):
+                    time.sleep(0.2)
+                    continue
                 return {"poll": "error", "err": str(e)[:280], "result": self._summarize_order(last)}
 
         return {"poll": "ok", "result": self._summarize_order(last)}
+
     # -------------------------
     # Equity helpers (LIVE cap için)
     # -------------------------
@@ -389,7 +482,6 @@ class TradeExecutor:
         except Exception:
             pass
         return 0.0
-
     # -------------------------
     # Telegram: SADECE OPEN/CLOSE
     # -------------------------
@@ -465,6 +557,7 @@ class TradeExecutor:
             self._tg_send(msg)
         except Exception:
             pass
+
     # -------------------------
     # unified shutdown contract
     # -------------------------
@@ -538,7 +631,6 @@ class TradeExecutor:
         out = list(self._closed_buffer)
         self._closed_buffer.clear()
         return out
-
     # -------------------------
     # position access via PositionManager
     # -------------------------
@@ -631,6 +723,7 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
+
     # -------------------------
     # Exchange order helpers (REAL)
     # -------------------------
@@ -645,6 +738,7 @@ class TradeExecutor:
           - response summary log
           - optional poll status
           - optional verify position
+          - retry/backoff (empty response / decode error)
         """
         sym = str(symbol).upper()
 
@@ -688,27 +782,31 @@ class TradeExecutor:
 
         used = "futures_create_order"
         t0 = self._now_ms()
+
+        attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
+        base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
+
         try:
             fn = getattr(client, "futures_create_order", None)
             if callable(fn):
-                resp = fn(**payload)
+                resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
             else:
                 fn = getattr(client, "create_order", None)
                 used = "create_order"
                 if callable(fn):
-                    resp = fn(**payload)
+                    resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
                 else:
                     fn = getattr(client, "new_order", None)
                     used = "new_order"
                     if callable(fn):
-                        resp = fn(**payload)
+                        resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
                     else:
                         raise RuntimeError("no supported order function on client (futures_create_order/create_order/new_order)")
         except Exception as e:
             dt = self._now_ms() - t0
             try:
                 self.logger.exception(
-                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.6f reduceOnly=%s dt_ms=%d payload=%s err=%s",
+                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.6f reduceOnly=%s dt_ms=%d client_oid=%s payload=%s err=%s",
                     ("CLOSE" if reduce_only else "OPEN"),
                     used,
                     sym,
@@ -716,6 +814,7 @@ class TradeExecutor:
                     q,
                     bool(reduce_only),
                     int(dt),
+                    client_oid,
                     self._safe_json(payload, limit=900),
                     str(e)[:300],
                 )
@@ -778,7 +877,6 @@ class TradeExecutor:
         else:
             close_side = s
         return self._exchange_open_market(symbol=str(symbol).upper(), side=close_side, qty=float(qty), reduce_only=True)
-
     # -------------------------
     # position dict
     # -------------------------
@@ -850,6 +948,7 @@ class TradeExecutor:
             },
         }
         return pos, opened_at
+
     @staticmethod
     def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
         if qty <= 0:
@@ -971,7 +1070,6 @@ class TradeExecutor:
             pass
 
         return pos
-
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -1059,6 +1157,7 @@ class TradeExecutor:
                     return self._close_position(symbol, price, reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
+
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
@@ -1217,7 +1316,7 @@ class TradeExecutor:
             except Exception:
                 return {"status": "skip", "reason": "exchange_open_failed"}
 
-        probs = {}
+        probs: Dict[str, float] = {}
         extra = dict(meta0)
         extra.setdefault("trail_pct", meta0.get("trail_pct", None))
         extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
@@ -1488,6 +1587,7 @@ class TradeExecutor:
         except Exception:
             pass
 
+
         # REAL open order (DRY_RUN=False)
         if not self.dry_run:
             try:
@@ -1546,7 +1646,7 @@ class TradeExecutor:
                 if _side not in ("long", "short"):
                     _side = "long" if signal_u == "BUY" else ("short" if signal_u == "SELL" else "hold")
 
-                _meta = {}
+                _meta: Dict[str, Any] = {}
                 try:
                     if isinstance(extra0, dict):
                         _meta = dict(extra0)
