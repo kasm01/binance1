@@ -21,6 +21,13 @@ def _env_int(k: str, default: int) -> int:
         return default
 
 
+def _env_float(k: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(k, str(default))).strip())
+    except Exception:
+        return default
+
+
 def _env_bool(k: str, default: bool = False) -> bool:
     v = os.getenv(k)
     if v is None:
@@ -49,20 +56,41 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def _safe_str(x: Any, default: str = "") -> str:
     try:
-        s = str(x)
-        return s
+        return str(x)
     except Exception:
         return default
 
 
-def _as_list(x: Any) -> List[Any]:
-    if x is None:
-        return []
-    if isinstance(x, list):
-        return x
-    if isinstance(x, tuple):
-        return list(x)
-    return [x]
+def _safe_dict(x: Any) -> Dict[str, Any]:
+    return x if isinstance(x, dict) else {}
+
+
+def _safe_list(x: Any) -> List[Any]:
+    return x if isinstance(x, list) else []
+
+
+def _json_dumps_safe(x: Any, *, limit: int = 12000) -> str:
+    """
+    raw pass-through'u şişirmemek için truncate'lı json.
+    """
+    try:
+        s = json.dumps(x, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(x)
+    if len(s) > int(limit):
+        return s[: int(limit)] + "...(trunc)"
+    return s
+
+
+def sleep_backoff(idle_count: int, *, base: float = 0.02, cap: float = 0.50) -> None:
+    """
+    Idle durumunda CPU yakmamak için küçük backoff.
+    """
+    try:
+        t = min(float(cap), float(base) * max(1, int(idle_count)))
+        time.sleep(float(t))
+    except Exception:
+        time.sleep(0.05)
 
 
 class IntentBridge:
@@ -85,14 +113,17 @@ class IntentBridge:
         self.redis_db = _env_int("REDIS_DB", 0)
         self.redis_password = os.getenv("REDIS_PASSWORD") or None
 
+        self.socket_timeout = _env_int("REDIS_SOCKET_TIMEOUT", 5)
+        self.socket_connect_timeout = _env_int("REDIS_SOCKET_CONNECT_TIMEOUT", 5)
+
         self.r = redis.Redis(
             host=self.redis_host,
             port=self.redis_port,
             db=self.redis_db,
             password=self.redis_password,
             decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5,
+            socket_timeout=self.socket_timeout,
+            socket_connect_timeout=self.socket_connect_timeout,
         )
 
         # Streams
@@ -112,7 +143,7 @@ class IntentBridge:
         # State
         self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
         self.state_ttl_sec = _env_int("BRIDGE_STATE_TTL_SEC", 900)
-        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 900)  # per-symbol "expires_at"
+        self.open_ttl_sec = _env_int("BRIDGE_OPEN_TTL_SEC", 900)  # per-symbol expires_at
         self.cleanup_every_sec = max(1, _env_int("BRIDGE_CLEANUP_EVERY_SEC", 5))
 
         # Limits / dedup
@@ -125,6 +156,14 @@ class IntentBridge:
 
         # Require valid price for publish (default true)
         self.require_price = _env_bool("BRIDGE_REQUIRE_PRICE", True)
+
+        # Stream publish tuning
+        self.out_maxlen = _env_int("BRIDGE_OUT_MAXLEN", 5000)
+        self.out_approx = _env_bool("BRIDGE_OUT_APPROX", True)
+
+        # Raw pass-through controls
+        self.pass_raw = _env_bool("BRIDGE_PASS_RAW", True)
+        self.raw_max_chars = _env_int("BRIDGE_RAW_MAX_CHARS", 12000)
 
         # Dry-run behavior knobs
         self.dry_run_env = _env_bool("DRY_RUN", True)
@@ -155,6 +194,9 @@ class IntentBridge:
         )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
+        """
+        Stream + XGROUP create (idempotent).
+        """
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
             print(f"[IntentBridge] XGROUP created: stream={stream} group={group} start_id={start_id}")
@@ -164,6 +206,7 @@ class IntentBridge:
             raise
         except Exception:
             return
+
     def _ack(self, ids: List[str]) -> None:
         if not ids:
             return
@@ -211,7 +254,6 @@ class IntentBridge:
             return len([1 for _k, v in (st or {}).items() if isinstance(v, dict)])
         except Exception:
             return 0
-
     def _is_open(self, st: Dict[str, Any], symbol: str) -> bool:
         try:
             return isinstance((st or {}).get(symbol), dict)
@@ -228,7 +270,7 @@ class IntentBridge:
             return "close"
         if side in ("long", "short", "buy", "sell"):
             return "open"
-        # default: open (safe for backward compatibility)
+        # default: open (backward compat)
         return "open"
 
     def _norm_side(self, item: Dict[str, Any]) -> str:
@@ -244,6 +286,37 @@ class IntentBridge:
     def _price_of(self, item: Dict[str, Any]) -> float:
         p = _safe_float(item.get("price", 0.0), 0.0)
         return float(p) if p > 0 else 0.0
+
+    def _stall_ttl_of(self, item: Dict[str, Any]) -> int:
+        """
+        Öneri/fix:
+        - önce item.stall_ttl_sec (veya stall_ttl) oku
+        - yoksa env STALL_TTL_SEC fallback
+        """
+        v = item.get("stall_ttl_sec", None)
+        if v is None:
+            v = item.get("stall_ttl", None)
+        try:
+            iv = int(float(v)) if v is not None else int(_env_int("STALL_TTL_SEC", 0))
+        except Exception:
+            iv = int(_env_int("STALL_TTL_SEC", 0))
+        return int(max(0, iv))
+
+    def _trail_pct_of(self, item: Dict[str, Any]) -> float:
+        """
+        trail_pct yoksa trailing_pct'yi de kabul et.
+        env TRAIL_PCT fallback.
+        """
+        v = item.get("trail_pct", None)
+        if v is None:
+            v = item.get("trailing_pct", None)
+        if v is None:
+            v = os.getenv("TRAIL_PCT", None)
+        try:
+            fv = float(v) if v is not None else 0.0
+        except Exception:
+            fv = 0.0
+        return float(max(0.0, min(0.50, fv)))
 
     def _close_cd_get(self, symbol: str) -> float:
         try:
@@ -312,12 +385,11 @@ class IntentBridge:
                 self._close_cd_set(sym, time.time())
                 self._set_state(st)
                 return True, "closed"
-            # still set cooldown to reduce spam, but don't rewrite big state
+            # still set cooldown to reduce spam
             self._close_cd_set(sym, time.time())
             return False, "close_not_open"
 
         # OPEN path
-        # close cooldown gate
         last_close = self._close_cd_get(sym)
         if last_close > 0 and (time.time() - last_close) < float(self.close_cooldown_sec):
             return False, "cooldown"
@@ -337,7 +409,15 @@ class IntentBridge:
         }
         self._set_state(st)
         return True, "opened"
+
     def _publish_exec(self, source_stream_id: str, item: Dict[str, Any]) -> Optional[str]:
+        """
+        OUT stream'e tek item publish.
+        Öneri/fix:
+          - stall_ttl_sec item üzerinden geçsin (env'e yanlış bağlanmasın)
+          - trail_pct/trailing_pct normalize edilsin
+          - raw pass-through truncate edilsin (opsiyonel)
+        """
         if not self.publish_allowed:
             return None
 
@@ -348,40 +428,43 @@ class IntentBridge:
         score = _safe_float(item.get("score", 0.0), 0.0)
         price = self._price_of(item)
 
+        if not sym:
+            return None
+
         if self.require_price and price <= 0.0 and (side != "close"):
             return None
+
+        payload_item: Dict[str, Any] = {
+            "symbol": sym,
+            "interval": interval,
+            "side": side,
+            "intent_id": intent_id,
+            "score": float(score),
+            "price": float(price),
+            "trail_pct": float(self._trail_pct_of(item)),
+            "stall_ttl_sec": int(self._stall_ttl_of(item)),
+        }
+
+        if self.pass_raw:
+            payload_item["raw"] = _json_dumps_safe(_safe_dict(item), limit=self.raw_max_chars)
 
         payload = {
             "ts_utc": _now_utc_iso(),
             "source_intents_id": source_stream_id,
             "count": 1,
-            "items": [
-                {
-                    "symbol": sym,
-                    "interval": interval,
-                    "side": side,
-                    "intent_id": intent_id,
-                    "score": float(score),
-                    "price": float(price),
-                    # pass-through knobs if exist
-                    "trail_pct": _safe_float(item.get("trail_pct", 0.0), 0.0),
-                    "stall_ttl_sec": _env_int("STALL_TTL_SEC", _env_int("STALL_TTL_SEC", 0)),
-                    "raw": dict(item),
-                }
-            ],
+            "items": [payload_item],
         }
 
         try:
             sid = self.r.xadd(
                 self.out_stream,
                 {"json": json.dumps(payload, ensure_ascii=False)},
-                maxlen=5000,
-                approximate=True,
+                maxlen=int(self.out_maxlen),
+                approximate=bool(self.out_approx),
             )
             return sid
         except Exception:
             return None
-
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -393,6 +476,7 @@ class IntentBridge:
             )
         except redis.exceptions.ResponseError as e:
             msg = str(e)
+            # stream blocking read sırasında silinirse
             if "UNBLOCKED" in msg and "no longer exists" in msg:
                 self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
                 return []
@@ -410,6 +494,27 @@ class IntentBridge:
                 out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
 
+    def _process_rows(self, rows: List[Tuple[str, Dict[str, Any]]], *, is_pel: bool = False) -> None:
+        mids = [sid for sid, _ in rows]
+        for sid, pkg in rows:
+            items = pkg.get("items")
+            if not isinstance(items, list):
+                continue
+
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+
+                self._maybe_cleanup()
+                _changed, reason = self._apply_state_update(it)
+
+                out_id = self._publish_exec(source_stream_id=sid, item=it)
+                if out_id:
+                    tag = "(PEL) " if is_pel else ""
+                    print(f"[IntentBridge] {tag}published 1 -> {self.out_stream} source={sid} reason={reason}")
+
+        self._ack(mids)
+
     def run_forever(self) -> None:
         if self.drain_pending:
             print("[IntentBridge] draining pending (PEL) ...")
@@ -417,20 +522,7 @@ class IntentBridge:
                 rows = self._xreadgroup("0")
                 if not rows:
                     break
-                mids = [sid for sid, _ in rows]
-                for sid, pkg in rows:
-                    items = pkg.get("items") or []
-                    if not isinstance(items, list):
-                        continue
-                    for it in items:
-                        if not isinstance(it, dict):
-                            continue
-                        self._maybe_cleanup()
-                        self._apply_state_update(it)
-                        out_id = self._publish_exec(source_stream_id=sid, item=it)
-                        if out_id:
-                            print(f"[IntentBridge] (PEL) published 1 -> {self.out_stream} source={sid}")
-                self._ack(mids)
+                self._process_rows(rows, is_pel=True)
                 time.sleep(0.05)
             print("[IntentBridge] pending drained.")
 
@@ -442,27 +534,12 @@ class IntentBridge:
                 if idle % 30 == 0:
                     print("[IntentBridge] idle...")
                 self._maybe_cleanup()
+                sleep_backoff(idle)
                 continue
+
             idle = 0
-
-            mids = [sid for sid, _ in rows]
-            for sid, pkg in rows:
-                items = pkg.get("items") or []
-                if not isinstance(items, list):
-                    continue
-
-                for it in items:
-                    if not isinstance(it, dict):
-                        continue
-
-                    self._maybe_cleanup()
-                    _changed, _reason = self._apply_state_update(it)
-                    out_id = self._publish_exec(source_stream_id=sid, item=it)
-                    if out_id:
-                        print(f"[IntentBridge] published 1 -> {self.out_stream} source={sid}")
-
-            self._ack(mids)
-            time.sleep(0.05)
+            self._process_rows(rows, is_pel=False)
+            time.sleep(0.02)
 
 
 if __name__ == "__main__":

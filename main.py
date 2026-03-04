@@ -70,7 +70,8 @@ import json
 import time
 import random
 from typing import Any, Dict, Optional, List
-
+import redis  # type: ignore
+from core.stream_io import ensure_group, xreadgroup_json as read_group, xack_safe
 import pandas as pd
 import threading
 from functools import lru_cache
@@ -1900,7 +1901,136 @@ def _backfill_telegram_env_compat() -> None:
     os.environ.setdefault("TG_NOTIFY_TRADES", "0")
     os.environ.setdefault("TG_NOTIFY_HOLD", "0")
 
+# --- Exec events stream consumer (manual intents) ---
 
+async def _maybe_await(x):
+    # TradeExecutor metodları sync veya async olabilir; ikisini de taşır.
+    import inspect
+    if inspect.isawaitable(x):
+        return await x
+    return x
+
+def _pick_method(obj, names):
+    for n in names:
+        if hasattr(obj, n):
+            return getattr(obj, n)
+    return None
+
+async def consume_exec_events_stream(logger, executor, *, redis_url: str):
+    if os.getenv("EXEC_EVENTS_ENABLE", "1").strip() not in ("1", "true", "True", "yes", "YES"):
+        logger.info("[EXEC-EVENTS] disabled via EXEC_EVENTS_ENABLE")
+        return
+
+    stream = os.getenv("EXEC_EVENTS_STREAM", os.getenv("BRIDGE_OUT_STREAM", "exec_events_stream"))
+    group = os.getenv("EXEC_EVENTS_GROUP", "main_exec_g")
+    consumer = os.getenv("EXEC_EVENTS_CONSUMER", "main_1")
+    block_ms = int(os.getenv("EXEC_EVENTS_BLOCK_MS", "5000"))
+    batch = int(os.getenv("EXEC_EVENTS_BATCH", "50"))
+    start_id = os.getenv("EXEC_EVENTS_START_ID", "$")  # sadece yeni mesajlar
+
+    r = redis.Redis.from_url(redis_url, decode_responses=True)
+    ensure_group(r, stream, group, start_id=start_id)
+
+    logger.info("[EXEC-EVENTS] consuming stream=%s group=%s consumer=%s", stream, group, consumer)
+
+    # Metod isimleri projeye göre değişebilir; yaygın isimleri dener.
+    open_m = _pick_method(executor, ["open_position", "open", "open_trade", "open_order", "open_from_intent"])
+    close_m = _pick_method(executor, ["close_position", "close", "close_trade", "close_order", "close_from_intent"])
+
+    if open_m is None and close_m is None:
+        logger.error("[EXEC-EVENTS] TradeExecutor open/close method not found. Check core/trade_executor.py")
+        return
+
+    while True:
+        try:
+            entries = read_group(
+                r,
+                stream=stream,
+                group=group,
+                consumer=consumer,
+                start_id=">",              # group mode
+                group_start_id=start_id,
+                count=batch,
+                block_ms=block_ms,
+            )
+
+            if not entries:
+                continue
+
+            ids = []
+            for sid, pkg in entries:
+                ids.append(sid)
+                # pkg genelde {"json": "..."} şeklinde normalize gelir
+                payload = pkg
+                if isinstance(pkg, dict) and "json" in pkg:
+                    try:
+                        payload = json.loads(pkg["json"])
+                    except Exception:
+                        logger.exception("[EXEC-EVENTS] json parse failed sid=%s", sid)
+                        continue
+
+                items = (payload or {}).get("items") or []
+                if not isinstance(items, list):
+                    continue
+
+                for it in items:
+                    try:
+                        symbol = str(it.get("symbol", "")).upper()
+                        side = str(it.get("side", "")).lower()
+                        interval = str(it.get("interval", "") or "5m")
+                        intent_id = str(it.get("intent_id", "") or "")
+
+                        # IntentBridge normalize: price/trail_pct/stall_ttl_sec vs.
+                        price = it.get("price", None)
+                        trail_pct = it.get("trail_pct", None)
+                        stall_ttl_sec = it.get("stall_ttl_sec", None)
+
+                        logger.info("[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
+                                    intent_id, side, symbol, interval, price)
+
+                        if side in ("long", "short"):
+                            if open_m is None:
+                                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
+                                continue
+                            # open çağrısı: metod imzasına göre uyarlaman gerekebilir
+                            # En esnek: kwargs ile dene
+                            await _maybe_await(open_m(
+                                symbol=symbol,
+                                side=side,
+                                interval=interval,
+                                price=price,
+                                trail_pct=trail_pct,
+                                stall_ttl_sec=stall_ttl_sec,
+                                intent_id=intent_id,
+                                raw=it,
+                            ))
+
+                        elif side in ("close", "flat", "exit"):
+                            if close_m is None:
+                                logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
+                                continue
+                            await _maybe_await(close_m(
+                                symbol=symbol,
+                                interval=interval,
+                                intent_id=intent_id,
+                                raw=it,
+                            ))
+                        else:
+                            logger.warning("[EXEC-EVENTS] unknown side=%s intent=%s", side, intent_id)
+
+                    except TypeError:
+                        # Method imzası uymadıysa net hata verelim (en sık olacak yer burası)
+                        logger.exception("[EXEC-EVENTS] method signature mismatch for item=%s", it)
+                    except Exception:
+                        logger.exception("[EXEC-EVENTS] failed to apply item=%s", it)
+
+            # ACK: bu batch’i kilitlemesin
+            if ids:
+                xack_safe(r, stream, group, ids)
+
+        except Exception:
+            logger.exception("[EXEC-EVENTS] loop error; retrying")
+            await asyncio.sleep(1.0)
 # ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------
@@ -1990,7 +2120,20 @@ async def async_main() -> None:
 
     trading_objects = create_trading_objects()
     engine = HeavyEngine(trading_objects)
-
+    # --- consume exec_events_stream (manual intents -> TradeExecutor) ---
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        te = trading_objects.get("trade_executor")
+        if te is not None:
+            asyncio.create_task(
+                consume_exec_events_stream(system_logger, te, redis_url=redis_url),
+                name="exec-events-consumer",
+            )
+            if system_logger:
+                system_logger.info("[EXEC-EVENTS] consumer task started.")
+    except Exception as e:
+        if system_logger:
+            system_logger.warning("[EXEC-EVENTS] failed to start consumer: %s", e)
     scan_enable = get_bool_env("SCAN_ENABLE", False)
     if scan_enable:
         await scanner_loop(engine)

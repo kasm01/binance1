@@ -9,13 +9,17 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
+try:
+    # requests.exceptions.JSONDecodeError (requests>=2.27 civarı)
+    from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError  # type: ignore
+except Exception:  # pragma: no cover
+    RequestsJSONDecodeError = Exception  # type: ignore
 
 from config import config
-from core.risk_manager import RiskManager
 from core.position_manager import PositionManager
+from core.risk_manager import RiskManager
 from tg_bot.telegram_bot import TelegramBot
 
 
@@ -84,6 +88,9 @@ class TradeExecutor:
         self.order_poll_status = bool(self._truthy_env("ORDER_POLL_STATUS", "1"))
         self.order_poll_wait_s = float(self._clip_float(os.getenv("ORDER_POLL_WAIT_S", "2.0"), 2.0) or 2.0)
 
+        # qty rounding knobs (opsiyonel)
+        self.order_qty_round_decimals = int(float(self._clip_float(os.getenv("ORDER_QTY_ROUND_DECIMALS", "0"), 0.0) or 0.0))
+
         # /status snapshot için
         self.last_snapshot: Dict[str, Any] = {}
 
@@ -98,7 +105,6 @@ class TradeExecutor:
         # Best-effort: python-binance requests timeout (bazı sürümlerde client bunu kullanır)
         try:
             if self.client is not None and hasattr(self.client, "__dict__"):
-                # bazı client sürümlerinde requests_params alanı okunur
                 if not getattr(self.client, "requests_params", None):
                     self.client.requests_params = {"timeout": (3.05, 10)}  # connect, read
         except Exception:
@@ -134,6 +140,7 @@ class TradeExecutor:
             return "HOLD"
         except Exception:
             return "HOLD"
+
     @staticmethod
     def _ensure_csv_append(path: str, header: List[str], row: Dict[str, Any]) -> None:
         """
@@ -150,6 +157,10 @@ class TradeExecutor:
                 w.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in header})
         except Exception:
             pass
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.utcnow().isoformat()
 
     def _append_hold_csv(self, row: dict) -> None:
         path = os.getenv("HOLD_DECISIONS_CSV_PATH", "logs/hold_decisions.csv")
@@ -177,6 +188,54 @@ class TradeExecutor:
         if s == "sell":
             return "short"
         return "hold"
+
+    def _round_qty(self, qty: float) -> float:
+        """
+        Opsiyonel qty rounding.
+        ORDER_QTY_ROUND_DECIMALS>0 ise round uygular.
+        """
+        try:
+            q = float(qty)
+            d = int(self.order_qty_round_decimals or 0)
+            if d <= 0:
+                return q
+            return float(round(q, d))
+        except Exception:
+            return float(qty)
+    # -------------------------
+    # async/coro helpers (risk manager vb.)
+    # -------------------------
+    def _fire_and_forget(self, coro: Any, *, label: str = "task") -> None:
+        """
+        Sync context'te coroutine dönerse: loop varsa create_task, yoksa yut.
+        """
+        try:
+            if coro is None:
+                return
+            if not asyncio.iscoroutine(coro):
+                return
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(coro)  # fire-and-forget
+            except RuntimeError:
+                # running loop yok -> burada bloklamıyoruz
+                try:
+                    self.logger.warning("[EXEC] %s coroutine returned but no running loop; dropped", label)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _await_if_coro(self, maybe: Any, *, label: str = "awaitable") -> Any:
+        try:
+            if asyncio.iscoroutine(maybe):
+                return await maybe
+        except Exception:
+            try:
+                self.logger.exception("[EXEC] await %s failed", label)
+            except Exception:
+                pass
+        return maybe
 
     # -------------------------
     # Order debug helpers (latency / summary / clientOrderId)
@@ -228,6 +287,7 @@ class TradeExecutor:
         s = str(symbol).upper()
         rid = uuid.uuid4().hex[:12]
         return f"b1_{tag}_{s}_{rid}"[:36]
+
     # -------------------------
     # Order retry helpers
     # -------------------------
@@ -306,7 +366,6 @@ class TradeExecutor:
         if last_exc:
             raise last_exc
         raise RuntimeError("retry failed with unknown state")
-
     def _verify_position_sync(self, symbol: str) -> Dict[str, Any]:
         """
         Emir sonrası 'gerçekten position açıldı mı?' kontrolü (best-effort).
@@ -354,6 +413,7 @@ class TradeExecutor:
             }
         except Exception as e:
             return {"verify": "error", "symbol": sym, "err": str(e)[:300]}
+
     def _poll_order_status(
         self,
         symbol: str,
@@ -437,7 +497,6 @@ class TradeExecutor:
             raise
         except Exception:
             return 0.0
-
     def _get_futures_equity_usdt_sync(self) -> float:
         """
         Sync path (open_position_from_signal) için best-effort equity.
@@ -482,6 +541,7 @@ class TradeExecutor:
         except Exception:
             pass
         return 0.0
+
     # -------------------------
     # Telegram: SADECE OPEN/CLOSE
     # -------------------------
@@ -557,7 +617,6 @@ class TradeExecutor:
             self._tg_send(msg)
         except Exception:
             pass
-
     # -------------------------
     # unified shutdown contract
     # -------------------------
@@ -631,6 +690,7 @@ class TradeExecutor:
         out = list(self._closed_buffer)
         self._closed_buffer.clear()
         return out
+
     # -------------------------
     # position access via PositionManager
     # -------------------------
@@ -640,7 +700,10 @@ class TradeExecutor:
             try:
                 return self.position_manager.get_position(sym)
             except Exception as e:
-                self.logger.warning("[EXEC] PositionManager.get_position hata: %s (local fallback)", e)
+                try:
+                    self.logger.warning("[EXEC] PositionManager.get_position hata: %s (local fallback)", e)
+                except Exception:
+                    pass
         return self._local_positions.get(sym)
 
     def _set_position(self, symbol: str, pos: Dict[str, Any]) -> None:
@@ -654,7 +717,10 @@ class TradeExecutor:
                 self.position_manager.set_position(sym, pos)
                 return
             except Exception as e:
-                self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
+                try:
+                    self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
+                except Exception:
+                    pass
         self._local_positions[sym] = pos
 
     def _clear_position(self, symbol: str) -> None:
@@ -663,9 +729,11 @@ class TradeExecutor:
             try:
                 self.position_manager.clear_position(sym)
             except Exception as e:
-                self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
+                try:
+                    self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
+                except Exception:
+                    pass
         self._local_positions.pop(sym, None)
-
     # -------------------------
     # whale bias helpers
     # -------------------------
@@ -727,7 +795,13 @@ class TradeExecutor:
     # -------------------------
     # Exchange order helpers (REAL)
     # -------------------------
-    def _exchange_open_market(self, symbol: str, side: str, qty: float, reduce_only: bool = False) -> Optional[Dict[str, Any]]:
+    def _exchange_open_market(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        reduce_only: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """
         REAL: Binance Futures market order (best-effort).
         side: "long" -> BUY, "short" -> SELL
@@ -739,6 +813,7 @@ class TradeExecutor:
           - optional poll status
           - optional verify position
           - retry/backoff (empty response / decode error)
+          - opsiyonel qty rounding (ORDER_QTY_ROUND_DECIMALS)
         """
         sym = str(symbol).upper()
 
@@ -763,7 +838,7 @@ class TradeExecutor:
         else:
             raise ValueError(f"bad side={side}")
 
-        q = float(qty)
+        q = self._round_qty(float(qty))
         if q <= 0:
             raise ValueError("qty must be > 0")
 
@@ -801,17 +876,19 @@ class TradeExecutor:
                     if callable(fn):
                         resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
                     else:
-                        raise RuntimeError("no supported order function on client (futures_create_order/create_order/new_order)")
+                        raise RuntimeError(
+                            "no supported order function on client (futures_create_order/create_order/new_order)"
+                        )
         except Exception as e:
             dt = self._now_ms() - t0
             try:
                 self.logger.exception(
-                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.6f reduceOnly=%s dt_ms=%d client_oid=%s payload=%s err=%s",
+                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s dt_ms=%d client_oid=%s payload=%s err=%s",
                     ("CLOSE" if reduce_only else "OPEN"),
                     used,
                     sym,
                     order_side,
-                    q,
+                    float(q),
                     bool(reduce_only),
                     int(dt),
                     client_oid,
@@ -824,16 +901,15 @@ class TradeExecutor:
 
         dt = self._now_ms() - t0
 
-        # güçlü log
         summ = self._summarize_order(resp)
         try:
             self.logger.info(
-                "[EXEC][ORDER] %s OK | fn=%s symbol=%s side=%s qty=%.6f reduceOnly=%s dt_ms=%d summary=%s",
+                "[EXEC][ORDER] %s OK | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s dt_ms=%d summary=%s",
                 ("CLOSE" if reduce_only else "OPEN"),
                 used,
                 sym,
                 order_side,
-                q,
+                float(q),
                 bool(reduce_only),
                 int(dt),
                 self._safe_json(summ, limit=900),
@@ -850,7 +926,10 @@ class TradeExecutor:
                     oid = resp.get("orderId")
                     coid = str(resp.get("clientOrderId") or resp.get("newClientOrderId") or client_oid or "")
                 pol = self._poll_order_status(sym, order_id=oid, client_order_id=coid, max_wait_s=self.order_poll_wait_s)
-                self.logger.info("[EXEC][ORDER][POLL] %s", self._safe_json(pol, limit=900))
+                try:
+                    self.logger.info("[EXEC][ORDER][POLL] %s", self._safe_json(pol, limit=900))
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -858,7 +937,10 @@ class TradeExecutor:
         try:
             if self.order_verify_position:
                 v = self._verify_position_sync(sym)
-                self.logger.info("[EXEC][VERIFY] %s", self._safe_json(v, limit=900))
+                try:
+                    self.logger.info("[EXEC][VERIFY] %s", self._safe_json(v, limit=900))
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -876,7 +958,12 @@ class TradeExecutor:
             close_side = "long"
         else:
             close_side = s
-        return self._exchange_open_market(symbol=str(symbol).upper(), side=close_side, qty=float(qty), reduce_only=True)
+        return self._exchange_open_market(
+            symbol=str(symbol).upper(),
+            side=close_side,
+            qty=float(qty),
+            reduce_only=True,
+        )
     # -------------------------
     # position dict
     # -------------------------
@@ -995,7 +1082,10 @@ class TradeExecutor:
             except Exception:
                 # REAL close başarısızsa state'i kapatma!
                 try:
-                    self.logger.exception("[EXEC][CLOSE] exchange close failed -> position state korunuyor | symbol=%s", str(symbol).upper())
+                    self.logger.exception(
+                        "[EXEC][CLOSE] exchange close failed -> position state korunuyor | symbol=%s",
+                        str(symbol).upper(),
+                    )
                 except Exception:
                     pass
                 return None
@@ -1045,11 +1135,8 @@ class TradeExecutor:
                     meta=payload_meta,
                 )
 
-                try:
-                    if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                        self.logger.warning("[EXEC] risk_manager.on_position_close returned coroutine (not awaited)")
-                except Exception:
-                    pass
+                # async dönerse loop varsa task'a al
+                self._fire_and_forget(out, label="risk_on_close")
         except Exception:
             try:
                 if getattr(self, "logger", None):
@@ -1091,7 +1178,7 @@ class TradeExecutor:
         highest = float(pos.get("highest_price", price) or price)
         lowest = float(pos.get("lowest_price", price) or price)
 
-        extra = {}
+        extra: Dict[str, Any] = {}
         try:
             meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
             extra = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
@@ -1220,11 +1307,16 @@ class TradeExecutor:
             pass
 
         return float(notional)
-
     # -------------------------
     # Orchestration entrypoints (IntentBridge uyumlu)
     # -------------------------
-    def open_position_from_signal(self, symbol: str, side: str, interval: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def open_position_from_signal(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         meta0 = meta if isinstance(meta, dict) else {}
         sym_u = str(symbol).upper()
         side0 = str(side or "long").strip().lower()
@@ -1282,6 +1374,7 @@ class TradeExecutor:
         notional = float(min(notional, float(self.max_position_notional)))
         notional = float(max(10.0, notional))
         qty = notional / float(price) if float(price) > 0 else 0.0
+        qty = self._round_qty(qty)
         if qty <= 0:
             return {"status": "skip", "reason": "bad_qty"}
 
@@ -1335,7 +1428,7 @@ class TradeExecutor:
 
         try:
             self.logger.info(
-                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.6f price=%.6f notional=%.2f npct=%s dry_run=%s",
+                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f npct=%s dry_run=%s",
                 side0.upper(),
                 sym_u,
                 float(qty),
@@ -1355,7 +1448,7 @@ class TradeExecutor:
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
-                rm.on_position_open(
+                out = rm.on_position_open(
                     symbol=sym_u,
                     side=side0,
                     qty=float(qty),
@@ -1364,6 +1457,7 @@ class TradeExecutor:
                     interval=str(interval or ""),
                     meta={"reason": "INTENT_OPEN", **extra},
                 )
+                self._fire_and_forget(out, label="risk_on_open_intent")
         except Exception:
             pass
 
@@ -1529,7 +1623,7 @@ class TradeExecutor:
 
         # qty/notional
         if size is not None and float(size) > 0:
-            qty = float(size)
+            qty = self._round_qty(float(size))
             notional = qty * float(price)
         else:
             # ✅ LIVE equity cap için equity_usdt doldur
@@ -1540,7 +1634,7 @@ class TradeExecutor:
                 pass
 
             notional = self._compute_notional(sym_u, side_norm, float(price), extra0)
-            qty = notional / float(price) if float(price) > 0 else 0.0
+            qty = self._round_qty(notional / float(price) if float(price) > 0 else 0.0)
 
         if qty <= 0 or float(price) <= 0:
             return
@@ -1587,7 +1681,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-
         # REAL open order (DRY_RUN=False)
         if not self.dry_run:
             try:
@@ -1613,7 +1706,7 @@ class TradeExecutor:
 
         try:
             self.logger.info(
-                "[EXEC] OPEN %s | symbol=%s qty=%.6f price=%.4f notional=%.2f interval=%s dry_run=%s",
+                "[EXEC] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f interval=%s dry_run=%s",
                 side_norm.upper(),
                 sym_u,
                 float(qty),
@@ -1664,12 +1757,7 @@ class TradeExecutor:
                     interval=str(interval or ""),
                     meta=payload_meta,
                 )
-
-                try:
-                    if asyncio.iscoroutine(out) and getattr(self, "logger", None):
-                        self.logger.warning("[EXEC] risk_manager.on_position_open returned coroutine (not awaited)")
-                except Exception:
-                    pass
+                self._fire_and_forget(out, label="risk_on_open_exec")
         except Exception:
             try:
                 if getattr(self, "logger", None):

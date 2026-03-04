@@ -73,6 +73,8 @@ def default_stream_conn() -> StreamConn:
         db=_env_int("REDIS_DB", 0),
         password=os.getenv("REDIS_PASSWORD") or None,
     )
+
+
 def ensure_group(r: redis.Redis, stream: str, group: str, start_id: str = "$") -> None:
     """
     Stream + XGROUP create (idempotent).
@@ -125,6 +127,8 @@ def parse_json_field(fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return d if isinstance(d, dict) else None
     except Exception:
         return None
+
+
 def normalize_pkg(d: Dict[str, Any], *, source_stream_id: str = "") -> Dict[str, Any]:
     """
     Paket normalize:
@@ -172,6 +176,8 @@ def xack_safe(r: redis.Redis, stream: str, group: str, ids: List[str]) -> None:
         r.xack(stream, group, *ids)
     except Exception:
         pass
+
+
 def xreadgroup_json(
     r: redis.Redis,
     *,
@@ -218,6 +224,38 @@ def xreadgroup_json(
             d = normalize_pkg(d, source_stream_id=sid)
             out.append((sid, d))
     return out
+
+# -------------------------
+# Backward compatible aliases
+# -------------------------
+
+def read_group(
+    r: redis.Redis,
+    *,
+    stream: str,
+    group: str,
+    consumer: str,
+    start_id: str,
+    count: int = 50,
+    block_ms: int = 2000,
+    auto_recover_group: bool = True,
+    group_start_id: str = "$",
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """
+    Backward compat wrapper for old name `read_group`.
+    Delegates to xreadgroup_json().
+    """
+    return xreadgroup_json(
+        r,
+        stream=stream,
+        group=group,
+        consumer=consumer,
+        start_id=start_id,
+        count=count,
+        block_ms=block_ms,
+        auto_recover_group=auto_recover_group,
+        group_start_id=group_start_id,
+    )
 def sleep_backoff(idle_count: int, *, base: float = 0.02, cap: float = 0.50) -> None:
     """
     Idle durumunda CPU yakmamak için küçük backoff.
