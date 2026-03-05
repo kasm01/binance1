@@ -32,7 +32,21 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return default
+
+
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
+
+
+def _clamp_int(x: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, x))
 
 
@@ -59,9 +73,16 @@ def main() -> None:
     simulate_whale = _env_bool("WORKER_SIM_WHALE", True)
     emit_meta = _env_bool("WORKER_EMIT_META", True)  # meta şişmesini istersen kapat
 
-    # Pace
+    # Pace (base)
     sleep_sec = _env_float("WORKER_SLEEP_SEC", 0.80)
     hold_skip_sleep_sec = _env_float("WORKER_HOLD_SKIP_SLEEP_SEC", 0.30)
+
+    # Backpressure throttle (set by supervisor)
+    throttle_key = os.getenv("WORKER_THROTTLE_KEY", "scanner:throttle_factor").strip() or "scanner:throttle_factor"
+    throttle_min = _env_int("WORKER_THROTTLE_MIN", 1)
+    throttle_max = _env_int("WORKER_THROTTLE_MAX", 20)
+    throttle_poll_every = _env_int("WORKER_THROTTLE_POLL_EVERY", 10)  # loops
+    throttle_jitter = _env_float("WORKER_THROTTLE_JITTER", 0.02)      # +/- 2% jitter
 
     # Anti-spam / quality gates (Worker layer)
     max_spread_pct = _env_float("WORKER_MAX_SPREAD_PCT", 0.0010)  # default %0.10
@@ -81,13 +102,53 @@ def main() -> None:
         except Exception:
             random.seed(seed)
 
+    # throttle state
+    throttle_factor = 1
+    loops = 0
+
+    def _read_throttle_factor() -> int:
+        """
+        Reads throttle factor from Redis key (string/int).
+        Fail-open to 1 if anything goes wrong.
+        """
+        try:
+            # RedisBus usually keeps a redis client; try common attribute names.
+            r = getattr(bus, "redis", None) or getattr(bus, "r", None) or getattr(bus, "_redis", None)
+            if r is None:
+                return 1
+            v = r.get(throttle_key)
+            if v is None:
+                return 1
+            if isinstance(v, bytes):
+                v = v.decode("utf-8", "ignore")
+            n = int(str(v).strip())
+            return _clamp_int(n, throttle_min, throttle_max)
+        except Exception:
+            return 1
+
+    def _sleep_effective(base_seconds: float) -> None:
+        # Apply throttle and small jitter to avoid synchronization between workers.
+        eff = max(0.0, float(base_seconds) * float(throttle_factor))
+        if throttle_jitter > 0:
+            j = random.uniform(-throttle_jitter, throttle_jitter)
+            eff = max(0.0, eff * (1.0 + j))
+        time.sleep(eff)
+
     print(
         f"[WorkerStub] started. publishing to {bus.signals_stream} | "
         f"source={source} mode={scanner_mode} itv={interval} syms={symbols} | "
         f"gates(min_conf={min_conf} max_spread={max_spread_pct} max_atr={max_atr_pct}) | "
-        f"sleep={sleep_sec}s meta={emit_meta}"
+        f"sleep={sleep_sec}s meta={emit_meta} throttle_key={throttle_key}"
     )
+
     while True:
+        loops += 1
+        if loops == 1 or (throttle_poll_every > 0 and (loops % throttle_poll_every) == 0):
+            new_tf = _read_throttle_factor()
+            if new_tf != throttle_factor:
+                throttle_factor = new_tf
+                print(f"[WorkerStub] throttle_factor={throttle_factor} (key={throttle_key})")
+
         sym = random.choice(symbols)
 
         # ----- side candidate (long/short/none) -----
@@ -99,7 +160,7 @@ def main() -> None:
             side_candidate = "short"
 
         if side_candidate == "none" and not publish_hold:
-            time.sleep(hold_skip_sleep_sec)
+            _sleep_effective(hold_skip_sleep_sec)
             continue
 
         # ----- simulate features (stub) -----
@@ -152,15 +213,14 @@ def main() -> None:
         # ----- Worker quality gate (spam kesme) -----
         if side_candidate != "none":
             if spread_pct > max_spread_pct:
-                time.sleep(min(0.25, sleep_sec))
+                _sleep_effective(min(0.25, sleep_sec))
                 continue
             if atr_pct > max_atr_pct:
-                time.sleep(min(0.25, sleep_sec))
+                _sleep_effective(min(0.25, sleep_sec))
                 continue
             if confidence < min_conf:
-                time.sleep(min(0.25, sleep_sec))
+                _sleep_effective(min(0.25, sleep_sec))
                 continue
-
         # ----- SignalEvent (standard) -----
         ts_utc = _utc_now_iso()
         dedup_key = f"{sym}|{interval}|{side_candidate}"
@@ -205,10 +265,16 @@ def main() -> None:
                     "max_spread_pct": max_spread_pct,
                     "max_atr_pct": max_atr_pct,
                 },
+                # useful for observability
+                "throttle": {
+                    "key": throttle_key,
+                    "factor": int(throttle_factor),
+                    "base_sleep_sec": float(sleep_sec),
+                },
             }
 
         bus.publish_signal(evt)
-        time.sleep(sleep_sec)
+        _sleep_effective(sleep_sec)
 
 
 if __name__ == "__main__":
