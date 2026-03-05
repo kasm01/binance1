@@ -94,7 +94,8 @@ from models.hybrid_inference import HybridMultiTFModel
 from models.model_registry import ModelRegistry
 
 from tg_bot.telegram_bot import TelegramBot
-
+from core.price_cache import PriceCache
+price_cache = PriceCache()
 # WebSocket
 from wsfeeds.binance_ws import BinanceWS
 from wsfeeds.okx_ws import OKXWS
