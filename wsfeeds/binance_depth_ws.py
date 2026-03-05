@@ -33,11 +33,21 @@ class BinanceDepthWS:
     - websockets ile çalışır (websocket-client ile isim çakışmasını önler).
     - last snapshot saklar
     - opsiyonel MarketMetaBuilder'a update_orderbook ile otomatik basar
+    - opsiyonel PriceCache'e best bid/ask yazar (mid tek kaynaktan okunur)
 
     main.py:
-        depth_ws = BinanceDepthWS(symbol=symbol, builder=market_meta_builder, tfs=list(mtf_intervals))
+        from core.price_cache import PriceCache
+        price_cache = PriceCache()
+
+        depth_ws = BinanceDepthWS(
+            symbol=symbol,
+            builder=market_meta_builder,
+            tfs=list(mtf_intervals),
+            price_cache=price_cache,
+        )
         depth_ws.run_background()
-        snap = depth_ws.get_last_depth()
+
+        mid = price_cache.get_mid(symbol, max_age_sec=2.0)
     """
 
     def __init__(
@@ -53,6 +63,8 @@ class BinanceDepthWS:
         reconnect_max_backoff_s: float = 30.0,
         ping_interval_s: float = 20.0,
         ping_timeout_s: float = 20.0,
+        # NEW: single-source mid-price cache (optional)
+        price_cache: Any = None,
     ) -> None:
         self.symbol = str(symbol).upper().strip()
 
@@ -72,6 +84,9 @@ class BinanceDepthWS:
         self.reconnect_max_backoff_s = float(max(1.0, reconnect_max_backoff_s))
         self.ping_interval_s = float(max(5.0, ping_interval_s))
         self.ping_timeout_s = float(max(5.0, ping_timeout_s))
+
+        # NEW: PriceCache (core.price_cache.PriceCache)
+        self.price_cache = price_cache
 
         self._thread: Optional[threading.Thread] = None
         self._stop_flag = threading.Event()
@@ -196,6 +211,17 @@ class BinanceDepthWS:
                 # sort best first (Binance genelde zaten sıralı gelir ama garanti edelim)
                 bids.sort(key=lambda t: t[0], reverse=True)
                 asks.sort(key=lambda t: t[0], reverse=False)
+
+                # NEW: best bid/ask -> PriceCache (mid tek kaynaktan)
+                if self.price_cache is not None and bids and asks:
+                    try:
+                        best_bid = float(bids[0][0])
+                        best_ask = float(asks[0][0])
+                        # PriceCache API: set_bid_ask(symbol, bid, ask, ts?)
+                        if hasattr(self.price_cache, "set_bid_ask"):
+                            self.price_cache.set_bid_ask(self.symbol, best_bid, best_ask, ts=now)
+                    except Exception:
+                        pass
 
                 snap: Dict[str, Any] = {
                     "ts": now,
