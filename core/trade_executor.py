@@ -672,12 +672,13 @@ class TradeExecutor:
         qty = float(pos.get("qty") or 0.0)
         return (side in ("long", "short")) and (qty > 0)
 
-    def close_position(
+    def close_position_backtest(
         self,
         symbol: str,
         price: float,
         reason: str = "manual",
         interval: str = "",
+        **_ignored: Any,
     ) -> Optional[Dict[str, Any]]:
         return self._close_position(
             symbol=str(symbol).upper(),
@@ -685,7 +686,6 @@ class TradeExecutor:
             reason=str(reason),
             interval=str(interval or ""),
         )
-
     def pop_closed_trades(self) -> List[Dict[str, Any]]:
         out = list(self._closed_buffer)
         self._closed_buffer.clear()
@@ -1472,6 +1472,53 @@ class TradeExecutor:
             "stall_ttl_sec": int(pos.get("stall_ttl_sec") or 0),
         }
 
+    def close_position(
+        self,
+        symbol: str,
+        price: Optional[float] = None,
+        reason: str = "manual",
+        interval: str = "",
+        intent_id: Optional[str] = None,
+        **_ignored: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Close an open position.
+
+        Accepts extra kwargs for forward/backward compatibility with exec-events payloads
+        (e.g., intent_id, score, raw, trail_pct, stall_ttl_sec...).
+        """
+
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return None
+
+        try:
+            if intent_id:
+                self.logger.info(
+                    f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}"
+                )
+        except Exception:
+            pass
+
+        itv = str(interval or "").strip()
+
+        p = 0.0
+        try:
+            if price is not None:
+                p = float(price)
+                if p < 0:
+                    p = 0.0
+        except Exception:
+            p = 0.0
+
+        return self._close_position(
+            symbol=sym,
+            price=p,
+            reason=str(reason or "manual"),
+            interval=itv,
+        )
+
+
     def close_position_from_signal(
         self,
         symbol: str,
@@ -1481,21 +1528,35 @@ class TradeExecutor:
         price: Any = None,
         exit_price: Any = None,
     ) -> Dict[str, Any]:
+
         sym_u = str(symbol).upper()
         pos = self._get_position(sym_u)
+
         if not pos:
             return {"status": "skip", "reason": "no_position"}
 
         p = self._clip_float(price, None)
+
         if p is None:
             p = self._clip_float(exit_price, None)
 
         if p is None or p <= 0:
             p = float(pos.get("entry_price") or 0.0) or 0.0
 
-        out = self._close_position(sym_u, float(p), reason="INTENT_CLOSE", interval=str(interval or pos.get("interval") or ""))
+        out = self._close_position(
+            sym_u,
+            float(p),
+            reason="INTENT_CLOSE",
+            interval=str(interval or pos.get("interval") or ""),
+        )
+
         if out:
-            return {"status": "closed" if not self.dry_run else "dry_run", "symbol": sym_u, "price": float(p)}
+            return {
+                "status": "closed" if not self.dry_run else "dry_run",
+                "symbol": sym_u,
+                "price": float(p),
+            }
+
         return {"status": "skip", "reason": "close_failed"}
 
     async def open_position(self, *args, **kwargs):
