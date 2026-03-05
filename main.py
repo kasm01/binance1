@@ -96,9 +96,9 @@ from models.model_registry import ModelRegistry
 from tg_bot.telegram_bot import TelegramBot
 
 # WebSocket
-from websocket.binance_ws import BinanceWS
-from websocket.okx_ws import OKXWS
-from websocket.binance_depth_ws import BinanceDepthWS
+from wsfeeds.binance_ws import BinanceWS
+from wsfeeds.okx_ws import OKXWS
+from wsfeeds.binance_depth_ws import BinanceDepthWS
 
 # p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer

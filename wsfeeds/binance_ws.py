@@ -4,7 +4,7 @@ import threading
 from typing import Optional
 
 import websocket  # websocket-client paketi
-
+print("[WS-DEBUG] websocket module:", getattr(websocket, "__file__", websocket), "WebSocketApp=", hasattr(websocket, "WebSocketApp"))
 from core.logger import system_logger
 from config.settings import Settings
 from .stream_handler import handle_message

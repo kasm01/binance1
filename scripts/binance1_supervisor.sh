@@ -84,8 +84,7 @@ SUP_BP_EVERY_TICKS="${SUP_BP_EVERY_TICKS:-1}"
 SUP_TRIM_ENABLED="${SUP_TRIM_ENABLED:-1}"
 SUP_TRIM_MAXLEN="${SUP_TRIM_MAXLEN:-50000}"               # must be int
 SUP_TRIM_EVERY_TICKS="${SUP_TRIM_EVERY_TICKS:-6}"
-SUP_TRIM_STREAMS="${SUP_TRIM_STREAMS:-exec_events_stream}" # comma list
-
+SUP_TRIM_STREAMS="${SUP_TRIM_STREAMS:-signals_stream,candidates_stream,top5_stream,trade_intents_stream,exec_events_stream}" # comma list
 # ------------ utils ------------
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "[$(ts)] $*" | tee -a "$SUP_LOG" >/dev/null; }
@@ -215,6 +214,7 @@ declare -A STUCK_CNT          # key=stream:group -> consec warn ticks
 LAST_HEALTH_TG_TS=0
 LAST_HEALTH_SIG=""           # redis|orch|main|thr|xlen_bucket
 LAST_THR_SENT=""             # last throttle sent for bp alerts
+
 # ------------ group health ------------
 group_stats() {
   # prints: pending lag  (or: -1 -1)
@@ -225,7 +225,7 @@ group_stats() {
     found==1 && $0=="pending"{getline; p=$0}
     found==1 && $0=="lag"{getline; l=$0}
     END{print p, l}
-  ' | tr -d '\r'
+  ' | tr -d "\r"
 }
 
 check_group_health() {
@@ -389,7 +389,7 @@ health_report() {
   orch="$(orch_state)"
 
   xlen="$(redis-cli -n "$REDIS_DB" XLEN "$EXEC_EVENTS_STREAM" 2>/dev/null | tr -d '\r' || echo "?")"
-  thr="$(redis_get_int "$SUP_BP_THROTTLE_KEY")"; [[ -z "${thr:-}" ]] && thr="(none)"
+  thr="$(redis_get_int "$SUP_BP_THROTTLE_KEY")"; [[ -z "${thr:-}" ]] && thr="$SUP_BP_MIN"
 
   # bucketize xlen to reduce noise
   bucket="ok"
@@ -427,13 +427,12 @@ health_report() {
 SHUTDOWN_REQ=0
 _on_term() { SHUTDOWN_REQ=1; log "INFO SIGTERM/INT -> shutdown requested"; }
 trap _on_term SIGTERM SIGINT
-
 # ------------ main loop ------------
 main_loop() {
   cd "$BASE_DIR" || exit 1
   load_env
 
-  need "$VENV_PY" || { log "ERROR venv python missing: $VENV_PY"; exit 1; }
+  [[ -x "$VENV_PY" ]] || { log "ERROR venv python missing: $VENV_PY"; exit 1; }
   log "INFO supervisor started base=$BASE_DIR dry_run=$DRY_RUN armed=$ARMED kill=$LIVE_KILL_SWITCH manage_orch=$MANAGE_ORCH_SERVICE"
 
   ensure_orch_service

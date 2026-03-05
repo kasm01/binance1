@@ -25,7 +25,7 @@ from models.hybrid_inference import HybridModel
 from tg_bot.telegram_bot import TelegramBot
 
 # WebSocket
-from websocket.binance_ws import BinanceWS  # Biz bunu aşağıda websocket/binance_ws.py içinde tanımlayacağız
+from wsfeeds.binance_ws import BinanceWS  # Biz bunu aşağıda websocket/binance_ws.py içinde tanımlayacağız
 
 # NEW: p_buy stabilization + safe proba
 from core.prob_stabilizer import ProbStabilizer
