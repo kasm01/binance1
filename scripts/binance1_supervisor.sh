@@ -367,11 +367,15 @@ backpressure_guard() {
   cur="$(redis_get_int "$SUP_BP_THROTTLE_KEY")"
   [[ -z "${cur:-}" ]] && cur="$SUP_BP_MIN"
 
-  next="$cur"; action="hold"
+  next="$cur"
+  action="hold"
+
   if [[ "$xlen" -gt "$SUP_BP_HIGH_WATER" ]]; then
-    next=$((cur + SUP_BP_STEP_UP)); action="up"
+    next=$((cur + SUP_BP_STEP_UP))
+    action="up"
   elif [[ "$xlen" -lt "$SUP_BP_LOW_WATER" ]]; then
-    next=$((cur - SUP_BP_STEP_DOWN)); action="down"
+    next=$((cur - SUP_BP_STEP_DOWN))
+    action="down"
   fi
 
   [[ "$next" -lt "$SUP_BP_MIN" ]] && next="$SUP_BP_MIN"
@@ -381,22 +385,25 @@ backpressure_guard() {
     redis_set_throttle "$next" "$SUP_BP_TTL_SEC"
   fi
 
-  if [[ "$next" != "$cur" if [[ "$next" != "$cur" ]]; thenif [[ "$next" != "$cur" ]]; then "$LAST_BP_STATE" != "$next" ]]; then
-      LAST_BP_STATE="$next"
+  if [[ "$next" != "$cur" ]]; then
+    if [[ "$LAST_BP_STATE" == "$action:$cur->$next" ]]; then
+      return 0
+    fi
+    LAST_BP_STATE="$action:$cur->$next"
+
     if [[ "$action" == "up" ]]; then
       log "WARN BACKPRESSURE XLEN=$xlen > $SUP_BP_HIGH_WATER throttle $cur->$next ttl=${SUP_BP_TTL_SEC}s"
       if [[ "$LAST_THR_SENT" != "$next" ]]; then
         LAST_THR_SENT="$next"
         tg_send "bp_up" "$(tg_line "ALERT" "backpressure XLEN(${EXEC_EVENTS_STREAM})=$xlen hi=$SUP_BP_HIGH_WATER throttle=$next ttl=${SUP_BP_TTL_SEC}s")"
       fi
-    else
+    elif [[ "$action" == "down" ]]; then
       log "INFO BACKPRESSURE relax XLEN=$xlen < $SUP_BP_LOW_WATER throttle $cur->$next"
       tg_send "bp_down" "$(tg_line "OK" "backpressure_relax XLEN(${EXEC_EVENTS_STREAM})=$xlen lo=$SUP_BP_LOW_WATER throttle=$next")"
       [[ "$next" -le 1 ]] && LAST_THR_SENT="1"
     fi
   fi
 }
-
 trim_streams() {
   [[ "$SUP_TRIM_ENABLED" == "1" ]] || return 0
   redis_ok || return 0

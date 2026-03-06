@@ -108,7 +108,45 @@ class TradeExecutor:
         self.redis_price_cache_max_age_sec = float(
             self._clip_float(os.getenv("REDIS_PRICECACHE_MAX_AGE_SEC", "3.0"), 3.0) or 3.0
         )
+        # whale decision policy
+        self.whale_block_actions = {
+            x.strip().lower()
+            for x in str(os.getenv("WHALE_BLOCK_ACTIONS", "hard_block,force_exit")).split(",")
+            if x.strip()
+        }
+        self.whale_reduce_actions = {
+            x.strip().lower()
+            for x in str(os.getenv("WHALE_REDUCE_ACTIONS", "reduce_size,tighten_risk,avoid_open")).split(",")
+            if x.strip()
+        }
+        self.whale_boost_actions = {
+            x.strip().lower()
+            for x in str(os.getenv("WHALE_BOOST_ACTIONS", "confirm,strong_confirm,hold_winner")).split(",")
+            if x.strip()
+        }
 
+        self.whale_hard_block_min_score = float(
+            self._clip_float(os.getenv("WHALE_HARD_BLOCK_MIN_SCORE", "0.65"), 0.65) or 0.65
+        )
+        self.whale_reduce_min_score = float(
+            self._clip_float(os.getenv("WHALE_REDUCE_MIN_SCORE", "0.40"), 0.40) or 0.40
+        )
+        self.whale_confirm_min_score = float(
+            self._clip_float(os.getenv("WHALE_CONFIRM_MIN_SCORE", "0.55"), 0.55) or 0.55
+        )
+
+        self.whale_reduce_notional_mult = float(
+            self._clip_float(os.getenv("WHALE_REDUCE_NOTIONAL_MULT", "0.65"), 0.65) or 0.65
+        )
+        self.whale_reduce_trailing_mult = float(
+            self._clip_float(os.getenv("WHALE_REDUCE_TRAILING_MULT", "0.70"), 0.70) or 0.70
+        )
+        self.whale_hold_trailing_mult = float(
+            self._clip_float(os.getenv("WHALE_HOLD_TRAILING_MULT", "1.20"), 1.20) or 1.20
+        )
+        self.whale_hold_stall_mult = float(
+            self._clip_float(os.getenv("WHALE_HOLD_STALL_MULT", "1.40"), 1.40) or 1.40
+        )
         # /status snapshot
         self.last_snapshot: Dict[str, Any] = {}
 
@@ -786,11 +824,38 @@ class TradeExecutor:
     # whale bias helpers
     # -------------------------
     def _whale_bias(self, side: str, extra: Dict[str, Any]) -> str:
+        """
+        Çıkış davranışı için sade bias döndürür:
+          - hold
+          - exit
+          - reduce
+          - neutral
+        Öncelik:
+          1) whale_action / whale_decision
+          2) fallback whale_dir + whale_score
+        """
         try:
-            wdir = str(extra.get("whale_dir", "none") or "none").lower()
+            action = str(
+                extra.get("whale_action")
+                or extra.get("whale_decision")
+                or extra.get("whale_policy")
+                or ""
+            ).strip().lower()
+
             ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action:
+                if action in self.whale_block_actions:
+                    return "exit"
+                if action in self.whale_reduce_actions:
+                    return "reduce"
+                if action in self.whale_boost_actions:
+                    return "hold"
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
             if ws < float(self.w_min):
                 return "neutral"
+
             if wdir in ("long", "short") and side in ("long", "short"):
                 if wdir == side:
                     return "hold"
@@ -798,25 +863,35 @@ class TradeExecutor:
         except Exception:
             pass
         return "neutral"
-
     def _effective_trailing_pct(self, base_trail: float, bias: str) -> float:
         bt = float(base_trail or 0.0)
         if bt <= 0:
             return 0.0
-        if bias == "hold":
-            return max(bt, bt * 1.25)
-        if bias == "exit":
-            return max(0.001, bt * 0.65)
-        return bt
 
+        if bias == "hold":
+            return max(bt, bt * float(self.whale_hold_trailing_mult))
+
+        if bias == "exit":
+            return max(0.001, bt * 0.55)
+
+        if bias == "reduce":
+            return max(0.001, bt * float(self.whale_reduce_trailing_mult))
+
+        return bt
     def _effective_stall_ttl(self, base_ttl: int, bias: str) -> int:
         t = int(base_ttl or 0)
         if t <= 0:
             return 0
+
         if bias == "hold":
-            return int(max(60, round(t * 1.50)))
+            return int(max(60, round(t * float(self.whale_hold_stall_mult))))
+
         if bias == "exit":
-            return int(max(60, round(t * 0.50)))
+            return int(max(30, round(t * 0.45)))
+
+        if bias == "reduce":
+            return int(max(45, round(t * 0.70)))
+
         return t
 
     @staticmethod
@@ -1063,7 +1138,74 @@ class TradeExecutor:
         if side == "short":
             return (entry_price - exit_price) * qty
         return 0.0
+    def _whale_action(self, extra: Dict[str, Any]) -> str:
+        try:
+            return str(
+                extra.get("whale_action")
+                or extra.get("whale_decision")
+                or extra.get("whale_policy")
+                or ""
+            ).strip().lower()
+        except Exception:
+            return ""
 
+    def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
+        try:
+            action = self._whale_action(extra)
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
+                return True
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_hard_block_min_score):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _apply_whale_open_adjustments(
+        self,
+        side: str,
+        notional: float,
+        extra: Dict[str, Any],
+    ) -> float:
+        try:
+            action = self._whale_action(extra)
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action in self.whale_reduce_actions and ws >= float(self.whale_reduce_min_score):
+                return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_reduce_min_score):
+                    return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
+        except Exception:
+            pass
+        return float(notional)
+
+    def _should_force_close_by_whale(
+        self,
+        side: str,
+        extra: Dict[str, Any],
+        pnl_pct: float,
+    ) -> bool:
+        try:
+            action = self._whale_action(extra)
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action in ("force_exit", "hard_block") and ws >= float(self.whale_hard_block_min_score):
+                return True
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_hard_block_min_score) and pnl_pct > -0.02:
+                    return True
+        except Exception:
+            pass
+        return False
     def _close_position(self, symbol: str, price: float, reason: str, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -1222,6 +1364,19 @@ class TradeExecutor:
         try:
             entry = float(pos.get("entry_price") or 0.0)
             cur_pnl_pct = float(self._pnl_pct(side, entry, float(live_price)))
+
+            if self._should_force_close_by_whale(
+                side=side,
+                extra=extra,
+                pnl_pct=cur_pnl_pct,
+            ):
+                return self._close_position(
+                    symbol,
+                    float(live_price),
+                    reason="WHALE_FORCE_EXIT",
+                    interval=interval,
+                )
+
             best = float(pos.get("best_pnl_pct") or 0.0)
             now_ts = time.time()
 
@@ -1236,10 +1391,14 @@ class TradeExecutor:
 
                 if stall_ttl_eff > 0 and cur_pnl_pct > 0.0:
                     if (now_ts - last_best_ts) >= float(stall_ttl_eff):
-                        return self._close_position(symbol, float(live_price), reason="STALL_EXIT", interval=interval)
+                        return self._close_position(
+                            symbol,
+                            float(live_price),
+                            reason="STALL_EXIT",
+                            interval=interval,
+                        )
         except Exception:
             pass
-
         if side == "long":
             if sl is not None and live_price <= sl:
                 return self._close_position(symbol, float(live_price), reason="SL_HIT", interval=interval)
@@ -1360,7 +1519,19 @@ class TradeExecutor:
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
-
+        if self._should_block_open_by_whale(side0, meta0):
+            try:
+                self.logger.info(
+                    "[EXEC][WHALE][OPEN-BLOCK] symbol=%s side=%s whale_dir=%s whale_score=%.3f action=%s",
+                    sym_u,
+                    side0,
+                    str(meta0.get("whale_dir", "none")),
+                    float(meta0.get("whale_score", 0.0) or 0.0),
+                    self._whale_action(meta0),
+                )
+            except Exception:
+                pass
+            return {"status": "skip", "reason": "whale_block"}
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
@@ -1383,6 +1554,7 @@ class TradeExecutor:
         if notional is None or notional <= 0:
             notional = self._compute_notional(sym_u, side0, float(price), meta0)
 
+        notional = self._apply_whale_open_adjustments(side0, float(notional), meta0)
         notional = float(min(notional, float(self.max_position_notional)))
         notional = float(max(10.0, notional))
 
@@ -1637,22 +1809,17 @@ class TradeExecutor:
             return
 
         try:
-            whale_dir = str(extra0.get("whale_dir", "none") or "none").lower()
-            whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
-            veto_thr = float(os.getenv("WHALE_VETO_THR", "0.70"))
-            if side_norm in ("long", "short") and whale_dir in ("long", "short"):
-                if whale_dir != side_norm and whale_score >= veto_thr:
-                    self.logger.info(
-                        "[EXEC][VETO] WHALE_VETO | side=%s whale_dir=%s whale_score=%.3f thr=%.2f -> SKIP",
-                        side_norm,
-                        whale_dir,
-                        whale_score,
-                        veto_thr,
-                    )
-                    return
+            if self._should_block_open_by_whale(side_norm, extra0):
+                self.logger.info(
+                    "[EXEC][VETO] WHALE_BLOCK | side=%s whale_dir=%s whale_score=%.3f action=%s -> SKIP",
+                    side_norm,
+                    str(extra0.get("whale_dir", "none")),
+                    float(extra0.get("whale_score", 0.0) or 0.0),
+                    self._whale_action(extra0),
+                )
+                return
         except Exception:
             pass
-
         live_price = self._resolve_price(
             symbol=sym_u,
             price=price,
@@ -1678,8 +1845,8 @@ class TradeExecutor:
                 pass
 
             notional = self._compute_notional(sym_u, side_norm, float(live_price), extra0)
+            notional = self._apply_whale_open_adjustments(side_norm, float(notional), extra0)
             qty = self._round_qty(notional / float(live_price))
-
         if qty <= 0:
             return
 
