@@ -1699,9 +1699,28 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
 
     logger.info("[EXEC-EVENTS] consuming stream=%s group=%s consumer=%s", stream, group, consumer)
 
-    open_m = _pick_method(executor, ["open_position", "open", "open_trade", "open_order", "open_from_intent"])
-    close_m = _pick_method(executor, ["close_position", "close", "close_trade", "close_order", "close_from_intent"])
-
+    open_m = _pick_method(
+        executor,
+        [
+            "open_position_from_signal",
+            "open_from_intent",
+            "open_position",
+            "open",
+            "open_trade",
+            "open_order",
+        ],
+    )
+    close_m = _pick_method(
+        executor,
+        [
+            "close_position_from_signal",
+            "close_from_intent",
+            "close_position",
+            "close",
+            "close_trade",
+            "close_order",
+        ],
+    )
     if open_m is None and close_m is None:
         logger.error("[EXEC-EVENTS] TradeExecutor open/close method not found. Check core/trade_executor.py")
         return
@@ -1752,33 +1771,59 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                             intent_id, side, symbol, interval, price
                         )
 
-                        if side in ("long", "short"):
-                            if open_m is None:
-                                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
-                                continue
+                if side in ("long", "short"):
+                    if open_m is None:
+                        logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
+                        continue
 
-                            await _maybe_await(open_m(
-                                symbol=symbol,
-                                side=side,
-                                interval=interval,
-                                price=price,
-                                trail_pct=trail_pct,
-                                stall_ttl_sec=stall_ttl_sec,
-                                intent_id=intent_id,
-                                raw=it,
-                            ))
+                    if getattr(open_m, "__name__", "") in ("open_position_from_signal", "open_from_intent"):
+                        await _maybe_await(open_m(
+                            symbol=symbol,
+                            side=side,
+                            interval=interval,
+                            meta={
+                                "price": price,
+                                "trail_pct": trail_pct,
+                                "stall_ttl_sec": stall_ttl_sec,
+                                "intent_id": intent_id,
+                                "score": it.get("score"),
+                                "raw": it,
+                            },
+                        ))
+                    else:
+                        await _maybe_await(open_m(
+                            symbol=symbol,
+                            side=side,
+                            interval=interval,
+                            price=price,
+                            trail_pct=trail_pct,
+                            stall_ttl_sec=stall_ttl_sec,
+                            intent_id=intent_id,
+                            raw=it,
+                        ))
+                elif side in ("close", "flat", "exit"):
+                    if close_m is None:
+                        logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
+                        continue
 
-                        elif side in ("close", "flat", "exit"):
-                            if close_m is None:
-                                logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
-                                continue
-
-                            await _maybe_await(close_m(
-                                symbol=symbol,
-                                interval=interval,
-                                intent_id=intent_id,
-                                raw=it,
-                            ))
+                    if getattr(close_m, "__name__", "") in ("close_position_from_signal", "close_from_intent"):
+                        await _maybe_await(close_m(
+                            symbol=symbol,
+                            interval=interval,
+                            meta={
+                                "intent_id": intent_id,
+                                "raw": it,
+                            },
+                            price=price,
+                        ))
+                    else:
+                        await _maybe_await(close_m(
+                            symbol=symbol,
+                            interval=interval,
+                            intent_id=intent_id,
+                            raw=it,
+                            price=price,
+                        ))
                         else:
                             logger.warning("[EXEC-EVENTS] unknown side=%s intent=%s", side, intent_id)
 

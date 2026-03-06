@@ -10,7 +10,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
 from core.redis_price_cache import RedisPriceCache
+
 try:
     from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError  # type: ignore
 except Exception:  # pragma: no cover
@@ -31,7 +33,7 @@ class TradeExecutor:
       - STALL (kâr ilerlemiyorsa TTL dolunca kapat) uygular
       - Whale "hold/exit bias" ile trailing/TTL davranışını ayarlar
       - DRY_RUN modunda gerçek emir atmadan state simüle eder
-      - İsteğe bağlı PriceCache ile tek kaynaktan mid-price okur
+      - İsteğe bağlı PriceCache / RedisPriceCache ile tek kaynaktan fiyat okur
 
     Telegram politikası:
       ✅ Otomatik mesaj: SADECE pozisyon OPEN/CLOSE
@@ -57,6 +59,8 @@ class TradeExecutor:
         atr_tp_mult: float = 3.0,
         whale_risk_boost: float = 2.0,
         tg_bot_unused_kw: Optional[Any] = None,  # backward compat
+        price_cache: Optional[Any] = None,
+        redis_price_cache: Optional[RedisPriceCache] = None,
     ) -> None:
         self.client = client
         self.risk_manager = risk_manager
@@ -78,28 +82,34 @@ class TradeExecutor:
 
         self.whale_risk_boost = float(whale_risk_boost)
 
-        # NEW: single-source mid price cache
-        self.price_cache: Optional[Any] = None
+        # price cache
+        self.price_cache: Optional[Any] = price_cache
+        self.redis_price_cache: Optional[RedisPriceCache] = redis_price_cache
 
         # orchestration knobs (env)
         self.w_min = float(self._clip_float(os.getenv("W_MIN", "0.58"), 0.58) or 0.58)
         self.default_trail_pct = float(self._clip_float(os.getenv("TRAIL_PCT", "0.05"), 0.05) or 0.05)
         self.default_stall_ttl_sec = int(float(self._clip_float(os.getenv("STALL_TTL_SEC", "0"), 0.0) or 0.0))
 
-        # Order debug knobs
+        # order debug knobs
         self.order_verify_position = bool(self._truthy_env("ORDER_VERIFY_POSITION", "1"))
         self.order_poll_status = bool(self._truthy_env("ORDER_POLL_STATUS", "1"))
         self.order_poll_wait_s = float(self._clip_float(os.getenv("ORDER_POLL_WAIT_S", "2.0"), 2.0) or 2.0)
 
-        # qty rounding knobs (opsiyonel)
-        self.order_qty_round_decimals = int(float(self._clip_float(os.getenv("ORDER_QTY_ROUND_DECIMALS", "0"), 0.0) or 0.0))
+        # qty rounding knobs
+        self.order_qty_round_decimals = int(
+            float(self._clip_float(os.getenv("ORDER_QTY_ROUND_DECIMALS", "0"), 0.0) or 0.0)
+        )
 
-        # Price cache knobs
+        # price cache knobs
         self.price_cache_max_age_sec = float(
             self._clip_float(os.getenv("PRICE_CACHE_MAX_AGE_SEC", "2.0"), 2.0) or 2.0
         )
+        self.redis_price_cache_max_age_sec = float(
+            self._clip_float(os.getenv("REDIS_PRICECACHE_MAX_AGE_SEC", "3.0"), 3.0) or 3.0
+        )
 
-        # /status snapshot için
+        # /status snapshot
         self.last_snapshot: Dict[str, Any] = {}
 
         # PositionManager yoksa local fallback
@@ -110,6 +120,7 @@ class TradeExecutor:
 
         self._closed = False
 
+        # requests timeout best-effort
         try:
             if self.client is not None and hasattr(self.client, "__dict__"):
                 if not getattr(self.client, "requests_params", None):
@@ -117,17 +128,7 @@ class TradeExecutor:
         except Exception:
             pass
 
-    # -------------------------
-    # price cache helpers
-    # -------------------------
-    def set_price_cache(self, price_cache: Any) -> None:
-        """
-        main.py içinden:
-            trade_executor.set_price_cache(price_cache)
-        """
-        self.price_cache = price_cache
-        self.redis_price_cache = redis_price_cache
-
+        # redis price cache auto init
         if self.redis_price_cache is None:
             try:
                 self.redis_price_cache = RedisPriceCache(
@@ -137,19 +138,48 @@ class TradeExecutor:
                 )
             except Exception:
                 self.redis_price_cache = None
+
+    # -------------------------
+    # price cache helpers
+    # -------------------------
+    def set_price_cache(
+        self,
+        price_cache: Optional[Any] = None,
+        redis_price_cache: Optional[RedisPriceCache] = None,
+    ) -> None:
+        """
+        main.py içinden:
+            trade_executor.set_price_cache(price_cache, redis_price_cache)
+        """
+        if price_cache is not None:
+            self.price_cache = price_cache
+        if redis_price_cache is not None:
+            self.redis_price_cache = redis_price_cache
+
     def _get_cached_mid_price(self, symbol: str, max_age_sec: Optional[float] = None) -> Optional[float]:
+        sym = str(symbol).upper()
+        age = self.price_cache_max_age_sec if max_age_sec is None else float(max_age_sec)
+
         try:
-            if self.price_cache is None:
-                return None
-            age = self.price_cache_max_age_sec if max_age_sec is None else float(max_age_sec)
-            if hasattr(self.price_cache, "get_mid"):
-                px = self.price_cache.get_mid(str(symbol).upper(), max_age_sec=age)
-                if px is None:
-                    return None
-                px = float(px)
-                return px if px > 0 else None
+            if self.price_cache is not None and hasattr(self.price_cache, "get_mid"):
+                px = self.price_cache.get_mid(sym, max_age_sec=age)
+                if px is not None:
+                    px = float(px)
+                    if px > 0:
+                        return px
         except Exception:
             pass
+
+        try:
+            if self.redis_price_cache is not None and hasattr(self.redis_price_cache, "get_mid"):
+                px = self.redis_price_cache.get_mid(sym, max_age_sec=self.redis_price_cache_max_age_sec)
+                if px is not None:
+                    px = float(px)
+                    if px > 0:
+                        return px
+        except Exception:
+            pass
+
         return None
 
     def _resolve_price(
@@ -158,38 +188,24 @@ class TradeExecutor:
         price: Any = None,
         mark_price: Any = None,
         last_price: Any = None,
+        *,
+        max_age_sec: Optional[float] = None,
     ) -> Optional[float]:
         """
-        Resolve order/reference price with priority:
-
-        1) explicit price/mark_price/last_price
-        2) in-memory PriceCache mid
-        3) RedisPriceCache mid
-        4) client.get_price()
+        Priority:
+          1) explicit price / mark_price / last_price
+          2) in-memory PriceCache mid
+          3) RedisPriceCache mid
+          4) client.get_price()
         """
         for candidate in (price, mark_price, last_price):
             pv = self._clip_float(candidate, None)
             if pv is not None and pv > 0:
                 return float(pv)
 
-        try:
-            if self.price_cache is not None and hasattr(self.price_cache, "get_mid"):
-                mid = self.price_cache.get_mid(str(symbol).upper(), max_age_sec=self.price_cache_max_age_sec)
-                if mid is not None and float(mid) > 0:
-                    return float(mid)
-        except Exception:
-            pass
-
-        try:
-            if self.redis_price_cache is not None and hasattr(self.redis_price_cache, "get_mid"):
-                mid = self.redis_price_cache.get_mid(
-                    str(symbol).upper(),
-                    max_age_sec=float(os.getenv("REDIS_PRICECACHE_MAX_AGE_SEC", "3.0")),
-                )
-                if mid is not None and float(mid) > 0:
-                    return float(mid)
-        except Exception:
-            pass
+        cached = self._get_cached_mid_price(symbol, max_age_sec=max_age_sec)
+        if cached is not None and cached > 0:
+            return float(cached)
 
         try:
             if self.client is not None:
@@ -282,8 +298,9 @@ class TradeExecutor:
             return float(round(q, d))
         except Exception:
             return float(qty)
+
     # -------------------------
-    # async/coro helpers (risk manager vb.)
+    # async/coro helpers
     # -------------------------
     def _fire_and_forget(self, coro: Any, *, label: str = "task") -> None:
         try:
@@ -314,7 +331,7 @@ class TradeExecutor:
         return maybe
 
     # -------------------------
-    # Order debug helpers (latency / summary / clientOrderId)
+    # order debug helpers
     # -------------------------
     @staticmethod
     def _now_ms() -> int:
@@ -361,7 +378,7 @@ class TradeExecutor:
         return f"b1_{tag}_{s}_{rid}"[:36]
 
     # -------------------------
-    # Order retry helpers
+    # order retry helpers
     # -------------------------
     @staticmethod
     def _is_empty_invalid_response_err(e: Exception) -> bool:
@@ -427,7 +444,6 @@ class TradeExecutor:
         if last_exc:
             raise last_exc
         raise RuntimeError("retry failed with unknown state")
-
     def _verify_position_sync(self, symbol: str) -> Dict[str, Any]:
         if self.dry_run:
             return {"verify": "skip", "reason": "dry_run"}
@@ -519,7 +535,7 @@ class TradeExecutor:
         return {"poll": "ok", "result": self._summarize_order(last)}
 
     # -------------------------
-    # Equity helpers (LIVE cap için)
+    # equity helpers
     # -------------------------
     async def _get_futures_equity_usdt(self) -> float:
         try:
@@ -564,6 +580,7 @@ class TradeExecutor:
             return float(self._extract_equity_from_futures_account(acc))
         except Exception:
             return 0.0
+
     @staticmethod
     def _extract_equity_from_futures_account(acc: Any) -> float:
         try:
@@ -584,7 +601,7 @@ class TradeExecutor:
         return 0.0
 
     # -------------------------
-    # Telegram: SADECE OPEN/CLOSE
+    # Telegram: only OPEN/CLOSE
     # -------------------------
     def _tg_send(self, text: str) -> None:
         try:
@@ -694,7 +711,6 @@ class TradeExecutor:
 
     async def aclose(self) -> None:
         return await self.shutdown(reason="close")
-
     # -------------------------
     # backtest helper API
     # -------------------------
@@ -727,7 +743,7 @@ class TradeExecutor:
         return out
 
     # -------------------------
-    # position access via PositionManager
+    # position access
     # -------------------------
     def _get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         sym = str(symbol).upper()
@@ -812,8 +828,9 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
+
     # -------------------------
-    # Exchange order helpers (REAL)
+    # exchange order helpers
     # -------------------------
     def _exchange_open_market(
         self,
@@ -822,10 +839,6 @@ class TradeExecutor:
         qty: float,
         reduce_only: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """
-        REAL: Binance Futures market order (best-effort).
-        side: "long" -> BUY, "short" -> SELL
-        """
         sym = str(symbol).upper()
 
         if self.dry_run:
@@ -909,7 +922,6 @@ class TradeExecutor:
             except Exception:
                 pass
             raise
-
         dt = self._now_ms() - t0
 
         summ = self._summarize_order(resp)
@@ -1051,6 +1063,7 @@ class TradeExecutor:
         if side == "short":
             return (entry_price - exit_price) * qty
         return 0.0
+
     def _close_position(self, symbol: str, price: float, reason: str, interval: str) -> Optional[Dict[str, Any]]:
         pos = self._get_position(symbol)
         if not pos:
@@ -1068,7 +1081,6 @@ class TradeExecutor:
         entry_price = float(pos.get("entry_price") or 0.0)
         notional = float(pos.get("notional") or (qty * entry_price))
 
-        # close price fallback
         close_price = self._resolve_price(
             symbol=symbol,
             price=price,
@@ -1085,8 +1097,7 @@ class TradeExecutor:
             exit_price=float(close_price),
             qty=qty,
         )
-
-        # --- exchange close (real) ---
+        # exchange close (real)
         if self.dry_run:
             try:
                 self.logger.info("[EXEC] DRY_RUN=True close emri gönderilmeyecek.")
@@ -1262,12 +1273,12 @@ class TradeExecutor:
                     return self._close_position(symbol, float(live_price), reason="TRAILING_STOP_SHORT", interval=interval)
 
         return None
-
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
         whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.6))
         whale_veto_thr = float(getattr(config, "WHALE_VETO_THR", 0.6))
+
         base = float(self.base_order_notional)
         model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
 
@@ -1321,6 +1332,7 @@ class TradeExecutor:
             pass
 
         return float(notional)
+
     def open_position_from_signal(
         self,
         symbol: str,
@@ -1328,9 +1340,7 @@ class TradeExecutor:
         interval: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-
         meta0 = meta if isinstance(meta, dict) else {}
-
         sym_u = str(symbol).upper()
 
         side0 = str(side or "long").strip().lower()
@@ -1352,10 +1362,8 @@ class TradeExecutor:
             return {"status": "skip", "reason": "missing_price"}
 
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
-
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
-
         npct = float(npct) if npct is not None else None
 
         try:
@@ -1368,7 +1376,6 @@ class TradeExecutor:
         eq_fallback = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
 
         notional = None
-
         if npct is not None and npct > 0:
             base_eq = float(meta0.get("equity_usdt") or eq_fallback)
             notional = float(base_eq) * float(npct)
@@ -1380,20 +1387,17 @@ class TradeExecutor:
         notional = float(max(10.0, notional))
 
         qty = notional / float(price)
-
         qty = self._round_qty(qty)
 
         if qty <= 0:
             return {"status": "skip", "reason": "bad_qty"}
 
         cur = self._get_position(sym_u)
-
         cur_side = str(cur.get("side")).lower() if cur else None
 
         if cur_side in ("long", "short"):
             if cur_side == side0:
                 return {"status": "ok", "reason": "already_open_same_side"}
-
             self._close_position(sym_u, float(price), reason="FLIP_INTENT", interval=str(interval or ""))
 
         if not self.dry_run:
@@ -1401,10 +1405,9 @@ class TradeExecutor:
                 self._exchange_open_market(symbol=sym_u, side=side0, qty=float(qty), reduce_only=False)
             except Exception:
                 return {"status": "skip", "reason": "exchange_open_failed"}
+
         probs: Dict[str, float] = {}
-
         extra = dict(meta0)
-
         extra.setdefault("trail_pct", meta0.get("trail_pct", None))
         extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
 
@@ -1434,9 +1437,24 @@ class TradeExecutor:
             )
         except Exception:
             pass
-
         try:
             self._notify_position_open(sym_u, str(interval or ""), side0, float(qty), float(price), extra)
+        except Exception:
+            pass
+
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                out = rm.on_position_open(
+                    symbol=sym_u,
+                    side=side0,
+                    qty=float(qty),
+                    notional=float(notional),
+                    price=float(price),
+                    interval=str(interval or ""),
+                    meta={"reason": "INTENT_OPEN", **extra},
+                )
+                self._fire_and_forget(out, label="risk_on_open_intent")
         except Exception:
             pass
 
@@ -1450,6 +1468,7 @@ class TradeExecutor:
             "trail_pct": float(pos.get("trailing_pct") or 0.0),
             "stall_ttl_sec": int(pos.get("stall_ttl_sec") or 0),
         }
+
     def close_position(
         self,
         symbol: str,
@@ -1459,22 +1478,17 @@ class TradeExecutor:
         intent_id: Optional[str] = None,
         **_ignored: Any,
     ) -> Optional[Dict[str, Any]]:
-
         sym = str(symbol).upper().strip()
-
         if not sym:
             return None
 
         try:
             if intent_id:
-                self.logger.info(
-                    f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}"
-                )
+                self.logger.info(f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}")
         except Exception:
             pass
 
         p = self._resolve_price(symbol=sym, price=price)
-
         if p is None:
             p = 0.0
 
@@ -1484,6 +1498,61 @@ class TradeExecutor:
             reason=str(reason or "manual"),
             interval=str(interval or ""),
         )
+
+    def close_position_from_signal(
+        self,
+        symbol: str,
+        interval: str = "",
+        meta: Optional[Dict[str, Any]] = None,
+        direction: str = "",
+        price: Any = None,
+        exit_price: Any = None,
+    ) -> Dict[str, Any]:
+        sym_u = str(symbol).upper()
+        pos = self._get_position(sym_u)
+
+        if not pos:
+            return {"status": "skip", "reason": "no_position"}
+
+        p = self._resolve_price(
+            symbol=sym_u,
+            price=price,
+            mark_price=(meta or {}).get("mark_price") if isinstance(meta, dict) else None,
+            last_price=exit_price,
+        )
+
+        if p is None or p <= 0:
+            p = float(pos.get("entry_price") or 0.0) or 0.0
+
+        out = self._close_position(
+            sym_u,
+            float(p),
+            reason="INTENT_CLOSE",
+            interval=str(interval or pos.get("interval") or ""),
+        )
+
+        if out:
+            return {
+                "status": "closed" if not self.dry_run else "dry_run",
+                "symbol": sym_u,
+                "price": float(p),
+            }
+
+        return {"status": "skip", "reason": "close_failed"}
+
+    async def open_position(self, *args, **kwargs):
+        pm = getattr(self, "position_manager", None)
+        if pm is not None and hasattr(pm, "open_position"):
+            res = pm.open_position(*args, **kwargs)
+            try:
+                import inspect
+                if inspect.isawaitable(res):
+                    return await res
+            except Exception:
+                pass
+            return res
+        return None
+
     async def execute_trade(self, *args, **kwargs):
         return await self.open_position(*args, **kwargs)
 
@@ -1499,24 +1568,90 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-
         extra0 = extra if isinstance(extra, dict) else {}
-
         signal_u = self._signal_u_from_any(signal)
-
         side_norm = self._normalize_side(signal_u)
-
         sym_u = str(symbol).upper()
 
+        try:
+            p_used = extra0.get("ensemble_p")
+            if p_used is None:
+                p_used = extra0.get("p_buy_ema") or extra0.get("p_buy_raw")
+            if p_used is None and isinstance(probs, dict):
+                p_used = probs.get("p_used") or probs.get("p_single")
+
+            self.last_snapshot = {
+                "ts": datetime.utcnow().isoformat(),
+                "symbol": sym_u,
+                "interval": interval,
+                "signal": signal_u,
+                "signal_source": str(extra0.get("signal_source") or extra0.get("p_buy_source") or ""),
+                "p_used": p_used,
+                "p_single": probs.get("p_single") if isinstance(probs, dict) else None,
+                "p_buy_raw": extra0.get("p_buy_raw"),
+                "p_buy_ema": extra0.get("p_buy_ema"),
+                "whale_dir": extra0.get("whale_dir", "none"),
+                "whale_score": extra0.get("whale_score", 0.0),
+                "extra": extra0,
+            }
+        except Exception:
+            pass
         if signal_u == "HOLD":
+            try:
+                ens = extra0.get("ensemble_p")
+                mcf = extra0.get("model_confidence_factor")
+                pbe = extra0.get("p_buy_ema")
+                pbr = extra0.get("p_buy_raw")
+
+                p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
+                p_src = "ensemble_p" if ens is not None else ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
+
+                pv = self._clip_float(p_val, None)
+                if pv is not None:
+                    pv = max(0.0, min(1.0, pv))
+
+                self._append_hold_csv({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "symbol": sym_u,
+                    "interval": interval,
+                    "signal": "HOLD",
+                    "p": pv,
+                    "p_source": p_src,
+                    "ensemble_p": ens,
+                    "model_confidence_factor": mcf,
+                    "p_buy_ema": pbe,
+                    "p_buy_raw": pbr,
+                })
+            except Exception:
+                pass
+
             try:
                 self.logger.info("[EXEC] Signal=HOLD symbol=%s", sym_u)
             except Exception:
                 pass
             return
 
+        if self._truthy_env("SHADOW_MODE", "0"):
+            return
         if training_mode:
             return
+
+        try:
+            whale_dir = str(extra0.get("whale_dir", "none") or "none").lower()
+            whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
+            veto_thr = float(os.getenv("WHALE_VETO_THR", "0.70"))
+            if side_norm in ("long", "short") and whale_dir in ("long", "short"):
+                if whale_dir != side_norm and whale_score >= veto_thr:
+                    self.logger.info(
+                        "[EXEC][VETO] WHALE_VETO | side=%s whale_dir=%s whale_score=%.3f thr=%.2f -> SKIP",
+                        side_norm,
+                        whale_dir,
+                        whale_score,
+                        veto_thr,
+                    )
+                    return
+        except Exception:
+            pass
 
         live_price = self._resolve_price(
             symbol=sym_u,
@@ -1524,7 +1659,6 @@ class TradeExecutor:
             mark_price=extra0.get("mark_price"),
             last_price=extra0.get("last_price"),
         )
-
         if live_price is None or live_price <= 0:
             return
 
@@ -1544,25 +1678,51 @@ class TradeExecutor:
                 pass
 
             notional = self._compute_notional(sym_u, side_norm, float(live_price), extra0)
-
             qty = self._round_qty(notional / float(live_price))
 
         if qty <= 0:
             return
 
         cur = self._get_position(sym_u)
-
         cur_side = str(cur.get("side")).lower() if cur else None
 
         if cur_side in ("long", "short") and cur_side != side_norm:
             self._close_position(sym_u, float(live_price), reason="FLIP", interval=interval)
 
         cur2 = self._get_position(sym_u)
-
         cur2_side = str(cur2.get("side")).lower() if cur2 else None
 
         if cur2_side == side_norm:
             return
+
+        try:
+            ens = extra0.get("ensemble_p")
+            mcf = extra0.get("model_confidence_factor")
+            pbe = extra0.get("p_buy_ema")
+            pbr = extra0.get("p_buy_raw")
+            p_src = str(extra0.get("signal_source") or extra0.get("p_buy_source") or "p_used")
+
+            p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
+            if p_val is None and isinstance(probs, dict):
+                p_val = probs.get("p_used") or probs.get("p_single")
+            pv = self._clip_float(p_val, None)
+            if pv is not None:
+                pv = max(0.0, min(1.0, pv))
+
+            self._append_trade_csv({
+                "timestamp": datetime.utcnow().isoformat(),
+                "symbol": sym_u,
+                "interval": interval,
+                "signal": signal_u,
+                "p": pv,
+                "p_source": p_src,
+                "ensemble_p": ens,
+                "model_confidence_factor": mcf,
+                "p_buy_ema": pbe,
+                "p_buy_raw": pbr,
+            })
+        except Exception:
+            pass
 
         if not self.dry_run:
             try:
@@ -1586,7 +1746,6 @@ class TradeExecutor:
         )
 
         self._set_position(sym_u, pos)
-
         try:
             self.logger.info(
                 "[EXEC] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f interval=%s dry_run=%s",
@@ -1612,5 +1771,38 @@ class TradeExecutor:
             )
         except Exception:
             pass
+
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                _side = str(side_norm).strip().lower()
+                if _side not in ("long", "short"):
+                    _side = "long" if signal_u == "BUY" else ("short" if signal_u == "SELL" else "hold")
+
+                _meta: Dict[str, Any] = {}
+                try:
+                    if isinstance(extra0, dict):
+                        _meta = dict(extra0)
+                except Exception:
+                    _meta = {}
+
+                payload_meta = {"reason": "EXEC_OPEN", **_meta}
+
+                out = rm.on_position_open(
+                    symbol=sym_u,
+                    side=_side,
+                    qty=float(qty),
+                    notional=float(notional),
+                    price=float(live_price),
+                    interval=str(interval or ""),
+                    meta=payload_meta,
+                )
+                self._fire_and_forget(out, label="risk_on_open_exec")
+        except Exception:
+            try:
+                if getattr(self, "logger", None):
+                    self.logger.exception("[EXEC] risk_manager.on_position_open failed")
+            except Exception:
+                pass
 
         return
