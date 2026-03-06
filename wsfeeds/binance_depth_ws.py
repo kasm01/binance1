@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import websockets  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:
     websockets = None  # type: ignore
 
 
@@ -28,28 +28,6 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 
 class BinanceDepthWS:
-    """
-    Binance Futures depth stream (default: depth5@100ms).
-    - websockets ile çalışır (websocket-client ile isim çakışmasını önler).
-    - last snapshot saklar
-    - opsiyonel MarketMetaBuilder'a update_orderbook ile otomatik basar
-    - opsiyonel PriceCache'e best bid/ask yazar (mid tek kaynaktan okunur)
-
-    main.py:
-        from core.price_cache import PriceCache
-        price_cache = PriceCache()
-
-        depth_ws = BinanceDepthWS(
-            symbol=symbol,
-            builder=market_meta_builder,
-            tfs=list(mtf_intervals),
-            price_cache=price_cache,
-        )
-        depth_ws.run_background()
-
-        mid = price_cache.get_mid(symbol, max_age_sec=2.0)
-    """
-
     def __init__(
         self,
         *,
@@ -63,30 +41,26 @@ class BinanceDepthWS:
         reconnect_max_backoff_s: float = 30.0,
         ping_interval_s: float = 20.0,
         ping_timeout_s: float = 20.0,
-        # NEW: single-source mid-price cache (optional)
         price_cache: Any = None,
+        redis_price_cache: Any = None,
     ) -> None:
         self.symbol = str(symbol).upper().strip()
 
-        # fstream (USDT-M Futures)
         base = url or os.getenv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/ws")
-
-        # depth5@100ms default
         stream = depth_stream or os.getenv("BINANCE_DEPTH_STREAM", f"{self.symbol.lower()}@depth5@100ms")
         self.ws_url = f"{base}/{stream}"
 
         self.logger = logger_ or logger
-
         self.builder = builder
-        self.tfs = [str(x) for x in (tfs or [])]  # builder'a hangi TF'lere basılacak
+        self.tfs = [str(x) for x in (tfs or [])]
         self.store_every_ms = int(max(0, store_every_ms))
 
         self.reconnect_max_backoff_s = float(max(1.0, reconnect_max_backoff_s))
         self.ping_interval_s = float(max(5.0, ping_interval_s))
         self.ping_timeout_s = float(max(5.0, ping_timeout_s))
 
-        # NEW: PriceCache (core.price_cache.PriceCache)
         self.price_cache = price_cache
+        self.redis_price_cache = redis_price_cache
 
         self._thread: Optional[threading.Thread] = None
         self._stop_flag = threading.Event()
@@ -94,10 +68,6 @@ class BinanceDepthWS:
         self._lock = threading.Lock()
         self._last_depth: Optional[Dict[str, Any]] = None
         self._last_store_ts: float = 0.0
-
-    # --------------------------
-    # Public
-    # --------------------------
     def run_background(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -107,7 +77,11 @@ class BinanceDepthWS:
             return
 
         self._stop_flag.clear()
-        self._thread = threading.Thread(target=self._thread_main, name="binance-depth-ws", daemon=True)
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name="binance-depth-ws",
+            daemon=True,
+        )
         self._thread.start()
         self.logger.info("[DEPTHWS] thread started url=%s", self.ws_url)
 
@@ -123,9 +97,6 @@ class BinanceDepthWS:
         with self._lock:
             return dict(self._last_depth) if isinstance(self._last_depth, dict) else None
 
-    # --------------------------
-    # Internal
-    # --------------------------
     def _thread_main(self) -> None:
         try:
             loop = asyncio.new_event_loop()
@@ -178,9 +149,6 @@ class BinanceDepthWS:
                 if not isinstance(msg, dict):
                     continue
 
-                # depth stream payload:
-                # bids: msg["b"] = [["price","qty"],...]
-                # asks: msg["a"] = [["price","qty"],...]
                 bids_raw = msg.get("b")
                 asks_raw = msg.get("a")
                 if not isinstance(bids_raw, list) or not isinstance(asks_raw, list):
@@ -208,21 +176,29 @@ class BinanceDepthWS:
                         if p > 0 and q >= 0:
                             asks.append((p, q))
 
-                # sort best first (Binance genelde zaten sıralı gelir ama garanti edelim)
                 bids.sort(key=lambda t: t[0], reverse=True)
                 asks.sort(key=lambda t: t[0], reverse=False)
 
-                # NEW: best bid/ask -> PriceCache (mid tek kaynaktan)
+                # best bid/ask -> PriceCache
                 if self.price_cache is not None and bids and asks:
                     try:
                         best_bid = float(bids[0][0])
                         best_ask = float(asks[0][0])
-                        # PriceCache API: set_bid_ask(symbol, bid, ask, ts?)
+
                         if hasattr(self.price_cache, "set_bid_ask"):
                             self.price_cache.set_bid_ask(self.symbol, best_bid, best_ask, ts=now)
                     except Exception:
                         pass
 
+                if self.redis_price_cache is not None and bids and asks:
+                    try:
+                        best_bid = float(bids[0][0])
+                        best_ask = float(asks[0][0])
+
+                        if hasattr(self.redis_price_cache, "set_bid_ask"):
+                            self.redis_price_cache.set_bid_ask(self.symbol, best_bid, best_ask, ts=now)
+                    except Exception:
+                        pass
                 snap: Dict[str, Any] = {
                     "ts": now,
                     "symbol": self.symbol,
@@ -235,13 +211,10 @@ class BinanceDepthWS:
                     self._last_depth = snap
                     self._last_store_ts = now
 
-                # Builder'a otomatik bas
                 if self.builder is not None:
                     try:
-                        # TF listesi verildiyse hepsine güncelle; yoksa "5m" default gibi davran
                         tfs = self.tfs or ["5m"]
                         for tf in tfs:
-                            # builder.update_orderbook(symbol, tf, bids=..., asks=..., ts_sec=...)
                             if hasattr(self.builder, "update_orderbook"):
                                 self.builder.update_orderbook(
                                     self.symbol,

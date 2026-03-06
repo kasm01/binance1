@@ -1,4 +1,3 @@
-# core/price_cache.py
 from __future__ import annotations
 
 import threading
@@ -13,7 +12,7 @@ class PriceSnapshot:
     bid: float
     ask: float
     mid: float
-    ts: float      # time.time()
+    ts: float  # time.time()
 
 
 class PriceCache:
@@ -30,8 +29,9 @@ class PriceCache:
     def set_bid_ask(self, symbol: str, bid: float, ask: float, ts: Optional[float] = None) -> None:
         if bid <= 0 or ask <= 0:
             return
+
         if ask < bid:
-            # bazen anlık terslik -> yine de koruyalım
+            # bazen anlık terslik olabilir, düzeltelim
             bid, ask = min(bid, ask), max(bid, ask)
 
         now = time.time() if ts is None else float(ts)
@@ -39,7 +39,11 @@ class PriceCache:
 
         with self._lock:
             self._data[symbol.upper()] = PriceSnapshot(
-                symbol=symbol.upper(), bid=float(bid), ask=float(ask), mid=float(mid), ts=now
+                symbol=symbol.upper(),
+                bid=float(bid),
+                ask=float(ask),
+                mid=float(mid),
+                ts=now,
             )
 
     def get(self, symbol: str) -> Optional[PriceSnapshot]:
@@ -50,6 +54,8 @@ class PriceCache:
         snap = self.get(symbol)
         if not snap:
             return None
+
         if max_age_sec > 0 and (time.time() - snap.ts) > max_age_sec:
             return None
+
         return snap.mid
