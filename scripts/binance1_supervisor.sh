@@ -11,6 +11,7 @@ set -euo pipefail
 # - Backpressure guard: XLEN(exec_events_stream) -> scanner throttle factor
 # - XTRIM retention
 # - Optional stuck reset policy
+# - Reconcile helper (orch state <-> executor state)
 # =========================
 
 BASE_DIR="${BASE_DIR:-$HOME/binance1}"
@@ -23,6 +24,7 @@ SUP_LOG_DIR="$BASE_DIR/logs/supervisor"
 mkdir -p "$SUP_LOG_DIR"
 SUP_LOG="$SUP_LOG_DIR/supervisor.log"
 MAIN_LOG="$BASE_DIR/logs/main.log"
+RECON_LOG="$SUP_LOG_DIR/reconcile.log"
 
 CHECK_EVERY_SEC="${CHECK_EVERY_SEC:-10}"
 LOG_MAX_BYTES="${LOG_MAX_BYTES:-10485760}"   # 10MB
@@ -43,7 +45,7 @@ REDIS_DB="${REDIS_DB:-0}"
 
 # Telegram
 SUP_TG_ENABLED="${SUP_TG_ENABLED:-1}"
-SUP_TG_COOLDOWN_SEC="${SUP_TG_COOLDOWN_SEC:-300}"          # per-key
+SUP_TG_COOLDOWN_SEC="${SUP_TG_COOLDOWN_SEC:-300}"
 SUP_TG_SILENT="${SUP_TG_SILENT:-1}"
 SUP_TG_HEALTH_MODE="${SUP_TG_HEALTH_MODE:-change}"         # change|periodic|off
 SUP_TG_HEALTH_MIN_INTERVAL_SEC="${SUP_TG_HEALTH_MIN_INTERVAL_SEC:-1800}"
@@ -60,9 +62,7 @@ SUP_XAUTOCLAIM_MIN_IDLE_MS="${SUP_XAUTOCLAIM_MIN_IDLE_MS:-60000}"
 SUP_XAUTOCLAIM_COUNT="${SUP_XAUTOCLAIM_COUNT:-50}"
 SUP_XAUTOCLAIM_EVERY_TICKS="${SUP_XAUTOCLAIM_EVERY_TICKS:-3}"
 
-# Stuck reset policy (DANGEROUS if used wrong)
-# - none (default)
-# - setid_tail: if lag high for consecutive ticks AND pending==0 -> XGROUP SETID ... $
+# Stuck reset policy
 SUP_STUCK_RESET_MODE="${SUP_STUCK_RESET_MODE:-none}"       # none|setid_tail
 SUP_STUCK_CONSEC_TICKS="${SUP_STUCK_CONSEC_TICKS:-6}"
 SUP_STUCK_RESET_EVERY_TICKS="${SUP_STUCK_RESET_EVERY_TICKS:-3}"
@@ -82,9 +82,15 @@ SUP_BP_EVERY_TICKS="${SUP_BP_EVERY_TICKS:-1}"
 
 # XTRIM retention
 SUP_TRIM_ENABLED="${SUP_TRIM_ENABLED:-1}"
-SUP_TRIM_MAXLEN="${SUP_TRIM_MAXLEN:-50000}"               # must be int
+SUP_TRIM_MAXLEN="${SUP_TRIM_MAXLEN:-50000}"
 SUP_TRIM_EVERY_TICKS="${SUP_TRIM_EVERY_TICKS:-6}"
-SUP_TRIM_STREAMS="${SUP_TRIM_STREAMS:-signals_stream,candidates_stream,top5_stream,trade_intents_stream,exec_events_stream}" # comma list
+SUP_TRIM_STREAMS="${SUP_TRIM_STREAMS:-signals_stream,candidates_stream,top5_stream,trade_intents_stream,exec_events_stream}"
+
+# Reconcile
+RUN_RECONCILE_ON_START="${RUN_RECONCILE_ON_START:-1}"
+RUN_RECONCILE_DRY_EVERY_TICKS="${RUN_RECONCILE_DRY_EVERY_TICKS:-18}"
+RECONCILE_SCRIPT="${RECONCILE_SCRIPT:-$BASE_DIR/scripts/reconcile_positions.py}"
+
 # ------------ utils ------------
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "[$(ts)] $*" | tee -a "$SUP_LOG" >/dev/null; }
@@ -155,8 +161,28 @@ start_main() {
   sleep 1
 }
 
+run_reconcile_apply() {
+  [[ "$RUN_RECONCILE_ON_START" == "1" ]] || return 0
+  [[ -x "$VENV_PY" ]] || return 0
+  [[ -f "$RECONCILE_SCRIPT" ]] || return 0
+
+  log "INFO reconcile apply start"
+  "$VENV_PY" "$RECONCILE_SCRIPT" --apply --apply-exec >>"$RECON_LOG" 2>&1 || true
+  log "INFO reconcile apply done"
+}
+
+run_reconcile_dry() {
+  [[ "$RUN_RECONCILE_DRY_EVERY_TICKS" =~ ^[0-9]+$ ]] || return 0
+  [[ "$RUN_RECONCILE_DRY_EVERY_TICKS" -gt 0 ]] || return 0
+  [[ -x "$VENV_PY" ]] || return 0
+  [[ -f "$RECONCILE_SCRIPT" ]] || return 0
+
+  "$VENV_PY" "$RECONCILE_SCRIPT" >>"$RECON_LOG" 2>&1 || true
+}
+
 # ------------ telegram ------------
 TG_CD_FILE="$SUP_LOG_DIR/tg_cooldowns.json"
+
 tg_cd_get() {
   local key="$1"
   [[ -f "$TG_CD_FILE" ]] || { echo "0"; return 0; }
@@ -168,6 +194,7 @@ except Exception: obj={}
 print(int(obj.get(k,0)))
 PY
 }
+
 tg_cd_set() {
   local key="$1"; local now_ts; now_ts="$(date +%s)"
   python3 - <<PY 2>/dev/null || true
@@ -185,6 +212,7 @@ PY
 tg_send() {
   [[ "$SUP_TG_ENABLED" == "1" ]] || return 0
   need curl || return 0
+
   local token="${TELEGRAM_BOT_TOKEN:-}"
   local chat_id="${TELEGRAM_CHAT_ID:-}"
   [[ -n "$token" && -n "$chat_id" && "$token" != "SET" && "$chat_id" != "SET" ]] || return 0
@@ -201,23 +229,20 @@ tg_send() {
     -d "disable_notification=${silent}" >/dev/null 2>&1 || true
 }
 
-# normalized telegram line
 tg_line() {
-  # usage: tg_line "LEVEL" "msg..."
   local lvl="$1"; shift
   echo "binance1 | ${lvl} | $(ts) | $*"
 }
-
-# ------------ state (anti-spam) ------------
-declare -A LAST_GROUP_STATE   # key=stream:group -> OK/WARN/MISS
-declare -A STUCK_CNT          # key=stream:group -> consec warn ticks
+# ------------ state ------------
+declare -A LAST_GROUP_STATE
+declare -A STUCK_CNT
 LAST_HEALTH_TG_TS=0
-LAST_HEALTH_SIG=""           # redis|orch|main|thr|xlen_bucket
-LAST_THR_SENT=""             # last throttle sent for bp alerts
+LAST_HEALTH_SIG=""
+LAST_BP_STATE=""
+LAST_THR_SENT=""
 
 # ------------ group health ------------
 group_stats() {
-  # prints: pending lag  (or: -1 -1)
   local stream="$1" group="$2"
   redis-cli -n "$REDIS_DB" --raw XINFO GROUPS "$stream" 2>/dev/null | awk -v g="$group" '
     BEGIN{found=0; p=-1; l=-1;}
@@ -250,7 +275,6 @@ check_group_health() {
       state="OK"
     fi
 
-    # state-change alert only
     if [[ "${LAST_GROUP_STATE[$key]:-}" != "$state" ]]; then
       LAST_GROUP_STATE[$key]="$state"
       if [[ "$state" == "WARN" ]]; then
@@ -265,7 +289,6 @@ check_group_health() {
       fi
     fi
 
-    # stuck counter (only when WARN)
     if [[ "$state" == "WARN" ]]; then
       STUCK_CNT[$key]=$(( ${STUCK_CNT[$key]:-0} + 1 ))
     else
@@ -274,7 +297,6 @@ check_group_health() {
   done
 }
 
-# ------------ stuck reset policy ------------
 stuck_reset_policy() {
   [[ "$SUP_STUCK_RESET_MODE" != "none" ]] || return 0
   redis_ok || return 0
@@ -290,7 +312,6 @@ stuck_reset_policy() {
     pending="$(awk '{print $1}' <<<"$stats")"
     lag="$(awk '{print $2}' <<<"$stats")"
 
-    # only safe-ish condition
     if [[ "$pending" == "0" && "$lag" -ge "$SUP_LAG_WARN" ]]; then
       if [[ "$SUP_STUCK_RESET_MODE" == "setid_tail" ]]; then
         log "WARN stuck reset(setid_tail): $key pending=0 lag=$lag -> XGROUP SETID $"
@@ -302,16 +323,30 @@ stuck_reset_policy() {
   done
 }
 
-# ------------ XAUTOCLAIM self-heal ------------
 recover_pending() {
   [[ "$SUP_XAUTOCLAIM_ENABLED" == "1" ]] || return 0
   redis_ok || return 0
 
-  local IFS=',' pair stream group out claimed total=0
+  local IFS=',' pair stream group stats pending lag out claimed total=0
   for pair in $SUP_GROUP_CHECKS; do
-    stream="${pair%%:*}"; group="${pair#*:}"
+    stream="${pair%%:*}"
+    group="${pair#*:}"
+
+    # exec_events_stream için supervisor claim yapmaz
+    if [[ "$stream" == "$EXEC_EVENTS_STREAM" ]]; then
+      continue
+    fi
+
+    stats="$(group_stats "$stream" "$group" || echo "-1 -1")"
+    pending="$(awk '{print $1}' <<<"$stats")"
+    lag="$(awk '{print $2}' <<<"$stats")"
+
+    [[ "$pending" =~ ^[0-9]+$ ]] || continue
+    [[ "$pending" -gt 0 ]] || continue
+
     out="$(redis-cli -n "$REDIS_DB" XAUTOCLAIM "$stream" "$group" "supervisor_recover" \
       "$SUP_XAUTOCLAIM_MIN_IDLE_MS" 0 COUNT "$SUP_XAUTOCLAIM_COUNT" 2>/dev/null || true)"
+
     claimed="$(printf "%s\n" "$out" | grep -E '^[0-9]{13,}-[0-9]+$' | wc -l | tr -d ' ' || true)"
     [[ "${claimed:-0}" -gt 0 ]] && total=$((total + claimed))
   done
@@ -321,8 +356,6 @@ recover_pending() {
     tg_send "xautoclaim_repair" "$(tg_line "INFO" "xautoclaim_repaired claimed=$total")"
   fi
 }
-
-# ------------ backpressure guard ------------
 backpressure_guard() {
   [[ "$SUP_BACKPRESSURE_ENABLED" == "1" ]] || return 0
   redis_ok || return 0
@@ -344,16 +377,14 @@ backpressure_guard() {
   [[ "$next" -lt "$SUP_BP_MIN" ]] && next="$SUP_BP_MIN"
   [[ "$next" -gt "$SUP_BP_MAX" ]] && next="$SUP_BP_MAX"
 
-  # refresh TTL while pressure exists OR throttle > 1
   if [[ "$xlen" -gt "$SUP_BP_LOW_WATER" || "$next" -gt 1 ]]; then
     redis_set_throttle "$next" "$SUP_BP_TTL_SEC"
   fi
 
-  # alert only on actual change
-  if [[ "$next" != "$cur" ]]; then
+  if [[ "$next" != "$cur" if [[ "$next" != "$cur" ]]; thenif [[ "$next" != "$cur" ]]; then "$LAST_BP_STATE" != "$next" ]]; then
+      LAST_BP_STATE="$next"
     if [[ "$action" == "up" ]]; then
       log "WARN BACKPRESSURE XLEN=$xlen > $SUP_BP_HIGH_WATER throttle $cur->$next ttl=${SUP_BP_TTL_SEC}s"
-      # avoid spamming: only when throttle level changes
       if [[ "$LAST_THR_SENT" != "$next" ]]; then
         LAST_THR_SENT="$next"
         tg_send "bp_up" "$(tg_line "ALERT" "backpressure XLEN(${EXEC_EVENTS_STREAM})=$xlen hi=$SUP_BP_HIGH_WATER throttle=$next ttl=${SUP_BP_TTL_SEC}s")"
@@ -366,7 +397,6 @@ backpressure_guard() {
   fi
 }
 
-# ------------ XTRIM retention ------------
 trim_streams() {
   [[ "$SUP_TRIM_ENABLED" == "1" ]] || return 0
   redis_ok || return 0
@@ -376,12 +406,10 @@ trim_streams() {
   for s in $SUP_TRIM_STREAMS; do
     s="$(echo "$s" | xargs)"
     [[ -z "$s" ]] && continue
-    # XTRIM key MAXLEN ~ <count>
     redis-cli -n "$REDIS_DB" XTRIM "$s" MAXLEN ~ "$SUP_TRIM_MAXLEN" >/dev/null 2>&1 || true
   done
 }
 
-# ------------ health reporting (telegram anti-spam) ------------
 health_report() {
   local redis="down" main="down" orch thr xlen bucket sig now
   redis_ok && redis="up"
@@ -391,12 +419,14 @@ health_report() {
   xlen="$(redis-cli -n "$REDIS_DB" XLEN "$EXEC_EVENTS_STREAM" 2>/dev/null | tr -d '\r' || echo "?")"
   thr="$(redis_get_int "$SUP_BP_THROTTLE_KEY")"; [[ -z "${thr:-}" ]] && thr="$SUP_BP_MIN"
 
-  # bucketize xlen to reduce noise
   bucket="ok"
   if [[ "$xlen" =~ ^[0-9]+$ ]]; then
-    if [[ "$xlen" -gt "$SUP_BP_HIGH_WATER" ]]; then bucket="hi"
-    elif [[ "$xlen" -lt "$SUP_BP_LOW_WATER" ]]; then bucket="lo"
-    else bucket="mid"
+    if [[ "$xlen" -gt "$SUP_BP_HIGH_WATER" ]]; then
+      bucket="hi"
+    elif [[ "$xlen" -lt "$SUP_BP_LOW_WATER" ]]; then
+      bucket="lo"
+    else
+      bucket="mid"
     fi
   else
     bucket="na"
@@ -410,12 +440,13 @@ health_report() {
 
   if [[ "$SUP_TG_HEALTH_MODE" == "change" ]]; then
     if [[ "$sig" != "$LAST_HEALTH_SIG" ]] && [[ $((now - LAST_HEALTH_TG_TS)) -ge "$SUP_TG_HEALTH_MIN_INTERVAL_SEC" ]]; then
+LAST_BP_STATE=""
       LAST_HEALTH_SIG="$sig"
+LAST_BP_STATE=""
       LAST_HEALTH_TG_TS="$now"
       tg_send "health" "$(tg_line "HEALTH" "redis=$redis orch=$orch main=$main xlen_exec=$xlen throttle=$thr")"
     fi
   else
-    # periodic
     if [[ $((now - LAST_HEALTH_TG_TS)) -ge "$SUP_TG_HEALTH_MIN_INTERVAL_SEC" ]]; then
       LAST_HEALTH_TG_TS="$now"
       tg_send "health" "$(tg_line "HEALTH" "redis=$redis orch=$orch main=$main xlen_exec=$xlen throttle=$thr")"
@@ -427,6 +458,7 @@ health_report() {
 SHUTDOWN_REQ=0
 _on_term() { SHUTDOWN_REQ=1; log "INFO SIGTERM/INT -> shutdown requested"; }
 trap _on_term SIGTERM SIGINT
+
 # ------------ main loop ------------
 main_loop() {
   cd "$BASE_DIR" || exit 1
@@ -436,6 +468,7 @@ main_loop() {
   log "INFO supervisor started base=$BASE_DIR dry_run=$DRY_RUN armed=$ARMED kill=$LIVE_KILL_SWITCH manage_orch=$MANAGE_ORCH_SERVICE"
 
   ensure_orch_service
+  run_reconcile_apply
   start_main
   health_report
 
@@ -446,6 +479,7 @@ main_loop() {
 
     rotate_log "$SUP_LOG"
     rotate_log "$MAIN_LOG"
+    rotate_log "$RECON_LOG"
 
     if ! redis_ok; then
       log "WARN redis ping failed (retry)"
@@ -460,6 +494,7 @@ main_loop() {
       log "WARN main.py down -> restart"
       tg_send "main_down" "$(tg_line "ALERT" "main.py DOWN -> restarting")"
       start_main
+      run_reconcile_dry
     fi
 
     if [[ $((tick % SUP_BP_EVERY_TICKS)) -eq 0 ]]; then
@@ -477,6 +512,12 @@ main_loop() {
 
     if [[ $((tick % SUP_TRIM_EVERY_TICKS)) -eq 0 ]]; then
       trim_streams
+    fi
+
+    if [[ "$RUN_RECONCILE_DRY_EVERY_TICKS" =~ ^[0-9]+$ ]] && [[ "$RUN_RECONCILE_DRY_EVERY_TICKS" -gt 0 ]]; then
+      if [[ $((tick % RUN_RECONCILE_DRY_EVERY_TICKS)) -eq 0 ]]; then
+        run_reconcile_dry
+      fi
     fi
 
     if [[ $((tick % 6)) -eq 0 ]]; then
