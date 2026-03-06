@@ -78,6 +78,7 @@ from core.trade_executor import TradeExecutor
 
 from core.market_meta_builder import MarketMetaBuilder
 from core.price_cache import PriceCache
+from core.redis_price_cache import RedisPriceCache
 from data.anomaly_detection import AnomalyDetector
 from data.whale_detector import MultiTimeframeWhaleDetector
 
@@ -735,8 +736,10 @@ class ShutdownManager:
 
 _shutdown_mgr = ShutdownManager()
 
-
-def create_trading_objects() -> Dict[str, Any]:
+def create_trading_objects(
+    price_cache: Optional[PriceCache] = None,
+    redis_price_cache: Optional[RedisPriceCache] = None,
+) -> Dict[str, Any]:
     global system_logger
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN, USE_TESTNET
@@ -864,6 +867,7 @@ def create_trading_objects() -> Dict[str, Any]:
     registry = ModelRegistry(model_dir=MODELS_DIR)
     mtf_intervals = parse_csv_env_list("MTF_INTERVALS", MTF_INTERVALS_DEFAULT)
 
+    # --- Market meta (depth-based) ---
     depth_ws = None
     market_meta_builder = None
     try:
@@ -880,10 +884,17 @@ def create_trading_objects() -> Dict[str, Any]:
                 builder=market_meta_builder,
                 tfs=list(mtf_intervals),
                 price_cache=price_cache,
+                redis_price_cache=redis_price_cache,
             )
             depth_ws.run_background()
             if system_logger:
-                system_logger.info("[DEPTHWS] enabled | symbol=%s tfs=%s", symbol, list(mtf_intervals))
+                system_logger.info(
+                    "[DEPTHWS] enabled | symbol=%s tfs=%s price_cache=%s redis_price_cache=%s",
+                    symbol,
+                    list(mtf_intervals),
+                    price_cache is not None,
+                    redis_price_cache is not None,
+                )
         else:
             if system_logger:
                 system_logger.info("[DEPTHWS] disabled (ENABLE_DEPTH_WS!=1 or mtf_intervals empty)")
@@ -892,7 +903,6 @@ def create_trading_objects() -> Dict[str, Any]:
         market_meta_builder = None
         if system_logger:
             system_logger.warning("[DEPTHWS] init failed: %s", e)
-
     hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
 
     mtf_ensemble = None
@@ -963,8 +973,9 @@ def create_trading_objects() -> Dict[str, Any]:
         atr_tp_mult=atr_tp_mult,
         whale_risk_boost=whale_risk_boost,
         tg_bot=tg_bot,
+        price_cache=price_cache,
+        redis_price_cache=redis_price_cache,
     )
-
     try:
         if hasattr(trade_executor, "set_price_cache"):
             trade_executor.set_price_cache(price_cache)
@@ -1039,6 +1050,7 @@ def create_trading_objects() -> Dict[str, Any]:
         "okx_ws": okx_ws,
         "market_meta_builder": market_meta_builder,
         "price_cache": price_cache,
+        "redis_price_cache": redis_price_cache,
     }
 
 
@@ -1860,8 +1872,19 @@ async def async_main() -> None:
     else:
         if system_logger:
             system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
+    price_cache = PriceCache()
+    redis_price_cache = RedisPriceCache()
 
-    trading_objects = create_trading_objects()
+    if system_logger:
+        system_logger.info(
+            "[PRICECACHE] initialized | memory_cache=%s redis_cache=%s",
+            True,
+            bool(getattr(redis_price_cache, "is_available", lambda: False)()),
+        )
+    trading_objects = create_trading_objects(
+        price_cache=price_cache,
+        redis_price_cache=redis_price_cache,
+    )
     engine = HeavyEngine(trading_objects)
 
     try:
