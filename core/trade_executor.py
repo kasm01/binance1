@@ -903,7 +903,38 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
+    def _should_force_close_by_whale(
+        self,
+        side: str,
+        extra: Dict[str, Any],
+        pnl_pct: float,
+    ) -> bool:
+        try:
+            if not self._truthy_env("WHALE_FORCE_EXIT_ENABLE", "0"):
+                return False
 
+            whale_dir = str(extra.get("whale_dir", "none") or "none").lower()
+            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+
+            thr = float(os.getenv("WHALE_FORCE_EXIT_THR", "0.72"))
+            min_pnl_pct = float(os.getenv("WHALE_FORCE_EXIT_MIN_PNL_PCT", "-0.003"))
+            profit_only = self._truthy_env("WHALE_FORCE_EXIT_ON_PROFIT_ONLY", "0")
+
+            if whale_dir not in ("long", "short"):
+                return False
+            if side not in ("long", "short"):
+                return False
+            if whale_dir == side:
+                return False
+            if whale_score < thr:
+                return False
+
+            if profit_only:
+                return float(pnl_pct) > 0.0
+
+            return float(pnl_pct) >= float(min_pnl_pct)
+        except Exception:
+            return False
     # -------------------------
     # exchange order helpers
     # -------------------------

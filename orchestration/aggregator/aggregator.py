@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from orchestration.aggregator.scoring import compute_score, pass_quality_gates
 from orchestration.event_bus.redis_bus import RedisBus
@@ -60,9 +60,15 @@ def _norm_side_candidate(x: Any) -> str:
         return "long"
     if s in ("sell", "short"):
         return "short"
-    if s in ("none", "hold", ""):
-        return "none"
-    # unknown -> none (fail closed)
+    return "none"
+
+
+def _norm_whale_dir(x: Any) -> str:
+    s = str(x or "").strip().lower()
+    if s in ("buy", "long", "inflow", "in"):
+        return "long"
+    if s in ("sell", "short", "outflow", "out"):
+        return "short"
     return "none"
 
 
@@ -77,15 +83,12 @@ class Aggregator:
     """
     signals_stream -> candidates_stream
 
-    Reads SignalEvent, applies:
-      - quality gates (hard)
-      - dedup/cooldown (spam-killer)
-      - scoring (0..1)
-    Publishes CandidateTrade-like dict to candidates_stream.
-
-    NOTE:
-      - price passthrough is CRITICAL (downstream needs it).
-      - run as module: python -m orchestration.aggregator.aggregator
+    SignalEvent alır:
+      - hard quality gates
+      - dedup/cooldown
+      - base scoring
+      - whale overlay (bonus / veto / contra tagging)
+    uygular ve CandidateTrade benzeri payload basar.
     """
 
     def __init__(
@@ -102,53 +105,117 @@ class Aggregator:
         self.consumer = str(os.getenv("AGG_CONSUMER", consumer))
         self.topk_out = int(_env_int("AGG_TOPK_OUT", int(topk_out)))
 
-        # cooldown / dedup
-        # NOTE: DupGuard lives in orchestration/state/dup_guard.py (existing in your repo)
-        from orchestration.state.dup_guard import DupGuard  # local import: avoids import cycle
+        from orchestration.state.dup_guard import DupGuard
 
-        self.dup = DupGuard(bus, prefix=os.getenv("AGG_DUP_PREFIX", "aggdup"), default_cooldown_sec=int(cooldown_sec))
+        self.dup = DupGuard(
+            bus,
+            prefix=os.getenv("AGG_DUP_PREFIX", "aggdup"),
+            default_cooldown_sec=int(cooldown_sec),
+        )
 
-        # raw payload stream'i şişirebilir; env ile kapatılabilir
         self.include_raw = _env_bool("CANDIDATE_INCLUDE_RAW", include_raw_default)
-
-        # "0 trade normal" mantığının aggregator versiyonu:
-        # skor bu eşikten küçükse candidates_stream'e basma.
         self.min_score = float(_env_float("AGG_MIN_SCORE", 0.0))
-
-        # read tuning
         self.read_count = int(_env_int("AGG_READ_COUNT", 300))
         self.block_ms = int(_env_int("AGG_BLOCK_MS", 1000))
-
-        # debug: neden drop oldu görmek için (smoke testte kullandın)
         self.debug_drops = _env_bool("AGG_DEBUG_DROPS", False)
+
+        self.require_price = _env_bool("AGG_REQUIRE_PRICE", True)
+
+        self.whale_veto_enable = _env_bool("AGG_WHALE_VETO_ENABLE", True)
+        self.whale_bonus_enable = _env_bool("AGG_WHALE_BONUS_ENABLE", True)
+        self.whale_veto_thr = float(_env_float("WHALE_VETO_THR", 0.70))
+        self.whale_confirm_thr = float(_env_float("WHALE_CONFIRM_THR", 0.60))
+        self.whale_bonus = float(_env_float("AGG_WHALE_BONUS", 0.08))
+        self.whale_contra_penalty = float(_env_float("AGG_WHALE_CONTRA_PENALTY", 0.12))
+        self.trend_bonus = float(_env_float("WHALE_TREND_BONUS", 1.15))
+        self.range_penalty = float(_env_float("WHALE_RANGE_PENALTY", 0.65))
 
     def _normalize_event(self, mid: str, evt: Dict[str, Any]) -> Dict[str, Any]:
         e = dict(evt)
 
         sym = str(e.get("symbol", "") or "").upper().strip()
-        if sym:
-            e["symbol"] = sym
+        e["symbol"] = sym
 
         itv = str(e.get("interval", "") or "").strip() or "5m"
         e["interval"] = itv
 
-        e["side_candidate"] = _norm_side_candidate(e.get("side_candidate", "none"))
+        side = _norm_side_candidate(e.get("side_candidate", e.get("side", "none")))
+        e["side_candidate"] = side
 
         if not e.get("ts_utc"):
             e["ts_utc"] = _ts_from_stream_id(mid)
 
-        # --- PRICE normalize (critical) ---
-        p = _safe_float(e.get("price", 0.0), 0.0)
-        e["price"] = float(p) if p > 0 else 0.0
+        price = _safe_float(e.get("price", 0.0), 0.0)
+        e["price"] = float(price) if price > 0 else 0.0
 
-        # dedup_key standard
+        e["score_edge"] = _clamp01(e.get("score_edge", e.get("model_score", 0.0)))
+        e["confidence"] = _clamp01(e.get("confidence", 0.0))
+        e["liq_score"] = _clamp01(e.get("liq_score", 0.0))
+        e["spread_pct"] = max(0.0, _safe_float(e.get("spread_pct", 0.0), 0.0))
+        e["atr_pct"] = max(0.0, _safe_float(e.get("atr_pct", 0.0), 0.0))
+
+        meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
+        whale_score = e.get("whale_score", meta.get("whale_score", 0.0))
+        whale_dir = e.get("whale_dir", meta.get("whale_dir", "none"))
+
+        e["whale_score"] = _clamp01(whale_score)
+        e["whale_dir"] = _norm_whale_dir(whale_dir)
+
         dk = str(e.get("dedup_key", "") or "").strip()
         if not dk and sym:
-            dk = f"{sym}|{itv}|{e['side_candidate']}"
-            e["dedup_key"] = dk
+            dk = f"{sym}|{itv}|{side}"
+        e["dedup_key"] = dk
 
         e["_source_stream_id"] = mid
         return e
+
+    def _apply_whale_overlay(
+        self,
+        evt: Dict[str, Any],
+        score_total: float,
+        reason_codes: List[str],
+        risk_tags: List[str],
+    ) -> Tuple[float, List[str], List[str], bool]:
+        score = float(_clamp01(score_total))
+        reasons = list(reason_codes or [])
+        tags = list(risk_tags or [])
+
+        side = str(evt.get("side_candidate", "none"))
+        whale_dir = str(evt.get("whale_dir", "none"))
+        whale_score = float(evt.get("whale_score", 0.0) or 0.0)
+
+        blocked = False
+
+        if whale_score > 0:
+            reasons.append("whale_seen")
+
+        if whale_score >= self.whale_confirm_thr:
+            reasons.append("whale_strong")
+            tags.append("whale_strong")
+
+        if whale_dir in ("long", "short") and side in ("long", "short"):
+            if whale_dir == side:
+                reasons.append(f"whale_align_{side}")
+                if self.whale_bonus_enable and whale_score >= self.whale_confirm_thr:
+                    score = _clamp01(score + self.whale_bonus * whale_score)
+            else:
+                reasons.append("whale_contra")
+                tags.append("whale_contra")
+                score = _clamp01(score - self.whale_contra_penalty * max(0.0, whale_score))
+                if self.whale_veto_enable and whale_score >= self.whale_veto_thr:
+                    blocked = True
+
+        market_regime = str(evt.get("market_regime", evt.get("regime", "")) or "").lower()
+        if market_regime == "trend":
+            reasons.append("regime_trend")
+            score = _clamp01(score * self.trend_bonus)
+        elif market_regime == "range":
+            reasons.append("regime_range")
+            score = _clamp01(score * self.range_penalty)
+
+        reasons = list(dict.fromkeys(reasons))
+        tags = list(dict.fromkeys(tags))
+        return float(score), reasons, tags, blocked
 
     def _build_candidate_payload(self, evt: Dict[str, Any]) -> Dict[str, Any]:
         sym = str(evt.get("symbol", "") or "").upper().strip()
@@ -158,11 +225,7 @@ class Aggregator:
 
         src = str(evt.get("source") or evt.get("producer_id") or "w?").strip()
         dedup_key = str(evt.get("dedup_key") or f"{sym}|{itv}|{side}")
-
-        # --- PRICE passthrough ---
         price = _safe_float(evt.get("price", 0.0), 0.0)
-        if price < 0:
-            price = 0.0
 
         payload: Dict[str, Any] = {
             "candidate_id": str(uuid.uuid4()),
@@ -170,20 +233,18 @@ class Aggregator:
             "symbol": sym,
             "interval": itv,
             "side": side,
-            "price": float(price),  # <<< CRITICAL
+            "price": float(price),
             "score_total": float(_clamp01(evt.get("_score_total", 0.0))),
-            # leverage / notional: şimdilik default; MasterExecutor daha iyi hesaplar
             "recommended_leverage": int(evt.get("recommended_leverage", 5) or 5),
             "recommended_notional_pct": float(evt.get("recommended_notional_pct", 0.05) or 0.05),
             "risk_tags": list(evt.get("_risk_tags", []) or []),
             "reason_codes": list(evt.get("_reason_codes", []) or []),
             "source": src,
             "dedup_key": dedup_key,
+            "whale_score": float(evt.get("whale_score", 0.0) or 0.0),
+            "whale_dir": str(evt.get("whale_dir", "none") or "none"),
         }
 
-        # raw payload policy:
-        # include_raw=1 -> full raw
-        # include_raw=0 -> send "raw_min" (TopSelector/Master still can gate whale)
         if self.include_raw:
             payload["raw"] = evt
         else:
@@ -191,11 +252,15 @@ class Aggregator:
             payload["raw"] = {
                 "price": float(price),
                 "whale_score": float(evt.get("whale_score", 0.0) or 0.0),
-                "whale_dir": str(evt.get("whale_dir") or meta.get("whale_dir", "none") or "none"),
+                "whale_dir": str(evt.get("whale_dir", "none") or "none"),
                 "meta": {
                     "p_used": float(meta.get("p_used", 0.0) or 0.0),
                     "fast_model_score": float(meta.get("fast_model_score", 0.0) or 0.0),
                     "micro_score": float(meta.get("micro_score", 0.0) or 0.0),
+                    "confidence": float(evt.get("confidence", 0.0) or 0.0),
+                    "spread_pct": float(evt.get("spread_pct", 0.0) or 0.0),
+                    "liq_score": float(evt.get("liq_score", 0.0) or 0.0),
+                    "atr_pct": float(evt.get("atr_pct", 0.0) or 0.0),
                 },
             }
 
@@ -206,7 +271,7 @@ class Aggregator:
             f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
             f"group={self.group} consumer={self.consumer} topk_out={self.topk_out} "
             f"min_score={self.min_score:.3f} include_raw={self.include_raw} "
-            f"dup_prefix={getattr(self.dup, 'prefix', 'aggdup')} debug_drops={self.debug_drops}",
+            f"require_price={self.require_price} debug_drops={self.debug_drops}",
             flush=True,
         )
 
@@ -236,16 +301,14 @@ class Aggregator:
                         print(f"[Aggregator][DROP] invalid_evt mid={mid}", flush=True)
                     continue
 
-                # schema normalize + local normalize
                 evt = SignalEvent.normalize(evt)
                 e = self._normalize_event(mid, evt)
 
-                # ignore HOLD/none
                 if e.get("side_candidate") not in ("long", "short"):
                     if self.debug_drops:
                         print(
-                            f"[Aggregator][DROP] side_none symbol={e.get('symbol')} itv={e.get('interval')} "
-                            f"side={e.get('side_candidate')} mid={mid}",
+                            f"[Aggregator][DROP] side_none symbol={e.get('symbol')} "
+                            f"itv={e.get('interval')} mid={mid}",
                             flush=True,
                         )
                     continue
@@ -255,22 +318,32 @@ class Aggregator:
                         print(f"[Aggregator][DROP] no_symbol mid={mid}", flush=True)
                     continue
 
+                if self.require_price and float(e.get("price", 0.0) or 0.0) <= 0.0:
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] no_price sym={e.get('symbol')} "
+                            f"itv={e.get('interval')} side={e.get('side_candidate')} mid={mid}",
+                            flush=True,
+                        )
+                    continue
+
                 ok, reason = pass_quality_gates(e)
                 if not ok:
                     if self.debug_drops:
                         print(
                             f"[Aggregator][DROP] gate_fail reason={reason} "
-                            f"sym={e.get('symbol')} itv={e.get('interval')} side={e.get('side_candidate')} mid={mid}",
+                            f"sym={e.get('symbol')} itv={e.get('interval')} "
+                            f"side={e.get('side_candidate')} mid={mid}",
                             flush=True,
                         )
                     continue
 
-                # cooldown (spam killer)
                 dk = str(e.get("dedup_key", "") or "").strip()
                 if not dk:
                     if self.debug_drops:
                         print(
-                            f"[Aggregator][DROP] no_dedup_key sym={e.get('symbol')} itv={e.get('interval')} mid={mid}",
+                            f"[Aggregator][DROP] no_dedup_key sym={e.get('symbol')} "
+                            f"itv={e.get('interval')} mid={mid}",
                             flush=True,
                         )
                     continue
@@ -278,30 +351,48 @@ class Aggregator:
                 if not self.dup.allow(dk, cooldown_sec=None):
                     if self.debug_drops:
                         print(
-                            f"[Aggregator][DROP] dup_cooldown dk={dk} sym={e.get('symbol')} itv={e.get('interval')} mid={mid}",
+                            f"[Aggregator][DROP] dup_cooldown dk={dk} "
+                            f"sym={e.get('symbol')} itv={e.get('interval')} mid={mid}",
                             flush=True,
                         )
                     continue
 
                 score_total, reason_codes, risk_tags = compute_score(e)
+                score_total, reason_codes, risk_tags, blocked = self._apply_whale_overlay(
+                    e,
+                    score_total,
+                    list(reason_codes or []),
+                    list(risk_tags or []),
+                )
+
+                if blocked:
+                    if self.debug_drops:
+                        print(
+                            f"[Aggregator][DROP] whale_veto "
+                            f"sym={e.get('symbol')} itv={e.get('interval')} "
+                            f"side={e.get('side_candidate')} whale_dir={e.get('whale_dir')} "
+                            f"whale_score={float(e.get('whale_score', 0.0)):.3f} mid={mid}",
+                            flush=True,
+                        )
+                    continue
+
                 e["_score_total"] = _clamp01(score_total)
                 e["_reason_codes"] = list(reason_codes or [])
                 e["_risk_tags"] = list(risk_tags or [])
 
-                # global min score gate (optional)
                 if float(self.min_score) > 0.0 and float(e["_score_total"]) < float(self.min_score):
                     if self.debug_drops:
                         print(
                             f"[Aggregator][DROP] min_score "
                             f"score={float(e['_score_total']):.3f} < {float(self.min_score):.3f} "
-                            f"sym={e.get('symbol')} itv={e.get('interval')} side={e.get('side_candidate')} mid={mid}",
+                            f"sym={e.get('symbol')} itv={e.get('interval')} "
+                            f"side={e.get('side_candidate')} mid={mid}",
                             flush=True,
                         )
                     continue
 
                 candidates.append(e)
 
-            # ACK everything (fail-open)
             if mids:
                 try:
                     self.bus.xack(self.bus.signals_stream, self.group, mids)
@@ -311,7 +402,6 @@ class Aggregator:
             if not candidates:
                 continue
 
-            # sort by best score_total
             candidates.sort(key=lambda x: float(x.get("_score_total", 0.0)), reverse=True)
             top = candidates[: max(1, int(self.topk_out))]
 
@@ -326,7 +416,6 @@ class Aggregator:
 
 
 if __name__ == "__main__":
-    # minimal runnable entrypoint
     bus = RedisBus()
     agg = Aggregator(bus=bus)
     agg.run_forever()
