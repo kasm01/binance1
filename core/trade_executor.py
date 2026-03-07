@@ -1190,20 +1190,38 @@ class TradeExecutor:
             stall_ttl = int(self.default_stall_ttl_sec or 0)
         stall_ttl = int(max(0, stall_ttl))
 
+        # whale bias -> open anındaki risk profili
+        bias = self._whale_bias(signal, extra)
+
+        sl_mult_adj = 1.0
+        tp_mult_adj = 1.0
+
+        if bias == "reduce":
+            sl_mult_adj = float(getattr(self, "whale_reduce_sl_mult", 0.75) or 0.75)
+            tp_mult_adj = float(getattr(self, "whale_reduce_tp_mult", 0.90) or 0.90)
+        elif bias == "hold":
+            tp_mult_adj = max(
+                1.0,
+                float(getattr(self, "whale_hold_stall_mult", 1.40) or 1.40) / 1.2,
+            )
+
         if self.use_atr_sltp and atr_value > 0.0:
             if signal == "long":
-                sl_price = price - self.atr_sl_mult * atr_value
-                tp_price = price + self.atr_tp_mult * atr_value
+                sl_price = price - (self.atr_sl_mult * sl_mult_adj * atr_value)
+                tp_price = price + (self.atr_tp_mult * tp_mult_adj * atr_value)
             else:
-                sl_price = price + self.atr_sl_mult * atr_value
-                tp_price = price - self.atr_tp_mult * atr_value
+                sl_price = price + (self.atr_sl_mult * sl_mult_adj * atr_value)
+                tp_price = price - (self.atr_tp_mult * tp_mult_adj * atr_value)
         else:
+            eff_sl_pct = float(self.sl_pct) * float(sl_mult_adj)
+            eff_tp_pct = float(self.tp_pct) * float(tp_mult_adj)
+
             if signal == "long":
-                sl_price = price * (1.0 - self.sl_pct)
-                tp_price = price * (1.0 + self.tp_pct)
+                sl_price = price * (1.0 - eff_sl_pct)
+                tp_price = price * (1.0 + eff_tp_pct)
             else:
-                sl_price = price * (1.0 + self.sl_pct)
-                tp_price = price * (1.0 - self.tp_pct)
+                sl_price = price * (1.0 + eff_sl_pct)
+                tp_price = price * (1.0 - eff_tp_pct)
 
         now_ts = time.time()
 
@@ -1227,6 +1245,9 @@ class TradeExecutor:
             "meta": {
                 "probs": probs,
                 "extra": extra,
+                "whale_bias_on_open": str(bias),
+                "sl_mult_adj": float(sl_mult_adj),
+                "tp_mult_adj": float(tp_mult_adj),
             },
         }
         return pos, opened_at
@@ -1467,11 +1488,7 @@ class TradeExecutor:
             entry = float(pos.get("entry_price") or 0.0)
             cur_pnl_pct = float(self._pnl_pct(side, entry, float(live_price)))
 
-            if self._should_force_close_by_whale(
-                side=side,
-                extra=extra,
-                pnl_pct=cur_pnl_pct,
-            ):
+            if self._should_force_close_by_whale(side=side, extra=extra, pnl_pct=cur_pnl_pct):
                 return self._close_position(
                     symbol,
                     float(live_price),
@@ -1501,10 +1518,12 @@ class TradeExecutor:
                         )
         except Exception:
             pass
+
         if side == "long":
             if sl is not None and live_price <= sl:
                 return self._close_position(symbol, float(live_price), reason="SL_HIT", interval=interval)
-            if tp is not None and live_price >= tp:
+
+            if tp is not None and live_price >= tp and bias != "hold":
                 return self._close_position(symbol, float(live_price), reason="TP_HIT", interval=interval)
 
             if trailing_pct > 0.0:
@@ -1520,7 +1539,8 @@ class TradeExecutor:
         elif side == "short":
             if sl is not None and live_price >= sl:
                 return self._close_position(symbol, float(live_price), reason="SL_HIT", interval=interval)
-            if tp is not None and live_price <= tp:
+
+            if tp is not None and live_price <= tp and bias != "hold":
                 return self._close_position(symbol, float(live_price), reason="TP_HIT", interval=interval)
 
             if trailing_pct > 0.0:
@@ -1549,6 +1569,8 @@ class TradeExecutor:
         aggr_factor = 1.0
 
         if aggressive_mode:
+            whale_action = self._whale_action(extra)
+
             if whale_score > 0.0 and whale_dir in ("long", "short") and signal in ("long", "short"):
                 if whale_dir == signal and whale_score >= whale_boost_thr:
                     aggr_factor += self.whale_risk_boost * max(0.0, whale_score - whale_boost_thr)
@@ -1557,9 +1579,17 @@ class TradeExecutor:
                 elif whale_dir != signal:
                     aggr_factor -= 0.4 * whale_score
 
+            if whale_action in self.whale_reduce_actions and whale_score >= float(self.whale_reduce_min_score):
+                aggr_factor *= float(self.whale_reduce_notional_mult)
+
+            if whale_action in self.whale_boost_actions and whale_score >= float(self.whale_confirm_min_score):
+                aggr_factor *= 1.10
+
+            if whale_action in self.whale_block_actions and whale_score >= float(self.whale_hard_block_min_score):
+                aggr_factor *= 0.25
+
             mc = max(0.0, min(model_conf, 1.0))
             aggr_factor *= (0.5 + 0.5 * mc)
-
         aggr_factor = max(0.0, min(aggr_factor, max_risk_mult))
 
         notional = base * aggr_factor
