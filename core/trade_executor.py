@@ -147,6 +147,28 @@ class TradeExecutor:
         self.whale_hold_stall_mult = float(
             self._clip_float(os.getenv("WHALE_HOLD_STALL_MULT", "1.40"), 1.40) or 1.40
         )
+        self.whale_force_exit_enable = self._truthy_env("WHALE_FORCE_EXIT_ENABLE", "1")
+        self.whale_force_exit_thr = float(
+            self._clip_float(os.getenv("WHALE_FORCE_EXIT_THR", "0.72"), 0.72) or 0.72
+        )
+        self.whale_force_exit_min_pnl_pct = float(
+            self._clip_float(os.getenv("WHALE_FORCE_EXIT_MIN_PNL_PCT", "-0.003"), -0.003) or -0.003
+        )
+        self.whale_force_exit_on_profit_only = self._truthy_env("WHALE_FORCE_EXIT_ON_PROFIT_ONLY", "0")
+
+        self.whale_exit_trailing_mult = float(
+            self._clip_float(os.getenv("WHALE_EXIT_TRAILING_MULT", "0.55"), 0.55) or 0.55
+        )
+        self.whale_exit_stall_mult = float(
+            self._clip_float(os.getenv("WHALE_EXIT_STALL_MULT", "0.45"), 0.45) or 0.45
+        )
+
+        self.whale_reduce_sl_mult = float(
+            self._clip_float(os.getenv("WHALE_REDUCE_SL_MULT", "0.75"), 0.75) or 0.75
+        )
+        self.whale_reduce_tp_mult = float(
+            self._clip_float(os.getenv("WHALE_REDUCE_TP_MULT", "0.90"), 0.90) or 0.90
+        )
         # /status snapshot
         self.last_snapshot: Dict[str, Any] = {}
 
@@ -823,26 +845,36 @@ class TradeExecutor:
     # -------------------------
     # whale bias helpers
     # -------------------------
-    def _whale_bias(self, side: str, extra: Dict[str, Any]) -> str:
-        """
-        Çıkış davranışı için sade bias döndürür:
-          - hold
-          - exit
-          - reduce
-          - neutral
-        Öncelik:
-          1) whale_action / whale_decision
-          2) fallback whale_dir + whale_score
-        """
+    def _whale_action(self, extra: Dict[str, Any]) -> str:
         try:
-            action = str(
+            return str(
                 extra.get("whale_action")
                 or extra.get("whale_decision")
                 or extra.get("whale_policy")
                 or ""
             ).strip().lower()
+        except Exception:
+            return ""
 
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
+    def _whale_dir_score(self, extra: Dict[str, Any]) -> Tuple[str, float]:
+        try:
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            wscore = float(extra.get("whale_score", 0.0) or 0.0)
+            return wdir, wscore
+        except Exception:
+            return "none", 0.0
+
+    def _whale_bias(self, side: str, extra: Dict[str, Any]) -> str:
+        """
+        Çıkış davranışı için sade bias:
+          hold / exit / reduce / neutral
+        Öncelik:
+          1) whale_action
+          2) whale_dir + whale_score fallback
+        """
+        try:
+            action = self._whale_action(extra)
+            wdir, ws = self._whale_dir_score(extra)
 
             if action:
                 if action in self.whale_block_actions:
@@ -852,7 +884,6 @@ class TradeExecutor:
                 if action in self.whale_boost_actions:
                     return "hold"
 
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
             if ws < float(self.w_min):
                 return "neutral"
 
@@ -863,6 +894,7 @@ class TradeExecutor:
         except Exception:
             pass
         return "neutral"
+
     def _effective_trailing_pct(self, base_trail: float, bias: str) -> float:
         bt = float(base_trail or 0.0)
         if bt <= 0:
@@ -872,12 +904,13 @@ class TradeExecutor:
             return max(bt, bt * float(self.whale_hold_trailing_mult))
 
         if bias == "exit":
-            return max(0.001, bt * 0.55)
+            return max(0.001, bt * float(self.whale_exit_trailing_mult))
 
         if bias == "reduce":
             return max(0.001, bt * float(self.whale_reduce_trailing_mult))
 
         return bt
+
     def _effective_stall_ttl(self, base_ttl: int, bias: str) -> int:
         t = int(base_ttl or 0)
         if t <= 0:
@@ -887,7 +920,7 @@ class TradeExecutor:
             return int(max(60, round(t * float(self.whale_hold_stall_mult))))
 
         if bias == "exit":
-            return int(max(30, round(t * 0.45)))
+            return int(max(30, round(t * float(self.whale_exit_stall_mult))))
 
         if bias == "reduce":
             return int(max(45, round(t * 0.70)))
@@ -903,6 +936,42 @@ class TradeExecutor:
         if side == "short":
             return (entry - price) / entry
         return 0.0
+
+    def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
+        try:
+            action = self._whale_action(extra)
+            wdir, ws = self._whale_dir_score(extra)
+
+            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
+                return True
+
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_hard_block_min_score):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _apply_whale_open_adjustments(
+        self,
+        side: str,
+        notional: float,
+        extra: Dict[str, Any],
+    ) -> float:
+        try:
+            action = self._whale_action(extra)
+            wdir, ws = self._whale_dir_score(extra)
+
+            if action in self.whale_reduce_actions and ws >= float(self.whale_reduce_min_score):
+                return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
+
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_reduce_min_score):
+                    return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
+        except Exception:
+            pass
+        return float(notional)
+
     def _should_force_close_by_whale(
         self,
         side: str,
@@ -910,29 +979,31 @@ class TradeExecutor:
         pnl_pct: float,
     ) -> bool:
         try:
-            if not self._truthy_env("WHALE_FORCE_EXIT_ENABLE", "0"):
+            if not self.whale_force_exit_enable:
                 return False
 
-            whale_dir = str(extra.get("whale_dir", "none") or "none").lower()
-            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+            action = self._whale_action(extra)
+            wdir, ws = self._whale_dir_score(extra)
 
-            thr = float(os.getenv("WHALE_FORCE_EXIT_THR", "0.72"))
-            min_pnl_pct = float(os.getenv("WHALE_FORCE_EXIT_MIN_PNL_PCT", "-0.003"))
-            profit_only = self._truthy_env("WHALE_FORCE_EXIT_ON_PROFIT_ONLY", "0")
-
-            if whale_dir not in ("long", "short"):
-                return False
             if side not in ("long", "short"):
                 return False
-            if whale_dir == side:
+
+            if action == "force_exit" and ws >= float(self.whale_force_exit_thr):
+                if self.whale_force_exit_on_profit_only:
+                    return float(pnl_pct) > 0.0
+                return float(pnl_pct) >= float(self.whale_force_exit_min_pnl_pct)
+
+            if wdir not in ("long", "short"):
                 return False
-            if whale_score < thr:
+            if wdir == side:
+                return False
+            if ws < float(self.whale_force_exit_thr):
                 return False
 
-            if profit_only:
+            if self.whale_force_exit_on_profit_only:
                 return float(pnl_pct) > 0.0
 
-            return float(pnl_pct) >= float(min_pnl_pct)
+            return float(pnl_pct) >= float(self.whale_force_exit_min_pnl_pct)
         except Exception:
             return False
     # -------------------------

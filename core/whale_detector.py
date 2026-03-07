@@ -5,6 +5,7 @@ from typing import Literal, Optional, Dict, Any, List, Deque
 from collections import deque
 from datetime import datetime
 import asyncio
+import os
 
 import numpy as np
 import pandas as pd
@@ -61,9 +62,98 @@ class WhaleDetector:
         self.veto_thr = float(veto_thr)
         self.force_exit_thr = float(force_exit_thr)
 
+        self.whale_confirm_thr = self._env_float(
+            "WHALE_CONFIRM_THR",
+            self.boost_thr,
+        )
+        self.whale_veto_thr = self._env_float(
+            "WHALE_VETO_THR",
+            self.veto_thr,
+        )
+        self.whale_short_veto_thr = self._env_float(
+            "WHALE_SHORT_VETO_THR",
+            self.whale_veto_thr,
+        )
+
+        self.whale_trend_thr = self._env_float("WHALE_TREND_THR", 0.80)
+        self.whale_range_thr = self._env_float("WHALE_RANGE_THR", 0.30)
+        self.whale_range_penalty = self._env_float("WHALE_RANGE_PENALTY", 0.65)
+        self.whale_trend_bonus = self._env_float("WHALE_TREND_BONUS", 1.15)
+        self.whale_xconf_bonus = self._env_float("WHALE_XCONF_BONUS", 1.10)
+
+        self.whale_force_exit_enable = self._env_bool(
+            "WHALE_FORCE_EXIT_ENABLE",
+            False,
+        )
+        self.whale_force_exit_thr = self._env_float(
+            "WHALE_FORCE_EXIT_THR",
+            force_exit_thr,
+        )
+
+        self.whale_block_actions = {
+            x.strip()
+            for x in str(
+                os.getenv("WHALE_BLOCK_ACTIONS", "hard_block,force_exit")
+            ).split(",")
+            if x.strip()
+        }
+        self.whale_reduce_actions = {
+            x.strip()
+            for x in str(
+                os.getenv(
+                    "WHALE_REDUCE_ACTIONS",
+                    "reduce_size,tighten_risk,avoid_open",
+                )
+            ).split(",")
+            if x.strip()
+        }
+        self.whale_boost_actions = {
+            x.strip()
+            for x in str(
+                os.getenv(
+                    "WHALE_BOOST_ACTIONS",
+                    "confirm,strong_confirm,hold_winner",
+                )
+            ).split(",")
+            if x.strip()
+        }
+
+        self.ema_whale_only = self._env_bool("EMA_WHALE_ONLY", False)
+        self.ema_whale_thr = self._env_float("EMA_WHALE_THR", 0.50)
+        self.min_mtf_agreement_score = self._env_float(
+            "WHALE_MTF_MIN_AGREEMENT_SCORE",
+            0.55,
+        )
+
     # ------------------------------------------------------------------
     # yardımcılar
     # ------------------------------------------------------------------
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(str(os.getenv(name, str(default))).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(str(os.getenv(name, str(default))).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        v = os.getenv(name)
+        if v is None:
+            return default
+        s = str(v).strip().lower()
+        if s in ("1", "true", "t", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "f", "no", "n", "off", ""):
+            return False
+        return default
+
     @staticmethod
     def _clip01(x: Any) -> float:
         try:
@@ -80,7 +170,6 @@ class WhaleDetector:
             return v
         except Exception:
             return float(default)
-
     @staticmethod
     def _rsi(series: pd.Series, window: int = 14) -> pd.Series:
         delta = series.diff()
@@ -153,7 +242,6 @@ class WhaleDetector:
         df["wick_ratio"] = (df["upper_wick"] + df["lower_wick"]) / (
             df["body_size"] + 1e-10
         )
-
         df["body_to_range"] = df["body_size"] / (df["range_size"] + 1e-10)
 
         df["returns"] = df["close"].pct_change().fillna(0.0)
@@ -195,7 +283,6 @@ class WhaleDetector:
         )
 
         return df
-
     # ------------------------------------------------------------------
     # skor parçaları
     # ------------------------------------------------------------------
@@ -221,7 +308,10 @@ class WhaleDetector:
     def _calculate_momentum_score(self, recent: pd.DataFrame) -> float:
         cumret_5 = abs(self._safe_float(recent["cumret_5"].iloc[-1], 0.0))
         obv_delta = abs(self._safe_float(recent["obv_delta"].iloc[-1], 0.0))
-        vol_base = self._safe_float(recent["volume"].rolling(10, min_periods=1).mean().iloc[-1], 1.0)
+        vol_base = self._safe_float(
+            recent["volume"].rolling(10, min_periods=1).mean().iloc[-1],
+            1.0,
+        )
 
         obv_norm = obv_delta / max(vol_base * 5.0, 1e-8)
         raw = (min(0.03, cumret_5) / 0.03) * 0.6 + min(1.0, obv_norm) * 0.4
@@ -234,10 +324,16 @@ class WhaleDetector:
 
         raw = 0.0
         if wick_ratio > 2.5 and vol_ratio > 1.4 and body_to_range < 0.45:
-            raw = ((min(8.0, wick_ratio) / 8.0) * 0.6) + ((min(3.0, vol_ratio) / 3.0) * 0.4)
+            raw = ((min(8.0, wick_ratio) / 8.0) * 0.6) + (
+                (min(3.0, vol_ratio) / 3.0) * 0.4
+            )
         return self._clip01(raw)
 
-    def _determine_direction(self, recent: pd.DataFrame, scores: Dict[str, float]) -> Direction:
+    def _determine_direction(
+        self,
+        recent: pd.DataFrame,
+        scores: Dict[str, float],
+    ) -> Direction:
         last_body = self._safe_float(recent["body"].iloc[-1], 0.0)
         cumret_3 = self._safe_float(recent["cumret_3"].iloc[-1], 0.0)
         buy_p = self._safe_float(recent["buy_pressure_proxy"].tail(3).mean(), 0.0)
@@ -261,7 +357,10 @@ class WhaleDetector:
         elif sell_p > buy_p:
             short_votes += 1
 
-        if scores.get("momentum_score", 0.0) < 0.08 and scores.get("price_action_score", 0.0) < 0.12:
+        if (
+            scores.get("momentum_score", 0.0) < 0.08
+            and scores.get("price_action_score", 0.0) < 0.12
+        ):
             return "none"
 
         if long_votes >= 2 and long_votes > short_votes:
@@ -269,6 +368,7 @@ class WhaleDetector:
         if short_votes >= 2 and short_votes > long_votes:
             return "short"
         return "none"
+
     def _generate_reason(self, scores: Dict[str, float], direction: Direction) -> str:
         parts: List[str] = [f"dir={direction}"]
         for k, v in scores.items():
@@ -277,6 +377,108 @@ class WhaleDetector:
         if len(parts) == 1:
             parts.append("weak_signal")
         return " | ".join(parts)
+
+    def _detect_market_regime_from_recent(self, recent: pd.DataFrame) -> str:
+        try:
+            vol_ratio = self._safe_float(recent["volume_ratio"].tail(5).mean(), 1.0)
+            body_to_range = self._safe_float(
+                recent["body_to_range"].tail(5).mean(),
+                0.0,
+            )
+            cumret = abs(self._safe_float(recent["cumret_5"].iloc[-1], 0.0))
+
+            trend_score = (min(1.0, cumret / 0.02) * 0.55) + (
+                min(1.0, body_to_range / 0.65) * 0.45
+            )
+            range_score = (min(1.0, 1.0 - min(1.0, cumret / 0.02)) * 0.60) + (
+                min(1.0, vol_ratio / 1.5) * 0.40
+            )
+
+            if trend_score >= self.whale_trend_thr:
+                return "trend"
+            if range_score >= self.whale_range_thr:
+                return "range"
+            return "neutral"
+        except Exception:
+            return "neutral"
+    def _apply_regime_adjustment(
+        self,
+        score: float,
+        regime: str,
+        direction: Direction,
+        recent: pd.DataFrame,
+    ) -> float:
+        s = float(score)
+
+        try:
+            buy_p = self._safe_float(recent["buy_pressure_proxy"].tail(3).mean(), 0.0)
+            sell_p = self._safe_float(
+                recent["sell_pressure_proxy"].tail(3).mean(),
+                0.0,
+            )
+
+            aligned = (
+                (direction == "long" and buy_p >= sell_p)
+                or (direction == "short" and sell_p >= buy_p)
+            )
+
+            if regime == "trend" and aligned:
+                s *= float(self.whale_trend_bonus)
+
+            if regime == "range":
+                s *= float(self.whale_range_penalty)
+
+            if aligned and direction in ("long", "short"):
+                s *= float(self.whale_xconf_bonus)
+        except Exception:
+            pass
+
+        return float(self._clip01(s))
+
+    def _action_from_decision_context(
+        self,
+        regime: str,
+        score: float,
+        aligned_with_trade: bool,
+        opposed_to_trade: bool,
+        aligned_with_pos: bool,
+        opposed_to_pos: bool,
+    ) -> str:
+        if regime == "ignore":
+            return "ignore"
+
+        if regime == "watch":
+            if opposed_to_trade or opposed_to_pos:
+                return "avoid_open"
+            if aligned_with_trade or aligned_with_pos:
+                return "soft_confirm"
+            return "watch"
+
+        if regime == "boost":
+            if opposed_to_trade:
+                return "block"
+            if aligned_with_trade:
+                return "confirm"
+            if aligned_with_pos:
+                return "hold_winner"
+            if opposed_to_pos:
+                return "tighten_risk"
+            return "boost"
+
+        if regime == "veto":
+            if opposed_to_trade:
+                return "hard_block"
+            if aligned_with_trade:
+                return "strong_confirm"
+            if aligned_with_pos:
+                return "hold_winner"
+            if opposed_to_pos:
+                if self.whale_force_exit_enable and score >= self.whale_force_exit_thr:
+                    return "force_exit"
+                return "tighten_risk"
+            return "veto"
+
+        return "ignore"
 
     def _generate_signal(self, df: pd.DataFrame, multiplier: float = 1.0) -> WhaleSignal:
         tail = df.tail(self.window)
@@ -301,6 +503,7 @@ class WhaleDetector:
 
         total_score = sum(float(scores[k]) * float(weights[k]) for k in scores)
         direction = self._determine_direction(recent, scores)
+        regime = self._detect_market_regime_from_recent(recent)
 
         last = recent.iloc[-1]
         meta = {
@@ -311,12 +514,26 @@ class WhaleDetector:
             "last_body": self._safe_float(last.get("body"), 0.0),
             "last_body_to_range": self._safe_float(last.get("body_to_range"), 0.0),
             "last_rsi": self._safe_float(last.get("rsi"), 50.0),
-            "buy_pressure_proxy": self._safe_float(recent["buy_pressure_proxy"].tail(3).mean(), 0.0),
-            "sell_pressure_proxy": self._safe_float(recent["sell_pressure_proxy"].tail(3).mean(), 0.0),
+            "buy_pressure_proxy": self._safe_float(
+                recent["buy_pressure_proxy"].tail(3).mean(),
+                0.0,
+            ),
+            "sell_pressure_proxy": self._safe_float(
+                recent["sell_pressure_proxy"].tail(3).mean(),
+                0.0,
+            ),
+            "regime": regime,
         }
 
         if direction == "none":
             total_score *= 0.45
+        else:
+            total_score = self._apply_regime_adjustment(
+                score=float(total_score),
+                regime=str(regime),
+                direction=direction,
+                recent=recent,
+            )
 
         return WhaleSignal(
             direction=direction,
@@ -329,24 +546,16 @@ class WhaleDetector:
     # final karar desteği
     # ------------------------------------------------------------------
     def classify_regime(self, signal: WhaleSignal) -> str:
-        """
-        Whale sinyalini 4 rejime ayırır:
-        - ignore
-        - watch
-        - boost
-        - veto
-        """
         score = self._safe_float(signal.score, 0.0)
         direction = str(signal.direction or "none")
 
         if direction == "none" or score < 0.35:
             return "ignore"
-        if score < self.boost_thr:
+        if score < self.whale_confirm_thr:
             return "watch"
-        if score < self.veto_thr:
+        if score < self.whale_veto_thr:
             return "boost"
         return "veto"
-
     def final_whale_vote(
         self,
         signal: WhaleSignal,
@@ -367,69 +576,55 @@ class WhaleDetector:
         pos_side_n = str(current_position_side or "").strip().lower()
 
         aligned_with_trade = bool(
-            trade_side_n in ("long", "short") and sig_dir in ("long", "short") and trade_side_n == sig_dir
+            trade_side_n in ("long", "short")
+            and sig_dir in ("long", "short")
+            and trade_side_n == sig_dir
         )
         opposed_to_trade = bool(
-            trade_side_n in ("long", "short") and sig_dir in ("long", "short") and trade_side_n != sig_dir
+            trade_side_n in ("long", "short")
+            and sig_dir in ("long", "short")
+            and trade_side_n != sig_dir
         )
 
         aligned_with_pos = bool(
-            pos_side_n in ("long", "short") and sig_dir in ("long", "short") and pos_side_n == sig_dir
+            pos_side_n in ("long", "short")
+            and sig_dir in ("long", "short")
+            and pos_side_n == sig_dir
         )
         opposed_to_pos = bool(
-            pos_side_n in ("long", "short") and sig_dir in ("long", "short") and pos_side_n != sig_dir
+            pos_side_n in ("long", "short")
+            and sig_dir in ("long", "short")
+            and pos_side_n != sig_dir
         )
 
-        action = "ignore"
+        action = self._action_from_decision_context(
+            regime=regime,
+            score=score,
+            aligned_with_trade=aligned_with_trade,
+            opposed_to_trade=opposed_to_trade,
+            aligned_with_pos=aligned_with_pos,
+            opposed_to_pos=opposed_to_pos,
+        )
+
         confidence = 0.0
         reason = signal.reason
 
-        if regime == "ignore":
-            action = "ignore"
+        if action == "ignore":
             confidence = 0.0
-
-        elif regime == "watch":
-            if aligned_with_trade or aligned_with_pos:
-                action = "soft_confirm"
-                confidence = score * 0.55
-            elif opposed_to_trade or opposed_to_pos:
-                action = "soft_block"
-                confidence = score * 0.60
-            else:
-                action = "watch"
-                confidence = score * 0.40
-
-        elif regime == "boost":
-            if aligned_with_trade or aligned_with_pos:
-                action = "confirm"
-                confidence = score * 0.90
-            elif opposed_to_trade or opposed_to_pos:
-                action = "block"
-                confidence = score * 0.95
-            else:
-                action = "boost"
-                confidence = score * 0.75
-
-        elif regime == "veto":
-            if aligned_with_trade:
-                action = "strong_confirm"
-                confidence = min(1.0, score)
-            elif opposed_to_trade:
-                action = "hard_block"
-                confidence = min(1.0, score)
-            elif aligned_with_pos:
-                action = "hold_winner"
-                confidence = min(1.0, score)
-            elif opposed_to_pos:
-                if score >= self.force_exit_thr:
-                    action = "force_exit"
-                    confidence = min(1.0, score)
-                else:
-                    action = "tighten_risk"
-                    confidence = score * 0.92
-            else:
-                action = "veto"
-                confidence = score * 0.85
+        elif action in ("watch",):
+            confidence = score * 0.40
+        elif action in ("avoid_open", "soft_block"):
+            confidence = score * 0.60
+        elif action in ("soft_confirm",):
+            confidence = score * 0.55
+        elif action in ("boost",):
+            confidence = score * 0.75
+        elif action in ("confirm", "block", "tighten_risk"):
+            confidence = score * 0.90
+        elif action in ("strong_confirm", "hard_block", "hold_winner", "force_exit"):
+            confidence = min(1.0, score)
+        else:
+            confidence = score * 0.85
 
         meta = dict(signal.meta or {})
         meta.update(
@@ -440,9 +635,12 @@ class WhaleDetector:
                 "opposed_to_trade": opposed_to_trade,
                 "aligned_with_position": aligned_with_pos,
                 "opposed_to_position": opposed_to_pos,
-                "boost_thr": float(self.boost_thr),
-                "veto_thr": float(self.veto_thr),
-                "force_exit_thr": float(self.force_exit_thr),
+                "boost_thr": float(self.whale_confirm_thr),
+                "veto_thr": float(self.whale_veto_thr),
+                "force_exit_thr": float(self.whale_force_exit_thr),
+                "block_actions": sorted(self.whale_block_actions),
+                "reduce_actions": sorted(self.whale_reduce_actions),
+                "boost_actions": sorted(self.whale_boost_actions),
             }
         )
 
@@ -462,9 +660,6 @@ class WhaleDetector:
         trade_side: Optional[str] = None,
         current_position_side: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Executor / selector katmanında kolay tüketim için sade çıktı.
-        """
         dec = self.final_whale_vote(
             signal=signal,
             trade_side=trade_side,
@@ -481,21 +676,20 @@ class WhaleDetector:
             "whale_meta": dec.meta,
         }
 
-        # karar yardımcı bayrakları
-        out["whale_should_boost_open"] = dec.action in (
-            "boost",
-            "confirm",
-            "strong_confirm",
-            "soft_confirm",
+        out["whale_should_boost_open"] = (
+            dec.action in self.whale_boost_actions
+            or dec.action in ("boost", "confirm", "strong_confirm", "soft_confirm")
         )
-        out["whale_should_block_open"] = dec.action in (
-            "block",
-            "hard_block",
-            "soft_block",
+        out["whale_should_block_open"] = (
+            dec.action in self.whale_block_actions
+            or dec.action in ("block", "hard_block", "soft_block")
         )
-        out["whale_should_force_exit"] = dec.action in ("force_exit",)
-        out["whale_should_tighten_risk"] = dec.action in ("tighten_risk",)
-        out["whale_should_hold"] = dec.action in ("hold_winner",)
+        out["whale_should_force_exit"] = dec.action == "force_exit"
+        out["whale_should_tighten_risk"] = (
+            dec.action in self.whale_reduce_actions
+            or dec.action == "tighten_risk"
+        )
+        out["whale_should_hold"] = dec.action == "hold_winner"
 
         return out
 
@@ -508,7 +702,10 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.timeframes = ["1m", "3m", "5m", "15m", "30m", "1h"]
-
+        self.min_mtf_agreement_score = self._env_float(
+            "WHALE_MTF_MIN_AGREEMENT_SCORE",
+            0.55,
+        )
     def analyze_multiple_timeframes(
         self,
         dfs: Dict[str, pd.DataFrame],
@@ -517,7 +714,12 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
 
         for tf, df in dfs.items():
             if df is None or len(df) < max(60, self.window + 10):
-                signals[tf] = WhaleSignal("none", 0.0, f"insufficient_data_{tf}", {})
+                signals[tf] = WhaleSignal(
+                    "none",
+                    0.0,
+                    f"insufficient_data_{tf}",
+                    {},
+                )
                 continue
 
             df_features = self.calculate_features(df)
@@ -532,7 +734,10 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
                 "4h": 1.45,
             }.get(tf, 1.0)
 
-            signals[tf] = self._generate_signal(df_features, multiplier=tf_multiplier)
+            signals[tf] = self._generate_signal(
+                df_features,
+                multiplier=tf_multiplier,
+            )
 
         return signals
 
@@ -588,10 +793,13 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
 
         if total_w <= 0:
             total_w = 1.0
+
         long_score_n = float(long_score / total_w)
         short_score_n = float(short_score / total_w)
-
-        if long_score_n > short_score_n and long_score_n >= self.min_mtf_agreement_score:
+        if (
+            long_score_n > short_score_n
+            and long_score_n >= self.min_mtf_agreement_score
+        ):
             base_signal = WhaleSignal(
                 direction="long",
                 score=float(self._clip01(long_score_n)),
@@ -602,7 +810,10 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
                     "short_score": short_score_n,
                 },
             )
-        elif short_score_n > long_score_n and short_score_n >= self.min_mtf_agreement_score:
+        elif (
+            short_score_n > long_score_n
+            and short_score_n >= self.min_mtf_agreement_score
+        ):
             base_signal = WhaleSignal(
                 direction="short",
                 score=float(self._clip01(short_score_n)),
@@ -670,7 +881,6 @@ class MLWhaleDetector(WhaleDetector):
         ]
         existing = [c for c in cols if c in df_feat.columns]
         return df_feat[existing].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
     def _load_model(self, model_path: str) -> None:
         import joblib
 
@@ -743,7 +953,6 @@ class OrderFlowWhaleDetector(WhaleDetector):
         clusters: List[Dict[str, Any]] = []
         if len(df) == 0:
             return clusters
-
         low_min = float(df["low"].min())
         high_max = float(df["high"].max())
         if high_max <= low_min:
@@ -778,7 +987,10 @@ class OrderFlowWhaleDetector(WhaleDetector):
 
         df = df.copy()
         df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3.0
-        df["vwap"] = (df["volume"] * df["typical_price"]).cumsum() / df["volume"].cumsum()
+        df["vwap"] = (
+            (df["volume"] * df["typical_price"]).cumsum()
+            / df["volume"].cumsum()
+        )
         df["vwap_deviation"] = (df["close"] - df["vwap"]) / df["vwap"] * 100.0
         df["price_change"] = df["close"].pct_change().fillna(0.0)
         df["volume_delta"] = df["volume"] * np.sign(df["price_change"])
@@ -810,7 +1022,6 @@ class RealTimeWhaleMonitor:
         self.alert_threshold = alert_threshold
         self.signal_history: Deque[Dict[str, Any]] = deque(maxlen=1000)
         self.alert_callbacks: List[Any] = []
-
     async def monitor_stream(self, data_stream):
         async for df in data_stream:
             signal = self.detector.from_klines(df)
@@ -840,46 +1051,25 @@ class RealTimeWhaleMonitor:
 
 
 class WhaleDetectorBacktester:
-    """
-    Whale sinyallerinin performansını ölçmek için basit backtester.
-    """
-
     def __init__(self, detector: WhaleDetector):
         self.detector = detector
 
     def backtest(self, df: pd.DataFrame, lookahead_bars: int = 10) -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
-
         max_i = len(df) - self.detector.window - lookahead_bars
         for i in range(max(0, max_i)):
             window_data = df.iloc[i : i + self.detector.window]
             signal = self.detector.from_klines(window_data)
-
             if signal.direction == "none":
                 continue
-
             future_data = df.iloc[i + self.detector.window : i + self.detector.window + lookahead_bars]
             performance = self._calculate_performance(signal, window_data, future_data)
-
-            results.append(
-                {
-                    "signal": signal,
-                    "performance": performance,
-                    "index": int(i + self.detector.window),
-                }
-            )
-
+            results.append({"signal": signal, "performance": performance, "index": int(i + self.detector.window)})
         return self._analyze_results(results)
 
-    def _calculate_performance(
-        self,
-        signal: WhaleSignal,
-        window_data: pd.DataFrame,
-        future_data: pd.DataFrame,
-    ) -> float:
+    def _calculate_performance(self, signal: WhaleSignal, window_data: pd.DataFrame, future_data: pd.DataFrame) -> float:
         entry_price = float(window_data["close"].iloc[-1])
         exit_price = float(future_data["close"].iloc[-1])
-
         if signal.direction == "long":
             return float((exit_price - entry_price) / entry_price)
         if signal.direction == "short":
@@ -888,75 +1078,11 @@ class WhaleDetectorBacktester:
 
     def _analyze_results(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not results:
-            return {
-                "n_signals": 0,
-                "avg_return": 0.0,
-                "win_rate": 0.0,
-                "returns": [],
-            }
-
+            return {"n_signals": 0, "avg_return": 0.0, "win_rate": 0.0, "returns": []}
         rets = np.array([r["performance"] for r in results], dtype=float)
-        avg = float(rets.mean())
-        win_rate = float((rets > 0).mean())
-
         return {
             "n_signals": int(len(results)),
-            "avg_return": avg,
-            "win_rate": win_rate,
+            "avg_return": float(rets.mean()),
+            "win_rate": float((rets > 0).mean()),
             "returns": rets.tolist(),
         }
-
-
-try:
-    import optuna  # type: ignore
-except Exception:
-    optuna = None
-
-
-class OptimizedWhaleDetector:
-    """
-    Parametre optimizasyonu için helper.
-    """
-
-    def __init__(self):
-        self.best_params: Optional[Dict[str, Any]] = None
-
-    def optimize_parameters(
-        self,
-        df: pd.DataFrame,
-        n_trials: int = 50,
-    ) -> Optional[Dict[str, Any]]:
-        if optuna is None:
-            raise RuntimeError("optuna yüklü değil, optimizasyon kullanılamaz.")
-
-        def objective(trial: "optuna.Trial") -> float:
-            params = {
-                "volume_zscore_thr": trial.suggest_float("volume_zscore_thr", 1.0, 3.0),
-                "window": trial.suggest_int("window", 20, 100),
-                "boost_thr": trial.suggest_float("boost_thr", 0.45, 0.75),
-                "veto_thr": trial.suggest_float("veto_thr", 0.65, 0.95),
-            }
-
-            detector = WhaleDetector(
-                volume_zscore_thr=float(params["volume_zscore_thr"]),
-                window=int(params["window"]),
-                boost_thr=float(params["boost_thr"]),
-                veto_thr=float(params["veto_thr"]),
-            )
-            backtester = WhaleDetectorBacktester(detector)
-            res = backtester.backtest(df)
-
-            returns = np.array(res["returns"], dtype=float)
-            if len(returns) < 5:
-                return 0.0
-
-            mean = float(returns.mean())
-            std = float(returns.std() or 1e-8)
-            sharpe = mean / std
-            return float(sharpe)
-
-        study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=int(n_trials))
-
-        self.best_params = dict(study.best_params)
-        return self.best_params
