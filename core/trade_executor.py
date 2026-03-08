@@ -841,12 +841,84 @@ class TradeExecutor:
                 except Exception:
                     pass
         self._local_positions.pop(sym, None)
+    def _extract_whale_context(self, extra: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Whale bilgisini farklı nesting seviyelerinden toparlar.
+        Öncelik:
+          1) extra top-level
+          2) extra["raw"]
+          3) extra["raw"]["raw"]
+          4) extra["meta"]
+          5) extra["whale_meta"]
+        """
+        out = dict(extra or {})
 
+        def _pick(d: Any, key: str, default: Any = None) -> Any:
+            try:
+                if isinstance(d, dict) and key in d and d.get(key) is not None:
+                    return d.get(key)
+            except Exception:
+                pass
+            return default
+
+        raw1 = out.get("raw") if isinstance(out.get("raw"), dict) else {}
+        raw2 = raw1.get("raw") if isinstance(raw1.get("raw"), dict) else {}
+        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+        whale_meta = out.get("whale_meta") if isinstance(out.get("whale_meta"), dict) else {}
+
+        whale_dir = (
+            _pick(out, "whale_dir")
+            or _pick(raw1, "whale_dir")
+            or _pick(raw2, "whale_dir")
+            or _pick(meta, "whale_dir")
+            or _pick(whale_meta, "whale_dir")
+            or "none"
+        )
+        whale_score = (
+            _pick(out, "whale_score")
+            or _pick(raw1, "whale_score")
+            or _pick(raw2, "whale_score")
+            or _pick(meta, "whale_score")
+            or _pick(whale_meta, "whale_score")
+            or 0.0
+        )
+        whale_action = (
+            _pick(out, "whale_action")
+            or _pick(raw1, "whale_action")
+            or _pick(raw2, "whale_action")
+            or _pick(meta, "whale_action")
+            or _pick(whale_meta, "whale_action")
+            or _pick(out, "whale_decision")
+            or ""
+        )
+
+        try:
+            whale_dir = str(whale_dir or "none").strip().lower()
+        except Exception:
+            whale_dir = "none"
+
+        try:
+            whale_score = float(whale_score or 0.0)
+        except Exception:
+            whale_score = 0.0
+
+        try:
+            whale_action = str(whale_action or "").strip().lower()
+        except Exception:
+            whale_action = ""
+
+        out["whale_dir"] = whale_dir
+        out["whale_score"] = whale_score
+        if whale_action:
+            out["whale_action"] = whale_action
+
+        return out
     # -------------------------
     # whale bias helpers
     # -------------------------
     def _whale_action(self, extra: Dict[str, Any]) -> str:
         try:
+            extra = self._extract_whale_context(extra)
             return str(
                 extra.get("whale_action")
                 or extra.get("whale_decision")
@@ -855,7 +927,6 @@ class TradeExecutor:
             ).strip().lower()
         except Exception:
             return ""
-
     def _whale_dir_score(self, extra: Dict[str, Any]) -> Tuple[str, float]:
         try:
             wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
@@ -1261,17 +1332,6 @@ class TradeExecutor:
         if side == "short":
             return (entry_price - exit_price) * qty
         return 0.0
-    def _whale_action(self, extra: Dict[str, Any]) -> str:
-        try:
-            return str(
-                extra.get("whale_action")
-                or extra.get("whale_decision")
-                or extra.get("whale_policy")
-                or ""
-            ).strip().lower()
-        except Exception:
-            return ""
-
     def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
         try:
             action = self._whale_action(extra)
@@ -1477,10 +1537,10 @@ class TradeExecutor:
         extra: Dict[str, Any] = {}
         try:
             meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-            extra = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
+            extra0 = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
+            extra = self._extract_whale_context(extra0)
         except Exception:
             extra = {}
-
         bias = self._whale_bias(side=side, extra=extra)
         trailing_pct = self._effective_trailing_pct(trailing_pct_base, bias)
 
@@ -1555,23 +1615,36 @@ class TradeExecutor:
 
         return None
     def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
+        extra = self._extract_whale_context(extra)
+
         aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
         max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
-        whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.6))
-        whale_veto_thr = float(getattr(config, "WHALE_VETO_THR", 0.6))
+        whale_boost_thr = float(getattr(config, "WHALE_STRONG_THR", 0.60))
+        whale_veto_thr = float(getattr(config, "WHALE_VETO_THR", 0.70))
 
         base = float(self.base_order_notional)
         model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
 
-        whale_dir = str(extra.get("whale_dir", "none") or "none").lower()
+        whale_dir = str(extra.get("whale_dir", "none") or "none").strip().lower()
         whale_score = float(extra.get("whale_score", 0.0) or 0.0)
+        whale_action = self._whale_action(extra)
 
         aggr_factor = 1.0
 
         if aggressive_mode:
-            whale_action = self._whale_action(extra)
+            # 1) Önce explicit whale_action bazlı davran
+            if whale_action in self.whale_block_actions and whale_score >= float(self.whale_hard_block_min_score):
+                aggr_factor *= 0.0
 
-            if whale_score > 0.0 and whale_dir in ("long", "short") and signal in ("long", "short"):
+            elif whale_action in self.whale_reduce_actions and whale_score >= float(self.whale_reduce_min_score):
+                aggr_factor *= float(self.whale_reduce_notional_mult)
+
+            elif whale_action in self.whale_boost_actions and whale_score >= float(self.whale_confirm_min_score):
+                boost = 1.0 + (float(self.whale_risk_boost) * max(0.0, whale_score - float(self.whale_confirm_min_score)))
+                aggr_factor *= boost
+
+            # 2) explicit action yoksa veya zayıfsa fallback whale_dir mantığı
+            elif whale_score > 0.0 and whale_dir in ("long", "short") and signal in ("long", "short"):
                 if whale_dir == signal and whale_score >= whale_boost_thr:
                     aggr_factor += self.whale_risk_boost * max(0.0, whale_score - whale_boost_thr)
                 elif whale_dir != signal and whale_score >= whale_veto_thr:
@@ -1579,22 +1652,15 @@ class TradeExecutor:
                 elif whale_dir != signal:
                     aggr_factor -= 0.4 * whale_score
 
-            if whale_action in self.whale_reduce_actions and whale_score >= float(self.whale_reduce_min_score):
-                aggr_factor *= float(self.whale_reduce_notional_mult)
-
-            if whale_action in self.whale_boost_actions and whale_score >= float(self.whale_confirm_min_score):
-                aggr_factor *= 1.10
-
-            if whale_action in self.whale_block_actions and whale_score >= float(self.whale_hard_block_min_score):
-                aggr_factor *= 0.25
-
+            # 3) model confidence etkisi
             mc = max(0.0, min(model_conf, 1.0))
             aggr_factor *= (0.5 + 0.5 * mc)
-        aggr_factor = max(0.0, min(aggr_factor, max_risk_mult))
+
+        aggr_factor = max(0.0, min(float(aggr_factor), float(max_risk_mult)))
 
         notional = base * aggr_factor
-        notional = min(notional, float(self.max_position_notional))
-        notional = max(notional, 10.0)
+        notional = min(float(notional), float(self.max_position_notional))
+        notional = max(float(notional), 10.0 if aggr_factor > 0 else 0.0)
 
         try:
             dry_run = bool(getattr(self, "dry_run", True))
@@ -1610,20 +1676,23 @@ class TradeExecutor:
 
         try:
             self.logger.info(
-                "[EXEC][NOTIONAL] base=%.2f aggr=%.3f mc=%.3f whale_dir=%s whale_score=%.3f equity=%.2f notional=%.2f",
-                base,
-                aggr_factor,
-                model_conf,
-                whale_dir,
-                whale_score,
+                "[EXEC][NOTIONAL] symbol=%s signal=%s base=%.2f aggr=%.3f mc=%.3f "
+                "whale_dir=%s whale_score=%.3f whale_action=%s equity=%.2f notional=%.2f",
+                str(symbol).upper(),
+                str(signal),
+                float(base),
+                float(aggr_factor),
+                float(model_conf),
+                str(whale_dir),
+                float(whale_score),
+                str(whale_action),
                 float(extra.get("equity_usdt", 0.0) or 0.0),
-                notional,
+                float(notional),
             )
         except Exception:
             pass
 
         return float(notional)
-
     def open_position_from_signal(
         self,
         symbol: str,
@@ -1631,8 +1700,8 @@ class TradeExecutor:
         interval: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        meta0 = meta if isinstance(meta, dict) else {}
-        sym_u = str(symbol).upper()
+        meta0 = self._extract_whale_context(meta if isinstance(meta, dict) else {})
+        sym_u = str(symbol).upper().strip()
 
         side0 = str(side or "long").strip().lower()
         if side0 not in ("long", "short"):
@@ -1647,23 +1716,38 @@ class TradeExecutor:
 
         if price is None or price <= 0:
             try:
-                self.logger.warning("[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s", sym_u, side0)
+                self.logger.warning(
+                    "[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s",
+                    sym_u,
+                    side0,
+                )
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
+
+        whale_action = self._whale_action(meta0)
+        whale_score = float(meta0.get("whale_score", 0.0) or 0.0)
+        whale_dir = str(meta0.get("whale_dir", "none") or "none").strip().lower()
+
         if self._should_block_open_by_whale(side0, meta0):
             try:
                 self.logger.info(
                     "[EXEC][WHALE][OPEN-BLOCK] symbol=%s side=%s whale_dir=%s whale_score=%.3f action=%s",
                     sym_u,
                     side0,
-                    str(meta0.get("whale_dir", "none")),
-                    float(meta0.get("whale_score", 0.0) or 0.0),
-                    self._whale_action(meta0),
+                    whale_dir,
+                    whale_score,
+                    whale_action,
                 )
             except Exception:
                 pass
-            return {"status": "skip", "reason": "whale_block"}
+            return {
+                "status": "skip",
+                "reason": "whale_block",
+                "symbol": sym_u,
+                "side": side0,
+            }
+
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
@@ -1678,7 +1762,7 @@ class TradeExecutor:
 
         eq_fallback = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
 
-        notional = None
+        notional: Optional[float] = None
         if npct is not None and npct > 0:
             base_eq = float(meta0.get("equity_usdt") or eq_fallback)
             notional = float(base_eq) * float(npct)
@@ -1686,9 +1770,10 @@ class TradeExecutor:
         if notional is None or notional <= 0:
             notional = self._compute_notional(sym_u, side0, float(price), meta0)
 
+        raw_notional = float(notional)
         notional = self._apply_whale_open_adjustments(side0, float(notional), meta0)
-        notional = float(min(notional, float(self.max_position_notional)))
-        notional = float(max(10.0, notional))
+        notional = float(min(float(notional), float(self.max_position_notional)))
+        notional = float(max(10.0, float(notional)))
 
         qty = notional / float(price)
         qty = self._round_qty(qty)
@@ -1702,18 +1787,51 @@ class TradeExecutor:
         if cur_side in ("long", "short"):
             if cur_side == side0:
                 return {"status": "ok", "reason": "already_open_same_side"}
-            self._close_position(sym_u, float(price), reason="FLIP_INTENT", interval=str(interval or ""))
+            self._close_position(
+                sym_u,
+                float(price),
+                reason="FLIP_INTENT",
+                interval=str(interval or ""),
+            )
+
+        extra = dict(meta0)
+        extra.setdefault("trail_pct", meta0.get("trail_pct", None))
+        extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
+        extra["whale_action"] = whale_action
+        extra["whale_open_notional_before"] = float(raw_notional)
+        extra["whale_open_notional_after"] = float(notional)
+        extra["whale_notional_adjusted"] = bool(abs(float(notional) - float(raw_notional)) > 1e-12)
+
+        whale_bias_now = self._whale_bias(side=side0, extra=extra)
+        extra["whale_bias"] = whale_bias_now
+
+        try:
+            self.logger.info(
+                "[EXEC][WHALE][OPEN-CHECK] symbol=%s side=%s action=%s bias=%s whale_dir=%s whale_score=%.3f raw_notional=%.2f final_notional=%.2f",
+                sym_u,
+                side0,
+                whale_action or "-",
+                whale_bias_now,
+                whale_dir,
+                whale_score,
+                float(raw_notional),
+                float(notional),
+            )
+        except Exception:
+            pass
 
         if not self.dry_run:
             try:
-                self._exchange_open_market(symbol=sym_u, side=side0, qty=float(qty), reduce_only=False)
+                self._exchange_open_market(
+                    symbol=sym_u,
+                    side=side0,
+                    qty=float(qty),
+                    reduce_only=False,
+                )
             except Exception:
                 return {"status": "skip", "reason": "exchange_open_failed"}
 
         probs: Dict[str, float] = {}
-        extra = dict(meta0)
-        extra.setdefault("trail_pct", meta0.get("trail_pct", None))
-        extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
 
         pos, _opened_at = self._create_position_dict(
             signal=side0,
@@ -1730,19 +1848,29 @@ class TradeExecutor:
 
         try:
             self.logger.info(
-                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f npct=%s dry_run=%s",
+                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f npct=%s whale_action=%s whale_bias=%s dry_run=%s",
                 side0.upper(),
                 sym_u,
                 float(qty),
                 float(price),
                 float(notional),
                 ("-" if npct is None else f"{npct:.4f}"),
+                whale_action or "-",
+                whale_bias_now,
                 self.dry_run,
             )
         except Exception:
             pass
+
         try:
-            self._notify_position_open(sym_u, str(interval or ""), side0, float(qty), float(price), extra)
+            self._notify_position_open(
+                sym_u,
+                str(interval or ""),
+                side0,
+                float(qty),
+                float(price),
+                extra,
+            )
         except Exception:
             pass
 
@@ -1771,8 +1899,9 @@ class TradeExecutor:
             "notional": float(notional),
             "trail_pct": float(pos.get("trailing_pct") or 0.0),
             "stall_ttl_sec": int(pos.get("stall_ttl_sec") or 0),
+            "whale_action": whale_action,
+            "whale_bias": whale_bias_now,
         }
-
     def close_position(
         self,
         symbol: str,
@@ -1872,10 +2001,14 @@ class TradeExecutor:
         probs: Dict[str, float],
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        extra0 = extra if isinstance(extra, dict) else {}
+        extra0 = dict(extra) if isinstance(extra, dict) else {}
         signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
-        sym_u = str(symbol).upper()
+        sym_u = str(symbol).upper().strip()
+
+        whale_action = self._whale_action(extra0)
+        whale_dir = str(extra0.get("whale_dir", "none") or "none").strip().lower()
+        whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
 
         try:
             p_used = extra0.get("ensemble_p")
@@ -1894,12 +2027,14 @@ class TradeExecutor:
                 "p_single": probs.get("p_single") if isinstance(probs, dict) else None,
                 "p_buy_raw": extra0.get("p_buy_raw"),
                 "p_buy_ema": extra0.get("p_buy_ema"),
-                "whale_dir": extra0.get("whale_dir", "none"),
-                "whale_score": extra0.get("whale_score", 0.0),
+                "whale_dir": whale_dir,
+                "whale_score": whale_score,
+                "whale_action": whale_action,
                 "extra": extra0,
             }
         except Exception:
             pass
+
         if signal_u == "HOLD":
             try:
                 ens = extra0.get("ensemble_p")
@@ -1908,7 +2043,10 @@ class TradeExecutor:
                 pbr = extra0.get("p_buy_raw")
 
                 p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
-                p_src = "ensemble_p" if ens is not None else ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
+                p_src = (
+                    "ensemble_p" if ens is not None else
+                    ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
+                )
 
                 pv = self._clip_float(p_val, None)
                 if pv is not None:
@@ -1930,7 +2068,13 @@ class TradeExecutor:
                 pass
 
             try:
-                self.logger.info("[EXEC] Signal=HOLD symbol=%s", sym_u)
+                self.logger.info(
+                    "[EXEC] Signal=HOLD symbol=%s whale_action=%s whale_dir=%s whale_score=%.3f",
+                    sym_u,
+                    whale_action or "-",
+                    whale_dir,
+                    whale_score,
+                )
             except Exception:
                 pass
             return
@@ -1939,19 +2083,23 @@ class TradeExecutor:
             return
         if training_mode:
             return
+        if side_norm not in ("long", "short"):
+            return
 
         try:
             if self._should_block_open_by_whale(side_norm, extra0):
                 self.logger.info(
-                    "[EXEC][VETO] WHALE_BLOCK | side=%s whale_dir=%s whale_score=%.3f action=%s -> SKIP",
+                    "[EXEC][VETO] WHALE_BLOCK | symbol=%s side=%s whale_dir=%s whale_score=%.3f action=%s -> SKIP",
+                    sym_u,
                     side_norm,
-                    str(extra0.get("whale_dir", "none")),
-                    float(extra0.get("whale_score", 0.0) or 0.0),
-                    self._whale_action(extra0),
+                    whale_dir,
+                    whale_score,
+                    whale_action or "-",
                 )
                 return
         except Exception:
             pass
+
         live_price = self._resolve_price(
             symbol=sym_u,
             price=price,
@@ -1959,6 +2107,14 @@ class TradeExecutor:
             last_price=extra0.get("last_price"),
         )
         if live_price is None or live_price <= 0:
+            try:
+                self.logger.warning(
+                    "[EXEC] live_price unavailable -> skip | symbol=%s signal=%s",
+                    sym_u,
+                    signal_u,
+                )
+            except Exception:
+                pass
             return
 
         try:
@@ -1966,9 +2122,12 @@ class TradeExecutor:
         except Exception:
             pass
 
+        raw_notional: Optional[float] = None
+
         if size is not None and float(size) > 0:
             qty = self._round_qty(float(size))
-            notional = qty * float(live_price)
+            raw_notional = float(qty) * float(live_price)
+            notional = float(raw_notional)
         else:
             try:
                 if "equity_usdt" not in extra0 or not float(extra0.get("equity_usdt") or 0.0) > 0.0:
@@ -1976,11 +2135,29 @@ class TradeExecutor:
             except Exception:
                 pass
 
-            notional = self._compute_notional(sym_u, side_norm, float(live_price), extra0)
-            notional = self._apply_whale_open_adjustments(side_norm, float(notional), extra0)
-            qty = self._round_qty(notional / float(live_price))
+            raw_notional = float(self._compute_notional(sym_u, side_norm, float(live_price), extra0))
+            notional = float(self._apply_whale_open_adjustments(side_norm, float(raw_notional), extra0))
+            qty = self._round_qty(float(notional) / float(live_price))
+
         if qty <= 0:
+            try:
+                self.logger.info(
+                    "[EXEC] qty<=0 -> skip | symbol=%s side=%s raw_notional=%.4f",
+                    sym_u,
+                    side_norm,
+                    float(raw_notional or 0.0),
+                )
+            except Exception:
+                pass
             return
+
+        extra0["whale_action"] = whale_action
+        extra0["whale_bias"] = self._whale_bias(side=side_norm, extra=extra0)
+        extra0["whale_open_notional_before"] = float(raw_notional or 0.0)
+        extra0["whale_open_notional_after"] = float(notional)
+        extra0["whale_notional_adjusted"] = bool(
+            abs(float(notional) - float(raw_notional or 0.0)) > 1e-12
+        )
 
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
@@ -1992,6 +2169,14 @@ class TradeExecutor:
         cur2_side = str(cur2.get("side")).lower() if cur2 else None
 
         if cur2_side == side_norm:
+            try:
+                self.logger.info(
+                    "[EXEC] same-side already open -> skip | symbol=%s side=%s",
+                    sym_u,
+                    side_norm,
+                )
+            except Exception:
+                pass
             return
 
         try:
@@ -2004,6 +2189,7 @@ class TradeExecutor:
             p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
             if p_val is None and isinstance(probs, dict):
                 p_val = probs.get("p_used") or probs.get("p_single")
+
             pv = self._clip_float(p_val, None)
             if pv is not None:
                 pv = max(0.0, min(1.0, pv))
@@ -2023,12 +2209,37 @@ class TradeExecutor:
         except Exception:
             pass
 
+        try:
+            self.logger.info(
+                "[EXEC][OPEN-CHECK] symbol=%s side=%s price=%.6f raw_notional=%.2f final_notional=%.2f qty=%.10f whale_action=%s whale_bias=%s whale_dir=%s whale_score=%.3f",
+                sym_u,
+                side_norm,
+                float(live_price),
+                float(raw_notional or 0.0),
+                float(notional),
+                float(qty),
+                whale_action or "-",
+                str(extra0.get("whale_bias") or "neutral"),
+                whale_dir,
+                whale_score,
+            )
+        except Exception:
+            pass
+
         if not self.dry_run:
             try:
-                self._exchange_open_market(symbol=sym_u, side=side_norm, qty=float(qty), reduce_only=False)
+                self._exchange_open_market(
+                    symbol=sym_u,
+                    side=side_norm,
+                    qty=float(qty),
+                    reduce_only=False,
+                )
             except Exception:
                 try:
-                    self.logger.exception("[EXEC][OPEN] exchange open failed -> state set edilmeyecek | symbol=%s", sym_u)
+                    self.logger.exception(
+                        "[EXEC][OPEN] exchange open failed -> state set edilmeyecek | symbol=%s",
+                        sym_u,
+                    )
                 except Exception:
                     pass
                 return
@@ -2045,15 +2256,18 @@ class TradeExecutor:
         )
 
         self._set_position(sym_u, pos)
+
         try:
             self.logger.info(
-                "[EXEC] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f interval=%s dry_run=%s",
+                "[EXEC] OPEN %s | symbol=%s qty=%.10f price=%.6f notional=%.2f interval=%s whale_action=%s whale_bias=%s dry_run=%s",
                 side_norm.upper(),
                 sym_u,
                 float(qty),
                 float(live_price),
                 float(notional),
                 interval,
+                whale_action or "-",
+                str(extra0.get("whale_bias") or "neutral"),
                 self.dry_run,
             )
         except Exception:
