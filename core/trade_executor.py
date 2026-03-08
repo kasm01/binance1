@@ -841,76 +841,100 @@ class TradeExecutor:
                 except Exception:
                     pass
         self._local_positions.pop(sym, None)
-    def _extract_whale_context(self, extra: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Whale bilgisini farklı nesting seviyelerinden toparlar.
-        Öncelik:
-          1) extra top-level
-          2) extra["raw"]
-          3) extra["raw"]["raw"]
-          4) extra["meta"]
-          5) extra["whale_meta"]
-        """
-        out = dict(extra or {})
-
-        def _pick(d: Any, key: str, default: Any = None) -> Any:
-            try:
-                if isinstance(d, dict) and key in d and d.get(key) is not None:
-                    return d.get(key)
-            except Exception:
-                pass
-            return default
-
-        raw1 = out.get("raw") if isinstance(out.get("raw"), dict) else {}
-        raw2 = raw1.get("raw") if isinstance(raw1.get("raw"), dict) else {}
-        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
-        whale_meta = out.get("whale_meta") if isinstance(out.get("whale_meta"), dict) else {}
-
-        whale_dir = (
-            _pick(out, "whale_dir")
-            or _pick(raw1, "whale_dir")
-            or _pick(raw2, "whale_dir")
-            or _pick(meta, "whale_dir")
-            or _pick(whale_meta, "whale_dir")
-            or "none"
-        )
-        whale_score = (
-            _pick(out, "whale_score")
-            or _pick(raw1, "whale_score")
-            or _pick(raw2, "whale_score")
-            or _pick(meta, "whale_score")
-            or _pick(whale_meta, "whale_score")
-            or 0.0
-        )
-        whale_action = (
-            _pick(out, "whale_action")
-            or _pick(raw1, "whale_action")
-            or _pick(raw2, "whale_action")
-            or _pick(meta, "whale_action")
-            or _pick(whale_meta, "whale_action")
-            or _pick(out, "whale_decision")
-            or ""
-        )
+    def _extract_whale_context(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        out: Dict[str, Any] = dict(extra) if isinstance(extra, dict) else {}
 
         try:
-            whale_dir = str(whale_dir or "none").strip().lower()
-        except Exception:
-            whale_dir = "none"
+            raw0 = out.get("raw")
+            if isinstance(raw0, str):
+                try:
+                    raw0 = json.loads(raw0)
+                except Exception:
+                    raw0 = {}
+            if not isinstance(raw0, dict):
+                raw0 = {}
 
-        try:
-            whale_score = float(whale_score or 0.0)
-        except Exception:
-            whale_score = 0.0
+            raw1 = raw0.get("raw")
+            if isinstance(raw1, str):
+                try:
+                    raw1 = json.loads(raw1)
+                except Exception:
+                    raw1 = {}
+            if not isinstance(raw1, dict):
+                raw1 = {}
 
-        try:
-            whale_action = str(whale_action or "").strip().lower()
-        except Exception:
-            whale_action = ""
+            raw2 = raw1.get("raw")
+            if isinstance(raw2, str):
+                try:
+                    raw2 = json.loads(raw2)
+                except Exception:
+                    raw2 = {}
+            if not isinstance(raw2, dict):
+                raw2 = {}
 
-        out["whale_dir"] = whale_dir
-        out["whale_score"] = whale_score
-        if whale_action:
-            out["whale_action"] = whale_action
+            meta_out = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+            meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
+            meta1 = raw1.get("meta") if isinstance(raw1.get("meta"), dict) else {}
+            meta2 = raw2.get("meta") if isinstance(raw2.get("meta"), dict) else {}
+            whale_meta = out.get("whale_meta") if isinstance(out.get("whale_meta"), dict) else {}
+
+            whale_dir = (
+                out.get("whale_dir")
+                or raw0.get("whale_dir")
+                or raw1.get("whale_dir")
+                or raw2.get("whale_dir")
+                or meta_out.get("whale_dir")
+                or meta0.get("whale_dir")
+                or meta1.get("whale_dir")
+                or meta2.get("whale_dir")
+                or whale_meta.get("whale_dir")
+                or "none"
+            )
+
+            whale_score = (
+                out.get("whale_score")
+                if out.get("whale_score") is not None else
+                raw0.get("whale_score")
+                if raw0.get("whale_score") is not None else
+                raw1.get("whale_score")
+                if raw1.get("whale_score") is not None else
+                raw2.get("whale_score")
+                if raw2.get("whale_score") is not None else
+                meta_out.get("whale_score")
+                if meta_out.get("whale_score") is not None else
+                meta0.get("whale_score")
+                if meta0.get("whale_score") is not None else
+                meta1.get("whale_score")
+                if meta1.get("whale_score") is not None else
+                meta2.get("whale_score")
+                if meta2.get("whale_score") is not None else
+                whale_meta.get("whale_score")
+                if whale_meta.get("whale_score") is not None else
+                0.0
+            )
+
+            whale_action = (
+                out.get("whale_action")
+                or out.get("whale_decision")
+                or out.get("whale_policy")
+                or raw0.get("whale_action")
+                or raw1.get("whale_action")
+                or raw2.get("whale_action")
+                or meta_out.get("whale_action")
+                or meta0.get("whale_action")
+                or meta1.get("whale_action")
+                or meta2.get("whale_action")
+                or whale_meta.get("whale_action")
+                or ""
+            )
+
+            out["whale_dir"] = str(whale_dir or "none").strip().lower()
+            out["whale_score"] = float(whale_score or 0.0)
+            if whale_action:
+                out["whale_action"] = str(whale_action).strip().lower()
+
+        except Exception:
+            pass
 
         return out
     # -------------------------

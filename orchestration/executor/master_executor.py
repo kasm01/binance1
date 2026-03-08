@@ -98,7 +98,45 @@ def _meta_get(raw: Dict[str, Any], key: str, default: Any = None) -> Any:
         pass
     return default
 
+def _json_load_if_str(x: Any) -> Any:
+    if isinstance(x, str):
+        s = x.strip()
+        if not s:
+            return {}
+        try:
+            return json.loads(s)
+        except Exception:
+            return x
+    return x
 
+
+def _deep_dict_chain(x: Any, max_depth: int = 4) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    cur = _json_load_if_str(x)
+
+    for _ in range(max_depth):
+        if not isinstance(cur, dict):
+            break
+        out.append(cur)
+        nxt = cur.get("raw")
+        nxt = _json_load_if_str(nxt)
+        if not isinstance(nxt, dict):
+            break
+        cur = nxt
+
+    return out
+
+
+def _first_non_empty(*vals: Any, default: Any = None) -> Any:
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str):
+            if v.strip() == "":
+                continue
+            return v
+        return v
+    return default
 def _deep_get(d: Dict[str, Any], path: List[str], default: Any = None) -> Any:
     cur: Any = d
     for p in path:
@@ -371,45 +409,100 @@ class MasterExecutor:
         )
 
     def _get_raw_evt(self, c: Dict[str, Any]) -> Dict[str, Any]:
-        raw_evt = c.get("raw") if isinstance(c.get("raw"), dict) else {}
-        return raw_evt or {}
-
-    def _get_whale_decision(self, raw_evt: Dict[str, Any]) -> Dict[str, Any]:
-        wd = _deep_get(raw_evt, ["meta", "whale_final_decision"], None)
-        if isinstance(wd, dict):
-            return wd
-        wd = raw_evt.get("whale_final_decision")
-        if isinstance(wd, dict):
-            return wd
+        raw_evt = c.get("raw")
+        raw_evt = _json_load_if_str(raw_evt)
+        if isinstance(raw_evt, dict):
+            return raw_evt
         return {}
 
+    def _extract_whale_context(self, raw_evt: Dict[str, Any]) -> Dict[str, Any]:
+        chain = _deep_dict_chain(raw_evt, max_depth=4)
+        metas: List[Dict[str, Any]] = []
+
+        for d in chain:
+            meta = d.get("meta")
+            if isinstance(meta, dict):
+                metas.append(meta)
+
+        whale_decision: Dict[str, Any] = {}
+        for d in chain:
+            wd = d.get("whale_final_decision")
+            if isinstance(wd, dict):
+                whale_decision = wd
+                break
+        if not whale_decision:
+            for m in metas:
+                wd = m.get("whale_final_decision")
+                if isinstance(wd, dict):
+                    whale_decision = wd
+                    break
+
+        whale_dir = _first_non_empty(
+            raw_evt.get("whale_dir"),
+            *[d.get("whale_dir") for d in chain],
+            *[m.get("whale_dir") for m in metas],
+            whale_decision.get("direction"),
+            default="none",
+        )
+
+        whale_score = _first_non_empty(
+            raw_evt.get("whale_score"),
+            *[d.get("whale_score") for d in chain],
+            *[m.get("whale_score") for m in metas],
+            whale_decision.get("score"),
+            whale_decision.get("confidence"),
+            default=0.0,
+        )
+
+        whale_action = _first_non_empty(
+            raw_evt.get("whale_action"),
+            raw_evt.get("whale_decision"),
+            raw_evt.get("whale_policy"),
+            *[d.get("whale_action") for d in chain],
+            *[d.get("whale_decision") for d in chain],
+            *[m.get("whale_action") for m in metas],
+            whale_decision.get("action"),
+            default="",
+        )
+
+        try:
+            whale_dir = str(whale_dir or "none").strip().lower()
+        except Exception:
+            whale_dir = "none"
+
+        try:
+            whale_score = float(whale_score or 0.0)
+        except Exception:
+            whale_score = 0.0
+
+        try:
+            whale_action = str(whale_action or "").strip().lower()
+        except Exception:
+            whale_action = ""
+
+        return {
+            "whale_dir": whale_dir,
+            "whale_score": float(_clamp(whale_score, 0.0, 1.0)),
+            "whale_action": whale_action,
+            "whale_final_decision": whale_decision if isinstance(whale_decision, dict) else {},
+            "raw_chain": chain,
+            "meta_chain": metas,
+        }
+
+    def _get_whale_decision(self, raw_evt: Dict[str, Any]) -> Dict[str, Any]:
+        return self._extract_whale_context(raw_evt).get("whale_final_decision", {}) or {}
+
     def _get_whale_action(self, raw_evt: Dict[str, Any]) -> str:
-        wd = self._get_whale_decision(raw_evt)
-        action = _safe_str(wd.get("action", ""), "").strip().lower()
-        if action:
-            return action
-        return _safe_str(
-            raw_evt.get("whale_action", _meta_get(raw_evt, "whale_action", "")),
-            "",
-        ).strip().lower()
+        ctx = self._extract_whale_context(raw_evt)
+        return _safe_str(ctx.get("whale_action", ""), "").strip().lower()
 
     def _get_whale_confidence(self, raw_evt: Dict[str, Any]) -> float:
-        wd = self._get_whale_decision(raw_evt)
-        v = wd.get("confidence", wd.get("score", None))
-        if v is None:
-            v = raw_evt.get("whale_score", 0.0)
-        return float(_clamp(_safe_float(v, 0.0), 0.0, 1.0))
+        ctx = self._extract_whale_context(raw_evt)
+        return float(_clamp(_safe_float(ctx.get("whale_score", 0.0), 0.0), 0.0, 1.0))
 
     def _get_whale_direction(self, raw_evt: Dict[str, Any]) -> str:
-        wd = self._get_whale_decision(raw_evt)
-        direction = _safe_str(wd.get("direction", ""), "").strip().lower()
-        if direction:
-            return direction
-        return _safe_str(
-            raw_evt.get("whale_dir", _meta_get(raw_evt, "whale_dir", "none")),
-            "none",
-        ).strip().lower()
-
+        ctx = self._extract_whale_context(raw_evt)
+        return _safe_str(ctx.get("whale_dir", "none"), "none").strip().lower()
     def _is_whale_contra(self, side: str, raw_evt: Dict[str, Any]) -> bool:
         whale_dir = self._get_whale_direction(raw_evt)
         whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
@@ -418,17 +511,28 @@ class MasterExecutor:
 
     def _compute_final_score(self, c: Dict[str, Any]) -> float:
         raw_evt = self._get_raw_evt(c)
+        ctx = self._extract_whale_context(raw_evt)
 
-        whale = _safe_float(raw_evt.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+        whale = _safe_float(ctx.get("whale_score", c.get("whale_score", 0.0)), 0.0)
+
         micro = _safe_float(
-            _meta_get(raw_evt, "micro_score", raw_evt.get("micro_score", c.get("micro_score", 0.0))),
+            _first_non_empty(
+                raw_evt.get("micro_score"),
+                *[_meta_get(d, "micro_score", None) for d in ctx.get("raw_chain", []) if isinstance(d, dict)],
+                c.get("micro_score", 0.0),
+                0.0,
+            ),
             0.0,
         )
+
         mtf = _safe_float(
-            _meta_get(
-                raw_evt,
-                "fast_model_score",
-                _meta_get(raw_evt, "p_used", c.get("score_total", 0.0)),
+            _first_non_empty(
+                _meta_get(raw_evt, "fast_model_score", None),
+                _meta_get(raw_evt, "p_used", None),
+                raw_evt.get("fast_model_score"),
+                raw_evt.get("p_used"),
+                c.get("score_total", 0.0),
+                0.0,
             ),
             0.0,
         )
@@ -440,8 +544,8 @@ class MasterExecutor:
         score = (self.w_w * whale) + (self.w_mtf * mtf) + (self.w_micro * micro)
 
         if self.whale_use_final_decision:
-            action = self._get_whale_action(raw_evt)
-            wconf = self._get_whale_confidence(raw_evt)
+            action = _safe_str(ctx.get("whale_action", ""), "").strip().lower()
+            wconf = float(_clamp(_safe_float(ctx.get("whale_score", 0.0), 0.0), 0.0, 1.0))
 
             if action in self.whale_boost_actions:
                 bonus = self.whale_confirm_score_bonus
@@ -462,7 +566,6 @@ class MasterExecutor:
             self._warned_heavy_stub = True
 
         return float(score)
-
     def _warn_missing_price_once(self, symbol: str, interval: str, side: str) -> None:
         try:
             key = f"{symbol}|{interval}|{side}"
@@ -475,12 +578,28 @@ class MasterExecutor:
 
     def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
         price = _safe_float(c.get("price", 0.0), 0.0)
-        if price <= 0:
-            price = _safe_float(raw_evt.get("price", 0.0), 0.0)
-        if price <= 0 and isinstance(raw_evt.get("raw"), dict):
-            price = _safe_float(raw_evt["raw"].get("price", 0.0), 0.0)
-        return float(max(0.0, price))
+        if price > 0:
+            return float(price)
 
+        ctx = self._extract_whale_context(raw_evt)
+
+        candidates = [
+            raw_evt.get("price"),
+            _deep_get(raw_evt, ["raw", "price"]),
+            _deep_get(raw_evt, ["raw", "raw", "price"]),
+            _deep_get(raw_evt, ["raw", "raw", "raw", "price"]),
+        ]
+
+        for d in ctx.get("raw_chain", []):
+            if isinstance(d, dict):
+                candidates.append(d.get("price"))
+
+        for v in candidates:
+            pv = _safe_float(v, 0.0)
+            if pv > 0:
+                return float(pv)
+
+        return 0.0
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
         base = float(_clamp(self._candidate_score(c), 0.0, 1.0))
         return base, ["heavy_passthrough"]
@@ -651,13 +770,27 @@ class MasterExecutor:
         c2["price"] = float(price)
 
         try:
-            if isinstance(c2.get("raw"), dict):
-                c2["raw"]["price"] = float(price)
-                if isinstance(c2["raw"].get("raw"), dict):
-                    c2["raw"]["raw"]["price"] = float(price)
+            raw0 = c2.get("raw")
+            raw0 = _json_load_if_str(raw0)
+
+            if isinstance(raw0, dict):
+                raw0["price"] = float(price)
+
+                raw1 = raw0.get("raw")
+                raw1 = _json_load_if_str(raw1)
+                if isinstance(raw1, dict):
+                    raw1["price"] = float(price)
+                    raw0["raw"] = raw1
+
+                    raw2 = raw1.get("raw")
+                    raw2 = _json_load_if_str(raw2)
+                    if isinstance(raw2, dict):
+                        raw2["price"] = float(price)
+                        raw1["raw"] = raw2
+
+                c2["raw"] = raw0
         except Exception:
             pass
-
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
@@ -808,3 +941,80 @@ class MasterExecutor:
         self._last_published_source_id = source_stream_id
 
         return sid
+    def run_forever(self) -> None:
+        if self.drain_pending:
+            print("[MasterExecutor] draining pending (PEL) ...")
+            while True:
+                rows = self._xreadgroup("0")
+                if not rows:
+                    break
+
+                mids = [sid for sid, _ in rows]
+
+                for sid, pkg in rows:
+                    items = pkg.get("items") or []
+                    if not isinstance(items, list) or not items:
+                        continue
+
+                    items2 = self._apply_heavy_stage(items)
+                    intents = self._select_top_unique(items2)
+                    out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
+
+                    if out_id:
+                        summary = ", ".join(
+                            [
+                                f"{it.symbol}:{it.side}@L{it.recommended_leverage} "
+                                f"npct={it.recommended_notional_pct:.3f}"
+                                for it in intents
+                            ]
+                        )
+                        print(
+                            f"[MasterExecutor] (PEL) published intents={len(intents)} "
+                            f"id={out_id} | {summary}"
+                        )
+
+                self._ack(mids)
+                time.sleep(0.05)
+
+            print("[MasterExecutor] pending drained.")
+
+        idle = 0
+        while True:
+            rows = self._xreadgroup(">")
+            if not rows:
+                idle += 1
+                if idle % 30 == 0:
+                    print("[MasterExecutor] idle...")
+                continue
+
+            idle = 0
+            mids = [sid for sid, _ in rows]
+
+            for sid, pkg in rows:
+                items = pkg.get("items") or []
+                if not isinstance(items, list) or not items:
+                    continue
+
+                items2 = self._apply_heavy_stage(items)
+                intents = self._select_top_unique(items2)
+                out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
+
+                if out_id:
+                    summary = ", ".join(
+                        [
+                            f"{it.symbol}:{it.side}@L{it.recommended_leverage} "
+                            f"npct={it.recommended_notional_pct:.3f}"
+                            for it in intents
+                        ]
+                    )
+                    print(
+                        f"[MasterExecutor] published intents={len(intents)} "
+                        f"-> {self.out_stream} id={out_id} | {summary}"
+                    )
+
+            self._ack(mids)
+            time.sleep(0.05)
+
+
+if __name__ == "__main__":
+    MasterExecutor().run_forever()

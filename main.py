@@ -783,47 +783,35 @@ def create_trading_objects(
         logger=system_logger,
     )
 
-    price_cache = PriceCache()
+    if price_cache is None:
+        price_cache = PriceCache()
+
     tg_bot = None
     try:
         tg_bot = TelegramBot()
+
         try:
             risk_manager.set_telegram_bot(tg_bot)
         except Exception:
-            pass
+            try:
+                setattr(risk_manager, "telegram_bot", tg_bot)
+            except Exception:
+                pass
 
-        dispatcher = getattr(tg_bot, "dispatcher", None)
-        if dispatcher:
+        try:
             if hasattr(tg_bot, "set_risk_manager"):
                 tg_bot.set_risk_manager(risk_manager)
             else:
                 setattr(tg_bot, "risk_manager", risk_manager)
+        except Exception:
+            pass
 
-            if system_logger:
-                system_logger.info("[MAIN] TelegramBot'a RiskManager enjekte edildi (/risk aktif).")
-
-            def _tg_polling_worker():
-                try:
-                    if system_logger:
-                        system_logger.info("[MAIN] Telegram polling worker starting...")
-                    tg_bot.start_polling()
-                except Exception as e:
-                    if system_logger:
-                        system_logger.exception("[MAIN] Telegram polling worker crashed: %s", e)
-
-            threading.Thread(
-                target=_tg_polling_worker,
-                name="telegram-polling",
-                daemon=True,
-            ).start()
-        else:
-            if system_logger:
-                system_logger.warning("[MAIN] Telegram dispatcher yok. TELEGRAM_BOT_TOKEN ayarlı değilse komutlar çalışmaz.")
+        if system_logger:
+            system_logger.info("[MAIN] TelegramBot init OK (send-only mode).")
     except Exception as e:
         tg_bot = None
         if system_logger:
-            system_logger.exception("[MAIN] TelegramBot init/enjeksiyon hata: %s", e)
-
+            system_logger.exception("[MAIN] TelegramBot init hata: %s", e)
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 

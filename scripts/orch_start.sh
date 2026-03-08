@@ -12,38 +12,54 @@ load_env_fill_only() {
   local env_file="${1:-.env}"
   [[ -f "$env_file" ]] || return 0
 
+  local line k v
+
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "${line//[[:space:]]/}" ]] && continue
+    # boş / yorum
+    [[ -z "$line" ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    line="${line#export }"
 
-    local k="${line%%=*}"
-    local v="${line#*=}"
+    # export prefix
+    [[ "$line" == export\ * ]] && line="${line#export }"
 
-    k="$(echo "$k" | xargs)"
+    # "=" yoksa geç
+    [[ "$line" == *=* ]] || continue
+
+    k="${line%%=*}"
+    v="${line#*=}"
+
+    # trim key
+    k="${k#"${k%%[![:space:]]*}"}"
+    k="${k%"${k##*[![:space:]]}"}"
+
     [[ -z "$k" ]] && continue
     [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
 
-    # do not override already-set env
+    # mevcut env varsa override etme
     if [[ -n "${!k+x}" ]]; then
       continue
     fi
 
-    v="$(echo "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    if [[ "$v" =~ ^\".*\"$ ]]; then
-      v="${v:1:${#v}-2}"
-    elif [[ "$v" =~ ^\'.*\'$ ]]; then
-      v="${v:1:${#v}-2}"
+    # trim value
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+
+    # tek/double quote soy
+    if [[ ${#v} -ge 2 ]]; then
+      if [[ "${v:0:1}" == '"' && "${v: -1}" == '"' ]]; then
+        v="${v:1:${#v}-2}"
+      elif [[ "${v:0:1}" == "'" && "${v: -1}" == "'" ]]; then
+        v="${v:1:${#v}-2}"
+      fi
     fi
 
     export "$k=$v"
   done < "$env_file"
 }
-
 load_env_fill_only ".env"
 
 # -----------------------------
-# Dirs + lock (avoid double-start races)
+# Dirs + lock
 # -----------------------------
 mkdir -p run logs/orch
 LOCK_FILE="run/orch_start.lock"
@@ -59,7 +75,7 @@ REDIS_DB="${REDIS_DB:-0}"
 PY="${PY:-python}"
 
 # -----------------------------
-# Streams (prefer .env)
+# Streams
 # -----------------------------
 SIGNALS_STREAM="${SIGNALS_STREAM:-signals_stream}"
 CANDIDATES_STREAM="${CANDIDATES_STREAM:-candidates_stream}"
@@ -68,7 +84,7 @@ TRADE_INTENTS_STREAM="${TRADE_INTENTS_STREAM:-trade_intents_stream}"
 EXEC_EVENTS_STREAM="${EXEC_EVENTS_STREAM:-exec_events_stream}"
 
 # -----------------------------
-# Hardening: pin consumer groups (deterministic)
+# Consumer groups
 # -----------------------------
 export TOPSEL_GROUP="${TOPSEL_GROUP:-topsel_g}"
 export TOPSEL_GROUP_START_ID="${TOPSEL_GROUP_START_ID:-$}"
@@ -83,7 +99,7 @@ export MASTER_GROUP_START_ID="${MASTER_GROUP_START_ID:-$}"
 export MASTER_CONSUMER="${MASTER_CONSUMER:-master_1}"
 
 # -----------------------------
-# Redis bootstrap: create streams+groups (idempotent)
+# Redis bootstrap
 # -----------------------------
 redis_xgroup_create() {
   local stream="$1" group="$2" start_id="${3:-$}"
@@ -92,12 +108,10 @@ redis_xgroup_create() {
 }
 
 bootstrap_redis() {
-  # pipeline streams
   redis_xgroup_create "$CANDIDATES_STREAM" "$TOPSEL_GROUP" "$TOPSEL_GROUP_START_ID"
-  redis_xgroup_create "$TOP5_STREAM"       "$MASTER_GROUP" "$MASTER_GROUP_START_ID"
+  redis_xgroup_create "$TOP5_STREAM" "$MASTER_GROUP" "$MASTER_GROUP_START_ID"
   redis_xgroup_create "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP" "$BRIDGE_GROUP_START_ID"
 
-  # ensure these streams exist (harmless)
   need redis-cli || return 0
   redis-cli -n "$REDIS_DB" XADD "$SIGNALS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
   redis-cli -n "$REDIS_DB" XADD "$EXEC_EVENTS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
@@ -105,7 +119,7 @@ bootstrap_redis() {
 bootstrap_redis
 
 # -----------------------------
-# Helpers: pidfile heal / cleanup (prevents stale pid alarms)
+# Helpers: pidfile heal / cleanup
 # -----------------------------
 heal_pidfile() {
   local name="$1" pat="$2"
@@ -128,21 +142,78 @@ heal_pidfile() {
 }
 
 # -----------------------------
-# Backpressure Guard (exec_events_stream)
-#   - sets scanner:throttle_factor (workers read this and slow down)
-#   - best-effort: only on start, and can be re-run via orch service restart
+# Process health helpers
+# -----------------------------
+proc_pattern() {
+  local name="$1"
+  case "$name" in
+    scanner_w1) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w1|w1')" ;;
+    scanner_w2) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w2|w2')" ;;
+    scanner_w3) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w3|w3')" ;;
+    scanner_w4) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w4|w4')" ;;
+    scanner_w5) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w5|w5')" ;;
+    scanner_w6) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w6|w6')" ;;
+    scanner_w7) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w7|w7')" ;;
+    scanner_w8) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w8|w8')" ;;
+    aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
+    top_selector) echo "orchestration/selector/top_selector.py" ;;
+    master_executor) echo "orchestration/executor/master_executor.py" ;;
+    intent_bridge) echo "orchestration/executor/intent_bridge.py" ;;
+    *) echo "$name" ;;
+  esac
+}
+
+is_proc_alive() {
+  local pat="$1"
+  pgrep -f "$pat" >/dev/null 2>&1
+}
+
+wait_proc_alive() {
+  local pat="$1"
+  local seconds_total="${2:-8}"
+  local sleep_step="${3:-1}"
+  local elapsed=0
+
+  while (( elapsed < seconds_total )); do
+    if is_proc_alive "$pat"; then
+      return 0
+    fi
+    sleep "$sleep_step"
+    elapsed=$((elapsed + sleep_step))
+  done
+  return 1
+}
+
+assert_proc_running() {
+  local name="$1"
+  local pat
+  pat="$(proc_pattern "$name")"
+  if wait_proc_alive "$pat" 8 1; then
+    local pid
+    pid="$(pgrep -f "$pat" | head -n1 || true)"
+    [[ -n "${pid:-}" ]] && echo "$pid" > "run/${name}.pid"
+    echo "[OK] ${name} running pid=${pid:-na}"
+    return 0
+  fi
+
+  echo "[FAIL] ${name} is not running (pattern=${pat})"
+  echo "[FAIL] Check log: logs/orch/${name}.log"
+  return 1
+}
+# -----------------------------
+# Backpressure Guard
 # -----------------------------
 BP_ENABLED="${BP_ENABLED:-1}"
 BP_THROTTLE_KEY="${BP_THROTTLE_KEY:-scanner:throttle_factor}"
 
-BP_EXEC_XLEN_HIGH="${BP_EXEC_XLEN_HIGH:-5000}"   # trigger slow down
-BP_EXEC_XLEN_LOW="${BP_EXEC_XLEN_LOW:-2000}"     # allow speed up (hysteresis)
+BP_EXEC_XLEN_HIGH="${BP_EXEC_XLEN_HIGH:-5000}"
+BP_EXEC_XLEN_LOW="${BP_EXEC_XLEN_LOW:-2000}"
 BP_FACTOR_MIN="${BP_FACTOR_MIN:-1}"
 BP_FACTOR_MAX="${BP_FACTOR_MAX:-16}"
 BP_FACTOR_DEFAULT="${BP_FACTOR_DEFAULT:-1}"
-BP_THROTTLE_TTL_SEC="${BP_THROTTLE_TTL_SEC:-120}"  # keep alive window
-BP_FACTOR_STEP_UP="${BP_FACTOR_STEP_UP:-2}"         # multiply on spike (2x)
-BP_FACTOR_STEP_DOWN="${BP_FACTOR_STEP_DOWN:-2}"     # divide on relief (2x)
+BP_THROTTLE_TTL_SEC="${BP_THROTTLE_TTL_SEC:-120}"
+BP_FACTOR_STEP_UP="${BP_FACTOR_STEP_UP:-2}"
+BP_FACTOR_STEP_DOWN="${BP_FACTOR_STEP_DOWN:-2}"
 
 redis_get_int() {
   local key="$1"
@@ -156,7 +227,6 @@ redis_get_int() {
 redis_set_throttle() {
   local factor="$1"
   need redis-cli || return 0
-  # set with TTL so it auto-expires back to normal if nothing refreshes it
   redis-cli -n "$REDIS_DB" SET "$BP_THROTTLE_KEY" "$factor" EX "$BP_THROTTLE_TTL_SEC" >/dev/null 2>&1 || true
 }
 
@@ -185,14 +255,12 @@ apply_backpressure_guard() {
   cur="$(redis_get_int "$BP_THROTTLE_KEY")"
   [[ -n "${cur:-}" ]] || cur="$BP_FACTOR_DEFAULT"
 
-  # normalize cur
   cur="$(echo "$cur" | awk '{print int($1)}' 2>/dev/null || echo "$BP_FACTOR_DEFAULT")"
   cur="$(clamp_int "$cur" "$BP_FACTOR_MIN" "$BP_FACTOR_MAX")"
 
   local next="$cur"
 
   if [[ "$xlen" -ge "$BP_EXEC_XLEN_HIGH" ]]; then
-    # step up (multiply)
     next=$(( cur * BP_FACTOR_STEP_UP ))
     next="$(clamp_int "$next" "$BP_FACTOR_MIN" "$BP_FACTOR_MAX")"
     echo "[BP] exec_events_stream XLEN=$xlen >= $BP_EXEC_XLEN_HIGH -> throttle $cur -> $next (key=$BP_THROTTLE_KEY)"
@@ -201,7 +269,6 @@ apply_backpressure_guard() {
   fi
 
   if [[ "$xlen" -le "$BP_EXEC_XLEN_LOW" ]]; then
-    # step down (divide)
     if [[ "$cur" -gt "$BP_FACTOR_DEFAULT" ]]; then
       next=$(( cur / BP_FACTOR_STEP_DOWN ))
       [[ "$next" -lt "$BP_FACTOR_DEFAULT" ]] && next="$BP_FACTOR_DEFAULT"
@@ -209,26 +276,21 @@ apply_backpressure_guard() {
       echo "[BP] exec_events_stream XLEN=$xlen <= $BP_EXEC_XLEN_LOW -> throttle $cur -> $next (key=$BP_THROTTLE_KEY)"
       redis_set_throttle "$next"
     else
-      # keep refreshed at default so workers converge fast
       redis_set_throttle "$BP_FACTOR_DEFAULT"
     fi
     return 0
   fi
 
-  # mid-zone: keep current but refresh TTL
   echo "[BP] exec_events_stream XLEN=$xlen in mid-zone -> keep throttle=$cur (refresh TTL)"
   redis_set_throttle "$cur"
 }
-
 apply_backpressure_guard
 
 # -----------------------------
-# Stuck consumer auto reset (best effort)
-#   - claims idle pending messages so they don't get stuck forever
-#   - safe to run even if no pending
+# Stuck consumer auto reset
 # -----------------------------
 SUP_AUTORESET_ENABLED="${SUP_AUTORESET_ENABLED:-1}"
-SUP_AUTORESET_IDLE_MS="${SUP_AUTORESET_IDLE_MS:-120000}"  # 120s
+SUP_AUTORESET_IDLE_MS="${SUP_AUTORESET_IDLE_MS:-120000}"
 SUP_AUTORESET_COUNT="${SUP_AUTORESET_COUNT:-50}"
 SUP_AUTORESET_CONSUMER="${SUP_AUTORESET_CONSUMER:-orch_autoreset}"
 
@@ -242,21 +304,16 @@ autoreset_stream_group() {
 
 autoreset_best_effort() {
   is_truthy "$SUP_AUTORESET_ENABLED" || return 0
-  # These are your critical groups
   autoreset_stream_group "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP"
   autoreset_stream_group "$TOP5_STREAM" "$MASTER_GROUP"
 }
 autoreset_best_effort
 
 # -----------------------------
-# DRY_RUN reset policy (configurable)
-#   - DRYRUN_RESET_STATE=1  => allow reset (default)
-#   - DRYRUN_RESET_STATE=0  => never reset
-#   - If BRIDGE_DRYRUN_WRITE_STATE=1, default behavior is to NOT reset (keep state)
+# DRY_RUN reset policy
 # -----------------------------
 DRYRUN_RESET_STATE="${DRYRUN_RESET_STATE:-1}"
 
-# If user explicitly wants dry-run write-state, default to preserving state unless overridden.
 if is_truthy "${BRIDGE_DRYRUN_WRITE_STATE:-0}"; then
   DRYRUN_RESET_STATE="${DRYRUN_RESET_STATE_OVERRIDE_WHEN_WRITE_STATE:-0}"
 fi
@@ -278,17 +335,22 @@ if is_truthy "${DRY_RUN:-1}"; then
     echo "[SKIP] DRY_RUN reset disabled (DRYRUN_RESET_STATE=0)"
   fi
 fi
+
 # -----------------------------
-# Optional: sterile mode (only master + bridge)
+# Optional sterile mode
 # -----------------------------
 STERILE="${STERILE:-0}"
 if is_truthy "$STERILE"; then
   echo "[MODE] STERILE=1 -> starting only master_executor + intent_bridge"
-  heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
-  heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
 
-  start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
-  start_one "intent_bridge"  "$PY" -u orchestration/executor/intent_bridge.py
+  heal_pidfile "master_executor" "$(proc_pattern master_executor)"
+  heal_pidfile "intent_bridge" "$(proc_pattern intent_bridge)"
+
+  start_one "master_executor" "$PY" -u ./orchestration/executor/master_executor.py
+  start_one "intent_bridge" "$PY" -u ./orchestration/executor/intent_bridge.py
+
+  assert_proc_running "master_executor"
+  assert_proc_running "intent_bridge"
 
   echo
   echo "Sterile start commands issued."
@@ -297,10 +359,7 @@ if is_truthy "$STERILE"; then
 fi
 
 # -----------------------------
-# SCANNERS: symbols -> 8 workers (3 symbols each)
-# Priority:
-#   1) Wn_SYMBOLS override
-#   2) SYMBOLS_24 split (can be >24; we'll just take sequential triplets)
+# SCANNERS
 # -----------------------------
 SYMBOLS_24="${SYMBOLS_24:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,MATICUSDT,DOTUSDT,LTCUSDT,TRXUSDT,ATOMUSDT,OPUSDT,ARBUSDT,APTUSDT,INJUSDT,SUIUSDT,FILUSDT,NEARUSDT,ETCUSDT,UNIUSDT,AAVEUSDT}"
 WORKER_INTERVAL="${WORKER_INTERVAL:-5m}"
@@ -310,7 +369,6 @@ WORKER_MAX_SPREAD_PCT="${WORKER_MAX_SPREAD_PCT:-0.0010}"
 WORKER_MAX_ATR_PCT="${WORKER_MAX_ATR_PCT:-0.0300}"
 WORKER_MIN_CONF="${WORKER_MIN_CONF:-0.45}"
 
-# worker throttle envs (read by updated worker_stub.py)
 WORKER_THROTTLE_KEY="${WORKER_THROTTLE_KEY:-$BP_THROTTLE_KEY}"
 WORKER_THROTTLE_MIN="${WORKER_THROTTLE_MIN:-1}"
 WORKER_THROTTLE_MAX="${WORKER_THROTTLE_MAX:-20}"
@@ -343,13 +401,11 @@ pick_worker_symbols() {
   _join_nonempty_csv "${symarr[$idx]:-}" "${symarr[$((idx+1))]:-}" "${symarr[$((idx+2))]:-}"
 }
 
-# Start scanners
 for n in 1 2 3 4 5 6 7 8; do
   wid="w${n}"
   name="scanner_${wid}"
   syms="$(pick_worker_symbols "$n")"
 
-  # if worker gets empty (not enough symbols), skip
   if [[ -z "${syms:-}" ]]; then
     echo "[SKIP] ${name} (no symbols assigned)"
     continue
@@ -369,24 +425,29 @@ for n in 1 2 3 4 5 6 7 8; do
     WORKER_THROTTLE_MAX="$WORKER_THROTTLE_MAX" \
     WORKER_THROTTLE_POLL_EVERY="$WORKER_THROTTLE_POLL_EVERY" \
     WORKER_THROTTLE_JITTER="$WORKER_THROTTLE_JITTER" \
-    "$PY" -u orchestration/scanners/worker_stub.py
+    "$PY" -u ./orchestration/scanners/worker_stub.py
 done
+# -----------------------------
+# Downstream singletons
+# -----------------------------
+heal_pidfile "aggregator" "$(proc_pattern aggregator)"
+heal_pidfile "top_selector" "$(proc_pattern top_selector)"
+heal_pidfile "master_executor" "$(proc_pattern master_executor)"
+heal_pidfile "intent_bridge" "$(proc_pattern intent_bridge)"
+
+start_one "aggregator" "$PY" -u ./orchestration/aggregator/run_aggregator.py
+start_one "top_selector" "$PY" -u ./orchestration/selector/top_selector.py
+start_one "master_executor" "$PY" -u ./orchestration/executor/master_executor.py
+start_one "intent_bridge" "$PY" -u ./orchestration/executor/intent_bridge.py
+
+# hard verify singleton processes
+assert_proc_running "aggregator"
+assert_proc_running "top_selector"
+assert_proc_running "master_executor"
+assert_proc_running "intent_bridge"
 
 # -----------------------------
-# Downstream singletons (ordered)
-# -----------------------------
-heal_pidfile "aggregator"      "orchestration/aggregator/run_aggregator.py"
-heal_pidfile "top_selector"    "orchestration/selector/top_selector.py"
-heal_pidfile "master_executor" "orchestration/executor/master_executor.py"
-heal_pidfile "intent_bridge"   "orchestration/executor/intent_bridge.py"
-
-start_one "aggregator"      "$PY" -u orchestration/aggregator/run_aggregator.py
-start_one "top_selector"    "$PY" -u orchestration/selector/top_selector.py
-start_one "master_executor" "$PY" -u orchestration/executor/master_executor.py
-start_one "intent_bridge"   "$PY" -u orchestration/executor/intent_bridge.py
-
-# -----------------------------
-# Readiness (best effort)
+# Readiness
 # -----------------------------
 _last_stream_id() {
   local stream="$1"
@@ -426,11 +487,9 @@ _wait_group_health() {
   local elapsed=0
 
   while (( elapsed < seconds_total )); do
-    # Use --raw for stable parsing: fields are alternating key/value lines
     local raw
     raw="$(redis-cli -n "$REDIS_DB" --raw XINFO GROUPS "$stream" 2>/dev/null || true)"
     if [[ -n "${raw:-}" ]]; then
-      # Extract pending+lag for the given group
       local pending lag
       pending="$(printf "%s\n" "$raw" | awk -v g="$group" '
         $0=="name"{getline; name=$0}
@@ -462,6 +521,11 @@ if is_truthy "$WAIT_READY"; then
   echo
   echo "=== Readiness check (best effort) ==="
 
+  assert_proc_running "aggregator"
+  assert_proc_running "top_selector"
+  assert_proc_running "master_executor"
+  assert_proc_running "intent_bridge"
+
   if _wait_stream_advance_by_id "$SIGNALS_STREAM" 6 1; then
     echo "[OK] ${SIGNALS_STREAM} advanced (id)"
   else
@@ -492,7 +556,6 @@ if is_truthy "$WAIT_READY"; then
     echo "[WARN] ${TOP5_STREAM} group not healthy/visible yet (group=$MASTER_GROUP)"
   fi
 
-  # print backpressure state summary
   if is_truthy "$BP_ENABLED"; then
     cur="$(redis_get_int "$BP_THROTTLE_KEY")"; cur="${cur:-$BP_FACTOR_DEFAULT}"
     xlen="$(redis_xlen "$EXEC_EVENTS_STREAM")"
