@@ -21,7 +21,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
-
+def _get_futures_base_url(is_testnet: bool) -> str:
+    """
+    USDT-M Futures endpoint root:
+    - testnet: https://testnet.binancefuture.com/fapi
+    - live   : https://fapi.binance.com/fapi
+    """
+    return "https://testnet.binancefuture.com/fapi" if is_testnet else "https://fapi.binance.com/fapi"
 def _get_futures_data_url(is_testnet: bool) -> str:
     """
     Futures data endpoint root:
@@ -50,7 +56,6 @@ def _attach_close(client: Any, log: logging.Logger) -> Any:
         pass
 
     return client
-
 
 def create_binance_client(
     api_key: Optional[str],
@@ -81,7 +86,8 @@ def create_binance_client(
         is_testnet = bool(testnet)
 
     try:
-        client = Client(api_key, api_secret)
+        # testnet=False bırakıyoruz; futures için URL override ayrı yapılacak
+        client = Client(api_key, api_secret, testnet=False)
     except Exception as e:
         log.exception("[BINANCE_CLIENT] Client init failed: %s", e)
         if dry_run:
@@ -89,17 +95,31 @@ def create_binance_client(
         raise
 
     futures_url = _get_futures_base_url(is_testnet)
+    futures_data_url = (
+        "https://demo-fapi.binance.com/futures/data"
+        if is_testnet
+        else "https://fapi.binance.com/futures/data"
+    )
 
-    # IMPORTANT
-    # python-binance futures endpoint override
-    client.FUTURES_URL = futures_url
+    try:
+        # python-binance futures endpoint override
+        # NOT: burada /fapi soneki olmak zorunda
+        client.FUTURES_URL = futures_url
+    except Exception as e:
+        log.debug("[BINANCE_CLIENT] FUTURES_URL set failed: %s", e)
+
+    try:
+        client.FUTURES_DATA_URL = futures_data_url
+    except Exception as e:
+        log.debug("[BINANCE_CLIENT] FUTURES_DATA_URL set failed: %s", e)
 
     client = _attach_close(client, log)
 
     log.info(
-        "[BINANCE_CLIENT] Futures Client oluşturuldu | testnet=%s | url=%s | dry_run=%s",
+        "[BINANCE_CLIENT] Futures Client oluşturuldu | testnet=%s | url=%s | data_url=%s | dry_run=%s",
         is_testnet,
         futures_url,
+        futures_data_url,
         dry_run,
     )
 
