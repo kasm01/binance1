@@ -486,7 +486,7 @@ def _fetch_klines_public_rest(
     import requests
 
     is_testnet = (os.getenv("BINANCE_TESTNET") == "1")
-    base = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
+    base = "https://demo-fapi.binance.com" if is_testnet else "https://fapi.binance.com"
     url = f"{base}/fapi/v1/klines"
     params = {"symbol": symbol, "interval": interval, "limit": int(limit)}
 

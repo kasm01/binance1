@@ -9,52 +9,40 @@ BINANCE_IMPORT_ERROR: Optional[Exception] = None
 
 try:
     from binance.client import Client  # type: ignore
-    from binance.enums import *  # type: ignore
     HAS_BINANCE = True
 except Exception as e:
     HAS_BINANCE = False
     BINANCE_IMPORT_ERROR = e
 
 
-# ==============================
-# Futures Base URL Resolver
-# ==============================
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
-def _get_futures_base_url(is_testnet: bool) -> str:
+
+def _get_futures_data_url(is_testnet: bool) -> str:
     """
-    USDT-M Futures endpoint belirler.
-    - testnet: https://testnet.binancefuture.com
-    - live:    https://fapi.binance.com
+    Futures data endpoint root:
+    - testnet: https://demo-fapi.binance.com/futures/data
+    - live   : https://fapi.binance.com/futures/data
     """
-    return "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
-
-
-# ==============================
-# Attach Close Helper
-# ==============================
+    return "https://demo-fapi.binance.com/futures/data" if is_testnet else "https://fapi.binance.com/futures/data"
 
 def _attach_close(client: Any, log: logging.Logger) -> Any:
     """
-    python-binance Client objesine best-effort close() ekler.
-    Amaç: requests.Session kapanışı (HTTP connection pool cleanup).
+    requests session cleanup helper
     """
 
     def _close():
         try:
             sess = getattr(client, "session", None)
-            if sess is not None and hasattr(sess, "close"):
+            if sess and hasattr(sess, "close"):
                 sess.close()
-                log.info("[BINANCE_CLIENT] session closed.")
+                log.info("[BINANCE_CLIENT] session closed")
         except Exception as e:
-            log.debug("[BINANCE_CLIENT] session close failed: %s", e)
-
-        try:
-            if hasattr(client, "_session") and getattr(client, "_session") is not None:
-                s2 = getattr(client, "_session")
-                if hasattr(s2, "close"):
-                    s2.close()
-        except Exception:
-            pass
+            log.debug("[BINANCE_CLIENT] close error: %s", e)
 
     try:
         setattr(client, "close", _close)
@@ -64,27 +52,13 @@ def _attach_close(client: Any, log: logging.Logger) -> Any:
     return client
 
 
-# ==============================
-# Client Factory
-# ==============================
-
 def create_binance_client(
     api_key: Optional[str],
     api_secret: Optional[str],
-    testnet: Optional[bool] = None,  # ✅ main.py uyumu için eklendi
+    testnet: Optional[bool] = None,
     logger: Optional[logging.Logger] = None,
     dry_run: bool = True,
 ) -> Optional[Any]:
-    """
-    Binance USDT-M Futures REST client oluşturur.
-
-    - python-binance yoksa:
-        * DRY_RUN=True ise: client=None ile devam eder.
-        * DRY_RUN=False ise: RuntimeError fırlatır.
-    - Futures testnet/live seçimi:
-        * testnet parametresi verilmişse onu kullanır
-        * verilmemişse BINANCE_TESTNET env'inden okur
-    """
 
     log = logger or logging.getLogger("system")
 
@@ -92,40 +66,33 @@ def create_binance_client(
         msg = f"python-binance import edilemedi: {repr(BINANCE_IMPORT_ERROR)}"
         log.error("[BINANCE_CLIENT] %s", msg)
 
-        if dry_run or not api_key or not api_secret:
-            log.warning("[BINANCE_CLIENT] DRY_RUN veya API key yok; client=None ile devam.")
+        if dry_run:
             return None
 
-        raise RuntimeError("python-binance package not installed or failed to import")
+        raise RuntimeError(msg)
 
     if not api_key or not api_secret:
-        log.warning(
-            "[BINANCE_CLIENT] API key/secret boş. DRY_RUN=%s, client=None ile devam.",
-            dry_run,
-        )
+        log.warning("[BINANCE_CLIENT] API key/secret missing")
         return None
 
-    # ✅ testnet kararı: parametre > env
     if testnet is None:
-        is_testnet = str(os.getenv("BINANCE_TESTNET", "0")).strip().lower() in ("1", "true", "yes", "on")
+        is_testnet = _env_bool("BINANCE_TESTNET") or _env_bool("USE_TESTNET")
     else:
         is_testnet = bool(testnet)
 
-    # ⚠️ python-binance Client(..., testnet=...) spot içindir.
-    # Futures için base url override yapıyoruz.
-    client = Client(api_key, api_secret, testnet=False)
+    try:
+        client = Client(api_key, api_secret)
+    except Exception as e:
+        log.exception("[BINANCE_CLIENT] Client init failed: %s", e)
+        if dry_run:
+            return None
+        raise
 
     futures_url = _get_futures_base_url(is_testnet)
 
-    # ✅ python-binance futures URL override (USDT-M)
-    try:
-        client.FUTURES_URL = futures_url
-    except Exception:
-        pass
-    try:
-        client.FUTURES_DATA_URL = futures_url
-    except Exception:
-        pass
+    # IMPORTANT
+    # python-binance futures endpoint override
+    client.FUTURES_URL = futures_url
 
     client = _attach_close(client, log)
 
@@ -135,4 +102,5 @@ def create_binance_client(
         futures_url,
         dry_run,
     )
+
     return client
