@@ -240,7 +240,6 @@ class IntentBridge:
             return {}
 
     def _set_state(self, st: Dict[str, Any]) -> None:
-        # In DRY_RUN we may want to not touch state (configurable)
         if self.dry_run_env and (not self.dryrun_write_state):
             return
         try:
@@ -254,6 +253,7 @@ class IntentBridge:
             return len([1 for _k, v in (st or {}).items() if isinstance(v, dict)])
         except Exception:
             return 0
+
     def _is_open(self, st: Dict[str, Any], symbol: str) -> bool:
         try:
             return isinstance((st or {}).get(symbol), dict)
@@ -261,7 +261,6 @@ class IntentBridge:
             return False
 
     def _action_of(self, item: Dict[str, Any]) -> str:
-        # fail-open detection: OPEN if long/short; CLOSE if explicit close
         side = _safe_str(item.get("side", "")).strip().lower()
         action = _safe_str(item.get("action", "")).strip().lower()
         itype = _safe_str(item.get("intent_type", "")).strip().lower()
@@ -270,7 +269,6 @@ class IntentBridge:
             return "close"
         if side in ("long", "short", "buy", "sell"):
             return "open"
-        # default: open (backward compat)
         return "open"
 
     def _norm_side(self, item: Dict[str, Any]) -> str:
@@ -288,11 +286,6 @@ class IntentBridge:
         return float(p) if p > 0 else 0.0
 
     def _stall_ttl_of(self, item: Dict[str, Any]) -> int:
-        """
-        Öneri/fix:
-        - önce item.stall_ttl_sec (veya stall_ttl) oku
-        - yoksa env STALL_TTL_SEC fallback
-        """
         v = item.get("stall_ttl_sec", None)
         if v is None:
             v = item.get("stall_ttl", None)
@@ -303,10 +296,6 @@ class IntentBridge:
         return int(max(0, iv))
 
     def _trail_pct_of(self, item: Dict[str, Any]) -> float:
-        """
-        trail_pct yoksa trailing_pct'yi de kabul et.
-        env TRAIL_PCT fallback.
-        """
         v = item.get("trail_pct", None)
         if v is None:
             v = item.get("trailing_pct", None)
@@ -328,11 +317,9 @@ class IntentBridge:
     def _close_cd_set(self, symbol: str, ts: float) -> None:
         try:
             self.r.hset(self.close_cd_key, symbol, str(float(ts)))
-            # keep cooldown hash small; expire > cooldown
             self.r.expire(self.close_cd_key, max(10, int(self.close_cooldown_sec * 2)))
         except Exception:
             pass
-
     def _prune_state(self, st: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         """
         Remove expired symbols based on per-symbol expires_at.
@@ -385,11 +372,10 @@ class IntentBridge:
                 self._close_cd_set(sym, time.time())
                 self._set_state(st)
                 return True, "closed"
-            # still set cooldown to reduce spam
+
             self._close_cd_set(sym, time.time())
             return False, "close_not_open"
 
-        # OPEN path
         last_close = self._close_cd_get(sym)
         if last_close > 0 and (time.time() - last_close) < float(self.close_cooldown_sec):
             return False, "cooldown"
@@ -410,13 +396,19 @@ class IntentBridge:
         self._set_state(st)
         return True, "opened"
 
-    def _publish_exec(self, source_stream_id: str, item: Dict[str, Any]) -> Optional[str]:
+    def _publish_exec(
+        self,
+        source_stream_id: str,
+        item: Dict[str, Any],
+        reason_hint: str = "",
+    ) -> Optional[str]:
         """
         OUT stream'e tek item publish.
-        Öneri/fix:
-          - stall_ttl_sec item üzerinden geçsin (env'e yanlış bağlanmasın)
-          - trail_pct/trailing_pct normalize edilsin
-          - raw pass-through truncate edilsin (opsiyonel)
+
+        Kurallar:
+          - open event için valid price gerekir
+          - close event'te price 0 olabilir
+          - publish log reason'ı payload / hint ile belirlenir
         """
         if not self.publish_allowed:
             return None
@@ -431,7 +423,7 @@ class IntentBridge:
         if not sym:
             return None
 
-        if self.require_price and price <= 0.0 and (side != "close"):
+        if self.require_price and price <= 0.0 and side != "close":
             return None
 
         payload_item: Dict[str, Any] = {
@@ -462,9 +454,24 @@ class IntentBridge:
                 maxlen=int(self.out_maxlen),
                 approximate=bool(self.out_approx),
             )
-            return sid
         except Exception:
             return None
+
+        publish_reason = str(reason_hint or "").strip().lower()
+        if not publish_reason:
+            if side == "close":
+                publish_reason = "closed"
+            elif side in ("long", "short"):
+                publish_reason = "opened"
+            else:
+                publish_reason = "published"
+
+        print(
+            f"[IntentBridge] published 1 -> {self.out_stream} "
+            f"source={source_stream_id} reason={publish_reason}"
+        )
+        return sid
+
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -476,7 +483,6 @@ class IntentBridge:
             )
         except redis.exceptions.ResponseError as e:
             msg = str(e)
-            # stream blocking read sırasında silinirse
             if "UNBLOCKED" in msg and "no longer exists" in msg:
                 self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
                 return []
@@ -493,9 +499,10 @@ class IntentBridge:
                 pkg = self._parse_pkg(sid, fields) or {}
                 out.append((sid, pkg if isinstance(pkg, dict) else {}))
         return out
-
     def _process_rows(self, rows: List[Tuple[str, Dict[str, Any]]], *, is_pel: bool = False) -> None:
         mids = [sid for sid, _ in rows]
+        publishable_reasons = {"opened", "closed"}
+
         for sid, pkg in rows:
             items = pkg.get("items")
             if not isinstance(items, list):
@@ -508,13 +515,28 @@ class IntentBridge:
                 self._maybe_cleanup()
                 _changed, reason = self._apply_state_update(it)
 
+                tag = "(PEL) " if is_pel else ""
+
+                if reason not in publishable_reasons:
+                    print(
+                        f"[IntentBridge] {tag}skip publish source={sid} "
+                        f"reason={reason} symbol={_safe_str(it.get('symbol', '')).upper()}"
+                    )
+                    continue
+
                 out_id = self._publish_exec(source_stream_id=sid, item=it)
                 if out_id:
-                    tag = "(PEL) " if is_pel else ""
-                    print(f"[IntentBridge] {tag}published 1 -> {self.out_stream} source={sid} reason={reason}")
+                    print(
+                        f"[IntentBridge] {tag}published 1 -> {self.out_stream} "
+                        f"source={sid} reason={reason}"
+                    )
+                else:
+                    print(
+                        f"[IntentBridge] {tag}publish failed source={sid} "
+                        f"reason={reason} symbol={_safe_str(it.get('symbol', '')).upper()}"
+                    )
 
         self._ack(mids)
-
     def run_forever(self) -> None:
         if self.drain_pending:
             print("[IntentBridge] draining pending (PEL) ...")

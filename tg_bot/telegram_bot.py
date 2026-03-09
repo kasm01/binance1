@@ -1,16 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
-import re
-import logging
-import traceback
 from typing import Optional
 
 from telegram import Bot
-from telegram.error import BadRequest
 
 from core.logger import system_logger, error_logger
-from core.risk_manager import RiskManager
-from tg_bot.commands import register_handlers
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
@@ -28,9 +23,13 @@ class TelegramBot:
         self.polling_enabled = _env_bool("TELEGRAM_POLLING_ENABLED", False)
 
         self.bot: Optional[Bot] = None
+        self.dispatcher = None
+        self.risk_manager = None
 
         if not self.enabled:
-            system_logger.warning("[TelegramBot] disabled: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing")
+            system_logger.warning(
+                "[TelegramBot] disabled: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing"
+            )
             return
 
         try:
@@ -44,10 +43,17 @@ class TelegramBot:
             self.bot = None
             error_logger.exception("[TelegramBot] init failed: %s", e)
 
+    def set_risk_manager(self, risk_manager) -> None:
+        self.risk_manager = risk_manager
+        try:
+            system_logger.info("[TelegramBot] risk_manager attached")
+        except Exception:
+            pass
+
     def start_polling(self) -> None:
         """
-        Bu projede varsayılan davranış polling yapmamak.
-        Sadece geriye uyumluluk için metod bırakıldı.
+        Send-only mode.
+        Polling bilinçli olarak kapalı bırakılıyor.
         """
         if not self.enabled or self.bot is None:
             system_logger.warning("[TelegramBot] start_polling skipped: bot not ready")
@@ -57,7 +63,10 @@ class TelegramBot:
             system_logger.info("[TelegramBot] polling disabled -> send-only mode")
             return
 
-        system_logger.warning("[TelegramBot] polling requested but disabled by implementation (send-only mode)")
+        system_logger.warning(
+            "[TelegramBot] polling requested but implementation is send-only; skipping"
+        )
+        return
 
     def send_message(self, message: str, *, parse_mode: Optional[str] = None) -> None:
         if not self.enabled or self.bot is None:
@@ -69,19 +78,15 @@ class TelegramBot:
             return
 
         try:
+            kwargs = {
+                "chat_id": self.default_chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            }
             if parse_mode:
-                self.bot.send_message(
-                    chat_id=self.default_chat_id,
-                    text=text,
-                    parse_mode=parse_mode,
-                    disable_web_page_preview=True,
-                )
-            else:
-                self.bot.send_message(
-                    chat_id=self.default_chat_id,
-                    text=text,
-                    disable_web_page_preview=True,
-                )
+                kwargs["parse_mode"] = parse_mode
+
+            self.bot.send_message(**kwargs)
         except Exception:
             try:
                 error_logger.exception("[TelegramBot] send_message failed")
