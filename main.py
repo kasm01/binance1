@@ -933,7 +933,13 @@ def create_trading_objects(
     base_order_notional = float(os.getenv("BASE_ORDER_NOTIONAL", "50"))
     max_position_notional = float(os.getenv("MAX_POSITION_NOTIONAL", "500"))
     max_leverage = float(os.getenv("MAX_LEVERAGE", "3"))
-
+    if system_logger:
+        system_logger.info(
+            "[MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=%s MAX_POSITION_NOTIONAL=%s MAX_LEVERAGE=%s",
+            os.getenv("BASE_ORDER_NOTIONAL", "50"),
+            os.getenv("MAX_POSITION_NOTIONAL", "500"),
+            os.getenv("MAX_LEVERAGE", "3"),
+        )
     sl_pct = float(os.getenv("SL_PCT", "0.01"))
     tp_pct = float(os.getenv("TP_PCT", "0.02"))
     trailing_pct = float(os.getenv("TRAILING_PCT", "0.01"))

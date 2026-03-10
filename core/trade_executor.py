@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,7 +82,16 @@ class TradeExecutor:
         self.atr_tp_mult = float(atr_tp_mult)
 
         self.whale_risk_boost = float(whale_risk_boost)
-
+        try:
+            self.logger.info(
+                "[EXEC][INIT] dry_run=%s base_order_notional=%.2f max_position_notional=%.2f max_leverage=%.2f",
+                self.dry_run,
+                float(self.base_order_notional),
+                float(self.max_position_notional),
+                float(self.max_leverage),
+            )
+        except Exception:
+            pass
         # price cache
         self.price_cache: Optional[Any] = price_cache
         self.redis_price_cache: Optional[RedisPriceCache] = redis_price_cache
@@ -358,7 +368,190 @@ class TradeExecutor:
             return float(round(q, d))
         except Exception:
             return float(qty)
+    def _to_decimal(self, x: Any, default: str = "0") -> Decimal:
+        try:
+            return Decimal(str(x))
+        except Exception:
+            return Decimal(default)
 
+    def _floor_to_step(self, value: float, step: float) -> float:
+        """
+        value'yu stepSize katına aşağı yuvarlar.
+        Örn:
+          value=0.00076923, step=0.001 -> 0.000
+          value=1.287, step=0.01 -> 1.28
+        """
+        try:
+            v = self._to_decimal(value)
+            s = self._to_decimal(step)
+            if s <= 0:
+                return float(v)
+
+            floored = (v / s).to_integral_value(rounding=ROUND_DOWN) * s
+            return float(floored)
+        except Exception:
+            return float(value)
+
+    def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
+    """
+    exchangeInfo symbol filtresinden gerekli alanları çıkarır.
+    """
+    out = {
+        "step_size": 0.0,
+        "min_qty": 0.0,
+        "min_notional": 0.0,
+        "tick_size": 0.0,
+    }
+
+    try:
+        filters = symbol_info.get("filters", []) or []
+        for f in filters:
+            if not isinstance(f, dict):
+                continue
+
+            ftype = str(f.get("filterType", "")).upper()
+
+            if ftype in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+                step_size = float(f.get("stepSize", 0.0) or 0.0)
+                min_qty = float(f.get("minQty", 0.0) or 0.0)
+
+                if step_size > 0:
+                    out["step_size"] = max(out["step_size"], step_size)
+                if min_qty > 0:
+                    out["min_qty"] = max(out["min_qty"], min_qty)
+
+            elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                min_notional = (
+                    f.get("notional")
+                    or f.get("minNotional")
+                    or 0.0
+                )
+                out["min_notional"] = float(min_notional or 0.0)
+
+            elif ftype == "PRICE_FILTER":
+                out["tick_size"] = float(f.get("tickSize", 0.0) or 0.0)
+    except Exception:
+        pass
+
+    return out
+    def _normalize_order_qty(
+    self,
+    *,
+    symbol: str,
+    raw_qty: float,
+    price: float,
+    symbol_info: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Qty'yi exchange filtresine göre normalize eder.
+    Döner:
+      normalized_qty, meta
+    """
+    meta: Dict[str, Any] = {
+        "symbol": str(symbol).upper(),
+        "raw_qty": float(raw_qty),
+        "price": float(price),
+        "step_size": 0.0,
+        "min_qty": 0.0,
+        "min_notional": 0.0,
+        "normalized_qty": 0.0,
+        "normalized_notional": 0.0,
+        "reject_reason": "",
+    }
+
+    try:
+        info = symbol_info or {}
+        filters = self._extract_symbol_filters(info)
+
+        step_size = float(filters.get("step_size", 0.0) or 0.0)
+        min_qty = float(filters.get("min_qty", 0.0) or 0.0)
+        min_notional = float(filters.get("min_notional", 0.0) or 0.0)
+
+        meta["step_size"] = step_size
+        meta["min_qty"] = min_qty
+        meta["min_notional"] = min_notional
+
+        qty = float(raw_qty)
+
+        if step_size > 0:
+            qty = self._floor_to_step(qty, step_size)
+
+        notional = float(qty * float(price))
+
+        meta["normalized_qty"] = qty
+        meta["normalized_notional"] = notional
+
+        if qty <= 0:
+            meta["reject_reason"] = "qty_zero_after_step_floor"
+            return 0.0, meta
+
+        if min_qty > 0 and qty < min_qty:
+            meta["reject_reason"] = "qty_below_min_qty"
+            return 0.0, meta
+
+        if min_notional > 0 and notional < min_notional:
+            meta["reject_reason"] = "notional_below_min_notional"
+            return 0.0, meta
+
+        return qty, meta
+
+    except Exception as e:
+        meta["reject_reason"] = f"normalize_exception:{e}"
+        return 0.0, meta
+    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+    sym = str(symbol).upper()
+
+    client = getattr(self, "client", None)
+    if client is None:
+        return {}
+
+    try:
+        exch = getattr(client, "futures_exchange_info", None)
+        if not callable(exch):
+            return {}
+
+        exchange_info = exch()
+        symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
+
+        for s in symbols:
+            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                return s
+    except Exception as e:
+        try:
+            self.logger.warning(
+                "[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s",
+                sym,
+                str(e),
+            )
+        except Exception:
+            pass
+
+    return {}
+    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+    sym = str(symbol).upper()
+
+    client = getattr(self, "client", None)
+    if client is None:
+        return {}
+
+    try:
+        exch = getattr(client, "futures_exchange_info", None)
+        if not callable(exch):
+            return {}
+
+        exchange_info = exch()
+        symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
+
+        for s in symbols:
+            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                return s
+    except Exception as e:
+        try:
+            self.logger.warning("[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s", sym, str(e))
+        except Exception:
+            pass
+
+    return {}
     # -------------------------
     # async/coro helpers
     # -------------------------
@@ -461,40 +654,43 @@ class TradeExecutor:
             return float(value)
 
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
-
+        """
+        exchangeInfo symbol filtresinden gerekli alanları çıkarır.
+        """
         out = {
             "step_size": 0.0,
             "min_qty": 0.0,
             "min_notional": 0.0,
+            "tick_size": 0.0,
         }
 
         try:
             filters = symbol_info.get("filters", []) or []
-
             for f in filters:
+                if not isinstance(f, dict):
+                    continue
 
                 ftype = str(f.get("filterType", "")).upper()
 
                 if ftype in ("LOT_SIZE", "MARKET_LOT_SIZE"):
-
-                    step = float(f.get("stepSize", 0.0) or 0.0)
+                    step_size = float(f.get("stepSize", 0.0) or 0.0)
                     min_qty = float(f.get("minQty", 0.0) or 0.0)
 
-                    if step > 0:
-                        out["step_size"] = max(out["step_size"], step)
-
+                    if step_size > 0:
+                        out["step_size"] = max(out["step_size"], step_size)
                     if min_qty > 0:
                         out["min_qty"] = max(out["min_qty"], min_qty)
 
-                elif ftype == "MIN_NOTIONAL":
+                elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                    min_notional = f.get("notional") or f.get("minNotional") or 0.0
+                    out["min_notional"] = float(min_notional or 0.0)
 
-                    out["min_notional"] = float(f.get("notional", 0.0) or 0.0)
-
+                elif ftype == "PRICE_FILTER":
+                    out["tick_size"] = float(f.get("tickSize", 0.0) or 0.0)
         except Exception:
             pass
 
         return out
-
     def _normalize_order_qty(self, symbol: str, raw_qty: float, price: float) -> float:
 
         try:
@@ -1315,16 +1511,58 @@ class TradeExecutor:
         else:
             raise ValueError(f"bad side={side}")
 
-        q = self._round_qty(float(qty))
+        raw_q = self._round_qty(float(qty))
 
-        q = self._normalize_order_qty(
+        price_for_norm = self._resolve_price(symbol=sym)
+        if price_for_norm is None or price_for_norm <= 0:
+            try:
+                ticker_fn = getattr(self.client, "futures_mark_price", None)
+                if callable(ticker_fn):
+                    mp = ticker_fn(symbol=sym)
+                    if isinstance(mp, dict):
+                        price_for_norm = float(mp.get("markPrice") or 0.0)
+            except Exception:
+                price_for_norm = 0.0
+
+        if price_for_norm is None or price_for_norm <= 0:
+            price_for_norm = float(os.getenv("LAST_PRICE_HINT", "0") or 0.0)
+
+        if price_for_norm is None or price_for_norm <= 0:
+            raise RuntimeError(f"price_for_norm <= 0 for {sym}")
+
+        symbol_info = self._get_symbol_info(sym)
+        if not symbol_info:
+            raise RuntimeError(f"symbol_info not found for {sym}")
+
+        q, qmeta = self._normalize_order_qty(
             symbol=sym,
-            raw_qty=q,
-            price=float(price),
+            raw_qty=raw_q,
+            price=float(price_for_norm),
+            symbol_info=symbol_info,
         )
 
+        try:
+            self.logger.info(
+                "[EXEC][QTY][NORMALIZE] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                sym,
+                float(raw_q),
+                float(q),
+                float(price_for_norm),
+                float(qmeta.get("step_size", 0.0) or 0.0),
+                float(qmeta.get("min_qty", 0.0) or 0.0),
+                float(qmeta.get("min_notional", 0.0) or 0.0),
+                str(qmeta.get("reject_reason", "") or "-"),
+            )
+        except Exception:
+            pass
+
+        try:
+            self.logger.info("[EXEC][QTY][DECISION] %s", self._safe_json(qmeta, limit=900))
+        except Exception:
+            pass
+
         if q <= 0:
-            raise ValueError("qty invalid after normalization")
+            raise ValueError(f"qty invalid after normalization: {self._safe_json(qmeta, limit=900)}")
         tag = "close" if reduce_only else "open"
         client_oid = self._make_client_order_id(sym, tag)
 
@@ -1982,12 +2220,39 @@ class TradeExecutor:
         notional = float(min(float(notional), float(self.max_position_notional)))
         notional = float(max(10.0, float(notional)))
 
-        qty = notional / float(price)
-        qty = self._round_qty(qty)
+        raw_qty = notional / float(price)
+        raw_qty = self._round_qty(raw_qty)
+
+        symbol_info = self._get_symbol_info(sym_u)
+        qty, qmeta = self._normalize_order_qty(
+            symbol=sym_u,
+            raw_qty=float(raw_qty),
+            price=float(price),
+            symbol_info=symbol_info,
+        )
+
+        try:
+            self.logger.info(
+                "[EXEC][INTENT][QTY] symbol=%s raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                sym_u,
+                float(raw_qty),
+                float(qty),
+                float(qmeta.get('step_size', 0.0) or 0.0),
+                float(qmeta.get('min_qty', 0.0) or 0.0),
+                float(qmeta.get('min_notional', 0.0) or 0.0),
+                str(qmeta.get('reject_reason', '') or "-"),
+            )
+        except Exception:
+            pass
 
         if qty <= 0:
-            return {"status": "skip", "reason": "bad_qty"}
+            return {
+                "status": "skip",
+                "reason": "bad_qty_after_normalization",
+                "meta": qmeta,
+            }
 
+        notional = float(qty) * float(price)
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
 
@@ -2331,10 +2596,18 @@ class TradeExecutor:
 
         raw_notional: Optional[float] = None
 
+        symbol_info = self._get_symbol_info(sym_u)
+
         if size is not None and float(size) > 0:
-            qty = self._round_qty(float(size))
-            raw_notional = float(qty) * float(live_price)
-            notional = float(raw_notional)
+            raw_qty = self._round_qty(float(size))
+            qty, qmeta = self._normalize_order_qty(
+                symbol=sym_u,
+                raw_qty=float(raw_qty),
+                price=float(live_price),
+                symbol_info=symbol_info,
+            )
+            raw_notional = float(raw_qty) * float(live_price)
+            notional = float(qty) * float(live_price)
         else:
             try:
                 if "equity_usdt" not in extra0 or not float(extra0.get("equity_usdt") or 0.0) > 0.0:
@@ -2343,21 +2616,43 @@ class TradeExecutor:
                 pass
 
             raw_notional = float(self._compute_notional(sym_u, side_norm, float(live_price), extra0))
-            notional = float(self._apply_whale_open_adjustments(side_norm, float(raw_notional), extra0))
-            qty = self._round_qty(float(notional) / float(live_price))
+            notional_pre = float(self._apply_whale_open_adjustments(side_norm, float(raw_notional), extra0))
+            raw_qty = self._round_qty(float(notional_pre) / float(live_price))
+
+            qty, qmeta = self._normalize_order_qty(
+                symbol=sym_u,
+                raw_qty=float(raw_qty),
+                price=float(live_price),
+                symbol_info=symbol_info,
+            )
+            notional = float(qty) * float(live_price)
+
+        try:
+            self.logger.info(
+                "[EXEC][QTY][DECISION] symbol=%s raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                sym_u,
+                float(raw_qty),
+                float(qty),
+                float(qmeta.get('step_size', 0.0) or 0.0),
+                float(qmeta.get('min_qty', 0.0) or 0.0),
+                float(qmeta.get('min_notional', 0.0) or 0.0),
+                str(qmeta.get('reject_reason', '') or "-"),
+            )
+        except Exception:
+            pass
 
         if qty <= 0:
             try:
                 self.logger.info(
-                    "[EXEC] qty<=0 -> skip | symbol=%s side=%s raw_notional=%.4f",
+                    "[EXEC] qty<=0 after normalization -> skip | symbol=%s side=%s raw_notional=%.4f meta=%s",
                     sym_u,
                     side_norm,
                     float(raw_notional or 0.0),
+                    self._safe_json(qmeta, limit=500),
                 )
             except Exception:
                 pass
             return
-
         extra0["whale_action"] = whale_action
         extra0["whale_bias"] = self._whale_bias(side=side_norm, extra=extra0)
         extra0["whale_open_notional_before"] = float(raw_notional or 0.0)
