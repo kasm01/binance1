@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.redis_price_cache import RedisPriceCache
-from typing import Any, Dict, List, Optional, Tuple
+
 try:
     from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError  # type: ignore
 except Exception:  # pragma: no cover
@@ -23,7 +23,6 @@ from config import config
 from core.position_manager import PositionManager
 from core.risk_manager import RiskManager
 from tg_bot.telegram_bot import TelegramBot
-
 
 class TradeExecutor:
     """
@@ -393,59 +392,34 @@ class TradeExecutor:
             return float(value)
 
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-    sym = str(symbol).upper()
+        sym = str(symbol).upper()
 
-    client = getattr(self, "client", None)
-    if client is None:
-        return {}
-
-    try:
-        exch = getattr(client, "futures_exchange_info", None)
-        if not callable(exch):
+        client = getattr(self, "client", None)
+        if client is None:
             return {}
 
-        exchange_info = exch()
-        symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
-
-        for s in symbols:
-            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                return s
-    except Exception as e:
         try:
-            self.logger.warning(
-                "[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s",
-                sym,
-                str(e),
-            )
-        except Exception:
-            pass
+            exch = getattr(client, "futures_exchange_info", None)
+            if not callable(exch):
+                return {}
 
-    return {}
-    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-    sym = str(symbol).upper()
+            exchange_info = exch()
+            symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
 
-    client = getattr(self, "client", None)
-    if client is None:
+            for s in symbols:
+                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                    return s
+        except Exception as e:
+            try:
+                self.logger.warning(
+                    "[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s",
+                    sym,
+                    str(e),
+                )
+            except Exception:
+                pass
+
         return {}
-
-    try:
-        exch = getattr(client, "futures_exchange_info", None)
-        if not callable(exch):
-            return {}
-
-        exchange_info = exch()
-        symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
-
-        for s in symbols:
-            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                return s
-    except Exception as e:
-        try:
-            self.logger.warning("[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s", sym, str(e))
-        except Exception:
-            pass
-
-    return {}
     # -------------------------
     # async/coro helpers
     # -------------------------
@@ -528,24 +502,6 @@ class TradeExecutor:
     # exchange qty normalization helpers
     # -------------------------
 
-    def _to_decimal(self, x: Any, default: str = "0") -> Decimal:
-        try:
-            return Decimal(str(x))
-        except Exception:
-            return Decimal(default)
-
-    def _floor_to_step(self, value: float, step: float) -> float:
-        try:
-            v = self._to_decimal(value)
-            s = self._to_decimal(step)
-
-            if s <= 0:
-                return float(v)
-
-            floored = (v / s).to_integral_value(rounding=ROUND_DOWN) * s
-            return float(floored)
-        except Exception:
-            return float(value)
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
         """
         exchangeInfo symbol filtresinden gerekli alanları çıkarır.
@@ -589,50 +545,69 @@ class TradeExecutor:
             pass
 
         return out
-    def _normalize_order_qty(self, symbol: str, raw_qty: float, price: float) -> float:
+
+    def _normalize_order_qty(
+        self,
+        *,
+        symbol: str,
+        raw_qty: float,
+        price: float,
+        symbol_info: Dict[str, Any],
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Qty'yi exchange filtresine göre normalize eder.
+        Döner:
+          normalized_qty, meta
+        """
+        meta: Dict[str, Any] = {
+            "symbol": str(symbol).upper(),
+            "raw_qty": float(raw_qty),
+            "price": float(price),
+            "step_size": 0.0,
+            "min_qty": 0.0,
+            "min_notional": 0.0,
+            "normalized_qty": 0.0,
+            "normalized_notional": 0.0,
+            "reject_reason": "",
+        }
 
         try:
-
-            client = getattr(self, "client", None)
-
-            if client is None:
-                return raw_qty
-
-            info = client.futures_exchange_info()
-
-            symbol_info = None
-
-            for s in info.get("symbols", []):
-                if s.get("symbol") == symbol:
-                    symbol_info = s
-                    break
-
-            if not symbol_info:
-                return raw_qty
-
             filters = self._extract_symbol_filters(symbol_info)
+            step_size = float(filters.get("step_size", 0.0) or 0.0)
+            min_qty = float(filters.get("min_qty", 0.0) or 0.0)
+            min_notional = float(filters.get("min_notional", 0.0) or 0.0)
 
-            step = float(filters.get("step_size", 0.0))
-            min_qty = float(filters.get("min_qty", 0.0))
-            min_notional = float(filters.get("min_notional", 0.0))
+            meta["step_size"] = step_size
+            meta["min_qty"] = min_qty
+            meta["min_notional"] = min_notional
 
             qty = float(raw_qty)
 
-            if step > 0:
-                qty = self._floor_to_step(qty, step)
+            if step_size > 0:
+                qty = self._floor_to_step(qty, step_size)
 
-            notional = qty * float(price)
+            notional = float(qty * float(price))
+
+            meta["normalized_qty"] = float(qty)
+            meta["normalized_notional"] = float(notional)
+
+            if qty <= 0:
+                meta["reject_reason"] = "qty_zero_after_step_floor"
+                return 0.0, meta
 
             if min_qty > 0 and qty < min_qty:
-                return 0.0
+                meta["reject_reason"] = "qty_below_min_qty"
+                return 0.0, meta
 
             if min_notional > 0 and notional < min_notional:
-                return 0.0
+                meta["reject_reason"] = "notional_below_min_notional"
+                return 0.0, meta
 
-            return float(qty)
+            return float(qty), meta
 
-        except Exception:
-            return float(raw_qty)
+        except Exception as e:
+            meta["reject_reason"] = f"normalize_exception:{e}"
+            return 0.0, meta
     # -------------------------
     # order retry helpers
     # -------------------------
@@ -1228,153 +1203,6 @@ class TradeExecutor:
             return (entry - price) / entry
         return 0.0
 
-    def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
-        extra = self._extract_whale_context(extra)
-
-        try:
-            action = self._whale_action(extra)
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            side0 = str(side or "").strip().lower()
-
-            if side0 not in ("long", "short"):
-                return False
-
-            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
-                try:
-                    self.logger.info(
-                        "[EXEC][WHALE][BLOCK] action-block side=%s whale_dir=%s whale_score=%.3f whale_action=%s",
-                        str(side0),
-                        str(wdir),
-                        float(ws),
-                        str(action),
-                    )
-                except Exception:
-                    pass
-                return True
-
-            if wdir in ("long", "short"):
-                if wdir != side0 and ws >= float(self.whale_hard_block_min_score):
-                    try:
-                        self.logger.info(
-                            "[EXEC][WHALE][BLOCK] contra-block side=%s whale_dir=%s whale_score=%.3f whale_action=%s",
-                            str(side0),
-                            str(wdir),
-                            float(ws),
-                            str(action),
-                        )
-                    except Exception:
-                        pass
-                    return True
-
-            return False
-        except Exception:
-            return False
-    def _apply_whale_open_adjustments(
-        self,
-        side: str,
-        notional: float,
-        extra: Dict[str, Any],
-    ) -> float:
-        extra = self._extract_whale_context(extra)
-
-        try:
-            base_notional = float(notional)
-            if base_notional <= 0:
-                return 0.0
-
-            action = self._whale_action(extra)
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            side0 = str(side or "").strip().lower()
-
-            adjusted = float(base_notional)
-
-            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
-                adjusted = max(10.0, base_notional * 0.25)
-
-            elif action in self.whale_reduce_actions and ws >= float(self.whale_reduce_min_score):
-                adjusted = max(10.0, base_notional * float(self.whale_reduce_notional_mult))
-
-            elif action in self.whale_boost_actions and ws >= float(self.whale_confirm_min_score):
-                boost_mult = 1.0 + max(0.0, ws - float(self.whale_confirm_min_score)) * float(self.whale_risk_boost)
-                adjusted = base_notional * boost_mult
-
-            else:
-                if side0 in ("long", "short") and wdir in ("long", "short"):
-                    if wdir != side0 and ws >= float(self.whale_hard_block_min_score):
-                        adjusted = max(10.0, base_notional * 0.35)
-                    elif wdir != side0 and ws >= float(self.whale_reduce_min_score):
-                        adjusted = max(10.0, base_notional * float(self.whale_reduce_notional_mult))
-                    elif wdir == side0 and ws >= float(self.whale_confirm_min_score):
-                        boost_mult = 1.0 + max(0.0, ws - float(self.whale_confirm_min_score)) * float(self.whale_risk_boost)
-                        adjusted = base_notional * boost_mult
-
-            adjusted = min(float(adjusted), float(self.max_position_notional))
-            adjusted = max(10.0, float(adjusted))
-
-            try:
-                self.logger.info(
-                    "[EXEC][WHALE][OPEN-ADJUST] symbol=%s side=%s base_notional=%.2f adjusted_notional=%.2f whale_dir=%s whale_score=%.3f whale_action=%s",
-                    str(extra.get("symbol", "")),
-                    str(side0),
-                    float(base_notional),
-                    float(adjusted),
-                    str(wdir),
-                    float(ws),
-                    str(action),
-                )
-            except Exception:
-                pass
-
-            return float(adjusted)
-        except Exception:
-            return float(notional)
-    def _should_force_close_by_whale(
-        self,
-        side: str,
-        extra: Dict[str, Any],
-        pnl_pct: float,
-    ) -> bool:
-        extra = self._extract_whale_context(extra)
-
-        try:
-            side0 = str(side or "").strip().lower()
-            if side0 not in ("long", "short"):
-                return False
-
-            action = self._whale_action(extra)
-            whale_dir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
-
-            thr = float(os.getenv("WHALE_FORCE_EXIT_THR", "0.72"))
-            min_pnl_pct = float(os.getenv("WHALE_FORCE_EXIT_MIN_PNL_PCT", "-0.003"))
-            profit_only = self._truthy_env("WHALE_FORCE_EXIT_ON_PROFIT_ONLY", "0")
-
-            if whale_dir not in ("long", "short"):
-                return False
-
-            # 1) action tabanlı direkt zorla çıkış
-            if action == "force_exit" and whale_score >= thr:
-                if profit_only:
-                    return float(pnl_pct) > 0.0
-                return float(pnl_pct) >= float(min_pnl_pct)
-
-            # 2) hard block + ters whale yönü -> zorla çıkış
-            if action in self.whale_block_actions and whale_dir != side0 and whale_score >= thr:
-                if profit_only:
-                    return float(pnl_pct) > 0.0
-                return float(pnl_pct) >= float(min_pnl_pct)
-
-            # 3) fallback: whale ters ve çok güçlüyse zorla çıkış
-            if whale_dir != side0 and whale_score >= thr:
-                if profit_only:
-                    return float(pnl_pct) > 0.0
-                return float(pnl_pct) >= float(min_pnl_pct)
-
-            return False
-        except Exception:
-            return False
     # -------------------------
     # exchange order helpers
     # -------------------------
