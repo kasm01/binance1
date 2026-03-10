@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.redis_price_cache import RedisPriceCache
-
+from typing import Any, Dict, List, Optional, Tuple
 try:
     from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError  # type: ignore
 except Exception:  # pragma: no cover
@@ -437,6 +437,108 @@ class TradeExecutor:
         rid = uuid.uuid4().hex[:12]
         return f"b1_{tag}_{s}_{rid}"[:36]
 
+    # -------------------------
+    # exchange qty normalization helpers
+    # -------------------------
+
+    def _to_decimal(self, x: Any, default: str = "0") -> Decimal:
+        try:
+            return Decimal(str(x))
+        except Exception:
+            return Decimal(default)
+
+    def _floor_to_step(self, value: float, step: float) -> float:
+        try:
+            v = self._to_decimal(value)
+            s = self._to_decimal(step)
+
+            if s <= 0:
+                return float(v)
+
+            floored = (v / s).to_integral_value(rounding=ROUND_DOWN) * s
+            return float(floored)
+        except Exception:
+            return float(value)
+
+    def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
+
+        out = {
+            "step_size": 0.0,
+            "min_qty": 0.0,
+            "min_notional": 0.0,
+        }
+
+        try:
+            filters = symbol_info.get("filters", []) or []
+
+            for f in filters:
+
+                ftype = str(f.get("filterType", "")).upper()
+
+                if ftype in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+
+                    step = float(f.get("stepSize", 0.0) or 0.0)
+                    min_qty = float(f.get("minQty", 0.0) or 0.0)
+
+                    if step > 0:
+                        out["step_size"] = max(out["step_size"], step)
+
+                    if min_qty > 0:
+                        out["min_qty"] = max(out["min_qty"], min_qty)
+
+                elif ftype == "MIN_NOTIONAL":
+
+                    out["min_notional"] = float(f.get("notional", 0.0) or 0.0)
+
+        except Exception:
+            pass
+
+        return out
+
+    def _normalize_order_qty(self, symbol: str, raw_qty: float, price: float) -> float:
+
+        try:
+
+            client = getattr(self, "client", None)
+
+            if client is None:
+                return raw_qty
+
+            info = client.futures_exchange_info()
+
+            symbol_info = None
+
+            for s in info.get("symbols", []):
+                if s.get("symbol") == symbol:
+                    symbol_info = s
+                    break
+
+            if not symbol_info:
+                return raw_qty
+
+            filters = self._extract_symbol_filters(symbol_info)
+
+            step = float(filters.get("step_size", 0.0))
+            min_qty = float(filters.get("min_qty", 0.0))
+            min_notional = float(filters.get("min_notional", 0.0))
+
+            qty = float(raw_qty)
+
+            if step > 0:
+                qty = self._floor_to_step(qty, step)
+
+            notional = qty * float(price)
+
+            if min_qty > 0 and qty < min_qty:
+                return 0.0
+
+            if min_notional > 0 and notional < min_notional:
+                return 0.0
+
+            return float(qty)
+
+        except Exception:
+            return float(raw_qty)
     # -------------------------
     # order retry helpers
     # -------------------------
@@ -1187,6 +1289,7 @@ class TradeExecutor:
         symbol: str,
         side: str,
         qty: float,
+        price: float,
         reduce_only: bool = False,
     ) -> Optional[Dict[str, Any]]:
         sym = str(symbol).upper()
@@ -1213,9 +1316,15 @@ class TradeExecutor:
             raise ValueError(f"bad side={side}")
 
         q = self._round_qty(float(qty))
-        if q <= 0:
-            raise ValueError("qty must be > 0")
 
+        q = self._normalize_order_qty(
+            symbol=sym,
+            raw_qty=q,
+            price=float(price),
+        )
+
+        if q <= 0:
+            raise ValueError("qty invalid after normalization")
         tag = "close" if reduce_only else "open"
         client_oid = self._make_client_order_id(sym, tag)
 
@@ -1329,9 +1438,9 @@ class TradeExecutor:
             symbol=str(symbol).upper(),
             side=close_side,
             qty=float(qty),
+            price=0.0,
             reduce_only=True,
         )
-
     # -------------------------
     # position dict
     # -------------------------
@@ -1924,6 +2033,7 @@ class TradeExecutor:
                     symbol=sym_u,
                     side=side0,
                     qty=float(qty),
+                    price=float(price),
                     reduce_only=False,
                 )
             except Exception:
@@ -2329,6 +2439,7 @@ class TradeExecutor:
                     symbol=sym_u,
                     side=side_norm,
                     qty=float(qty),
+                    price=float(live_price),
                     reduce_only=False,
                 )
             except Exception:
