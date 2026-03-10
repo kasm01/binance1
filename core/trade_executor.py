@@ -392,112 +392,6 @@ class TradeExecutor:
         except Exception:
             return float(value)
 
-    def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
-    """
-    exchangeInfo symbol filtresinden gerekli alanları çıkarır.
-    """
-    out = {
-        "step_size": 0.0,
-        "min_qty": 0.0,
-        "min_notional": 0.0,
-        "tick_size": 0.0,
-    }
-
-    try:
-        filters = symbol_info.get("filters", []) or []
-        for f in filters:
-            if not isinstance(f, dict):
-                continue
-
-            ftype = str(f.get("filterType", "")).upper()
-
-            if ftype in ("LOT_SIZE", "MARKET_LOT_SIZE"):
-                step_size = float(f.get("stepSize", 0.0) or 0.0)
-                min_qty = float(f.get("minQty", 0.0) or 0.0)
-
-                if step_size > 0:
-                    out["step_size"] = max(out["step_size"], step_size)
-                if min_qty > 0:
-                    out["min_qty"] = max(out["min_qty"], min_qty)
-
-            elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
-                min_notional = (
-                    f.get("notional")
-                    or f.get("minNotional")
-                    or 0.0
-                )
-                out["min_notional"] = float(min_notional or 0.0)
-
-            elif ftype == "PRICE_FILTER":
-                out["tick_size"] = float(f.get("tickSize", 0.0) or 0.0)
-    except Exception:
-        pass
-
-    return out
-    def _normalize_order_qty(
-    self,
-    *,
-    symbol: str,
-    raw_qty: float,
-    price: float,
-    symbol_info: Optional[Dict[str, Any]] = None,
-) -> Tuple[float, Dict[str, Any]]:
-    """
-    Qty'yi exchange filtresine göre normalize eder.
-    Döner:
-      normalized_qty, meta
-    """
-    meta: Dict[str, Any] = {
-        "symbol": str(symbol).upper(),
-        "raw_qty": float(raw_qty),
-        "price": float(price),
-        "step_size": 0.0,
-        "min_qty": 0.0,
-        "min_notional": 0.0,
-        "normalized_qty": 0.0,
-        "normalized_notional": 0.0,
-        "reject_reason": "",
-    }
-
-    try:
-        info = symbol_info or {}
-        filters = self._extract_symbol_filters(info)
-
-        step_size = float(filters.get("step_size", 0.0) or 0.0)
-        min_qty = float(filters.get("min_qty", 0.0) or 0.0)
-        min_notional = float(filters.get("min_notional", 0.0) or 0.0)
-
-        meta["step_size"] = step_size
-        meta["min_qty"] = min_qty
-        meta["min_notional"] = min_notional
-
-        qty = float(raw_qty)
-
-        if step_size > 0:
-            qty = self._floor_to_step(qty, step_size)
-
-        notional = float(qty * float(price))
-
-        meta["normalized_qty"] = qty
-        meta["normalized_notional"] = notional
-
-        if qty <= 0:
-            meta["reject_reason"] = "qty_zero_after_step_floor"
-            return 0.0, meta
-
-        if min_qty > 0 and qty < min_qty:
-            meta["reject_reason"] = "qty_below_min_qty"
-            return 0.0, meta
-
-        if min_notional > 0 and notional < min_notional:
-            meta["reject_reason"] = "notional_below_min_notional"
-            return 0.0, meta
-
-        return qty, meta
-
-    except Exception as e:
-        meta["reject_reason"] = f"normalize_exception:{e}"
-        return 0.0, meta
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
     sym = str(symbol).upper()
 
@@ -652,7 +546,6 @@ class TradeExecutor:
             return float(floored)
         except Exception:
             return float(value)
-
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
         """
         exchangeInfo symbol filtresinden gerekli alanları çıkarır.
@@ -682,11 +575,16 @@ class TradeExecutor:
                         out["min_qty"] = max(out["min_qty"], min_qty)
 
                 elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
-                    min_notional = f.get("notional") or f.get("minNotional") or 0.0
+                    min_notional = (
+                        f.get("notional")
+                        or f.get("minNotional")
+                        or 0.0
+                    )
                     out["min_notional"] = float(min_notional or 0.0)
 
                 elif ftype == "PRICE_FILTER":
                     out["tick_size"] = float(f.get("tickSize", 0.0) or 0.0)
+
         except Exception:
             pass
 
