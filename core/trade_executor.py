@@ -586,7 +586,7 @@ class TradeExecutor:
             if step_size > 0:
                 qty = self._floor_to_step(qty, step_size)
 
-            notional = float(qty * float(price))
+            notional = float(qty) * float(price)
 
             meta["normalized_qty"] = float(qty)
             meta["normalized_notional"] = float(notional)
@@ -717,8 +717,12 @@ class TradeExecutor:
                 "leverage": lev,
             }
         except Exception as e:
-            return {"verify": "error", "symbol": sym, "err": str(e)[:300]}
-
+            return {
+                "verify": "skip",
+                "symbol": sym,
+                "reason": "position_verify_failed",
+                "err": str(e)[:300],
+            }
     def _poll_order_status(
         self,
         symbol: str,
@@ -1299,9 +1303,16 @@ class TradeExecutor:
             "quantity": q,
             "newClientOrderId": client_oid,
         }
-        if reduce_only:
-            payload["reduceOnly"] = True
 
+        # Hedge mode positionSide eşlemesi:
+        # long  -> LONG
+        # short -> SHORT
+        pos_side = "LONG" if s == "long" else "SHORT"
+        payload["positionSide"] = pos_side
+
+        # Hedge mode'da reduceOnly çoğu durumda gereksiz / hatalı olabilir.
+        # Bu yüzden close işlemlerinde göndermiyoruz.
+        # One-way mode kullanılsaydı ayrı ele alınırdı.
         used = "futures_create_order"
         t0 = self._now_ms()
 
@@ -1392,19 +1403,108 @@ class TradeExecutor:
 
     def _exchange_close_market(self, symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
         s = str(side or "").strip().lower()
+
+        # Açık pozisyon:
+        # long  -> kapatmak için SELL + positionSide=LONG
+        # short -> kapatmak için BUY  + positionSide=SHORT
         if s == "long":
-            close_side = "short"
+            order_side = "SELL"
+            pos_side = "LONG"
         elif s == "short":
-            close_side = "long"
+            order_side = "BUY"
+            pos_side = "SHORT"
         else:
-            close_side = s
-        return self._exchange_open_market(
-            symbol=str(symbol).upper(),
-            side=close_side,
-            qty=float(qty),
-            price=0.0,
-            reduce_only=True,
-        )
+            raise ValueError(f"bad close side={side}")
+
+        sym = str(symbol).upper()
+
+        if self.dry_run:
+            return {
+                "status": "dry_run",
+                "symbol": sym,
+                "side": order_side,
+                "positionSide": pos_side,
+                "qty": float(qty),
+                "reduceOnly": False,
+            }
+
+        client = getattr(self, "client", None)
+        if client is None:
+            raise RuntimeError("client is None (cannot place close order)")
+
+        q = self._round_qty(float(qty))
+        if q <= 0:
+            raise ValueError("close qty must be > 0")
+
+        client_oid = self._make_client_order_id(sym, "close")
+
+        payload: Dict[str, Any] = {
+            "symbol": sym,
+            "side": order_side,
+            "type": "MARKET",
+            "quantity": q,
+            "positionSide": pos_side,
+            "newClientOrderId": client_oid,
+        }
+
+        used = "futures_create_order"
+        t0 = self._now_ms()
+
+        attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
+        base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
+
+        try:
+            fn = getattr(client, "futures_create_order", None)
+            if callable(fn):
+                resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+            else:
+                fn = getattr(client, "create_order", None)
+                used = "create_order"
+                if callable(fn):
+                    resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+                else:
+                    fn = getattr(client, "new_order", None)
+                    used = "new_order"
+                    if callable(fn):
+                        resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+                    else:
+                        raise RuntimeError(
+                            "no supported order function on client (futures_create_order/create_order/new_order)"
+                        )
+        except Exception as e:
+            dt = self._now_ms() - t0
+            try:
+                self.logger.exception(
+                    "[EXEC][ORDER] CLOSE FAIL | fn=%s symbol=%s side=%s qty=%.10f dt_ms=%d client_oid=%s payload=%s err=%s",
+                    used,
+                    sym,
+                    order_side,
+                    float(q),
+                    int(dt),
+                    client_oid,
+                    self._safe_json(payload, limit=900),
+                    str(e)[:300],
+                )
+            except Exception:
+                pass
+            raise
+
+        dt = self._now_ms() - t0
+
+        try:
+            self.logger.info(
+                "[EXEC][ORDER] CLOSE OK | fn=%s symbol=%s side=%s qty=%.10f dt_ms=%d summary=%s",
+                used,
+                sym,
+                order_side,
+                float(q),
+                int(dt),
+                self._safe_json(self._summarize_order(resp), limit=900),
+            )
+        except Exception:
+            pass
+
+        return resp
     # -------------------------
     # position dict
     # -------------------------
