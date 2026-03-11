@@ -72,6 +72,10 @@ class TradeExecutor:
         self.base_order_notional = float(base_order_notional)
         self.max_position_notional = float(max_position_notional)
         self.max_leverage = float(max_leverage)
+        self.default_order_leverage = int(
+            max(1, min(int(float(os.getenv("DEFAULT_ORDER_LEVERAGE", "3"))), int(self.max_leverage)))
+        )
+        self.enable_dynamic_leverage = self._truthy_env("ENABLE_DYNAMIC_LEVERAGE", "1")
 
         self.sl_pct = float(sl_pct)
         self.tp_pct = float(tp_pct)
@@ -674,22 +678,27 @@ class TradeExecutor:
     def _resolve_target_leverage(self, extra: Optional[Dict[str, Any]] = None) -> int:
         extra0 = extra if isinstance(extra, dict) else {}
 
-        lev = (
-            extra0.get("recommended_leverage")
-            or extra0.get("leverage")
-            or extra0.get("target_leverage")
-            or self.default_order_leverage
-        )
+        try:
+            rec = extra0.get("recommended_leverage", None)
+            if rec is None:
+                rec = extra0.get("leverage", None)
+            if rec is None:
+                rec = extra0.get("target_leverage", None)
+
+            if rec is None:
+                lev = int(self.default_order_leverage)
+            else:
+                lev = int(float(rec))
+        except Exception:
+            lev = int(self.default_order_leverage)
 
         try:
-            lev_i = int(float(lev))
+            lev = max(1, lev)
+            lev = min(int(lev), int(float(self.max_leverage)))
         except Exception:
-            lev_i = int(self.default_order_leverage)
+            lev = int(self.default_order_leverage)
 
-        lev_i = max(int(self.min_order_leverage), lev_i)
-        lev_i = min(int(self.max_order_leverage), lev_i)
-        return int(lev_i)
-
+        return int(lev)
     def _side_to_position_side(self, side: str) -> str:
         s = str(side or "").strip().lower()
         if s == "long":
@@ -1364,29 +1373,7 @@ class TradeExecutor:
         client = getattr(self, "client", None)
         if client is None:
             raise RuntimeError("client is None (cannot place order)")
-        extra0 = extra if isinstance(extra, dict) else {}
-        target_leverage = self._resolve_target_leverage(extra0)
 
-        try:
-            applied_leverage = self._set_symbol_leverage(sym, int(target_leverage))
-            self.logger.info(
-                "[EXEC][LEV] symbol=%s requested=%s applied=%s reduce_only=%s",
-                sym,
-                int(target_leverage),
-                int(applied_leverage),
-                bool(reduce_only),
-            )
-        except Exception as e:
-            try:
-                self.logger.warning(
-                    "[EXEC][LEV] set failed | symbol=%s requested=%s err=%s",
-                    sym,
-                    int(target_leverage),
-                    str(e),
-                )
-            except Exception:
-                pass
-            applied_leverage = int(target_leverage)
         s = str(side or "").strip().lower()
         if s == "long":
             order_side = "BUY"
@@ -1397,10 +1384,14 @@ class TradeExecutor:
 
         raw_q = self._round_qty(float(qty))
 
-        price_for_norm = self._resolve_price(symbol=sym)
+        price_for_norm = self._resolve_price(
+            symbol=sym,
+            price=price,
+        )
+
         if price_for_norm is None or price_for_norm <= 0:
             try:
-                ticker_fn = getattr(self.client, "futures_mark_price", None)
+                ticker_fn = getattr(client, "futures_mark_price", None)
                 if callable(ticker_fn):
                     mp = ticker_fn(symbol=sym)
                     if isinstance(mp, dict):
@@ -1420,7 +1411,7 @@ class TradeExecutor:
 
         q, qmeta = self._normalize_order_qty(
             symbol=sym,
-            raw_qty=raw_q,
+            raw_qty=float(raw_q),
             price=float(price_for_norm),
             symbol_info=symbol_info,
         )
@@ -1450,26 +1441,28 @@ class TradeExecutor:
 
         position_side = self._side_to_position_side(side)
 
-        target_leverage = self.default_order_leverage
-        applied_leverage = self.default_order_leverage
+        target_leverage = int(getattr(self, "default_order_leverage", 20))
+        applied_leverage = int(target_leverage)
 
         try:
-            if self.enable_dynamic_leverage and not reduce_only:
-                target_leverage = self._resolve_target_leverage(extra0)
-                applied_leverage = self._set_symbol_leverage(sym, target_leverage)
+            if not reduce_only:
+                if bool(getattr(self, "enable_dynamic_leverage", True)):
+                    target_leverage = int(self._resolve_target_leverage(extra0))
+                applied_leverage = int(self._set_symbol_leverage(sym, int(target_leverage)))
             else:
-                applied_leverage = target_leverage
+                applied_leverage = int(target_leverage)
         except Exception as e:
             try:
                 self.logger.warning(
-                    "[EXEC][LEV][FAIL] symbol=%s target=%s err=%s",
+                    "[EXEC][LEV][FAIL] symbol=%s target=%s reduce_only=%s err=%s",
                     sym,
-                    target_leverage,
+                    int(target_leverage),
+                    bool(reduce_only),
                     str(e),
                 )
             except Exception:
                 pass
-            applied_leverage = target_leverage
+            applied_leverage = int(target_leverage)
 
         try:
             self.logger.info(
@@ -1491,14 +1484,14 @@ class TradeExecutor:
             "symbol": sym,
             "side": order_side,
             "type": "MARKET",
-            "quantity": q,
+            "quantity": float(q),
             "newClientOrderId": client_oid,
         }
 
         if position_side in ("LONG", "SHORT"):
             payload["positionSide"] = position_side
 
-        if reduce_only:
+        if reduce_only and not bool(getattr(self, "hedge_mode_enabled", True)):
             payload["reduceOnly"] = True
 
         used = "futures_create_order"
@@ -1529,13 +1522,14 @@ class TradeExecutor:
             dt = self._now_ms() - t0
             try:
                 self.logger.exception(
-                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s dt_ms=%d client_oid=%s payload=%s err=%s",
+                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s lev=%s dt_ms=%d client_oid=%s payload=%s err=%s",
                     ("CLOSE" if reduce_only else "OPEN"),
                     used,
                     sym,
                     order_side,
                     float(q),
                     bool(reduce_only),
+                    int(applied_leverage),
                     int(dt),
                     client_oid,
                     self._safe_json(payload, limit=900),
@@ -1557,6 +1551,7 @@ class TradeExecutor:
                 order_side,
                 float(q),
                 bool(reduce_only),
+                int(applied_leverage),
                 int(dt),
                 self._safe_json(summ, limit=900),
             )
@@ -1570,7 +1565,12 @@ class TradeExecutor:
                 if isinstance(resp, dict):
                     oid = resp.get("orderId")
                     coid = str(resp.get("clientOrderId") or resp.get("newClientOrderId") or client_oid or "")
-                pol = self._poll_order_status(sym, order_id=oid, client_order_id=coid, max_wait_s=self.order_poll_wait_s)
+                pol = self._poll_order_status(
+                    sym,
+                    order_id=oid,
+                    client_order_id=coid,
+                    max_wait_s=self.order_poll_wait_s,
+                )
                 try:
                     self.logger.info("[EXEC][ORDER][POLL] %s", self._safe_json(pol, limit=900))
                 except Exception:
@@ -1589,7 +1589,6 @@ class TradeExecutor:
             pass
 
         return resp
-
     def _exchange_close_market(self, symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
         s = str(side or "").strip().lower()
         if s == "long":
