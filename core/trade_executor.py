@@ -188,7 +188,25 @@ class TradeExecutor:
         self._closed_buffer: List[Dict[str, Any]] = []
 
         self._closed = False
+        # exchange info cache
+        self.exchange_info_cache_ttl_sec = float(
+            self._clip_float(os.getenv("EXCHANGE_INFO_CACHE_TTL_SEC", "300"), 300.0) or 300.0
+        )
+        self._exchange_info_cache: Optional[Dict[str, Any]] = None
+        self._exchange_info_cache_ts: float = 0.0
+        self._symbol_info_cache: Dict[str, Dict[str, Any]] = {}
 
+        # leverage controls
+        self.enable_dynamic_leverage = self._truthy_env("ENABLE_DYNAMIC_LEVERAGE", "1")
+        self.default_order_leverage = int(
+            float(self._clip_float(os.getenv("DEFAULT_ORDER_LEVERAGE", "20"), 20.0) or 20.0)
+        )
+        self.min_order_leverage = int(
+            float(self._clip_float(os.getenv("MIN_ORDER_LEVERAGE", "3"), 3.0) or 3.0)
+        )
+        self.max_order_leverage = int(
+            float(self._clip_float(os.getenv("MAX_ORDER_LEVERAGE", "30"), 30.0) or 30.0)
+        )
         # requests timeout best-effort
         try:
             if self.client is not None and hasattr(self.client, "__dict__"):
@@ -391,8 +409,16 @@ class TradeExecutor:
         except Exception:
             return float(value)
 
-    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-        sym = str(symbol).upper()
+    def _get_exchange_info_cached(self, force_refresh: bool = False) -> Dict[str, Any]:
+        now_ts = time.time()
+
+        if not force_refresh:
+            if (
+                isinstance(self._exchange_info_cache, dict)
+                and self._exchange_info_cache
+                and (now_ts - float(self._exchange_info_cache_ts)) < float(self.exchange_info_cache_ttl_sec)
+            ):
+                return self._exchange_info_cache
 
         client = getattr(self, "client", None)
         if client is None:
@@ -403,22 +429,59 @@ class TradeExecutor:
             if not callable(exch):
                 return {}
 
-            exchange_info = exch()
-            symbols = exchange_info.get("symbols", []) if isinstance(exchange_info, dict) else []
+            info = exch()
+            if isinstance(info, dict):
+                self._exchange_info_cache = info
+                self._exchange_info_cache_ts = float(now_ts)
+                self._symbol_info_cache = {}
 
-            for s in symbols:
-                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                    return s
+                try:
+                    self.logger.info(
+                        "[EXEC][EXCHANGE_INFO] refreshed cache ttl=%.1fs symbols=%s",
+                        float(self.exchange_info_cache_ttl_sec),
+                        len(info.get("symbols", []) if isinstance(info, dict) else []),
+                    )
+                except Exception:
+                    pass
+
+                return info
         except Exception as e:
             try:
-                self.logger.warning(
-                    "[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s",
-                    sym,
-                    str(e),
-                )
+                self.logger.warning("[EXEC][EXCHANGE_INFO] refresh failed err=%s", str(e))
             except Exception:
                 pass
 
+        return self._exchange_info_cache or {}
+
+    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return {}
+
+        cached = self._symbol_info_cache.get(sym)
+        if isinstance(cached, dict) and cached:
+            return cached
+
+        info = self._get_exchange_info_cached(force_refresh=False)
+        symbols = info.get("symbols", []) if isinstance(info, dict) else []
+
+        for s in symbols:
+            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                self._symbol_info_cache[sym] = s
+                return s
+
+        info = self._get_exchange_info_cached(force_refresh=True)
+        symbols = info.get("symbols", []) if isinstance(info, dict) else []
+
+        for s in symbols:
+            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                self._symbol_info_cache[sym] = s
+                return s
+
+        try:
+            self.logger.warning("[EXEC][SYMBOL_INFO] not found | symbol=%s", sym)
+        except Exception:
+            pass
         return {}
     # -------------------------
     # async/coro helpers
@@ -503,9 +566,6 @@ class TradeExecutor:
     # -------------------------
 
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
-        """
-        exchangeInfo symbol filtresinden gerekli alanları çıkarır.
-        """
         out = {
             "step_size": 0.0,
             "min_qty": 0.0,
@@ -531,11 +591,7 @@ class TradeExecutor:
                         out["min_qty"] = max(out["min_qty"], min_qty)
 
                 elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
-                    min_notional = (
-                        f.get("notional")
-                        or f.get("minNotional")
-                        or 0.0
-                    )
+                    min_notional = f.get("notional") or f.get("minNotional") or 0.0
                     out["min_notional"] = float(min_notional or 0.0)
 
                 elif ftype == "PRICE_FILTER":
@@ -545,24 +601,17 @@ class TradeExecutor:
             pass
 
         return out
-
     def _normalize_order_qty(
         self,
-        *,
         symbol: str,
         raw_qty: float,
         price: float,
-        symbol_info: Dict[str, Any],
+        symbol_info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
-        """
-        Qty'yi exchange filtresine göre normalize eder.
-        Döner:
-          normalized_qty, meta
-        """
         meta: Dict[str, Any] = {
             "symbol": str(symbol).upper(),
-            "raw_qty": float(raw_qty),
-            "price": float(price),
+            "raw_qty": float(raw_qty or 0.0),
+            "price": float(price or 0.0),
             "step_size": 0.0,
             "min_qty": 0.0,
             "min_notional": 0.0,
@@ -572,42 +621,123 @@ class TradeExecutor:
         }
 
         try:
-            filters = self._extract_symbol_filters(symbol_info)
-            step_size = float(filters.get("step_size", 0.0) or 0.0)
+            qty = float(raw_qty or 0.0)
+            px = float(price or 0.0)
+
+            if qty <= 0:
+                meta["reject_reason"] = "raw_qty<=0"
+                return 0.0, meta
+
+            if px <= 0:
+                meta["reject_reason"] = "price<=0"
+                return 0.0, meta
+
+            info = symbol_info if isinstance(symbol_info, dict) and symbol_info else self._get_symbol_info(symbol)
+            if not info:
+                meta["reject_reason"] = "symbol_info_missing"
+                return 0.0, meta
+
+            filters = self._extract_symbol_filters(info)
+
+            step = float(filters.get("step_size", 0.0) or 0.0)
             min_qty = float(filters.get("min_qty", 0.0) or 0.0)
             min_notional = float(filters.get("min_notional", 0.0) or 0.0)
 
-            meta["step_size"] = step_size
+            meta["step_size"] = step
             meta["min_qty"] = min_qty
             meta["min_notional"] = min_notional
 
-            qty = float(raw_qty)
+            q = float(qty)
+            if step > 0:
+                q = self._floor_to_step(q, step)
 
-            if step_size > 0:
-                qty = self._floor_to_step(qty, step_size)
-
-            notional = float(qty) * float(price)
-
-            meta["normalized_qty"] = float(qty)
-            meta["normalized_notional"] = float(notional)
-
-            if qty <= 0:
-                meta["reject_reason"] = "qty_zero_after_step_floor"
+            if min_qty > 0 and q < min_qty:
+                meta["reject_reason"] = "qty<min_qty"
+                meta["normalized_qty"] = float(q)
+                meta["normalized_notional"] = float(q * px)
                 return 0.0, meta
 
-            if min_qty > 0 and qty < min_qty:
-                meta["reject_reason"] = "qty_below_min_qty"
-                return 0.0, meta
-
+            notional = float(q * px)
             if min_notional > 0 and notional < min_notional:
-                meta["reject_reason"] = "notional_below_min_notional"
+                meta["reject_reason"] = "notional<min_notional"
+                meta["normalized_qty"] = float(q)
+                meta["normalized_notional"] = float(notional)
                 return 0.0, meta
 
-            return float(qty), meta
+            meta["normalized_qty"] = float(q)
+            meta["normalized_notional"] = float(notional)
+            return float(q), meta
 
         except Exception as e:
-            meta["reject_reason"] = f"normalize_exception:{e}"
+            meta["reject_reason"] = f"exception:{str(e)[:120]}"
             return 0.0, meta
+    def _resolve_target_leverage(self, extra: Optional[Dict[str, Any]] = None) -> int:
+        extra0 = extra if isinstance(extra, dict) else {}
+
+        lev = (
+            extra0.get("recommended_leverage")
+            or extra0.get("leverage")
+            or extra0.get("target_leverage")
+            or self.default_order_leverage
+        )
+
+        try:
+            lev_i = int(float(lev))
+        except Exception:
+            lev_i = int(self.default_order_leverage)
+
+        lev_i = max(int(self.min_order_leverage), lev_i)
+        lev_i = min(int(self.max_order_leverage), lev_i)
+        return int(lev_i)
+
+    def _side_to_position_side(self, side: str) -> str:
+        s = str(side or "").strip().lower()
+        if s == "long":
+            return "LONG"
+        if s == "short":
+            return "SHORT"
+        return "BOTH"
+
+    def _set_symbol_leverage(self, symbol: str, leverage: int) -> int:
+        sym = str(symbol).upper().strip()
+        lev = int(max(self.min_order_leverage, min(self.max_order_leverage, int(leverage))))
+
+        if self.dry_run:
+            try:
+                self.logger.info("[EXEC][LEV] dry_run symbol=%s leverage=%s", sym, lev)
+            except Exception:
+                pass
+            return lev
+
+        client = getattr(self, "client", None)
+        if client is None:
+            raise RuntimeError("client is None")
+
+        fn = getattr(client, "futures_change_leverage", None)
+        if not callable(fn):
+            raise RuntimeError("futures_change_leverage not available")
+
+        resp = fn(symbol=sym, leverage=lev)
+
+        try:
+            self.logger.info(
+                "[EXEC][LEV][SET] symbol=%s requested=%s response=%s",
+                sym,
+                lev,
+                self._safe_json(resp, limit=600),
+            )
+        except Exception:
+            pass
+
+        try:
+            if isinstance(resp, dict):
+                applied = resp.get("leverage")
+                if applied is not None:
+                    return int(float(applied))
+        except Exception:
+            pass
+
+        return lev
     # -------------------------
     # order retry helpers
     # -------------------------
@@ -1217,8 +1347,10 @@ class TradeExecutor:
         qty: float,
         price: float,
         reduce_only: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         sym = str(symbol).upper()
+        extra0 = extra if isinstance(extra, dict) else {}
 
         if self.dry_run:
             return {
@@ -1293,6 +1425,43 @@ class TradeExecutor:
 
         if q <= 0:
             raise ValueError(f"qty invalid after normalization: {self._safe_json(qmeta, limit=900)}")
+
+        position_side = self._side_to_position_side(side)
+
+        target_leverage = self.default_order_leverage
+        applied_leverage = self.default_order_leverage
+
+        try:
+            if self.enable_dynamic_leverage and not reduce_only:
+                target_leverage = self._resolve_target_leverage(extra0)
+                applied_leverage = self._set_symbol_leverage(sym, target_leverage)
+            else:
+                applied_leverage = target_leverage
+        except Exception as e:
+            try:
+                self.logger.warning(
+                    "[EXEC][LEV][FAIL] symbol=%s target=%s err=%s",
+                    sym,
+                    target_leverage,
+                    str(e),
+                )
+            except Exception:
+                pass
+            applied_leverage = target_leverage
+
+        try:
+            self.logger.info(
+                "[EXEC][LEV] symbol=%s side=%s reduce_only=%s target=%s applied=%s positionSide=%s",
+                sym,
+                str(side),
+                bool(reduce_only),
+                int(target_leverage),
+                int(applied_leverage),
+                position_side,
+            )
+        except Exception:
+            pass
+
         tag = "close" if reduce_only else "open"
         client_oid = self._make_client_order_id(sym, tag)
 
@@ -1304,15 +1473,12 @@ class TradeExecutor:
             "newClientOrderId": client_oid,
         }
 
-        # Hedge mode positionSide eşlemesi:
-        # long  -> LONG
-        # short -> SHORT
-        pos_side = "LONG" if s == "long" else "SHORT"
-        payload["positionSide"] = pos_side
+        if position_side in ("LONG", "SHORT"):
+            payload["positionSide"] = position_side
 
-        # Hedge mode'da reduceOnly çoğu durumda gereksiz / hatalı olabilir.
-        # Bu yüzden close işlemlerinde göndermiyoruz.
-        # One-way mode kullanılsaydı ayrı ele alınırdı.
+        if reduce_only:
+            payload["reduceOnly"] = True
+
         used = "futures_create_order"
         t0 = self._now_ms()
 
@@ -1356,6 +1522,7 @@ class TradeExecutor:
             except Exception:
                 pass
             raise
+
         dt = self._now_ms() - t0
 
         summ = self._summarize_order(resp)
@@ -1403,108 +1570,44 @@ class TradeExecutor:
 
     def _exchange_close_market(self, symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
         s = str(side or "").strip().lower()
-
-        # Açık pozisyon:
-        # long  -> kapatmak için SELL + positionSide=LONG
-        # short -> kapatmak için BUY  + positionSide=SHORT
         if s == "long":
-            order_side = "SELL"
-            pos_side = "LONG"
+            close_side = "short"
         elif s == "short":
-            order_side = "BUY"
-            pos_side = "SHORT"
+            close_side = "long"
         else:
-            raise ValueError(f"bad close side={side}")
-
-        sym = str(symbol).upper()
-
-        if self.dry_run:
-            return {
-                "status": "dry_run",
-                "symbol": sym,
-                "side": order_side,
-                "positionSide": pos_side,
-                "qty": float(qty),
-                "reduceOnly": False,
-            }
-
-        client = getattr(self, "client", None)
-        if client is None:
-            raise RuntimeError("client is None (cannot place close order)")
-
-        q = self._round_qty(float(qty))
-        if q <= 0:
-            raise ValueError("close qty must be > 0")
-
-        client_oid = self._make_client_order_id(sym, "close")
-
-        payload: Dict[str, Any] = {
-            "symbol": sym,
-            "side": order_side,
-            "type": "MARKET",
-            "quantity": q,
-            "positionSide": pos_side,
-            "newClientOrderId": client_oid,
-        }
-
-        used = "futures_create_order"
-        t0 = self._now_ms()
-
-        attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
-        base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
+            close_side = s
 
         try:
-            fn = getattr(client, "futures_create_order", None)
-            if callable(fn):
-                resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
-            else:
-                fn = getattr(client, "create_order", None)
-                used = "create_order"
-                if callable(fn):
-                    resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
-                else:
-                    fn = getattr(client, "new_order", None)
-                    used = "new_order"
-                    if callable(fn):
-                        resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
-                    else:
-                        raise RuntimeError(
-                            "no supported order function on client (futures_create_order/create_order/new_order)"
-                        )
-        except Exception as e:
-            dt = self._now_ms() - t0
-            try:
-                self.logger.exception(
-                    "[EXEC][ORDER] CLOSE FAIL | fn=%s symbol=%s side=%s qty=%.10f dt_ms=%d client_oid=%s payload=%s err=%s",
-                    used,
-                    sym,
-                    order_side,
-                    float(q),
-                    int(dt),
-                    client_oid,
-                    self._safe_json(payload, limit=900),
-                    str(e)[:300],
-                )
-            except Exception:
-                pass
-            raise
-
-        dt = self._now_ms() - t0
-
-        try:
-            self.logger.info(
-                "[EXEC][ORDER] CLOSE OK | fn=%s symbol=%s side=%s qty=%.10f dt_ms=%d summary=%s",
-                used,
-                sym,
-                order_side,
-                float(q),
-                int(dt),
-                self._safe_json(self._summarize_order(resp), limit=900),
+            return self._exchange_open_market(
+                symbol=str(symbol).upper(),
+                side=close_side,
+                qty=float(qty),
+                price=0.0,
+                reduce_only=True,
+                extra=None,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            msg = str(e).lower()
+            if "reduceonly" in msg or "-1106" in msg:
+                try:
+                    self.logger.warning(
+                        "[EXEC][CLOSE] retry without reduceOnly | symbol=%s side=%s qty=%.10f",
+                        str(symbol).upper(),
+                        str(close_side),
+                        float(qty),
+                    )
+                except Exception:
+                    pass
 
-        return resp
+                return self._exchange_open_market(
+                    symbol=str(symbol).upper(),
+                    side=close_side,
+                    qty=float(qty),
+                    price=0.0,
+                    reduce_only=False,
+                    extra=None,
+                )
+            raise
     # -------------------------
     # position dict
     # -------------------------
