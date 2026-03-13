@@ -1,526 +1,144 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import asyncio
-import csv
+import inspect
 import json
-import logging
+import math
 import os
 import time
 import uuid
-from decimal import Decimal, ROUND_DOWN
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.redis_price_cache import RedisPriceCache
+import redis
 
-try:
-    from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError  # type: ignore
-except Exception:  # pragma: no cover
-    RequestsJSONDecodeError = Exception  # type: ignore
-
-from config import config
-from core.position_manager import PositionManager
-from core.risk_manager import RiskManager
-from tg_bot.telegram_bot import TelegramBot
 
 class TradeExecutor:
-    """
-    TradeExecutor:
-      - RiskManager ile entegre
-      - PositionManager ile açık pozisyon state'ini yönetir
-      - ATR bazlı SL/TP + trailing stop uygular
-      - STALL (kâr ilerlemiyorsa TTL dolunca kapat) uygular
-      - Whale "hold/exit bias" ile trailing/TTL davranışını ayarlar
-      - DRY_RUN modunda gerçek emir atmadan state simüle eder
-      - İsteğe bağlı PriceCache / RedisPriceCache ile tek kaynaktan fiyat okur
-
-    Telegram politikası:
-      ✅ Otomatik mesaj: SADECE pozisyon OPEN/CLOSE
-      ❌ Signal/HOLD karar anında mesaj YOK
-    """
-
     def __init__(
         self,
-        client: Optional[Any],
-        risk_manager: RiskManager,
-        position_manager: Optional[PositionManager] = None,
-        tg_bot: Optional[TelegramBot] = None,
-        logger: Optional[logging.Logger] = None,
-        dry_run: bool = True,
-        base_order_notional: float = 50.0,
+        client: Any = None,
+        redis_client: Any = None,
+        logger: Any = None,
+        price_cache: Any = None,
+        position_manager: Any = None,
+        risk_manager: Any = None,
+        telegram_bot: Any = None,
+        dry_run: bool = False,
+        base_order_notional: float = 120.0,
         max_position_notional: float = 500.0,
-        max_leverage: float = 30.0,
-        sl_pct: float = 0.01,
-        tp_pct: float = 0.02,
-        trailing_pct: float = 0.01,
-        use_atr_sltp: bool = True,
-        atr_sl_mult: float = 1.5,
-        atr_tp_mult: float = 3.0,
-        whale_risk_boost: float = 2.0,
-        tg_bot_unused_kw: Optional[Any] = None,  # backward compat
-        price_cache: Optional[Any] = None,
-        redis_price_cache: Optional[RedisPriceCache] = None,
+        max_leverage: float = 3.0,
+        **kwargs: Any,
     ) -> None:
         self.client = client
-        self.risk_manager = risk_manager
+        self.redis = redis_client
+        self.logger = logger
+        self.price_cache = price_cache
         self.position_manager = position_manager
-        self.tg_bot = tg_bot
-        self.logger = logger or logging.getLogger("system")
+        self.risk_manager = risk_manager
+        self.telegram_bot = telegram_bot
+
         self.dry_run = bool(dry_run)
+        self.base_order_notional = float(base_order_notional or 120.0)
+        self.max_position_notional = float(max_position_notional or 500.0)
+        self.max_leverage = float(max_leverage or 5.0)
 
-        self.base_order_notional = float(base_order_notional)
-        self.max_position_notional = float(max_position_notional)
-        self.max_leverage = float(max_leverage)
+        self.max_open_positions = int(
+            float(os.getenv("MAX_OPEN_POSITIONS", "3") or 3)
+        )
+        self.per_position_balance_pct = float(
+            os.getenv("PER_POSITION_BALANCE_PCT", "0.30") or 0.30
+        )
+        self.block_same_symbol_reentry = str(
+            os.getenv("BLOCK_SAME_SYMBOL_REENTRY", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
         self.default_order_leverage = int(
-            max(1, min(int(float(os.getenv("DEFAULT_ORDER_LEVERAGE", "3"))), int(self.max_leverage)))
+            float(os.getenv("DEFAULT_ORDER_LEVERAGE", str(int(self.max_leverage or 5))))
         )
-        self.enable_dynamic_leverage = self._truthy_env("ENABLE_DYNAMIC_LEVERAGE", "1")
+        self.enable_dynamic_leverage = str(
+            os.getenv("ENABLE_DYNAMIC_LEVERAGE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
 
-        self.sl_pct = float(sl_pct)
-        self.tp_pct = float(tp_pct)
-        self.trailing_pct = float(trailing_pct)
-        self.use_atr_sltp = bool(use_atr_sltp)
-        self.atr_sl_mult = float(atr_sl_mult)
-        self.atr_tp_mult = float(atr_tp_mult)
-
-        self.whale_risk_boost = float(whale_risk_boost)
-        try:
-            self.logger.info(
-                "[EXEC][INIT] dry_run=%s base_order_notional=%.2f max_position_notional=%.2f max_leverage=%.2f",
-                self.dry_run,
-                float(self.base_order_notional),
-                float(self.max_position_notional),
-                float(self.max_leverage),
-            )
-        except Exception:
-            pass
-        # price cache
-        self.price_cache: Optional[Any] = price_cache
-        self.redis_price_cache: Optional[RedisPriceCache] = redis_price_cache
-
-        # orchestration knobs (env)
-        self.w_min = float(self._clip_float(os.getenv("W_MIN", "0.58"), 0.58) or 0.58)
-        self.default_trail_pct = float(self._clip_float(os.getenv("TRAIL_PCT", "0.05"), 0.05) or 0.05)
-        self.default_stall_ttl_sec = int(float(self._clip_float(os.getenv("STALL_TTL_SEC", "0"), 0.0) or 0.0))
-
-        # order debug knobs
-        self.order_verify_position = bool(self._truthy_env("ORDER_VERIFY_POSITION", "1"))
-        self.order_poll_status = bool(self._truthy_env("ORDER_POLL_STATUS", "1"))
-        self.order_poll_wait_s = float(self._clip_float(os.getenv("ORDER_POLL_WAIT_S", "2.0"), 2.0) or 2.0)
-
-        # qty rounding knobs
-        self.order_qty_round_decimals = int(
-            float(self._clip_float(os.getenv("ORDER_QTY_ROUND_DECIMALS", "0"), 0.0) or 0.0)
-        )
-
-        # price cache knobs
-        self.price_cache_max_age_sec = float(
-            self._clip_float(os.getenv("PRICE_CACHE_MAX_AGE_SEC", "2.0"), 2.0) or 2.0
-        )
-        self.redis_price_cache_max_age_sec = float(
-            self._clip_float(os.getenv("REDIS_PRICECACHE_MAX_AGE_SEC", "3.0"), 3.0) or 3.0
-        )
-        # whale decision policy
-        self.whale_block_actions = {
-            x.strip().lower()
-            for x in str(os.getenv("WHALE_BLOCK_ACTIONS", "hard_block,force_exit")).split(",")
-            if x.strip()
-        self.whale_reduce_actions = {
-            x.strip().lower()
-            for x in str(os.getenv("WHALE_REDUCE_ACTIONS", "reduce_size,tighten_risk,avoid_open")).split(",")
-            if x.strip()
-        self.whale_boost_actions = {
-            x.strip().lower()
-            for x in str(os.getenv("WHALE_BOOST_ACTIONS", "confirm,strong_confirm,hold_winner")).split(",")
-            if x.strip()
-
-        self.whale_hard_block_min_score = float(
-            self._clip_float(os.getenv("WHALE_HARD_BLOCK_MIN_SCORE", "0.65"), 0.65) or 0.65
-        )
-        self.whale_reduce_min_score = float(
-            self._clip_float(os.getenv("WHALE_REDUCE_MIN_SCORE", "0.40"), 0.40) or 0.40
-        )
-        self.whale_confirm_min_score = float(
-            self._clip_float(os.getenv("WHALE_CONFIRM_MIN_SCORE", "0.55"), 0.55) or 0.55
-        )
-
-        self.whale_reduce_notional_mult = float(
-            self._clip_float(os.getenv("WHALE_REDUCE_NOTIONAL_MULT", "0.65"), 0.65) or 0.65
-        )
-        self.whale_reduce_trailing_mult = float(
-            self._clip_float(os.getenv("WHALE_REDUCE_TRAILING_MULT", "0.70"), 0.70) or 0.70
-        )
-        self.whale_hold_trailing_mult = float(
-            self._clip_float(os.getenv("WHALE_HOLD_TRAILING_MULT", "1.20"), 1.20) or 1.20
-        )
-        self.whale_hold_stall_mult = float(
-            self._clip_float(os.getenv("WHALE_HOLD_STALL_MULT", "1.40"), 1.40) or 1.40
-        )
-        self.whale_force_exit_enable = self._truthy_env("WHALE_FORCE_EXIT_ENABLE", "1")
-        self.whale_force_exit_thr = float(
-            self._clip_float(os.getenv("WHALE_FORCE_EXIT_THR", "0.72"), 0.72) or 0.72
-        )
-        self.whale_force_exit_min_pnl_pct = float(
-            self._clip_float(os.getenv("WHALE_FORCE_EXIT_MIN_PNL_PCT", "-0.003"), -0.003) or -0.003
-        )
-        self.whale_force_exit_on_profit_only = self._truthy_env("WHALE_FORCE_EXIT_ON_PROFIT_ONLY", "0")
-
-        self.whale_exit_trailing_mult = float(
-            self._clip_float(os.getenv("WHALE_EXIT_TRAILING_MULT", "0.55"), 0.55) or 0.55
-        )
-        self.whale_exit_stall_mult = float(
-            self._clip_float(os.getenv("WHALE_EXIT_STALL_MULT", "0.45"), 0.45) or 0.45
-        )
-
-        self.whale_reduce_sl_mult = float(
-            self._clip_float(os.getenv("WHALE_REDUCE_SL_MULT", "0.75"), 0.75) or 0.75
-        )
-        self.whale_reduce_tp_mult = float(
-            self._clip_float(os.getenv("WHALE_REDUCE_TP_MULT", "0.90"), 0.90) or 0.90
-        )
-        # /status snapshot
-        self.last_snapshot: Dict[str, Any] = {}
-
-        # PositionManager yoksa local fallback
-        self._local_positions: Dict[str, Dict[str, Any]] = {}
-
-        # backtest kapanış buffer
-        self._closed_buffer: List[Dict[str, Any]] = []
-
-        self._closed = False
-        # exchange info cache
-        self.exchange_info_cache_ttl_sec = float(
-            self._clip_float(os.getenv("EXCHANGE_INFO_CACHE_TTL_SEC", "300"), 300.0) or 300.0
-        )
+        self.exchange_info_ttl_sec = float(os.getenv("EXCHANGE_INFO_TTL_SEC", "300") or 300.0)
         self._exchange_info_cache: Optional[Dict[str, Any]] = None
         self._exchange_info_cache_ts: float = 0.0
-        self._symbol_info_cache: Dict[str, Dict[str, Any]] = {}
 
-        # leverage controls
-        self.enable_dynamic_leverage = self._truthy_env("ENABLE_DYNAMIC_LEVERAGE", "1")
-        self.default_order_leverage = int(
-            float(self._clip_float(os.getenv("DEFAULT_ORDER_LEVERAGE", "20"), 20.0) or 20.0)
-        )
-        self.min_order_leverage = int(
-            float(self._clip_float(os.getenv("MIN_ORDER_LEVERAGE", "3"), 3.0) or 3.0)
-        )
-        self.max_order_leverage = int(
-            float(self._clip_float(os.getenv("MAX_ORDER_LEVERAGE", "30"), 30.0) or 30.0)
-        )
-        # requests timeout best-effort
-        try:
-            if self.client is not None and hasattr(self.client, "__dict__"):
-                if not getattr(self.client, "requests_params", None):
-                    self.client.requests_params = {"timeout": (3.05, 10)}
-        except Exception:
-            pass
+        self.order_poll_status = str(
+            os.getenv("ORDER_POLL_STATUS", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self.order_poll_wait_s = float(os.getenv("ORDER_POLL_WAIT_S", "2.0") or 2.0)
 
-        # redis price cache auto init
-        if self.redis_price_cache is None:
+        self.order_verify_position = str(
+            os.getenv("ORDER_VERIFY_POSITION", "0")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.hedge_mode_enabled = True
+
+        self.whale_block_actions = {"block", "avoid", "hard_block"}
+        self.whale_reduce_actions = {"reduce", "scale_down", "soft_reduce"}
+
+        self.whale_hard_block_min_score = float(
+            os.getenv("WHALE_HARD_BLOCK_MIN_SCORE", "0.85") or 0.85
+        )
+        self.whale_reduce_min_score = float(
+            os.getenv("WHALE_REDUCE_MIN_SCORE", "0.60") or 0.60
+        )
+        self.whale_reduce_factor = float(
+            os.getenv("WHALE_REDUCE_FACTOR", "0.50") or 0.50
+        )
+
+        self.last_snapshot: Dict[str, Any] = {}
+
+        if self.logger:
             try:
-                self.redis_price_cache = RedisPriceCache(
-                    redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                    key_prefix=os.getenv("REDIS_PRICECACHE_PREFIX", "pricecache"),
-                    ttl_sec=int(os.getenv("REDIS_PRICECACHE_TTL_SEC", "15")),
+                self.logger.info(
+                    "[EXEC][INIT] dry_run=%s base_order_notional=%.2f "
+                    "max_position_notional=%.2f max_leverage=%.2f",
+                    self.dry_run,
+                    self.base_order_notional,
+                    self.max_position_notional,
+                    self.max_leverage,
                 )
             except Exception:
-                self.redis_price_cache = None
-
-    # -------------------------
-    # price cache helpers
-    # -------------------------
-    def set_price_cache(
-        self,
-        price_cache: Optional[Any] = None,
-        redis_price_cache: Optional[RedisPriceCache] = None,
-    ) -> None:
-        """
-        main.py içinden:
-            trade_executor.set_price_cache(price_cache, redis_price_cache)
-        """
-        if price_cache is not None:
-            self.price_cache = price_cache
-        if redis_price_cache is not None:
-            self.redis_price_cache = redis_price_cache
-
-    def _get_cached_mid_price(self, symbol: str, max_age_sec: Optional[float] = None) -> Optional[float]:
-        sym = str(symbol).upper()
-        age = self.price_cache_max_age_sec if max_age_sec is None else float(max_age_sec)
-
-        try:
-            if self.price_cache is not None and hasattr(self.price_cache, "get_mid"):
-                px = self.price_cache.get_mid(sym, max_age_sec=age)
-                if px is not None:
-                    px = float(px)
-                    if px > 0:
-                        return px
-        except Exception:
-            pass
-
-        try:
-            if self.redis_price_cache is not None and hasattr(self.redis_price_cache, "get_mid"):
-                px = self.redis_price_cache.get_mid(sym, max_age_sec=self.redis_price_cache_max_age_sec)
-                if px is not None:
-                    px = float(px)
-                    if px > 0:
-                        return px
-        except Exception:
-            pass
-
-        return None
-
-    def _resolve_price(
-        self,
-        symbol: str,
-        price: Any = None,
-        mark_price: Any = None,
-        last_price: Any = None,
-        *,
-        max_age_sec: Optional[float] = None,
-    ) -> Optional[float]:
-        """
-        Priority:
-          1) explicit price / mark_price / last_price
-          2) in-memory PriceCache mid
-          3) RedisPriceCache mid
-          4) client.get_price()
-        """
-        for candidate in (price, mark_price, last_price):
-            pv = self._clip_float(candidate, None)
-            if pv is not None and pv > 0:
-                return float(pv)
-
-        cached = self._get_cached_mid_price(symbol, max_age_sec=max_age_sec)
-        if cached is not None and cached > 0:
-            return float(cached)
-
-        try:
-            if self.client is not None:
-                fn = getattr(self.client, "get_price", None)
-                if callable(fn):
-                    out = fn(str(symbol).upper())
-                    pv = self._clip_float(out, None)
-                    if pv is not None and pv > 0:
-                        return float(pv)
-        except Exception:
-            pass
-
-        return None
-    # -------------------------
-    # helpers (env / cast / normalize)
-    # -------------------------
-    @staticmethod
-    def _truthy_env(name: str, default: str = "0") -> bool:
-        return str(os.getenv(name, default)).strip().lower() in ("1", "true", "yes", "on")
-
-    @staticmethod
-    def _clip_float(x: Any, default: Optional[float] = None) -> Optional[float]:
-        try:
-            if x is None:
-                return default
-            return float(x)
-        except Exception:
-            return default
-
-    @staticmethod
-    def _signal_u_from_any(signal: Any) -> str:
-        try:
-            s = str(signal or "").strip().lower()
-            if s in ("buy", "long", "1", "true"):
-                return "BUY"
-            if s in ("sell", "short", "-1", "false"):
-                return "SELL"
-            return "HOLD"
-        except Exception:
-            return "HOLD"
-
-    @staticmethod
-    def _ensure_csv_append(path: str, header: List[str], row: Dict[str, Any]) -> None:
-        try:
-            p = Path(path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            new_file = (not p.exists()) or p.stat().st_size == 0
-            with p.open("a", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
-                if new_file:
-                    w.writeheader()
-                w.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in header})
-        except Exception:
-            pass
-
-    @staticmethod
-    def _now_iso() -> str:
-        return datetime.utcnow().isoformat()
-
-    def _append_hold_csv(self, row: dict) -> None:
-        path = os.getenv("HOLD_DECISIONS_CSV_PATH", "logs/hold_decisions.csv")
-        header = [
-            "timestamp", "symbol", "interval", "signal",
-            "p", "p_source", "ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw",
-        ]
-        self._ensure_csv_append(path, header, row)
-
-    def _append_trade_csv(self, row: dict) -> None:
-        path = os.getenv("TRADE_DECISIONS_CSV_PATH", "logs/trade_decisions.csv")
-        header = [
-            "timestamp", "symbol", "interval", "signal",
-            "p", "p_source", "ensemble_p", "model_confidence_factor", "p_buy_ema", "p_buy_raw",
-        ]
-        self._ensure_csv_append(path, header, row)
-
-    def _normalize_side(self, signal_u: str) -> str:
-        s = str(signal_u or "").strip().lower()
-        if s == "buy":
-            return "long"
-        if s == "sell":
-            return "short"
-        return "hold"
-
-    def _round_qty(self, qty: float) -> float:
-        try:
-            q = float(qty)
-            d = int(self.order_qty_round_decimals or 0)
-            if d <= 0:
-                return q
-            return float(round(q, d))
-        except Exception:
-            return float(qty)
-    def _to_decimal(self, x: Any, default: str = "0") -> Decimal:
-        try:
-            return Decimal(str(x))
-        except Exception:
-            return Decimal(default)
-
-    def _floor_to_step(self, value: float, step: float) -> float:
-        """
-        value'yu stepSize katına aşağı yuvarlar.
-        Örn:
-          value=0.00076923, step=0.001 -> 0.000
-          value=1.287, step=0.01 -> 1.28
-        """
-        try:
-            v = self._to_decimal(value)
-            s = self._to_decimal(step)
-            if s <= 0:
-                return float(v)
-
-            floored = (v / s).to_integral_value(rounding=ROUND_DOWN) * s
-            return float(floored)
-        except Exception:
-            return float(value)
-
-    def _get_exchange_info_cached(self, force_refresh: bool = False) -> Dict[str, Any]:
-        now_ts = time.time()
-
-        if not force_refresh:
-            if (
-                isinstance(self._exchange_info_cache, dict)
-                and self._exchange_info_cache
-                and (now_ts - float(self._exchange_info_cache_ts)) < float(self.exchange_info_cache_ttl_sec)
-            ):
-                return self._exchange_info_cache
-
-        client = getattr(self, "client", None)
-        if client is None:
-            return {}
-
-        try:
-            exch = getattr(client, "futures_exchange_info", None)
-            if not callable(exch):
-                return {}
-
-            info = exch()
-            if isinstance(info, dict):
-                self._exchange_info_cache = info
-                self._exchange_info_cache_ts = float(now_ts)
-                self._symbol_info_cache = {}
-
-                try:
-                    self.logger.info(
-                        "[EXEC][EXCHANGE_INFO] refreshed cache ttl=%.1fs symbols=%s",
-                        float(self.exchange_info_cache_ttl_sec),
-                        len(info.get("symbols", []) if isinstance(info, dict) else []),
-                    )
-                except Exception:
-                    pass
-
-                return info
-        except Exception as e:
-            try:
-                self.logger.warning("[EXEC][EXCHANGE_INFO] refresh failed err=%s", str(e))
-            except Exception:
                 pass
-
-        return self._exchange_info_cache or {}
-
-    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-        sym = str(symbol).upper().strip()
-        if not sym:
-            return {}
-
-        cached = self._symbol_info_cache.get(sym)
-        if isinstance(cached, dict) and cached:
-            return cached
-
-        info = self._get_exchange_info_cached(force_refresh=False)
-        symbols = info.get("symbols", []) if isinstance(info, dict) else []
-
-        for s in symbols:
-            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                self._symbol_info_cache[sym] = s
-                return s
-
-        info = self._get_exchange_info_cached(force_refresh=True)
-        symbols = info.get("symbols", []) if isinstance(info, dict) else []
-
-        for s in symbols:
-            if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                self._symbol_info_cache[sym] = s
-                return s
-
-        try:
-            self.logger.warning("[EXEC][SYMBOL_INFO] not found | symbol=%s", sym)
-        except Exception:
-            pass
-        return {}
-    # -------------------------
-    # async/coro helpers
-    # -------------------------
-    def _fire_and_forget(self, coro: Any, *, label: str = "task") -> None:
-        try:
-            if coro is None:
-                return
-            if not asyncio.iscoroutine(coro):
-                return
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(coro)
-            except RuntimeError:
-                try:
-                    self.logger.warning("[EXEC] %s coroutine returned but no running loop; dropped", label)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    async def _await_if_coro(self, maybe: Any, *, label: str = "awaitable") -> Any:
-        try:
-            if asyncio.iscoroutine(maybe):
-                return await maybe
-        except Exception:
-            try:
-                self.logger.exception("[EXEC] await %s failed", label)
-            except Exception:
-                pass
-        return maybe
-
-    # -------------------------
-    # order debug helpers
-    # -------------------------
+    # ---------------------------------------------------------
+    # basic helpers
+    # ---------------------------------------------------------
     @staticmethod
     def _now_ms() -> int:
         return int(time.time() * 1000)
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _env_int(key: str, default: int) -> int:
+        try:
+            return int(str(os.getenv(key, str(default))).strip())
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _env_float(key: str, default: float) -> float:
+        try:
+            return float(str(os.getenv(key, str(default))).strip())
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _truthy_env(key: str, default: str = "0") -> bool:
+        val = str(os.getenv(key, default)).strip().lower()
+        return val in ("1", "true", "yes", "on", "y")
+
+    @staticmethod
+    def _clip_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+        try:
+            if val is None:
+                return default
+            return float(val)
+        except Exception:
+            return default
 
     @staticmethod
     def _safe_json(x: Any, limit: int = 1200) -> str:
@@ -533,18 +151,61 @@ class TradeExecutor:
         return s
 
     @staticmethod
+    def _signal_u_from_any(signal: str) -> str:
+        s = str(signal or "").strip().upper()
+        if s in ("BUY", "LONG"):
+            return "BUY"
+        if s in ("SELL", "SHORT"):
+            return "SELL"
+        return "HOLD"
+
+    @staticmethod
+    def _normalize_side(signal: str) -> str:
+        s = str(signal or "").strip().upper()
+        if s == "BUY":
+            return "long"
+        if s == "SELL":
+            return "short"
+        return "hold"
+
+    @staticmethod
+    def _side_to_position_side(side: str) -> str:
+        s = str(side or "").strip().lower()
+        if s == "long":
+            return "LONG"
+        if s == "short":
+            return "SHORT"
+        return "BOTH"
+
+    @staticmethod
+    def _make_client_order_id(symbol: str, tag: str) -> str:
+        sym = str(symbol).upper()
+        rid = uuid.uuid4().hex[:12]
+        return f"b1_{tag}_{sym}_{rid}"[:36]
+
+    @staticmethod
     def _summarize_order(resp: Any) -> Dict[str, Any]:
         if not isinstance(resp, dict):
             return {"resp": str(resp)}
 
         keys = [
-            "symbol", "side", "type",
-            "orderId", "clientOrderId", "status",
-            "price", "avgPrice",
-            "origQty", "executedQty", "cumQty", "cumQuote",
-            "reduceOnly", "positionSide",
+            "symbol",
+            "side",
+            "type",
+            "orderId",
+            "clientOrderId",
+            "status",
+            "price",
+            "avgPrice",
+            "origQty",
+            "executedQty",
+            "cumQty",
+            "cumQuote",
+            "reduceOnly",
+            "positionSide",
             "timeInForce",
-            "updateTime", "transactTime",
+            "updateTime",
+            "transactTime",
         ]
         out: Dict[str, Any] = {}
         for k in keys:
@@ -556,15 +217,379 @@ class TradeExecutor:
                 out[k] = resp.get(k)
 
         return out
+    def _get_all_local_positions(self) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
 
-    def _make_client_order_id(self, symbol: str, tag: str) -> str:
-        s = str(symbol).upper()
-        rid = uuid.uuid4().hex[:12]
-        return f"b1_{tag}_{s}_{rid}"[:36]
+        try:
+            if self.redis is None:
+                return out
 
-    # -------------------------
-    # exchange qty normalization helpers
-    # -------------------------
+            keys = self.redis.keys("bot:positions:*")
+            for k in keys:
+                try:
+                    key_s = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                    raw = self.redis.get(k)
+                    if not raw:
+                        continue
+
+                    if isinstance(raw, (bytes, bytearray)):
+                        raw = raw.decode("utf-8", errors="ignore")
+
+                    obj = json.loads(raw)
+                    if not isinstance(obj, dict):
+                        continue
+
+                    sym = str(obj.get("symbol") or key_s.split(":")[-1]).upper().strip()
+                    qty = float(obj.get("qty", 0.0) or 0.0)
+                    side = str(obj.get("side", "")).strip().lower()
+
+                    if sym and qty > 0 and side in ("long", "short"):
+                        out[sym] = obj
+                except Exception:
+                    continue
+        except Exception:
+            return out
+
+        return out
+
+    def _count_open_positions(self) -> int:
+        try:
+            return len(self._get_all_local_positions())
+        except Exception:
+            return 0
+
+    def _has_open_position_on_symbol(self, symbol: str) -> bool:
+        sym_u = str(symbol).upper().strip()
+        if not sym_u:
+            return False
+
+        try:
+            pos = self._get_position(sym_u)
+            if isinstance(pos, dict):
+                qty = float(pos.get("qty", 0.0) or 0.0)
+                side = str(pos.get("side", "")).strip().lower()
+                if qty > 0 and side in ("long", "short"):
+                    return True
+        except Exception:
+            pass
+
+        try:
+            all_pos = self._get_all_local_positions()
+            p = all_pos.get(sym_u)
+            if isinstance(p, dict):
+                qty = float(p.get("qty", 0.0) or 0.0)
+                side = str(p.get("side", "")).strip().lower()
+                if qty > 0 and side in ("long", "short"):
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _get_available_balance_usdt_sync(self) -> float:
+        client = getattr(self, "client", None)
+        if client is None:
+            return 0.0
+
+        try:
+            fn = getattr(client, "futures_account", None)
+            if not callable(fn):
+                return 0.0
+
+            acc = fn()
+            if not isinstance(acc, dict):
+                return 0.0
+
+            available = float(acc.get("availableBalance", 0.0) or 0.0)
+            if available > 0:
+                return available
+        except Exception:
+            pass
+
+        return 0.0
+
+    async def _get_available_balance_usdt(self) -> float:
+        try:
+            return float(self._get_available_balance_usdt_sync())
+        except Exception:
+            return 0.0
+
+    def _compute_balance_based_notional(self, symbol: str, side: str, price: float, extra: Dict[str, Any]) -> float:
+        available = 0.0
+
+        try:
+            available = float(extra.get("available_balance_usdt", 0.0) or 0.0)
+        except Exception:
+            available = 0.0
+
+        if available <= 0:
+            try:
+                available = float(self._get_available_balance_usdt_sync())
+            except Exception:
+                available = 0.0
+
+        if available <= 0:
+            try:
+                available = float(extra.get("equity_usdt", 0.0) or 0.0)
+            except Exception:
+                available = 0.0
+
+        if available <= 0:
+            available = float(self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0)
+
+        notional = float(available) * float(self.per_position_balance_pct)
+        notional = float(max(10.0, notional))
+        notional = float(min(notional, float(self.max_position_notional)))
+
+        try:
+            self.logger.info(
+                "[EXEC][NOTIONAL] symbol=%s side=%s available_balance=%.4f pct=%.4f notional=%.4f",
+                str(symbol).upper(),
+                str(side).lower(),
+                float(available),
+                float(self.per_position_balance_pct),
+                float(notional),
+            )
+        except Exception:
+            pass
+
+        return float(notional)
+    # ---------------------------------------------------------
+    # coroutine / retry helpers
+    # ---------------------------------------------------------
+    def _fire_and_forget(self, maybe: Any, *, label: str = "task") -> None:
+        try:
+            if inspect.isawaitable(maybe):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(maybe)
+                except RuntimeError:
+                    try:
+                        if self.logger:
+                            self.logger.warning("[EXEC] %s coroutine returned but no running loop; dropped", label)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    async def _await_if_coro(self, maybe: Any, *, label: str = "awaitable") -> Any:
+        try:
+            if inspect.isawaitable(maybe):
+                return await maybe
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception("[EXEC] await %s failed", label)
+            except Exception:
+                pass
+        return maybe
+
+    def _call_with_retry(
+        self,
+        fn: Any,
+        payload: Dict[str, Any],
+        attempts: int = 3,
+        base_sleep: float = 0.6,
+    ) -> Any:
+        last_err: Optional[Exception] = None
+        attempts = max(1, int(attempts))
+
+        for i in range(attempts):
+            try:
+                return fn(**payload)
+            except Exception as e:
+                last_err = e
+                if i >= attempts - 1:
+                    break
+                sleep_s = float(base_sleep) * (2 ** i)
+                time.sleep(sleep_s)
+
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("call_with_retry failed without exception")
+
+    # ---------------------------------------------------------
+    # whale helpers
+    # ---------------------------------------------------------
+    def _extract_whale_context(self, extra: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(extra or {})
+        raw = out.get("raw")
+        if isinstance(raw, dict):
+            for k in ("whale_score", "whale_dir", "recommended_leverage", "recommended_notional_pct"):
+                if k not in out and k in raw:
+                    out[k] = raw.get(k)
+        return out
+
+    @staticmethod
+    def _whale_action(extra: Dict[str, Any]) -> str:
+        try:
+            return str(extra.get("whale_action", "") or "").strip().lower()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _whale_bias(side: str, extra: Dict[str, Any]) -> str:
+        try:
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if side == wdir:
+                    return "align"
+                return "oppose"
+        except Exception:
+            pass
+        return "hold"
+
+    def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
+        try:
+            action = self._whale_action(extra)
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
+                return True
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if side in ("long", "short") and wdir in ("long", "short"):
+                if wdir != side and ws >= float(self.whale_hard_block_min_score):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _apply_whale_open_adjustments(self, side: str, notional: float, extra: Dict[str, Any]) -> float:
+        out = float(notional)
+        try:
+            action = self._whale_action(extra)
+            ws = float(extra.get("whale_score", 0.0) or 0.0)
+
+            if action in self.whale_reduce_actions and ws >= float(self.whale_reduce_min_score):
+                out *= 0.5
+
+            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
+            if wdir in ("long", "short") and wdir != str(side).strip().lower() and ws >= 0.58:
+                out *= 0.75
+        except Exception:
+            pass
+
+        return max(0.0, float(out))
+
+    # ---------------------------------------------------------
+    # price helpers
+    # ---------------------------------------------------------
+    def _get_cached_mid_price(self, symbol: str) -> Optional[float]:
+        sym = str(symbol).upper()
+        try:
+            pc = getattr(self, "price_cache", None)
+            if pc is not None:
+                for method_name in ("get_mid_price", "get_price", "get_last_price"):
+                    fn = getattr(pc, method_name, None)
+                    if callable(fn):
+                        v = fn(sym)
+                        fv = self._clip_float(v, None)
+                        if fv is not None and fv > 0:
+                            return fv
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None:
+                raw = self.redis.get(f"price:{sym}")
+                if raw:
+                    fv = self._clip_float(raw, None)
+                    if fv is not None and fv > 0:
+                        return fv
+        except Exception:
+            pass
+
+        return None
+
+    def _resolve_price(
+        self,
+        symbol: str,
+        price: Any = None,
+        mark_price: Any = None,
+        last_price: Any = None,
+    ) -> Optional[float]:
+        for v in (mark_price, price, last_price):
+            fv = self._clip_float(v, None)
+            if fv is not None and fv > 0:
+                return fv
+
+        cached = self._get_cached_mid_price(symbol)
+        if cached is not None and cached > 0:
+            return float(cached)
+
+        return None
+    # ---------------------------------------------------------
+    # exchange info cache
+    # ---------------------------------------------------------
+    def _get_exchange_info_cached(self, force_refresh: bool = False) -> Dict[str, Any]:
+        now = time.time()
+
+        if (
+            not force_refresh
+            and isinstance(self._exchange_info_cache, dict)
+            and (now - float(self._exchange_info_cache_ts)) < float(self.exchange_info_cache_ttl_sec)
+        ):
+            return self._exchange_info_cache
+
+        client = getattr(self, "client", None)
+        if client is None:
+            return {}
+
+        try:
+            fn = getattr(client, "futures_exchange_info", None)
+            if not callable(fn):
+                return {}
+
+            data = fn()
+            if isinstance(data, dict):
+                self._exchange_info_cache = data
+                self._exchange_info_cache_ts = now
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][EXCHANGE_INFO] refreshed cache ttl=%.1fs symbols=%s",
+                            float(self.exchange_info_cache_ttl_sec),
+                            len(data.get("symbols", []) or []),
+                        )
+                except Exception:
+                    pass
+                return data
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning("[EXEC][EXCHANGE_INFO] refresh failed err=%s", str(e))
+            except Exception:
+                pass
+
+        return self._exchange_info_cache or {}
+
+    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper()
+
+        try:
+            exch = self._get_exchange_info_cached(force_refresh=False)
+            symbols = exch.get("symbols", []) if isinstance(exch, dict) else []
+            for s in symbols:
+                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                    return s
+        except Exception:
+            pass
+
+        try:
+            exch = self._get_exchange_info_cached(force_refresh=True)
+            symbols = exch.get("symbols", []) if isinstance(exch, dict) else []
+            for s in symbols:
+                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
+                    return s
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning("[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s", sym, str(e))
+            except Exception:
+                pass
+
+        return {}
 
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
         out = {
@@ -572,6 +597,7 @@ class TradeExecutor:
             "min_qty": 0.0,
             "min_notional": 0.0,
             "tick_size": 0.0,
+        }
 
         try:
             filters = symbol_info.get("filters", []) or []
@@ -595,388 +621,322 @@ class TradeExecutor:
                     out["min_notional"] = float(min_notional or 0.0)
 
                 elif ftype == "PRICE_FILTER":
-                    out["tick_size"] = float(f.get("tickSize", 0.0) or 0.0)
-
+                    tick_size = float(f.get("tickSize", 0.0) or 0.0)
+                    if tick_size > 0:
+                        out["tick_size"] = tick_size
         except Exception:
             pass
 
         return out
+
+    @staticmethod
+    def _round_qty(qty: float, digits: int = 12) -> float:
+        try:
+            return float(round(float(qty), int(digits)))
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _floor_to_step(qty: float, step: float) -> float:
+        if step <= 0:
+            return float(qty)
+        try:
+            return math.floor(float(qty) / float(step)) * float(step)
+        except Exception:
+            return 0.0
+
     def _normalize_order_qty(
         self,
         symbol: str,
         raw_qty: float,
         price: float,
-        symbol_info: Optional[Dict[str, Any]] = None,
+        symbol_info: Dict[str, Any],
     ) -> Tuple[float, Dict[str, Any]]:
-        meta: Dict[str, Any] = {
-            "symbol": str(symbol).upper(),
-            "raw_qty": float(raw_qty or 0.0),
-            "price": float(price or 0.0),
-            "step_size": 0.0,
-            "min_qty": 0.0,
-            "min_notional": 0.0,
-            "normalized_qty": 0.0,
-            "normalized_notional": 0.0,
-            "reject_reason": "",
+        sym = str(symbol).upper()
+        px = float(price or 0.0)
+        rq = float(raw_qty or 0.0)
 
-        try:
-            qty = float(raw_qty or 0.0)
-            px = float(price or 0.0)
+        filters = self._extract_symbol_filters(symbol_info or {})
+        step = float(filters.get("step_size", 0.0) or 0.0)
+        min_qty = float(filters.get("min_qty", 0.0) or 0.0)
+        min_notional = float(filters.get("min_notional", 0.0) or 0.0)
 
-            if qty <= 0:
-                meta["reject_reason"] = "raw_qty<=0"
-                return 0.0, meta
+        q = float(rq)
+        if step > 0:
+            q = self._floor_to_step(q, step)
+        q = self._round_qty(q)
 
-            if px <= 0:
-                meta["reject_reason"] = "price<=0"
-                return 0.0, meta
+        reject_reason = ""
+        if q <= 0:
+            reject_reason = "qty_le_zero"
+        elif min_qty > 0 and q < min_qty:
+            reject_reason = "below_min_qty"
+        elif px > 0 and min_notional > 0 and (q * px) < min_notional:
+            reject_reason = "below_min_notional"
 
-            info = symbol_info if isinstance(symbol_info, dict) and symbol_info else self._get_symbol_info(symbol)
-            if not info:
-                meta["reject_reason"] = "symbol_info_missing"
-                return 0.0, meta
+        meta = {
+            "symbol": sym,
+            "raw_qty": float(rq),
+            "price": float(px),
+            "step_size": float(step),
+            "min_qty": float(min_qty),
+            "min_notional": float(min_notional),
+            "normalized_qty": float(q),
+            "normalized_notional": float(q * px),
+            "reject_reason": str(reject_reason),
+        }
 
-            filters = self._extract_symbol_filters(info)
-
-            step = float(filters.get("step_size", 0.0) or 0.0)
-            min_qty = float(filters.get("min_qty", 0.0) or 0.0)
-            min_notional = float(filters.get("min_notional", 0.0) or 0.0)
-
-            meta["step_size"] = step
-            meta["min_qty"] = min_qty
-            meta["min_notional"] = min_notional
-
-            q = float(qty)
-            if step > 0:
-                q = self._floor_to_step(q, step)
-
-            if min_qty > 0 and q < min_qty:
-                meta["reject_reason"] = "qty<min_qty"
-                meta["normalized_qty"] = float(q)
-                meta["normalized_notional"] = float(q * px)
-                return 0.0, meta
-
-            notional = float(q * px)
-            if min_notional > 0 and notional < min_notional:
-                meta["reject_reason"] = "notional<min_notional"
-                meta["normalized_qty"] = float(q)
-                meta["normalized_notional"] = float(notional)
-                return 0.0, meta
-
-            meta["normalized_qty"] = float(q)
-            meta["normalized_notional"] = float(notional)
-            return float(q), meta
-
-        except Exception as e:
-            meta["reject_reason"] = f"exception:{str(e)[:120]}"
+        if reject_reason:
             return 0.0, meta
+        return float(q), meta
+    # ---------------------------------------------------------
+    # leverage helpers
+    # ---------------------------------------------------------
     def _resolve_target_leverage(self, extra: Optional[Dict[str, Any]] = None) -> int:
         extra0 = extra if isinstance(extra, dict) else {}
 
-        try:
-            rec = extra0.get("recommended_leverage", None)
-            if rec is None:
-                rec = extra0.get("leverage", None)
-            if rec is None:
-                rec = extra0.get("target_leverage", None)
+        lev_min = int(self._env_int("LEV_MIN", 3))
+        lev_max_env = int(self._env_int("LEV_MAX", max(lev_min, self.max_leverage)))
+        lev_max = max(lev_min, min(int(lev_max_env), int(self.max_leverage)))
 
-            if rec is None:
-                lev = int(self.default_order_leverage)
-            else:
-                lev = int(float(rec))
-        except Exception:
-            lev = int(self.default_order_leverage)
+        rec = extra0.get("recommended_leverage")
+        rec_f = self._clip_float(rec, None)
 
-        try:
-            lev = max(1, lev)
-            lev = min(int(lev), int(float(self.max_leverage)))
-        except Exception:
-            lev = int(self.default_order_leverage)
+        if rec_f is None:
+            target = lev_min
+        else:
+            target = int(round(float(rec_f)))
 
-        return int(lev)
-    def _side_to_position_side(self, side: str) -> str:
-        s = str(side or "").strip().lower()
-        if s == "long":
-            return "LONG"
-        if s == "short":
-            return "SHORT"
-        return "BOTH"
+        target = max(lev_min, min(target, lev_max))
+        return int(target)
 
     def _set_symbol_leverage(self, symbol: str, leverage: int) -> int:
-        sym = str(symbol).upper().strip()
-        lev = int(max(self.min_order_leverage, min(self.max_order_leverage, int(leverage))))
-
-        if self.dry_run:
-            try:
-                self.logger.info("[EXEC][LEV] dry_run symbol=%s leverage=%s", sym, lev)
-            except Exception:
-                pass
-            return lev
+        sym = str(symbol).upper()
+        lev = int(max(1, leverage))
 
         client = getattr(self, "client", None)
         if client is None:
-            raise RuntimeError("client is None")
+            return lev
 
         fn = getattr(client, "futures_change_leverage", None)
         if not callable(fn):
-            raise RuntimeError("futures_change_leverage not available")
+            return lev
 
         resp = fn(symbol=sym, leverage=lev)
 
         try:
-            self.logger.info(
-                "[EXEC][LEV][SET] symbol=%s requested=%s response=%s",
-                sym,
-                lev,
-                self._safe_json(resp, limit=600),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][LEV][SET] symbol=%s requested=%s response=%s",
+                    sym,
+                    int(lev),
+                    self._safe_json(resp, limit=900),
+                )
         except Exception:
             pass
 
         try:
             if isinstance(resp, dict):
-                applied = resp.get("leverage")
-                if applied is not None:
-                    return int(float(applied))
+                return int(resp.get("leverage") or lev)
         except Exception:
             pass
 
         return lev
-    # -------------------------
-    # order retry helpers
-    # -------------------------
-    @staticmethod
-    def _is_empty_invalid_response_err(e: Exception) -> bool:
-        msg = str(e) or ""
-        msg_l = msg.lower()
-        if "invalid response" in msg_l:
-            return True
-        if "jsondecodeerror" in msg_l:
-            return True
-        return False
 
-    def _sleep_s(self, s: float) -> None:
-        try:
-            time.sleep(max(0.0, float(s)))
-        except Exception:
-            pass
-
-    def _call_with_retry(
-        self,
-        fn,
-        payload: Dict[str, Any],
-        *,
-        attempts: int = 3,
-        base_sleep: float = 0.6,
-    ):
-        last_exc: Optional[Exception] = None
-        attempts_i = max(1, int(attempts))
-
-        for i in range(attempts_i):
-            try:
-                return fn(**payload)
-            except (RequestsJSONDecodeError,) as e:
-                last_exc = e
-                if i < attempts_i - 1:
-                    try:
-                        self.logger.warning(
-                            "[EXEC][ORDER][RETRY] JSONDecodeError -> retry %d/%d | payload=%s",
-                            i + 1,
-                            attempts_i,
-                            self._safe_json(payload, limit=650),
-                        )
-                    except Exception:
-                        pass
-                    self._sleep_s(float(base_sleep) * (2 ** i))
-                    continue
-                raise
-            except Exception as e:
-                last_exc = e
-                if self._is_empty_invalid_response_err(e) and i < attempts_i - 1:
-                    try:
-                        self.logger.warning(
-                            "[EXEC][ORDER][RETRY] Invalid/empty response -> retry %d/%d | err=%s",
-                            i + 1,
-                            attempts_i,
-                            str(e)[:200],
-                        )
-                    except Exception:
-                        pass
-                    self._sleep_s(float(base_sleep) * (2 ** i))
-                    continue
-                raise
-
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("retry failed with unknown state")
-    def _verify_position_sync(self, symbol: str) -> Dict[str, Any]:
-        if self.dry_run:
-            return {"verify": "skip", "reason": "dry_run"}
-
-        client = getattr(self, "client", None)
-        if client is None:
-            return {"verify": "skip", "reason": "no_client"}
-
-        fn = getattr(client, "futures_position_information", None)
-        if not callable(fn):
-            return {"verify": "skip", "reason": "no_futures_position_information"}
-
-        sym = str(symbol).upper()
-        try:
-            data = fn(symbol=sym)
-            if isinstance(data, list):
-                rows = [r for r in data if isinstance(r, dict) and str(r.get("symbol", "")).upper() == sym]
-                row = rows[0] if rows else (data[0] if data else {})
-            elif isinstance(data, dict):
-                row = data
-            else:
-                row = {}
-
-            amt = None
-            entry = None
-            unreal = None
-            lev = None
-            if isinstance(row, dict):
-                amt = row.get("positionAmt")
-                entry = row.get("entryPrice")
-                unreal = row.get("unRealizedProfit") or row.get("unrealizedProfit")
-                lev = row.get("leverage")
-
-            return {
-                "verify": "ok",
-                "symbol": sym,
-                "positionAmt": amt,
-                "entryPrice": entry,
-                "unrealized": unreal,
-                "leverage": lev,
-        except Exception as e:
-            return {
-                "verify": "skip",
-                "symbol": sym,
-                "reason": "position_verify_failed",
-                "err": str(e)[:300],
-    def _poll_order_status(
-        self,
-        symbol: str,
-        order_id: Any = None,
-        client_order_id: str = "",
-        max_wait_s: float = 2.0,
-    ) -> Dict[str, Any]:
-        if self.dry_run:
-            return {"poll": "skip", "reason": "dry_run"}
-
-        client = getattr(self, "client", None)
-        if client is None:
-            return {"poll": "skip", "reason": "no_client"}
-
-        fn = getattr(client, "futures_get_order", None) or getattr(client, "futures_query_order", None)
-        if not callable(fn):
-            return {"poll": "skip", "reason": "no_futures_get_order"}
-
-        sym = str(symbol).upper()
-        t_end = time.time() + float(max_wait_s or 0.0)
-        last: Any = None
-
-        while time.time() < t_end:
-            try:
-                kwargs: Dict[str, Any] = {"symbol": sym}
-                if order_id is not None:
-                    kwargs["orderId"] = order_id
-                elif client_order_id:
-                    kwargs["origClientOrderId"] = client_order_id
-                else:
-                    break
-
-                last = fn(**kwargs)
-                if isinstance(last, dict):
-                    st = str(last.get("status", "")).upper()
-                    if st in ("FILLED", "CANCELED", "REJECTED", "EXPIRED"):
-                        break
-                time.sleep(0.25)
-            except Exception as e:
-                if self._is_empty_invalid_response_err(e):
-                    time.sleep(0.2)
-                    continue
-                return {"poll": "error", "err": str(e)[:280], "result": self._summarize_order(last)}
-
-        return {"poll": "ok", "result": self._summarize_order(last)}
-
-    # -------------------------
-    # equity helpers
-    # -------------------------
-    async def _get_futures_equity_usdt(self) -> float:
-        try:
-            if bool(getattr(self, "dry_run", True)):
-                return 0.0
-
-            client = getattr(self, "client", None)
-            if client is None:
-                return 0.0
-
-            import inspect
-
-            fn = getattr(client, "futures_account", None)
-            if fn is None:
-                return 0.0
-
-            if inspect.iscoroutinefunction(fn):
-                acc = await fn()
-            else:
-                acc = await asyncio.to_thread(fn)
-
-            return float(self._extract_equity_from_futures_account(acc))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return 0.0
-
+    # ---------------------------------------------------------
+    # equity / notional
+    # ---------------------------------------------------------
     def _get_futures_equity_usdt_sync(self) -> float:
-        try:
-            if bool(getattr(self, "dry_run", True)):
-                return 0.0
-
-            client = getattr(self, "client", None)
-            if client is None:
-                return 0.0
-
-            fn = getattr(client, "futures_account", None)
-            if not callable(fn):
-                return 0.0
-
-            acc = fn()
-            return float(self._extract_equity_from_futures_account(acc))
-        except Exception:
+        client = getattr(self, "client", None)
+        if client is None:
             return 0.0
 
-    @staticmethod
-    def _extract_equity_from_futures_account(acc: Any) -> float:
         try:
-            if not isinstance(acc, dict):
-                return 0.0
-
-            for k in ("totalWalletBalance", "totalMarginBalance", "availableBalance"):
-                v = acc.get(k)
-                if v is None:
-                    continue
-                try:
-                    eq = float(v)
-                    return float(max(0.0, eq))
-                except Exception:
-                    continue
+            fn = getattr(client, "futures_account_balance", None)
+            if callable(fn):
+                rows = fn()
+                if isinstance(rows, list):
+                    for r in rows:
+                        if str(r.get("asset", "")).upper() == "USDT":
+                            bal = self._clip_float(r.get("balance"), 0.0) or 0.0
+                            cw = self._clip_float(r.get("crossWalletBalance"), None)
+                            if cw is not None and cw > 0:
+                                return float(cw)
+                            return float(bal)
         except Exception:
             pass
+
         return 0.0
 
-    # -------------------------
-    # Telegram: only OPEN/CLOSE
-    # -------------------------
-    def _tg_send(self, text: str) -> None:
+    async def _get_futures_equity_usdt(self) -> float:
+        return float(self._get_futures_equity_usdt_sync())
+
+    def _compute_notional(self, symbol: str, side: str, price: float, extra: Dict[str, Any]) -> float:
+        base = float(self.base_order_notional)
+
+        liq_use_notional = self._truthy_env("LIQ_USE_NOTIONAL", "1")
+        min_pct = self._env_float("NOTIONAL_MIN_PCT", 0.02)
+        max_pct = self._env_float("NOTIONAL_MAX_PCT", 0.25)
+
+        eq = self._clip_float(extra.get("equity_usdt"), None)
+        if eq is None or eq <= 0:
+            eq = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
+
+        npct = self._clip_float(extra.get("recommended_notional_pct"), None)
+        if npct is not None:
+            npct = max(float(min_pct), min(float(npct), float(max_pct)))
+
+        if liq_use_notional and npct is not None and npct > 0:
+            notional = float(eq) * float(npct)
+        else:
+            notional = float(base)
+
+        notional = min(float(notional), float(self.max_position_notional))
+        notional = max(10.0, float(notional))
+
         try:
-            if self.tg_bot is None:
-                return
-            self.tg_bot.send_message(text)
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][NOTIONAL] symbol=%s side=%s base=%.2f equity=%.2f npct=%s notional=%.2f",
+                    str(symbol).upper(),
+                    str(side),
+                    float(base),
+                    float(eq),
+                    ("-" if npct is None else f"{float(npct):.4f}"),
+                    float(notional),
+                )
         except Exception:
             pass
+
+        return float(notional)
+
+    # ---------------------------------------------------------
+    # position state helpers
+    # ---------------------------------------------------------
+    def _pos_key(self, symbol: str) -> str:
+        return f"bot:positions:{str(symbol).upper()}"
+
+    def _get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper()
+
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm is not None and hasattr(pm, "get_position"):
+                pos = pm.get_position(sym)
+                if isinstance(pos, dict):
+                    return pos
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None:
+                raw = self.redis.get(self._pos_key(sym))
+                if raw:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="ignore")
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict):
+                        return obj
+        except Exception:
+            pass
+
+        return None
+
+    def _set_position(self, symbol: str, pos: Dict[str, Any]) -> None:
+        sym = str(symbol).upper()
+
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm is not None and hasattr(pm, "set_position"):
+                pm.set_position(sym, pos)
+                return
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None:
+                self.redis.set(self._pos_key(sym), json.dumps(pos, ensure_ascii=False, default=str))
+        except Exception:
+            pass
+
+    def _del_position(self, symbol: str) -> None:
+        sym = str(symbol).upper()
+
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm is not None and hasattr(pm, "delete_position"):
+                pm.delete_position(sym)
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None:
+                self.redis.delete(self._pos_key(sym))
+        except Exception:
+            pass
+    # ---------------------------------------------------------
+    # position dict / pnl / notify
+    # ---------------------------------------------------------
+    def _create_position_dict(
+        self,
+        signal: str,
+        symbol: str,
+        price: float,
+        qty: float,
+        notional: float,
+        interval: str,
+        probs: Dict[str, float],
+        extra: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], str]:
+        opened_at = self._utc_now_iso()
+        now_ts = time.time()
+
+        trail_pct = self._clip_float(extra.get("trail_pct"), 0.03) or 0.03
+        stall_ttl = int(extra.get("stall_ttl_sec", 7200) or 7200)
+
+        sl_price = 0.0
+        tp_price = 0.0
+        atr_value = 0.0
+        bias = self._whale_bias(str(signal), extra)
+        sl_mult_adj = 1.0
+        tp_mult_adj = 1.0
+
+        pos: Dict[str, Any] = {
+            "symbol": str(symbol).upper(),
+            "side": str(signal),
+            "qty": float(qty),
+            "entry_price": float(price),
+            "notional": float(notional),
+            "interval": str(interval or ""),
+            "opened_at": opened_at,
+            "sl_price": float(sl_price),
+            "tp_price": float(tp_price),
+            "trailing_pct": float(trail_pct),
+            "stall_ttl_sec": int(stall_ttl),
+            "best_pnl_pct": 0.0,
+            "last_best_ts": float(now_ts),
+            "atr_value": float(atr_value),
+            "highest_price": float(price),
+            "lowest_price": float(price),
+            "meta": {
+                "probs": dict(probs or {}),
+                "extra": dict(extra or {}),
+                "whale_bias_on_open": str(bias),
+                "sl_mult_adj": float(sl_mult_adj),
+                "tp_mult_adj": float(tp_mult_adj),
+            },
+        }
+        return pos, opened_at
+
+    @staticmethod
+    def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
+        if qty <= 0:
+            return 0.0
+        if side == "long":
+            return (float(exit_price) - float(entry_price)) * float(qty)
+        if side == "short":
+            return (float(entry_price) - float(exit_price)) * float(qty)
+        return 0.0
 
     def _notify_position_open(
         self,
@@ -987,27 +947,21 @@ class TradeExecutor:
         price: float,
         extra: Dict[str, Any],
     ) -> None:
+        bot = getattr(self, "telegram_bot", None)
+        if bot is None:
+            return
+
+        text = (
+            "🚀 POSITION OPENED\n"
+            f"symbol={str(symbol).upper()} side={str(side)} qty={float(qty)}\n"
+            f"price={float(price)} interval={str(interval or '')}"
+        )
+
         try:
-            if not self._truthy_env("TG_NOTIFY_OPEN_CLOSE", "1"):
-                return
-            if self.dry_run and self._truthy_env("TG_OPEN_CLOSE_ONLY_REAL", "0"):
-                return
-
-            p_used = extra.get("ensemble_p")
-            if p_used is None:
-                p_used = extra.get("p_buy_ema") or extra.get("p_buy_raw")
-
-            p_txt = "?" if p_used is None else f"{float(p_used):.4f}"
-            src = str(extra.get("signal_source") or extra.get("p_buy_source") or "")
-            whale_dir = str(extra.get("whale_dir", "none") or "none")
-            whale_score = float(extra.get("whale_score", 0.0) or 0.0)
-
-            msg = (
-                f"🟢 *OPEN* `{symbol}` `{interval}`\n"
-                f"side=`{side}` qty=`{qty:.6f}` price=`{price}`\n"
-                f"p=`{p_txt}` src=`{src}` whale=`{whale_dir}` score=`{whale_score:.2f}` dry_run=`{self.dry_run}`"
-            )
-            self._tg_send(msg)
+            fn = getattr(bot, "send_message", None)
+            if callable(fn):
+                out = fn(text)
+                self._fire_and_forget(out, label="tg_open")
         except Exception:
             pass
 
@@ -1017,331 +971,119 @@ class TradeExecutor:
         interval: str,
         side: str,
         qty: float,
-        entry_price: float,
-        exit_price: float,
-        pnl_usdt: float,
-        reason: str,
-    ) -> None:
-        try:
-            if not self._truthy_env("TG_NOTIFY_OPEN_CLOSE", "1"):
-                return
-            if self.dry_run and self._truthy_env("TG_OPEN_CLOSE_ONLY_REAL", "0"):
-                return
-
-            msg = (
-                f"🔴 *CLOSE* `{symbol}` `{interval}`\n"
-                f"side=`{side}` qty=`{qty:.6f}` entry=`{entry_price}` exit=`{exit_price}`\n"
-                f"pnl_usdt=`{pnl_usdt:.4f}` reason=`{reason}` dry_run=`{self.dry_run}`"
-            )
-            self._tg_send(msg)
-        except Exception:
-            pass
-
-    # -------------------------
-    # unified shutdown contract
-    # -------------------------
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-
-        try:
-            pm = self.position_manager
-            if pm is not None and hasattr(pm, "close"):
-                pm.close()
-        except Exception:
-            pass
-
-    async def shutdown(self, reason: str = "unknown") -> None:
-        if getattr(self, "_closed", False):
-            return
-        self._closed = True
-
-        try:
-            self.logger.info("[EXEC] shutdown requested | reason=%s", reason)
-        except Exception:
-            pass
-
-        try:
-            pm = getattr(self, "position_manager", None)
-            if pm is not None:
-                if hasattr(pm, "shutdown"):
-                    out = pm.shutdown(reason)  # type: ignore
-                    if asyncio.iscoroutine(out):
-                        await out
-                elif hasattr(pm, "close"):
-                    out = pm.close()  # type: ignore
-                    if asyncio.iscoroutine(out):
-                        await out
-        except Exception:
-            pass
-
-    async def aclose(self) -> None:
-        return await self.shutdown(reason="close")
-    # -------------------------
-    # backtest helper API
-    # -------------------------
-    def has_open_position(self, symbol: str) -> bool:
-        pos = self._get_position(symbol)
-        if not pos:
-            return False
-        side = str(pos.get("side") or "").lower()
-        qty = float(pos.get("qty") or 0.0)
-        return (side in ("long", "short")) and (qty > 0)
-
-    def close_position_backtest(
-        self,
-        symbol: str,
         price: float,
-        reason: str = "manual",
-        interval: str = "",
-        **_ignored: Any,
-    ) -> Optional[Dict[str, Any]]:
-        return self._close_position(
-            symbol=str(symbol).upper(),
-            price=float(price),
-            reason=str(reason),
-            interval=str(interval or ""),
+        realized_pnl: float,
+        daily_realized_pnl: float,
+    ) -> None:
+        bot = getattr(self, "telegram_bot", None)
+        if bot is None:
+            return
+
+        text = (
+            "✅ POSITION CLOSED\n"
+            f"symbol={str(symbol).upper()} side={str(side)} qty={float(qty)}\n"
+            f"price={float(price)} interval={str(interval or '')}\n"
+            f"realized_pnl={float(realized_pnl):.4f} daily_realized_pnl={float(daily_realized_pnl):.4f}"
         )
 
-    def pop_closed_trades(self) -> List[Dict[str, Any]]:
-        out = list(self._closed_buffer)
-        self._closed_buffer.clear()
-        return out
-
-    # -------------------------
-    # position access
-    # -------------------------
-    def _get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
-        sym = str(symbol).upper()
-        if self.position_manager is not None:
-            try:
-                return self.position_manager.get_position(sym)
-            except Exception as e:
-                try:
-                    self.logger.warning("[EXEC] PositionManager.get_position hata: %s (local fallback)", e)
-                except Exception:
-                    pass
-        return self._local_positions.get(sym)
-
-    def _set_position(self, symbol: str, pos: Dict[str, Any]) -> None:
-        sym = str(symbol).upper()
-        if self.position_manager is not None:
-            try:
-                self.position_manager.set_position(sym, pos)
-                return
-            except Exception as e:
-                try:
-                    self.logger.warning("[EXEC] PositionManager.set_position hata: %s (local fallback)", e)
-                except Exception:
-                    pass
-        self._local_positions[sym] = pos
-
-    def _clear_position(self, symbol: str) -> None:
-        sym = str(symbol).upper()
-        if self.position_manager is not None:
-            try:
-                self.position_manager.clear_position(sym)
-            except Exception as e:
-                try:
-                    self.logger.warning("[EXEC] PositionManager.clear_position hata: %s (local fallback)", e)
-                except Exception:
-                    pass
-        self._local_positions.pop(sym, None)
-    def _extract_whale_context(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        out: Dict[str, Any] = dict(extra) if isinstance(extra, dict) else {}
-
         try:
-            raw0 = out.get("raw")
-            if isinstance(raw0, str):
-                try:
-                    raw0 = json.loads(raw0)
-                except Exception:
-                    raw0 = {}
-            if not isinstance(raw0, dict):
-                raw0 = {}
-
-            raw1 = raw0.get("raw")
-            if isinstance(raw1, str):
-                try:
-                    raw1 = json.loads(raw1)
-                except Exception:
-                    raw1 = {}
-            if not isinstance(raw1, dict):
-                raw1 = {}
-
-            raw2 = raw1.get("raw")
-            if isinstance(raw2, str):
-                try:
-                    raw2 = json.loads(raw2)
-                except Exception:
-                    raw2 = {}
-            if not isinstance(raw2, dict):
-                raw2 = {}
-
-            meta_out = out.get("meta") if isinstance(out.get("meta"), dict) else {}
-            meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
-            meta1 = raw1.get("meta") if isinstance(raw1.get("meta"), dict) else {}
-            meta2 = raw2.get("meta") if isinstance(raw2.get("meta"), dict) else {}
-            whale_meta = out.get("whale_meta") if isinstance(out.get("whale_meta"), dict) else {}
-
-            whale_dir = (
-                out.get("whale_dir")
-                or raw0.get("whale_dir")
-                or raw1.get("whale_dir")
-                or raw2.get("whale_dir")
-                or meta_out.get("whale_dir")
-                or meta0.get("whale_dir")
-                or meta1.get("whale_dir")
-                or meta2.get("whale_dir")
-                or whale_meta.get("whale_dir")
-                or "none"
-            )
-
-            whale_score = (
-                out.get("whale_score")
-                if out.get("whale_score") is not None else
-                raw0.get("whale_score")
-                if raw0.get("whale_score") is not None else
-                raw1.get("whale_score")
-                if raw1.get("whale_score") is not None else
-                raw2.get("whale_score")
-                if raw2.get("whale_score") is not None else
-                meta_out.get("whale_score")
-                if meta_out.get("whale_score") is not None else
-                meta0.get("whale_score")
-                if meta0.get("whale_score") is not None else
-                meta1.get("whale_score")
-                if meta1.get("whale_score") is not None else
-                meta2.get("whale_score")
-                if meta2.get("whale_score") is not None else
-                whale_meta.get("whale_score")
-                if whale_meta.get("whale_score") is not None else
-                0.0
-            )
-
-            whale_action = (
-                out.get("whale_action")
-                or out.get("whale_decision")
-                or out.get("whale_policy")
-                or raw0.get("whale_action")
-                or raw1.get("whale_action")
-                or raw2.get("whale_action")
-                or meta_out.get("whale_action")
-                or meta0.get("whale_action")
-                or meta1.get("whale_action")
-                or meta2.get("whale_action")
-                or whale_meta.get("whale_action")
-                or ""
-            )
-
-            out["whale_dir"] = str(whale_dir or "none").strip().lower()
-            out["whale_score"] = float(whale_score or 0.0)
-            if whale_action:
-                out["whale_action"] = str(whale_action).strip().lower()
-
+            fn = getattr(bot, "send_message", None)
+            if callable(fn):
+                out = fn(text)
+                self._fire_and_forget(out, label="tg_close")
         except Exception:
             pass
 
-        return out
-    # -------------------------
-    # whale bias helpers
-    # -------------------------
-    def _whale_action(self, extra: Dict[str, Any]) -> str:
+    # ---------------------------------------------------------
+    # verify / poll
+    # ---------------------------------------------------------
+    def _verify_position_sync(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper()
+        client = getattr(self, "client", None)
+        if client is None:
+            return {"verify": "skip", "symbol": sym, "reason": "client_none"}
+
         try:
-            extra = self._extract_whale_context(extra)
-            return str(
-                extra.get("whale_action")
-                or extra.get("whale_decision")
-                or extra.get("whale_policy")
-                or ""
-            ).strip().lower()
-        except Exception:
-            return ""
-    def _whale_dir_score(self, extra: Dict[str, Any]) -> Tuple[str, float]:
-        try:
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            wscore = float(extra.get("whale_score", 0.0) or 0.0)
-            return wdir, wscore
-        except Exception:
-            return "none", 0.0
+            fn = getattr(client, "futures_position_information", None)
+            if not callable(fn):
+                return {"verify": "skip", "symbol": sym, "reason": "fn_missing"}
 
-    def _whale_bias(self, side: str, extra: Dict[str, Any]) -> str:
-        """
-        Çıkış davranışı için sade bias:
-          hold / exit / reduce / neutral
-        Öncelik:
-          1) whale_action
-          2) whale_dir + whale_score fallback
-        """
-        try:
-            action = self._whale_action(extra)
-            wdir, ws = self._whale_dir_score(extra)
+            rows = fn(symbol=sym)
+            if not isinstance(rows, list):
+                rows = [rows]
 
-            if action:
-                if action in self.whale_block_actions:
-                    return "exit"
-                if action in self.whale_reduce_actions:
-                    return "reduce"
-                if action in self.whale_boost_actions:
-                    return "hold"
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                amt = self._clip_float(row.get("positionAmt"), 0.0) or 0.0
+                if abs(float(amt)) > 0:
+                    entry = self._clip_float(row.get("entryPrice"), 0.0) or 0.0
+                    unreal = self._clip_float(row.get("unRealizedProfit"), 0.0) or 0.0
+                    lev = self._clip_float(row.get("leverage"), 0.0) or 0.0
+                    return {
+                        "verify": "ok",
+                        "symbol": sym,
+                        "positionAmt": amt,
+                        "entryPrice": entry,
+                        "unrealized": unreal,
+                        "leverage": lev,
+                    }
 
-            if ws < float(self.w_min):
-                return "neutral"
+            return {"verify": "ok", "symbol": sym, "positionAmt": 0.0}
+        except Exception as e:
+            return {
+                "verify": "skip",
+                "symbol": sym,
+                "reason": "position_verify_failed",
+                "err": str(e)[:300],
+            }
 
-            if wdir in ("long", "short") and side in ("long", "short"):
-                if wdir == side:
-                    return "hold"
-                return "exit"
-        except Exception:
-            pass
-        return "neutral"
+    def _poll_order_status(
+        self,
+        symbol: str,
+        order_id: Any = None,
+        client_order_id: str = "",
+        max_wait_s: float = 2.0,
+    ) -> Dict[str, Any]:
+        if self.dry_run:
+            return {"poll": "skip", "reason": "dry_run"}
 
-    def _effective_trailing_pct(self, base_trail: float, bias: str) -> float:
-        bt = float(base_trail or 0.0)
-        if bt <= 0:
-            return 0.0
+        sym = str(symbol).upper()
+        client = getattr(self, "client", None)
+        if client is None:
+            return {"poll": "skip", "reason": "client_none"}
 
-        if bias == "hold":
-            return max(bt, bt * float(self.whale_hold_trailing_mult))
+        fn = getattr(client, "futures_get_order", None)
+        if not callable(fn):
+            return {"poll": "skip", "reason": "fn_missing"}
 
-        if bias == "exit":
-            return max(0.001, bt * float(self.whale_exit_trailing_mult))
+        t_end = time.time() + float(max_wait_s)
+        last: Any = None
 
-        if bias == "reduce":
-            return max(0.001, bt * float(self.whale_reduce_trailing_mult))
+        while time.time() < t_end:
+            try:
+                payload: Dict[str, Any] = {"symbol": sym}
+                if order_id is not None:
+                    payload["orderId"] = order_id
+                elif client_order_id:
+                    payload["origClientOrderId"] = client_order_id
+                else:
+                    return {"poll": "skip", "reason": "no_order_ref"}
 
-        return bt
+                last = fn(**payload)
+                if isinstance(last, dict):
+                    status = str(last.get("status", "")).upper()
+                    if status in ("FILLED", "CANCELED", "REJECTED", "EXPIRED"):
+                        return {"poll": "ok", "result": self._summarize_order(last)}
+            except Exception as e:
+                return {"poll": "error", "err": str(e)[:300]}
 
-    def _effective_stall_ttl(self, base_ttl: int, bias: str) -> int:
-        t = int(base_ttl or 0)
-        if t <= 0:
-            return 0
+            time.sleep(0.2)
 
-        if bias == "hold":
-            return int(max(60, round(t * float(self.whale_hold_stall_mult))))
-
-        if bias == "exit":
-            return int(max(30, round(t * float(self.whale_exit_stall_mult))))
-
-        if bias == "reduce":
-            return int(max(45, round(t * 0.70)))
-
-        return t
-
-    @staticmethod
-    def _pnl_pct(side: str, entry: float, price: float) -> float:
-        if entry <= 0:
-            return 0.0
-        if side == "long":
-            return (price - entry) / entry
-        if side == "short":
-            return (entry - price) / entry
-        return 0.0
-
-    # -------------------------
-    # exchange order helpers
-    # -------------------------
+        return {"poll": "timeout", "last": self._summarize_order(last)}
+    # ---------------------------------------------------------
+    # exchange order functions
+    # ---------------------------------------------------------
     def _exchange_open_market(
         self,
         symbol: str,
@@ -1361,6 +1103,7 @@ class TradeExecutor:
                 "side": str(side),
                 "qty": float(qty),
                 "reduceOnly": bool(reduce_only),
+            }
 
         client = getattr(self, "client", None)
         if client is None:
@@ -1376,23 +1119,19 @@ class TradeExecutor:
 
         raw_q = self._round_qty(float(qty))
 
-        price_for_norm = self._resolve_price(
-            symbol=sym,
-            price=price,
-        )
+        price_for_norm = self._clip_float(price, None)
+        if price_for_norm is None or price_for_norm <= 0:
+            price_for_norm = self._resolve_price(symbol=sym)
 
         if price_for_norm is None or price_for_norm <= 0:
             try:
-                ticker_fn = getattr(client, "futures_mark_price", None)
-                if callable(ticker_fn):
-                    mp = ticker_fn(symbol=sym)
+                fn_mp = getattr(client, "futures_mark_price", None)
+                if callable(fn_mp):
+                    mp = fn_mp(symbol=sym)
                     if isinstance(mp, dict):
-                        price_for_norm = float(mp.get("markPrice") or 0.0)
+                        price_for_norm = self._clip_float(mp.get("markPrice"), None)
             except Exception:
-                price_for_norm = 0.0
-
-        if price_for_norm is None or price_for_norm <= 0:
-            price_for_norm = float(os.getenv("LAST_PRICE_HINT", "0") or 0.0)
+                price_for_norm = None
 
         if price_for_norm is None or price_for_norm <= 0:
             raise RuntimeError(f"price_for_norm <= 0 for {sym}")
@@ -1409,22 +1148,24 @@ class TradeExecutor:
         )
 
         try:
-            self.logger.info(
-                "[EXEC][QTY][NORMALIZE] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
-                sym,
-                float(raw_q),
-                float(q),
-                float(price_for_norm),
-                float(qmeta.get("step_size", 0.0) or 0.0),
-                float(qmeta.get("min_qty", 0.0) or 0.0),
-                float(qmeta.get("min_notional", 0.0) or 0.0),
-                str(qmeta.get("reject_reason", "") or "-"),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][QTY][NORMALIZE] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                    sym,
+                    float(raw_q),
+                    float(q),
+                    float(price_for_norm),
+                    float(qmeta.get("step_size", 0.0) or 0.0),
+                    float(qmeta.get("min_qty", 0.0) or 0.0),
+                    float(qmeta.get("min_notional", 0.0) or 0.0),
+                    str(qmeta.get("reject_reason", "") or "-"),
+                )
         except Exception:
             pass
 
         try:
-            self.logger.info("[EXEC][QTY][DECISION] %s", self._safe_json(qmeta, limit=900))
+            if self.logger:
+                self.logger.info("[EXEC][QTY][DECISION] %s", self._safe_json(qmeta, limit=900))
         except Exception:
             pass
 
@@ -1433,39 +1174,40 @@ class TradeExecutor:
 
         position_side = self._side_to_position_side(side)
 
-        target_leverage = int(getattr(self, "default_order_leverage", 20))
+        target_leverage = self._resolve_target_leverage(extra0)
+        target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         applied_leverage = int(target_leverage)
 
         try:
-            if not reduce_only:
-                if bool(getattr(self, "enable_dynamic_leverage", True)):
-                    target_leverage = int(self._resolve_target_leverage(extra0))
-                applied_leverage = int(self._set_symbol_leverage(sym, int(target_leverage)))
-            else:
+            if self.enable_dynamic_leverage and not reduce_only:
+                applied_leverage = self._set_symbol_leverage(sym, int(target_leverage))
+            elif reduce_only:
                 applied_leverage = int(target_leverage)
         except Exception as e:
             try:
-                self.logger.warning(
-                    "[EXEC][LEV][FAIL] symbol=%s target=%s reduce_only=%s err=%s",
-                    sym,
-                    int(target_leverage),
-                    bool(reduce_only),
-                    str(e),
-                )
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][LEV][FAIL] symbol=%s target=%s reduce_only=%s err=%s",
+                        sym,
+                        int(target_leverage),
+                        bool(reduce_only),
+                        str(e),
+                    )
             except Exception:
                 pass
             applied_leverage = int(target_leverage)
 
         try:
-            self.logger.info(
-                "[EXEC][LEV] symbol=%s side=%s reduce_only=%s target=%s applied=%s positionSide=%s",
-                sym,
-                str(side),
-                bool(reduce_only),
-                int(target_leverage),
-                int(applied_leverage),
-                position_side,
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][LEV] symbol=%s side=%s reduce_only=%s target=%s applied=%s positionSide=%s",
+                    sym,
+                    str(side),
+                    bool(reduce_only),
+                    int(target_leverage),
+                    int(applied_leverage),
+                    position_side,
+                )
         except Exception:
             pass
 
@@ -1478,6 +1220,7 @@ class TradeExecutor:
             "type": "MARKET",
             "quantity": float(q),
             "newClientOrderId": client_oid,
+        }
 
         if position_side in ("LONG", "SHORT"):
             payload["positionSide"] = position_side
@@ -1487,7 +1230,6 @@ class TradeExecutor:
 
         used = "futures_create_order"
         t0 = self._now_ms()
-
         attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
         base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
 
@@ -1507,25 +1249,28 @@ class TradeExecutor:
                         resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
                     else:
                         raise RuntimeError(
-                            "no supported order function on client (futures_create_order/create_order/new_order)"
+                            "no supported order function on client "
+                            "(futures_create_order/create_order/new_order)"
                         )
         except Exception as e:
             dt = self._now_ms() - t0
             try:
-                self.logger.exception(
-                    "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s lev=%s dt_ms=%d client_oid=%s payload=%s err=%s",
-                    ("CLOSE" if reduce_only else "OPEN"),
-                    used,
-                    sym,
-                    order_side,
-                    float(q),
-                    bool(reduce_only),
-                    int(applied_leverage),
-                    int(dt),
-                    client_oid,
-                    self._safe_json(payload, limit=900),
-                    str(e)[:300],
-                )
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f "
+                        "reduceOnly=%s lev=%s dt_ms=%d client_oid=%s payload=%s err=%s",
+                        ("CLOSE" if reduce_only else "OPEN"),
+                        used,
+                        sym,
+                        order_side,
+                        float(q),
+                        bool(reduce_only),
+                        int(applied_leverage),
+                        int(dt),
+                        client_oid,
+                        self._safe_json(payload, limit=900),
+                        str(e)[:300],
+                    )
             except Exception:
                 pass
             raise
@@ -1534,18 +1279,20 @@ class TradeExecutor:
 
         summ = self._summarize_order(resp)
         try:
-            self.logger.info(
-                "[EXEC][ORDER] %s OK | fn=%s symbol=%s side=%s qty=%.10f reduceOnly=%s lev=%s dt_ms=%d summary=%s",
-                ("CLOSE" if reduce_only else "OPEN"),
-                used,
-                sym,
-                order_side,
-                float(q),
-                bool(reduce_only),
-                int(applied_leverage),
-                int(dt),
-                self._safe_json(summ, limit=900),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][ORDER] %s OK | fn=%s symbol=%s side=%s qty=%.10f "
+                    "reduceOnly=%s lev=%s dt_ms=%d summary=%s",
+                    ("CLOSE" if reduce_only else "OPEN"),
+                    used,
+                    sym,
+                    order_side,
+                    float(q),
+                    bool(reduce_only),
+                    int(applied_leverage),
+                    int(dt),
+                    self._safe_json(summ, limit=900),
+                )
         except Exception:
             pass
 
@@ -1563,7 +1310,8 @@ class TradeExecutor:
                     max_wait_s=self.order_poll_wait_s,
                 )
                 try:
-                    self.logger.info("[EXEC][ORDER][POLL] %s", self._safe_json(pol, limit=900))
+                    if self.logger:
+                        self.logger.info("[EXEC][ORDER][POLL] %s", self._safe_json(pol, limit=900))
                 except Exception:
                     pass
         except Exception:
@@ -1573,284 +1321,94 @@ class TradeExecutor:
             if self.order_verify_position:
                 v = self._verify_position_sync(sym)
                 try:
-                    self.logger.info("[EXEC][VERIFY] %s", self._safe_json(v, limit=900))
+                    if self.logger:
+                        self.logger.info("[EXEC][VERIFY] %s", self._safe_json(v, limit=900))
                 except Exception:
                     pass
         except Exception:
             pass
 
         return resp
+
     def _exchange_close_market(self, symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
-        s = str(side or "").strip().lower()
-        if s == "long":
-            close_side = "short"
-        elif s == "short":
-            close_side = "long"
-        else:
-            close_side = s
+        close_side = str(side or "").strip().lower()
+        if close_side not in ("long", "short"):
+            raise ValueError(f"bad close side={side}")
 
-        try:
-            return self._exchange_open_market(
-                symbol=str(symbol).upper(),
-                side=close_side,
-                qty=float(qty),
-                price=0.0,
-                reduce_only=True,
-                extra=None,
-            )
-        except Exception as e:
-            msg = str(e).lower()
-            if "reduceonly" in msg or "-1106" in msg:
-                try:
-                    self.logger.warning(
-                        "[EXEC][CLOSE] retry without reduceOnly | symbol=%s side=%s qty=%.10f",
-                        str(symbol).upper(),
-                        str(close_side),
-                        float(qty),
-                    )
-                except Exception:
-                    pass
+        return self._exchange_open_market(
+            symbol=str(symbol).upper(),
+            side=close_side,
+            qty=float(qty),
+            price=0.0,
+            reduce_only=True,
+            extra={"target_leverage": self.default_order_leverage},
+        )
 
-                return self._exchange_open_market(
-                    symbol=str(symbol).upper(),
-                    side=close_side,
-                    qty=float(qty),
-                    price=0.0,
-                    reduce_only=False,
-                    extra=None,
-                )
-            raise
-    # -------------------------
-    # position dict
-    # -------------------------
-    def _create_position_dict(
+    # ---------------------------------------------------------
+    # close helpers
+    # ---------------------------------------------------------
+    def _close_position(
         self,
-        signal: str,
         symbol: str,
         price: float,
-        qty: float,
-        notional: float,
-        interval: str,
-        probs: Dict[str, float],
-        extra: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], str]:
-        opened_at = datetime.utcnow().isoformat()
-        atr_value = float(extra.get("atr", 0.0) or 0.0)
-
-        trail_pct = self._clip_float(extra.get("trail_pct"), None)
-        if trail_pct is None:
-            trail_pct = self._clip_float(extra.get("trailing_pct"), None)
-        if trail_pct is None:
-            trail_pct = float(self.default_trail_pct or self.trailing_pct)
-        trail_pct = float(max(0.0, min(0.50, float(trail_pct))))
-
-        stall_ttl = extra.get("stall_ttl_sec", None)
-        try:
-            stall_ttl = int(stall_ttl) if stall_ttl is not None else int(self.default_stall_ttl_sec or 0)
-        except Exception:
-            stall_ttl = int(self.default_stall_ttl_sec or 0)
-        stall_ttl = int(max(0, stall_ttl))
-
-        # whale bias -> open anındaki risk profili
-        bias = self._whale_bias(signal, extra)
-
-        sl_mult_adj = 1.0
-        tp_mult_adj = 1.0
-
-        if bias == "reduce":
-            sl_mult_adj = float(getattr(self, "whale_reduce_sl_mult", 0.75) or 0.75)
-            tp_mult_adj = float(getattr(self, "whale_reduce_tp_mult", 0.90) or 0.90)
-        elif bias == "hold":
-            tp_mult_adj = max(
-                1.0,
-                float(getattr(self, "whale_hold_stall_mult", 1.40) or 1.40) / 1.2,
-            )
-
-        if self.use_atr_sltp and atr_value > 0.0:
-            if signal == "long":
-                sl_price = price - (self.atr_sl_mult * sl_mult_adj * atr_value)
-                tp_price = price + (self.atr_tp_mult * tp_mult_adj * atr_value)
-            else:
-                sl_price = price + (self.atr_sl_mult * sl_mult_adj * atr_value)
-                tp_price = price - (self.atr_tp_mult * tp_mult_adj * atr_value)
-        else:
-            eff_sl_pct = float(self.sl_pct) * float(sl_mult_adj)
-            eff_tp_pct = float(self.tp_pct) * float(tp_mult_adj)
-
-            if signal == "long":
-                sl_price = price * (1.0 - eff_sl_pct)
-                tp_price = price * (1.0 + eff_tp_pct)
-            else:
-                sl_price = price * (1.0 + eff_sl_pct)
-                tp_price = price * (1.0 - eff_tp_pct)
-
-        now_ts = time.time()
-
-        pos: Dict[str, Any] = {
-            "symbol": str(symbol).upper(),
-            "side": signal,
-            "qty": float(qty),
-            "entry_price": float(price),
-            "notional": float(notional),
-            "interval": interval,
-            "opened_at": opened_at,
-            "sl_price": float(sl_price),
-            "tp_price": float(tp_price),
-            "trailing_pct": float(trail_pct),
-            "stall_ttl_sec": int(stall_ttl),
-            "best_pnl_pct": 0.0,
-            "last_best_ts": float(now_ts),
-            "atr_value": float(atr_value),
-            "highest_price": float(price),
-            "lowest_price": float(price),
-            "meta": {
-                "probs": probs,
-                "extra": extra,
-                "whale_bias_on_open": str(bias),
-                "sl_mult_adj": float(sl_mult_adj),
-                "tp_mult_adj": float(tp_mult_adj),
-            },
-        return pos, opened_at
-
-    @staticmethod
-    def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
-        if qty <= 0:
-            return 0.0
-        if side == "long":
-            return (exit_price - entry_price) * qty
-        if side == "short":
-            return (entry_price - exit_price) * qty
-        return 0.0
-    def _should_block_open_by_whale(self, side: str, extra: Dict[str, Any]) -> bool:
-        try:
-            action = self._whale_action(extra)
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
-
-            if action in self.whale_block_actions and ws >= float(self.whale_hard_block_min_score):
-                return True
-
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            if side in ("long", "short") and wdir in ("long", "short"):
-                if wdir != side and ws >= float(self.whale_hard_block_min_score):
-                    return True
-        except Exception:
-            pass
-        return False
-
-    def _apply_whale_open_adjustments(
-        self,
-        side: str,
-        notional: float,
-        extra: Dict[str, Any],
-    ) -> float:
-        try:
-            action = self._whale_action(extra)
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
-
-            if action in self.whale_reduce_actions and ws >= float(self.whale_reduce_min_score):
-                return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
-
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            if side in ("long", "short") and wdir in ("long", "short"):
-                if wdir != side and ws >= float(self.whale_reduce_min_score):
-                    return max(10.0, float(notional) * float(self.whale_reduce_notional_mult))
-        except Exception:
-            pass
-        return float(notional)
-
-    def _should_force_close_by_whale(
-        self,
-        side: str,
-        extra: Dict[str, Any],
-        pnl_pct: float,
-    ) -> bool:
-        try:
-            action = self._whale_action(extra)
-            ws = float(extra.get("whale_score", 0.0) or 0.0)
-
-            if action in ("force_exit", "hard_block") and ws >= float(self.whale_hard_block_min_score):
-                return True
-
-            wdir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-            if side in ("long", "short") and wdir in ("long", "short"):
-                if wdir != side and ws >= float(self.whale_hard_block_min_score) and pnl_pct > -0.02:
-                    return True
-        except Exception:
-            pass
-        return False
-    def _close_position(self, symbol: str, price: float, reason: str, interval: str) -> Optional[Dict[str, Any]]:
-        pos = self._get_position(symbol)
-        if not pos:
+        reason: str = "manual",
+        interval: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper()
+        pos = self._get_position(sym)
+        if not isinstance(pos, dict):
             return None
 
-        side_raw = str(pos.get("side") or "hold").strip().lower()
-        if side_raw in ("buy", "long"):
-            side = "long"
-        elif side_raw in ("sell", "short"):
-            side = "short"
-        else:
-            side = side_raw
+        side = str(pos.get("side", "")).strip().lower()
+        qty = float(pos.get("qty", 0.0) or 0.0)
+        entry_price = float(pos.get("entry_price", 0.0) or 0.0)
+        notional = float(pos.get("notional", 0.0) or 0.0)
 
-        qty = float(pos.get("qty") or 0.0)
-        entry_price = float(pos.get("entry_price") or 0.0)
-        notional = float(pos.get("notional") or (qty * entry_price))
+        if qty <= 0 or side not in ("long", "short"):
+            self._del_position(sym)
+            return None
 
-        close_price = self._resolve_price(
-            symbol=symbol,
-            price=price,
-            mark_price=None,
-            last_price=entry_price,
-            max_age_sec=self.price_cache_max_age_sec,
-        )
+        close_side = "short" if side == "long" else "long"
+        close_price = self._resolve_price(symbol=sym, price=price)
         if close_price is None or close_price <= 0:
-            close_price = float(price) if float(price or 0.0) > 0 else float(entry_price)
+            close_price = entry_price
 
-        realized_pnl = self._calc_pnl(
-            side=side,
-            entry_price=entry_price,
-            exit_price=float(close_price),
-            qty=qty,
-        )
-        # exchange close (real)
-        if self.dry_run:
+        if not self.dry_run:
             try:
-                self.logger.info("[EXEC] DRY_RUN=True close emri gönderilmeyecek.")
-            except Exception:
-                pass
-        else:
-            try:
-                self._exchange_close_market(symbol=str(symbol).upper(), side=str(side), qty=float(qty))
+                self._exchange_close_market(sym, close_side, float(qty))
             except Exception:
                 try:
-                    self.logger.exception(
-                        "[EXEC][CLOSE] exchange close failed -> position state korunuyor | symbol=%s",
-                        str(symbol).upper(),
-                    )
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][CLOSE] exchange close failed -> position state korunuyor | symbol=%s",
+                            sym,
+                        )
                 except Exception:
                     pass
-                return None
+                raise
+        realized_pnl = float(self._calc_pnl(side, entry_price, float(close_price), float(qty)))
+        daily_realized_pnl = 0.0
+
+        extra_dict: Dict[str, Any] = {}
+        probs_dict: Dict[str, float] = {}
 
         try:
-            self._notify_position_close(
-                symbol=str(symbol).upper(),
-                interval=str(interval or pos.get("interval") or ""),
-                side=str(side),
-                qty=float(qty),
-                entry_price=float(entry_price),
-                exit_price=float(close_price),
-                pnl_usdt=float(realized_pnl),
-                reason=str(reason),
-            )
+            meta = pos.get("meta", {})
+            if isinstance(meta, dict):
+                extra_obj = meta.get("extra", {})
+                probs_obj = meta.get("probs", {})
+                if isinstance(extra_obj, dict):
+                    extra_dict = dict(extra_obj)
+                if isinstance(probs_obj, dict):
+                    probs_dict = dict(probs_obj)
         except Exception:
             pass
+
+        self._del_position(sym)
 
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
-                meta_dict = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-                probs_dict = meta_dict.get("probs") if isinstance(meta_dict.get("probs"), dict) else {}
-                extra_dict = meta_dict.get("extra") if isinstance(meta_dict.get("extra"), dict) else {}
-
                 payload_meta = {
                     "reason": str(reason),
                     "entry_price": float(entry_price),
@@ -1860,6 +1418,7 @@ class TradeExecutor:
                     "notional": float(notional),
                     "probs": probs_dict,
                     "extra": extra_dict,
+                }
 
                 out = rm.on_position_close(
                     symbol=str(symbol).upper(),
@@ -1879,205 +1438,78 @@ class TradeExecutor:
             except Exception:
                 pass
 
-        self._clear_position(symbol)
-
-        pos["closed_at"] = datetime.utcnow().isoformat()
-        pos["close_price"] = float(close_price)
-        pos["realized_pnl"] = float(realized_pnl)
-        pos["close_reason"] = str(reason)
-
         try:
-            self._closed_buffer.append(dict(pos))
-        except Exception:
-            pass
-
-        return pos
-
-    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
-        pos = self._get_position(symbol)
-        if not pos:
-            return None
-
-        live_price = self._resolve_price(
-            symbol=symbol,
-            price=price,
-            max_age_sec=self.price_cache_max_age_sec,
-        )
-        if live_price is None or live_price <= 0:
-            live_price = float(price)
-
-        side = str(pos.get("side") or "hold").strip().lower()
-        if side in ("buy", "long"):
-            side = "long"
-        elif side in ("sell", "short"):
-            side = "short"
-
-        sl_price = pos.get("sl_price")
-        tp_price = pos.get("tp_price")
-        trailing_pct_base = float(pos.get("trailing_pct") or 0.0)
-
-        sl = float(sl_price) if sl_price is not None else None
-        tp = float(tp_price) if tp_price is not None else None
-
-        highest = float(pos.get("highest_price", live_price) or live_price)
-        lowest = float(pos.get("lowest_price", live_price) or live_price)
-
-        extra: Dict[str, Any] = {}
-        try:
-            meta = pos.get("meta") if isinstance(pos.get("meta"), dict) else {}
-            extra0 = meta.get("extra") if isinstance(meta.get("extra"), dict) else {}
-            extra = self._extract_whale_context(extra0)
-        except Exception:
-            extra = {}
-        bias = self._whale_bias(side=side, extra=extra)
-        trailing_pct = self._effective_trailing_pct(trailing_pct_base, bias)
-
-        try:
-            entry = float(pos.get("entry_price") or 0.0)
-            cur_pnl_pct = float(self._pnl_pct(side, entry, float(live_price)))
-
-            if self._should_force_close_by_whale(
-                side=side,
-                extra=extra,
-                pnl_pct=cur_pnl_pct,
-            ):
-                return self._close_position(
-                    symbol,
-                    float(live_price),
-                    reason="WHALE_FORCE_EXIT",
-                    interval=interval,
-                )
-
-            best = float(pos.get("best_pnl_pct") or 0.0)
-            now_ts = time.time()
-
-            if cur_pnl_pct > best:
-                pos["best_pnl_pct"] = float(cur_pnl_pct)
-                pos["last_best_ts"] = float(now_ts)
-                self._set_position(symbol, pos)
-            else:
-                stall_ttl = int(pos.get("stall_ttl_sec") or 0)
-                stall_ttl_eff = self._effective_stall_ttl(stall_ttl, bias)
-                last_best_ts = float(pos.get("last_best_ts") or now_ts)
-
-                if stall_ttl_eff > 0 and cur_pnl_pct > 0.0:
-                    if (now_ts - last_best_ts) >= float(stall_ttl_eff):
-                        return self._close_position(
-                            symbol,
-                            float(live_price),
-                            reason="STALL_EXIT",
-                            interval=interval,
-                        )
-        except Exception:
-            pass
-        if side == "long":
-            if sl is not None and live_price <= sl:
-                return self._close_position(symbol, float(live_price), reason="SL_HIT", interval=interval)
-
-            if tp is not None and live_price >= tp and bias != "hold":
-                return self._close_position(symbol, float(live_price), reason="TP_HIT", interval=interval)
-
-            if trailing_pct > 0.0:
-                if live_price > highest:
-                    pos["highest_price"] = float(live_price)
-                    self._set_position(symbol, pos)
-                    highest = float(live_price)
-
-                trail_sl = highest * (1.0 - trailing_pct)
-                if live_price <= trail_sl:
-                    return self._close_position(symbol, float(live_price), reason="TRAILING_STOP_LONG", interval=interval)
-
-        elif side == "short":
-            if sl is not None and live_price >= sl:
-                return self._close_position(symbol, float(live_price), reason="SL_HIT", interval=interval)
-
-            if tp is not None and live_price <= tp and bias != "hold":
-                return self._close_position(symbol, float(live_price), reason="TP_HIT", interval=interval)
-
-            if trailing_pct > 0.0:
-                if live_price < lowest:
-                    pos["lowest_price"] = float(live_price)
-                    self._set_position(symbol, pos)
-                    lowest = float(live_price)
-
-                trail_sl = lowest * (1.0 + trailing_pct)
-                if live_price >= trail_sl:
-                    return self._close_position(symbol, float(live_price), reason="TRAILING_STOP_SHORT", interval=interval)
-
-        return None
-    def _compute_notional(self, symbol: str, signal: str, price: float, extra: Dict[str, Any]) -> float:
-        extra = self._extract_whale_context(extra)
-
-        aggressive_mode = bool(getattr(config, "AGGRESSIVE_MODE", True))
-        max_risk_mult = float(getattr(config, "MAX_RISK_MULTIPLIER", 4.0))
-
-        base = float(self.base_order_notional)
-        model_conf = float(extra.get("model_confidence_factor", 1.0) or 1.0)
-        model_conf = max(0.0, min(model_conf, 1.0))
-
-        whale_dir = str(extra.get("whale_dir", "none") or "none").strip().lower()
-        whale_score = float(extra.get("whale_score", 0.0) or 0.0)
-        whale_action = self._whale_action(extra)
-
-        aggr_factor = 1.0
-
-        if aggressive_mode:
-            if whale_action in self.whale_boost_actions and whale_score >= float(self.whale_confirm_min_score):
-                aggr_factor *= 1.0 + max(0.0, whale_score - float(self.whale_confirm_min_score)) * float(self.whale_risk_boost)
-
-            elif whale_action in self.whale_reduce_actions and whale_score >= float(self.whale_reduce_min_score):
-                aggr_factor *= float(self.whale_reduce_notional_mult)
-
-            elif whale_action in self.whale_block_actions and whale_score >= float(self.whale_hard_block_min_score):
-                aggr_factor *= 0.25
-
-            else:
-                if whale_score > 0.0 and whale_dir in ("long", "short") and signal in ("long", "short"):
-                    if whale_dir == signal and whale_score >= float(self.whale_confirm_min_score):
-                        aggr_factor *= 1.0 + max(0.0, whale_score - float(self.whale_confirm_min_score)) * float(self.whale_risk_boost)
-                    elif whale_dir != signal and whale_score >= float(self.whale_hard_block_min_score):
-                        aggr_factor *= 0.35
-                    elif whale_dir != signal and whale_score >= float(self.whale_reduce_min_score):
-                        aggr_factor *= float(self.whale_reduce_notional_mult)
-
-            aggr_factor *= (0.5 + 0.5 * model_conf)
-
-        aggr_factor = max(0.0, min(float(aggr_factor), max_risk_mult))
-
-        notional = base * aggr_factor
-        notional = min(float(notional), float(self.max_position_notional))
-        notional = max(float(notional), 10.0)
-
-        try:
-            dry_run = bool(getattr(self, "dry_run", True))
-            equity_usdt = float(extra.get("equity_usdt", 0.0) or 0.0)
-            alloc_pct = float(os.getenv("LIVE_EQUITY_ALLOC_PCT", "0.30"))
-
-            if (not dry_run) and equity_usdt > 0.0 and alloc_pct > 0.0:
-                cap = equity_usdt * alloc_pct
-                if notional > cap:
-                    notional = cap
-        except Exception:
-            pass
-
-        try:
-            self.logger.info(
-                "[EXEC][NOTIONAL] symbol=%s side=%s base=%.2f aggr=%.3f mc=%.3f whale_dir=%s whale_score=%.3f whale_action=%s equity=%.2f notional=%.2f",
-                str(symbol).upper(),
-                str(signal),
-                float(base),
-                float(aggr_factor),
-                float(model_conf),
-                str(whale_dir),
-                float(whale_score),
-                str(whale_action),
-                float(extra.get("equity_usdt", 0.0) or 0.0),
-                float(notional),
+            self._notify_position_close(
+                symbol=sym,
+                interval=str(interval or ""),
+                side=str(side),
+                qty=float(qty),
+                price=float(close_price),
+                realized_pnl=float(realized_pnl),
+                daily_realized_pnl=float(daily_realized_pnl),
             )
         except Exception:
             pass
 
-        return float(notional)
+        return {
+            "status": "closed",
+            "symbol": sym,
+            "side": side,
+            "qty": float(qty),
+            "entry_price": float(entry_price),
+            "close_price": float(close_price),
+            "realized_pnl": float(realized_pnl),
+            "daily_realized_pnl": float(daily_realized_pnl),
+            "reason": str(reason),
+        }
+
+    def close_position(
+        self,
+        symbol: str,
+        price: Optional[float] = None,
+        reason: str = "manual",
+        interval: str = "",
+        intent_id: Optional[str] = None,
+        **_ignored: Any,
+    ) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return None
+
+        try:
+            if intent_id and self.logger:
+                self.logger.info(
+                    f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}"
+                )
+        except Exception:
+            pass
+
+        p = self._resolve_price(symbol=sym, price=price)
+        if p is None:
+            p = 0.0
+
+        return self._close_position(
+            symbol=sym,
+            price=float(p),
+            reason=str(reason or "manual"),
+            interval=str(interval or ""),
+        )
+
+    # ---------------------------------------------------------
+    # monitoring stubs
+    # ---------------------------------------------------------
+    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
+        return
+
+    def _append_hold_csv(self, row: Dict[str, Any]) -> None:
+        return
+
+    def _append_trade_csv(self, row: Dict[str, Any]) -> None:
+        return
+
+    # ---------------------------------------------------------
+    # open by intent
+    # ---------------------------------------------------------
     def open_position_from_signal(
         self,
         symbol: str,
@@ -2101,15 +1533,15 @@ class TradeExecutor:
 
         if intent_price is None or intent_price <= 0:
             try:
-                self.logger.warning(
-                    "[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s",
-                    sym_u,
-                    side0,
-                )
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s",
+                        sym_u,
+                        side0,
+                    )
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
-
         order_price: Optional[float] = None
 
         try:
@@ -2144,25 +1576,28 @@ class TradeExecutor:
         whale_dir = str(meta0.get("whale_dir", "none") or "none").strip().lower()
 
         try:
-            self.logger.info(
-                "[EXEC][LEV][INTENT] symbol=%s side=%s recommended=%s",
-                sym_u,
-                side0,
-                str(meta0.get("recommended_leverage")),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][LEV][INTENT] symbol=%s side=%s recommended=%s",
+                    sym_u,
+                    side0,
+                    str(meta0.get("recommended_leverage")),
+                )
         except Exception:
             pass
 
         if self._should_block_open_by_whale(side0, meta0):
             try:
-                self.logger.info(
-                    "[EXEC][WHALE][OPEN-BLOCK] symbol=%s side=%s whale_dir=%s whale_score=%.3f action=%s",
-                    sym_u,
-                    side0,
-                    whale_dir,
-                    whale_score,
-                    whale_action,
-                )
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][WHALE][OPEN-BLOCK] symbol=%s side=%s whale_dir=%s "
+                        "whale_score=%.3f action=%s",
+                        sym_u,
+                        side0,
+                        whale_dir,
+                        whale_score,
+                        whale_action,
+                    )
             except Exception:
                 pass
             return {
@@ -2170,6 +1605,7 @@ class TradeExecutor:
                 "reason": "whale_block",
                 "symbol": sym_u,
                 "side": side0,
+            }
 
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
@@ -2210,18 +1646,21 @@ class TradeExecutor:
         )
 
         try:
-            self.logger.info(
-                "[EXEC][INTENT][QTY] symbol=%s intent_price=%.6f order_price=%.6f raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
-                sym_u,
-                float(intent_price),
-                float(order_price),
-                float(raw_qty),
-                float(qty),
-                float(qmeta.get("step_size", 0.0) or 0.0),
-                float(qmeta.get("min_qty", 0.0) or 0.0),
-                float(qmeta.get("min_notional", 0.0) or 0.0),
-                str(qmeta.get("reject_reason", "") or "-"),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][INTENT][QTY] symbol=%s intent_price=%.6f order_price=%.6f "
+                    "raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f "
+                    "min_notional=%.6f reject=%s",
+                    sym_u,
+                    float(intent_price),
+                    float(order_price),
+                    float(raw_qty),
+                    float(qty),
+                    float(qmeta.get("step_size", 0.0) or 0.0),
+                    float(qmeta.get("min_qty", 0.0) or 0.0),
+                    float(qmeta.get("min_notional", 0.0) or 0.0),
+                    str(qmeta.get("reject_reason", "") or "-"),
+                )
         except Exception:
             pass
 
@@ -2230,9 +1669,9 @@ class TradeExecutor:
                 "status": "skip",
                 "reason": "bad_qty_after_normalization",
                 "meta": qmeta,
+            }
 
         final_notional = float(qty) * float(order_price)
-
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
 
@@ -2266,18 +1705,21 @@ class TradeExecutor:
         extra["whale_bias"] = whale_bias_now
 
         try:
-            self.logger.info(
-                "[EXEC][WHALE][OPEN-CHECK] symbol=%s side=%s action=%s bias=%s whale_dir=%s whale_score=%.3f raw_notional=%.2f final_notional=%.2f target_leverage=%s",
-                sym_u,
-                side0,
-                whale_action or "-",
-                whale_bias_now,
-                whale_dir,
-                whale_score,
-                float(raw_notional),
-                float(final_notional),
-                int(target_leverage),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WHALE][OPEN-CHECK] symbol=%s side=%s action=%s bias=%s "
+                    "whale_dir=%s whale_score=%.3f raw_notional=%.2f "
+                    "final_notional=%.2f target_leverage=%s",
+                    sym_u,
+                    side0,
+                    whale_action or "-",
+                    whale_bias_now,
+                    whale_dir,
+                    whale_score,
+                    float(raw_notional),
+                    float(final_notional),
+                    int(target_leverage),
+                )
         except Exception:
             pass
 
@@ -2293,14 +1735,16 @@ class TradeExecutor:
                 )
             except Exception as e:
                 try:
-                    self.logger.exception(
-                        "[EXEC][INTENT] exchange_open_failed | symbol=%s side=%s qty=%.10f price=%.6f err=%s",
-                        sym_u,
-                        side0,
-                        float(qty),
-                        float(order_price),
-                        str(e)[:300],
-                    )
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][INTENT] exchange_open_failed | symbol=%s side=%s "
+                            "qty=%.10f price=%.6f err=%s",
+                            sym_u,
+                            side0,
+                            float(qty),
+                            float(order_price),
+                            str(e)[:300],
+                        )
                 except Exception:
                     pass
                 return {"status": "skip", "reason": "exchange_open_failed"}
@@ -2321,20 +1765,23 @@ class TradeExecutor:
         self._set_position(sym_u, pos)
 
         try:
-            self.logger.info(
-                "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s whale_bias=%s dry_run=%s",
-                side0.upper(),
-                sym_u,
-                float(qty),
-                float(intent_price),
-                float(order_price),
-                float(final_notional),
-                ("-" if npct is None else f"{npct:.4f}"),
-                int(target_leverage),
-                whale_action or "-",
-                whale_bias_now,
-                self.dry_run,
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f "
+                    "order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s "
+                    "whale_bias=%s dry_run=%s",
+                    side0.upper(),
+                    sym_u,
+                    float(qty),
+                    float(intent_price),
+                    float(order_price),
+                    float(final_notional),
+                    ("-" if npct is None else f"{npct:.4f}"),
+                    int(target_leverage),
+                    whale_action or "-",
+                    whale_bias_now,
+                    self.dry_run,
+                )
         except Exception:
             pass
 
@@ -2378,92 +1825,10 @@ class TradeExecutor:
             "target_leverage": int(target_leverage),
             "whale_action": whale_action,
             "whale_bias": whale_bias_now,
-    def close_position(
-        self,
-        symbol: str,
-        price: Optional[float] = None,
-        reason: str = "manual",
-        interval: str = "",
-        intent_id: Optional[str] = None,
-        **_ignored: Any,
-    ) -> Optional[Dict[str, Any]]:
-        sym = str(symbol).upper().strip()
-        if not sym:
-            return None
-
-        try:
-            if intent_id:
-                self.logger.info(f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}")
-        except Exception:
-            pass
-
-        p = self._resolve_price(symbol=sym, price=price)
-        if p is None:
-            p = 0.0
-
-        return self._close_position(
-            symbol=sym,
-            price=float(p),
-            reason=str(reason or "manual"),
-            interval=str(interval or ""),
-        )
-
-    def close_position_from_signal(
-        self,
-        symbol: str,
-        interval: str = "",
-        meta: Optional[Dict[str, Any]] = None,
-        direction: str = "",
-        price: Any = None,
-        exit_price: Any = None,
-    ) -> Dict[str, Any]:
-        sym_u = str(symbol).upper()
-        pos = self._get_position(sym_u)
-
-        if not pos:
-            return {"status": "skip", "reason": "no_position"}
-
-        p = self._resolve_price(
-            symbol=sym_u,
-            price=price,
-            mark_price=(meta or {}).get("mark_price") if isinstance(meta, dict) else None,
-            last_price=exit_price,
-        )
-
-        if p is None or p <= 0:
-            p = float(pos.get("entry_price") or 0.0) or 0.0
-
-        out = self._close_position(
-            sym_u,
-            float(p),
-            reason="INTENT_CLOSE",
-            interval=str(interval or pos.get("interval") or ""),
-        )
-
-        if out:
-            return {
-                "status": "closed" if not self.dry_run else "dry_run",
-                "symbol": sym_u,
-                "price": float(p),
-
-        return {"status": "skip", "reason": "close_failed"}
-
-    async def open_position(self, *args, **kwargs):
-        pm = getattr(self, "position_manager", None)
-        if pm is not None and hasattr(pm, "open_position"):
-            res = pm.open_position(*args, **kwargs)
-            try:
-                import inspect
-                if inspect.isawaitable(res):
-                    return await res
-            except Exception:
-                pass
-            return res
-        return None
-
-    async def execute_trade(self, *args, **kwargs):
-        return await self.open_position(*args, **kwargs)
-
+        }
+    # ---------------------------------------------------------
+    # async decision executor
+    # ---------------------------------------------------------
     async def execute_decision(
         self,
         signal: str,
@@ -2505,6 +1870,7 @@ class TradeExecutor:
                 "whale_score": whale_score,
                 "whale_action": whale_action,
                 "extra": extra0,
+            }
         except Exception:
             pass
 
@@ -2517,8 +1883,8 @@ class TradeExecutor:
 
                 p_val = ens if ens is not None else (pbe if pbe is not None else pbr)
                 p_src = (
-                    "ensemble_p" if ens is not None else
-                    ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
+                    "ensemble_p" if ens is not None
+                    else ("p_buy_ema" if pbe is not None else ("p_buy_raw" if pbr is not None else "none"))
                 )
 
                 pv = self._clip_float(p_val, None)
@@ -2541,13 +1907,14 @@ class TradeExecutor:
                 pass
 
             try:
-                self.logger.info(
-                    "[EXEC] Signal=HOLD symbol=%s whale_action=%s whale_dir=%s whale_score=%.3f",
-                    sym_u,
-                    whale_action or "-",
-                    whale_dir,
-                    whale_score,
-                )
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC] Signal=HOLD symbol=%s whale_action=%s whale_dir=%s whale_score=%.3f",
+                        sym_u,
+                        whale_action or "-",
+                        whale_dir,
+                        whale_score,
+                    )
             except Exception:
                 pass
             return
@@ -2561,14 +1928,16 @@ class TradeExecutor:
 
         try:
             if self._should_block_open_by_whale(side_norm, extra0):
-                self.logger.info(
-                    "[EXEC][VETO] WHALE_BLOCK | symbol=%s side=%s whale_dir=%s whale_score=%.3f action=%s -> SKIP",
-                    sym_u,
-                    side_norm,
-                    whale_dir,
-                    whale_score,
-                    whale_action or "-",
-                )
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][VETO] WHALE_BLOCK | symbol=%s side=%s whale_dir=%s "
+                        "whale_score=%.3f action=%s -> SKIP",
+                        sym_u,
+                        side_norm,
+                        whale_dir,
+                        whale_score,
+                        whale_action or "-",
+                    )
                 return
         except Exception:
             pass
@@ -2581,15 +1950,15 @@ class TradeExecutor:
         )
         if intent_price is None or intent_price <= 0:
             try:
-                self.logger.warning(
-                    "[EXEC] live_price unavailable -> skip | symbol=%s signal=%s",
-                    sym_u,
-                    signal_u,
-                )
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC] live_price unavailable -> skip | symbol=%s signal=%s",
+                        sym_u,
+                        signal_u,
+                    )
             except Exception:
                 pass
             return
-
         order_price: Optional[float] = None
 
         try:
@@ -2657,30 +2026,35 @@ class TradeExecutor:
             notional = float(qty) * float(order_price)
 
         try:
-            self.logger.info(
-                "[EXEC][QTY][DECISION] symbol=%s intent_price=%.6f order_price=%.6f raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
-                sym_u,
-                float(intent_price),
-                float(order_price),
-                float(raw_qty),
-                float(qty),
-                float(qmeta.get("step_size", 0.0) or 0.0),
-                float(qmeta.get("min_qty", 0.0) or 0.0),
-                float(qmeta.get("min_notional", 0.0) or 0.0),
-                str(qmeta.get("reject_reason", "") or "-"),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][QTY][DECISION] symbol=%s intent_price=%.6f order_price=%.6f "
+                    "raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f "
+                    "min_notional=%.6f reject=%s",
+                    sym_u,
+                    float(intent_price),
+                    float(order_price),
+                    float(raw_qty),
+                    float(qty),
+                    float(qmeta.get("step_size", 0.0) or 0.0),
+                    float(qmeta.get("min_qty", 0.0) or 0.0),
+                    float(qmeta.get("min_notional", 0.0) or 0.0),
+                    str(qmeta.get("reject_reason", "") or "-"),
+                )
         except Exception:
             pass
 
         if qty <= 0:
             try:
-                self.logger.info(
-                    "[EXEC] qty<=0 after normalization -> skip | symbol=%s side=%s raw_notional=%.4f meta=%s",
-                    sym_u,
-                    side_norm,
-                    float(raw_notional or 0.0),
-                    self._safe_json(qmeta, limit=500),
-                )
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC] qty<=0 after normalization -> skip | symbol=%s side=%s "
+                        "raw_notional=%.4f meta=%s",
+                        sym_u,
+                        side_norm,
+                        float(raw_notional or 0.0),
+                        self._safe_json(qmeta, limit=500),
+                    )
             except Exception:
                 pass
             return
@@ -2710,11 +2084,12 @@ class TradeExecutor:
 
         if cur2_side == side_norm:
             try:
-                self.logger.info(
-                    "[EXEC] same-side already open -> skip | symbol=%s side=%s",
-                    sym_u,
-                    side_norm,
-                )
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC] same-side already open -> skip | symbol=%s side=%s",
+                        sym_u,
+                        side_norm,
+                    )
             except Exception:
                 pass
             return
@@ -2750,21 +2125,24 @@ class TradeExecutor:
             pass
 
         try:
-            self.logger.info(
-                "[EXEC][OPEN-CHECK] symbol=%s side=%s intent_price=%.6f order_price=%.6f raw_notional=%.2f final_notional=%.2f qty=%.10f target_leverage=%s whale_action=%s whale_bias=%s whale_dir=%s whale_score=%.3f",
-                sym_u,
-                side_norm,
-                float(intent_price),
-                float(order_price),
-                float(raw_notional or 0.0),
-                float(notional),
-                float(qty),
-                int(target_leverage),
-                whale_action or "-",
-                str(extra0.get("whale_bias") or "neutral"),
-                whale_dir,
-                whale_score,
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][OPEN-CHECK] symbol=%s side=%s intent_price=%.6f order_price=%.6f "
+                    "raw_notional=%.2f final_notional=%.2f qty=%.10f target_leverage=%s "
+                    "whale_action=%s whale_bias=%s whale_dir=%s whale_score=%.3f",
+                    sym_u,
+                    side_norm,
+                    float(intent_price),
+                    float(order_price),
+                    float(raw_notional or 0.0),
+                    float(notional),
+                    float(qty),
+                    int(target_leverage),
+                    whale_action or "-",
+                    str(extra0.get("whale_bias") or "neutral"),
+                    whale_dir,
+                    whale_score,
+                )
         except Exception:
             pass
 
@@ -2780,10 +2158,11 @@ class TradeExecutor:
                 )
             except Exception:
                 try:
-                    self.logger.exception(
-                        "[EXEC][OPEN] exchange open failed -> state set edilmeyecek | symbol=%s",
-                        sym_u,
-                    )
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][OPEN] exchange open failed -> state set edilmeyecek | symbol=%s",
+                            sym_u,
+                        )
                 except Exception:
                     pass
                 return
@@ -2802,20 +2181,22 @@ class TradeExecutor:
         self._set_position(sym_u, pos)
 
         try:
-            self.logger.info(
-                "[EXEC] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f notional=%.2f interval=%s lev=%s whale_action=%s whale_bias=%s dry_run=%s",
-                side_norm.upper(),
-                sym_u,
-                float(qty),
-                float(intent_price),
-                float(order_price),
-                float(notional),
-                interval,
-                int(target_leverage),
-                whale_action or "-",
-                str(extra0.get("whale_bias") or "neutral"),
-                self.dry_run,
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f "
+                    "notional=%.2f interval=%s lev=%s whale_action=%s whale_bias=%s dry_run=%s",
+                    side_norm.upper(),
+                    sym_u,
+                    float(qty),
+                    float(intent_price),
+                    float(order_price),
+                    float(notional),
+                    interval,
+                    int(target_leverage),
+                    whale_action or "-",
+                    str(extra0.get("whale_bias") or "neutral"),
+                    self.dry_run,
+                )
         except Exception:
             pass
 
@@ -2865,3 +2246,21 @@ class TradeExecutor:
                 pass
 
         return
+
+    # ---------------------------------------------------------
+    # compatibility wrappers
+    # ---------------------------------------------------------
+    async def open_position(self, *args, **kwargs):
+        pm = getattr(self, "position_manager", None)
+        if pm is not None and hasattr(pm, "open_position"):
+            res = pm.open_position(*args, **kwargs)
+            try:
+                if inspect.isawaitable(res):
+                    return await res
+            except Exception:
+                pass
+            return res
+        return None
+
+    async def execute_trade(self, *args, **kwargs):
+        return await self.open_position(*args, **kwargs)
