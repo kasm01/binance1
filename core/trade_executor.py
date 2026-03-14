@@ -92,7 +92,17 @@ class TradeExecutor:
         )
 
         self.last_snapshot: Dict[str, Any] = {}
+        self.position_sync_enabled = str(
+            os.getenv("POSITION_SYNC_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
 
+        self.position_sync_interval_sec = int(
+            float(os.getenv("POSITION_SYNC_INTERVAL_SEC", "300") or 300)
+        )
+
+        self.position_sync_remove_orphans = str(
+            os.getenv("POSITION_SYNC_REMOVE_ORPHANS", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
         if self.logger:
             try:
                 self.logger.info(
@@ -267,6 +277,61 @@ class TradeExecutor:
         if client is None:
             return out
 
+        # 1) Önce futures_account() içindeki positions alanını dene
+        try:
+            fn_acc = getattr(client, "futures_account", None)
+            if callable(fn_acc):
+                acc = fn_acc()
+                if isinstance(acc, dict):
+                    rows = acc.get("positions", []) or []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+
+                        try:
+                            amt = float(row.get("positionAmt") or 0.0)
+                        except Exception:
+                            amt = 0.0
+
+                        if abs(amt) <= 1e-12:
+                            continue
+
+                        sym = str(row.get("symbol") or "").upper().strip()
+                        if not sym:
+                            continue
+
+                        side = "long" if amt > 0 else "short"
+
+                        entry_price = self._clip_float(row.get("entryPrice"), 0.0) or 0.0
+                        mark_price = self._clip_float(row.get("markPrice"), 0.0) or 0.0
+                        px = float(mark_price if mark_price > 0 else entry_price)
+                        notional = float(abs(amt) * px) if px > 0 else 0.0
+
+                        out.append(
+                            {
+                                "symbol": sym,
+                                "side": side,
+                                "qty": abs(float(amt)),
+                                "entry_price": float(entry_price),
+                                "mark_price": float(mark_price),
+                                "notional": float(notional),
+                                "raw": row,
+                            }
+                        )
+
+                    if out:
+                        return out
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][EXCHANGE-POS] futures_account positions read failed err=%s",
+                        str(e)[:300],
+                    )
+            except Exception:
+                pass
+
+        # 2) Fallback: futures_position_information()
         try:
             fn = getattr(client, "futures_position_information", None)
             if not callable(fn):
@@ -292,21 +357,51 @@ class TradeExecutor:
                 if not sym:
                     continue
 
-                if amt > 0:
-                    side = "long"
-                else:
-                    side = "short"
+                side = "long" if amt > 0 else "short"
+                entry_price = self._clip_float(row.get("entryPrice"), 0.0) or 0.0
+                mark_price = self._clip_float(row.get("markPrice"), 0.0) or 0.0
+                px = float(mark_price if mark_price > 0 else entry_price)
+                notional = float(abs(amt) * px) if px > 0 else 0.0
 
                 out.append(
                     {
                         "symbol": sym,
                         "side": side,
                         "qty": abs(float(amt)),
+                        "entry_price": float(entry_price),
+                        "mark_price": float(mark_price),
+                        "notional": float(notional),
                         "raw": row,
                     }
                 )
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][EXCHANGE-POS] futures_position_information read failed err=%s",
+                        str(e)[:300],
+                    )
+            except Exception:
+                pass
+
+        return out
+    def _get_exchange_open_positions_map(self) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+
+        try:
+            rows = self._get_exchange_open_positions()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+
+                sym = str(row.get("symbol") or "").upper().strip()
+                side = str(row.get("side") or "").lower().strip()
+                qty = float(row.get("qty") or 0.0)
+
+                if sym and side in ("long", "short") and qty > 0:
+                    out[sym] = row
         except Exception:
-            return out
+            pass
 
         return out
 
@@ -940,6 +1035,50 @@ class TradeExecutor:
             pass
 
         return None
+    def _get_exchange_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return None
+
+        try:
+            rows = self._get_exchange_open_positions()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("symbol") or "").upper().strip() == sym:
+                    return row
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][EXCHANGE-POS] fetch skipped | symbol=%s err=%s",
+                        sym,
+                        str(e)[:300],
+                    )
+            except Exception:
+                pass
+
+        return None
+    def _get_effective_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return None
+
+        local_pos = self._get_position(sym)
+        if isinstance(local_pos, dict):
+            try:
+                side = str(local_pos.get("side") or "").strip().lower()
+                qty = float(local_pos.get("qty") or 0.0)
+                if side in ("long", "short") and qty > 0:
+                    return local_pos
+            except Exception:
+                pass
+
+        ex_pos = self._get_exchange_position(sym)
+        if isinstance(ex_pos, dict):
+            return ex_pos
+
+        return None
 
     def _set_position(self, symbol: str, pos: Dict[str, Any]) -> None:
         sym = str(symbol).upper()
@@ -959,20 +1098,238 @@ class TradeExecutor:
             pass
 
     def _del_position(self, symbol: str) -> None:
-        sym = str(symbol).upper()
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return
 
+        pm = getattr(self, "position_manager", None)
+
+        # position_manager tarafını olabildiğince temizle
         try:
-            pm = getattr(self, "position_manager", None)
-            if pm is not None and hasattr(pm, "delete_position"):
-                pm.delete_position(sym)
+            if pm is not None:
+                for method_name in ("delete_position", "del_position", "remove_position", "close_position_state"):
+                    fn = getattr(pm, method_name, None)
+                    if callable(fn):
+                        try:
+                            fn(sym)
+                        except TypeError:
+                            try:
+                                fn(symbol=sym)
+                            except Exception:
+                                pass
         except Exception:
             pass
 
+        # Redis tarafını zorla temizle
         try:
             if self.redis is not None:
                 self.redis.delete(self._pos_key(sym))
         except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception("[EXEC][STATE] redis delete failed | symbol=%s", sym)
+            except Exception:
+                pass
+
+        # doğrulama logu
+        try:
+            if self.redis is not None:
+                still_exists = self.redis.get(self._pos_key(sym))
+                if still_exists:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][STATE] local position delete attempted but key still exists | symbol=%s",
+                            sym,
+                        )
+                else:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][STATE] local position removed | symbol=%s",
+                            sym,
+                        )
+        except Exception:
             pass
+    def _remove_from_bridge_state(self, symbol: str) -> None:
+        sym = str(symbol).upper().strip()
+        if not sym or self.redis is None:
+            return
+
+        key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
+
+        try:
+            raw = self.redis.get(key)
+            if not raw:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] bridge state already empty | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+                return
+
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][STATE] bridge state invalid json object | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+                return
+
+            existed = sym in obj
+            if existed:
+                del obj[sym]
+                self.redis.set(key, json.dumps(obj, ensure_ascii=False, default=str))
+
+            # doğrulama
+            raw2 = self.redis.get(key)
+            ok_removed = True
+            if raw2:
+                if isinstance(raw2, (bytes, bytearray)):
+                    raw2 = raw2.decode("utf-8", errors="ignore")
+                obj2 = json.loads(raw2)
+                if isinstance(obj2, dict) and sym in obj2:
+                    ok_removed = False
+
+            if self.logger:
+                if existed and ok_removed:
+                    self.logger.info(
+                        "[EXEC][STATE] removed from bridge state | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+                elif existed and not ok_removed:
+                    self.logger.warning(
+                        "[EXEC][STATE] bridge state delete attempted but symbol still exists | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+                else:
+                    self.logger.info(
+                        "[EXEC][STATE] bridge state symbol already absent | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] remove from bridge state failed | key=%s symbol=%s",
+                        key,
+                        sym,
+                    )
+            except Exception:
+                pass
+    def sync_positions_with_exchange(self) -> Dict[str, Any]:
+        summary = {
+            "exchange_open": 0,
+            "local_open": 0,
+            "removed_local": [],
+            "removed_bridge": [],
+            "kept": [],
+        }
+
+        if not self.position_sync_enabled:
+            return summary
+
+        exchange_map = self._get_exchange_open_positions_map()
+        summary["exchange_open"] = len(exchange_map)
+
+        local_map = self._get_all_local_positions()
+        summary["local_open"] = len(local_map)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][SYNC] start | exchange_open=%s local_open=%s",
+                    int(summary["exchange_open"]),
+                    int(summary["local_open"]),
+                )
+        except Exception:
+            pass
+
+        # local var, exchange yok -> temizle
+        for sym, pos in local_map.items():
+            if sym not in exchange_map:
+                try:
+                    if self.position_sync_remove_orphans:
+                        self._del_position(sym)
+                        summary["removed_local"].append(sym)
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][SYNC] removed orphan local position | symbol=%s",
+                                    sym,
+                                )
+                        except Exception:
+                            pass
+
+                    self._remove_from_bridge_state(sym)
+                    summary["removed_bridge"].append(sym)
+                except Exception:
+                    try:
+                        if self.logger:
+                            self.logger.exception(
+                                "[EXEC][SYNC] failed removing orphan state | symbol=%s",
+                                sym,
+                            )
+                    except Exception:
+                        pass
+            else:
+                summary["kept"].append(sym)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s removed_local=%s removed_bridge=%s kept=%s",
+                    int(summary["exchange_open"]),
+                    int(summary["local_open"]),
+                    summary["removed_local"],
+                    summary["removed_bridge"],
+                    summary["kept"],
+                )
+        except Exception:
+            pass
+
+        return summary
+
+    async def _position_sync_loop(self) -> None:
+        while True:
+            try:
+                self.sync_positions_with_exchange()
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception("[EXEC][SYNC] periodic sync failed")
+                except Exception:
+                    pass
+
+            try:
+                await asyncio.sleep(max(30, int(self.position_sync_interval_sec)))
+            except Exception:
+                await asyncio.sleep(300)
+    def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
+        sym = str(symbol).upper().strip()
+        side0 = str(side or "").strip().lower()
+
+        if side0 not in ("long", "short"):
+            return 0.0
+
+        ex_pos = self._get_exchange_position(sym)
+        if not isinstance(ex_pos, dict):
+            return 0.0
+
+        ex_side = str(ex_pos.get("side") or "").strip().lower()
+        ex_qty = float(ex_pos.get("qty") or 0.0)
+
+        if ex_side != side0:
+            return 0.0
+
+        return float(ex_qty)
     # ---------------------------------------------------------
     # position dict / pnl / notify
     # ---------------------------------------------------------
@@ -1430,19 +1787,165 @@ class TradeExecutor:
         return resp
 
     def _exchange_close_market(self, symbol: str, side: str, qty: float) -> Optional[Dict[str, Any]]:
-        close_side = str(side or "").strip().lower()
-        if close_side not in ("long", "short"):
+        sym = str(symbol).upper().strip()
+        pos_side = str(side or "").strip().lower()
+
+        if pos_side not in ("long", "short"):
             raise ValueError(f"bad close side={side}")
 
-        return self._exchange_open_market(
-            symbol=str(symbol).upper(),
-            side=close_side,
-            qty=float(qty),
-            price=0.0,
-            reduce_only=True,
-            extra={"target_leverage": self.default_order_leverage},
+        if self.dry_run:
+            return {
+                "status": "dry_run",
+                "symbol": sym,
+                "close_side": pos_side,
+                "qty": float(qty),
+            }
+
+        client = getattr(self, "client", None)
+        if client is None:
+            raise RuntimeError("client is None (cannot place close order)")
+
+        # long kapat -> SELL + positionSide=LONG
+        # short kapat -> BUY  + positionSide=SHORT
+        order_side = "SELL" if pos_side == "long" else "BUY"
+        position_side = "LONG" if pos_side == "long" else "SHORT"
+
+        raw_q = self._round_qty(float(qty))
+
+        price_for_norm = self._resolve_price(symbol=sym)
+        if price_for_norm is None or price_for_norm <= 0:
+            try:
+                fn_mp = getattr(client, "futures_mark_price", None)
+                if callable(fn_mp):
+                    mp = fn_mp(symbol=sym)
+                    if isinstance(mp, dict):
+                        price_for_norm = self._clip_float(mp.get("markPrice"), None)
+            except Exception:
+                price_for_norm = None
+
+        if price_for_norm is None or price_for_norm <= 0:
+            ex_pos = self._get_exchange_position(sym)
+            if isinstance(ex_pos, dict):
+                price_for_norm = self._clip_float(ex_pos.get("entry_price"), None)
+
+        if price_for_norm is None or price_for_norm <= 0:
+            raise RuntimeError(f"close price_for_norm <= 0 for {sym}")
+
+        symbol_info = self._get_symbol_info(sym)
+        if not symbol_info:
+            raise RuntimeError(f"symbol_info not found for {sym}")
+
+        q, qmeta = self._normalize_order_qty(
+            symbol=sym,
+            raw_qty=float(raw_q),
+            price=float(price_for_norm),
+            symbol_info=symbol_info,
         )
 
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][CLOSE][QTY] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                    sym,
+                    float(raw_q),
+                    float(q),
+                    float(price_for_norm),
+                    float(qmeta.get("step_size", 0.0) or 0.0),
+                    float(qmeta.get("min_qty", 0.0) or 0.0),
+                    float(qmeta.get("min_notional", 0.0) or 0.0),
+                    str(qmeta.get("reject_reason", "") or "-"),
+                )
+        except Exception:
+            pass
+
+        if q <= 0:
+            raise ValueError(f"close qty invalid after normalization: {self._safe_json(qmeta, limit=900)}")
+
+        client_oid = self._make_client_order_id(sym, "close")
+
+        payload: Dict[str, Any] = {
+            "symbol": sym,
+            "side": order_side,
+            "type": "MARKET",
+            "quantity": float(q),
+            "newClientOrderId": client_oid,
+            "positionSide": position_side,
+        }
+
+        if not bool(getattr(self, "hedge_mode_enabled", True)):
+            payload["reduceOnly"] = True
+
+        used = "futures_create_order"
+        t0 = self._now_ms()
+        attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
+        base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
+
+        try:
+            fn = getattr(client, "futures_create_order", None)
+            if callable(fn):
+                resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+            else:
+                raise RuntimeError("futures_create_order not supported on client")
+        except Exception as e:
+            dt = self._now_ms() - t0
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][ORDER] CLOSE FAIL | fn=%s symbol=%s side=%s posSide=%s qty=%.10f dt_ms=%d client_oid=%s payload=%s err=%s",
+                        used,
+                        sym,
+                        order_side,
+                        position_side,
+                        float(q),
+                        int(dt),
+                        client_oid,
+                        self._safe_json(payload, limit=900),
+                        str(e)[:300],
+                    )
+            except Exception:
+                pass
+            raise
+
+        dt = self._now_ms() - t0
+        summ = self._summarize_order(resp)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][ORDER] CLOSE OK | fn=%s symbol=%s side=%s posSide=%s qty=%.10f dt_ms=%d summary=%s",
+                    used,
+                    sym,
+                    order_side,
+                    position_side,
+                    float(q),
+                    int(dt),
+                    self._safe_json(summ, limit=900),
+                )
+        except Exception:
+            pass
+
+        try:
+            if self.order_poll_status:
+                oid = None
+                coid = ""
+                if isinstance(resp, dict):
+                    oid = resp.get("orderId")
+                    coid = str(resp.get("clientOrderId") or resp.get("newClientOrderId") or client_oid or "")
+                pol = self._poll_order_status(
+                    sym,
+                    order_id=oid,
+                    client_order_id=coid,
+                    max_wait_s=self.order_poll_wait_s,
+                )
+                try:
+                    if self.logger:
+                        self.logger.info("[EXEC][CLOSE][POLL] %s", self._safe_json(pol, limit=900))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return resp
     # ---------------------------------------------------------
     # close helpers
     # ---------------------------------------------------------
@@ -1453,10 +1956,38 @@ class TradeExecutor:
         reason: str = "manual",
         interval: str = "",
     ) -> Optional[Dict[str, Any]]:
-        sym = str(symbol).upper()
-        pos = self._get_position(sym)
+        sym = str(symbol).upper().strip()
+
+        pos = self._get_effective_position(sym)
         if not isinstance(pos, dict):
-            return None
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE-BLOCK] no open position found | symbol=%s reason=%s interval=%s",
+                        sym,
+                        str(reason),
+                        str(interval or ""),
+                    )
+            except Exception:
+                pass
+
+            self._del_position(sym)
+            self._remove_from_bridge_state(sym)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] cleanup on missing position executed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+
+            return {
+                "status": "skip",
+                "reason": "no_open_position",
+                "symbol": sym,
+            }
 
         side = str(pos.get("side", "")).strip().lower()
         qty = float(pos.get("qty", 0.0) or 0.0)
@@ -1464,28 +1995,61 @@ class TradeExecutor:
         notional = float(pos.get("notional", 0.0) or 0.0)
 
         if qty <= 0 or side not in ("long", "short"):
-            self._del_position(sym)
-            return None
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE-BLOCK] invalid position snapshot | symbol=%s side=%s qty=%.10f",
+                        sym,
+                        side,
+                        float(qty),
+                    )
+            except Exception:
+                pass
 
-        close_side = "short" if side == "long" else "long"
+            self._del_position(sym)
+            self._remove_from_bridge_state(sym)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] cleanup on invalid snapshot executed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+
+            return {
+                "status": "skip",
+                "reason": "invalid_position_snapshot",
+                "symbol": sym,
+            }
+
         close_price = self._resolve_price(symbol=sym, price=price)
         if close_price is None or close_price <= 0:
-            close_price = entry_price
+            close_price = entry_price if entry_price > 0 else 0.0
+
+        exchange_resp: Optional[Dict[str, Any]] = None
 
         if not self.dry_run:
             try:
-                self._exchange_close_market(sym, close_side, float(qty))
+                exchange_resp = self._exchange_close_market(sym, side, float(qty))
             except Exception:
                 try:
                     if self.logger:
                         self.logger.exception(
-                            "[EXEC][CLOSE] exchange close failed -> position state korunuyor | symbol=%s",
+                            "[EXEC][CLOSE] exchange close failed -> state korunuyor | symbol=%s side=%s qty=%.10f",
                             sym,
+                            side,
+                            float(qty),
                         )
                 except Exception:
                     pass
                 raise
-        realized_pnl = float(self._calc_pnl(side, entry_price, float(close_price), float(qty)))
+
+        realized_pnl = 0.0
+        if entry_price > 0 and close_price > 0:
+            realized_pnl = float(self._calc_pnl(side, entry_price, float(close_price), float(qty)))
+
         daily_realized_pnl = 0.0
 
         extra_dict: Dict[str, Any] = {}
@@ -1503,8 +2067,101 @@ class TradeExecutor:
         except Exception:
             pass
 
-        self._del_position(sym)
+        residual_qty = 0.0
+        try:
+            residual_qty = float(self._get_exchange_residual_qty(sym, side))
+        except Exception:
+            residual_qty = 0.0
 
+        if residual_qty > 0:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][CLOSE] residual position remains on exchange | symbol=%s side=%s residual_qty=%.10f",
+                        sym,
+                        side,
+                        float(residual_qty),
+                    )
+            except Exception:
+                pass
+
+            pos["qty"] = float(residual_qty)
+            if close_price > 0:
+                pos["entry_price"] = float(close_price)
+
+            self._set_position(sym, pos)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] partial close state updated | symbol=%s residual_qty=%.10f",
+                        sym,
+                        float(residual_qty),
+                    )
+            except Exception:
+                pass
+
+            return {
+                "status": "partial_close",
+                "symbol": sym,
+                "side": side,
+                "qty": float(residual_qty),
+                "entry_price": float(entry_price),
+                "close_price": float(close_price),
+                "realized_pnl": float(realized_pnl),
+                "daily_realized_pnl": float(daily_realized_pnl),
+                "reason": str(reason),
+                "exchange_resp": exchange_resp,
+            }
+
+        self._del_position(sym)
+        self._remove_from_bridge_state(sym)
+
+        # Zorlayıcı cleanup doğrulaması
+        try:
+            if self.redis is not None:
+                # local pozisyon key'ini bir daha zorla sil
+                self.redis.delete(self._pos_key(sym))
+
+                # bridge state içinden bir daha zorla kaldır
+                bridge_key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
+                raw_state = self.redis.get(bridge_key)
+                if raw_state:
+                    if isinstance(raw_state, (bytes, bytearray)):
+                        raw_state = raw_state.decode("utf-8", errors="ignore")
+                    state_obj = json.loads(raw_state)
+                    if isinstance(state_obj, dict) and sym in state_obj:
+                        del state_obj[sym]
+                        self.redis.set(bridge_key, json.dumps(state_obj, ensure_ascii=False, default=str))
+
+                # doğrulama
+                local_after = self.redis.get(self._pos_key(sym))
+                bridge_after_raw = self.redis.get(bridge_key)
+
+                bridge_has_symbol = False
+                if bridge_after_raw:
+                    if isinstance(bridge_after_raw, (bytes, bytearray)):
+                        bridge_after_raw = bridge_after_raw.decode("utf-8", errors="ignore")
+                    bridge_after_obj = json.loads(bridge_after_raw)
+                    if isinstance(bridge_after_obj, dict) and sym in bridge_after_obj:
+                        bridge_has_symbol = True
+
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] close cleanup executed | symbol=%s local_deleted=%s bridge_deleted=%s",
+                        sym,
+                        str(local_after is None),
+                        str(not bridge_has_symbol),
+                    )
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] forced close cleanup verify failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
         try:
             rm = getattr(self, "risk_manager", None)
             if rm is not None:
@@ -1520,7 +2177,7 @@ class TradeExecutor:
                 }
 
                 out = rm.on_position_close(
-                    symbol=str(symbol).upper(),
+                    symbol=sym,
                     side=str(side),
                     qty=float(qty),
                     notional=float(notional),
@@ -1550,8 +2207,23 @@ class TradeExecutor:
         except Exception:
             pass
 
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][CLOSE] CLOSED | symbol=%s side=%s qty=%.10f entry=%.6f close=%.6f realized_pnl=%.6f reason=%s",
+                    sym,
+                    side,
+                    float(qty),
+                    float(entry_price),
+                    float(close_price),
+                    float(realized_pnl),
+                    str(reason),
+                )
+        except Exception:
+            pass
+
         return {
-            "status": "closed",
+            "status": "closed" if not self.dry_run else "dry_run",
             "symbol": sym,
             "side": side,
             "qty": float(qty),
@@ -1560,8 +2232,8 @@ class TradeExecutor:
             "realized_pnl": float(realized_pnl),
             "daily_realized_pnl": float(daily_realized_pnl),
             "reason": str(reason),
+            "exchange_resp": exchange_resp,
         }
-
     def close_position(
         self,
         symbol: str,
@@ -1707,13 +2379,79 @@ class TradeExecutor:
                 "side": side0,
             }
 
+        cur = self._get_effective_position(sym_u)
+        cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None
+
+        if cur_side in ("long", "short"):
+            if cur_side == side0:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] symbol already open same-side | symbol=%s current=%s incoming=%s",
+                            sym_u,
+                            cur_side,
+                            side0,
+                        )
+                except Exception:
+                    pass
+                return {
+                    "status": "skip",
+                    "reason": "symbol_already_open_same_side",
+                    "symbol": sym_u,
+                    "side": side0,
+                }
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][REVERSE] opposite-side intent -> closing current position | symbol=%s current=%s incoming=%s",
+                        sym_u,
+                        cur_side,
+                        side0,
+                    )
+            except Exception:
+                pass
+
+            try:
+                close_res = self.close_position(
+                    symbol=sym_u,
+                    price=float(order_price),
+                    reason=f"reverse_to_{side0}",
+                    interval=str(interval or ""),
+                    intent_id=str(meta0.get("intent_id") or ""),
+                )
+                return {
+                    "status": "closed_for_reverse",
+                    "symbol": sym_u,
+                    "previous_side": cur_side,
+                    "incoming_side": side0,
+                    "close_result": close_res,
+                }
+            except Exception as e:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][REVERSE] close-before-open failed | symbol=%s current=%s incoming=%s err=%s",
+                            sym_u,
+                            cur_side,
+                            side0,
+                            str(e)[:300],
+                        )
+                except Exception:
+                    pass
+                return {
+                    "status": "skip",
+                    "reason": "reverse_close_failed",
+                    "symbol": sym_u,
+                    "side": side0,
+                }
+
         try:
             open_count = int(self._count_open_positions())
             if open_count >= int(self.max_open_positions):
                 if self.logger:
                     self.logger.info(
-                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s "
-                        "open_count=%s limit=%s",
+                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s open_count=%s limit=%s",
                         sym_u,
                         side0,
                         int(open_count),
@@ -1722,23 +2460,6 @@ class TradeExecutor:
                 return {
                     "status": "skip",
                     "reason": "max_open_positions_reached",
-                    "symbol": sym_u,
-                    "side": side0,
-                }
-        except Exception:
-            pass
-
-        try:
-            if self.block_same_symbol_reentry and self._has_open_position_on_symbol(sym_u):
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][OPEN-BLOCK] symbol already open | symbol=%s side=%s",
-                        sym_u,
-                        side0,
-                    )
-                return {
-                    "status": "skip",
-                    "reason": "symbol_already_open",
                     "symbol": sym_u,
                     "side": side0,
                 }
@@ -1814,13 +2535,6 @@ class TradeExecutor:
             }
 
         final_notional = float(qty) * float(order_price)
-        cur = self._get_position(sym_u)
-        cur_side = str(cur.get("side")).lower() if cur else None
-
-        if cur_side in ("long", "short"):
-            if cur_side == side0:
-                return {"status": "ok", "reason": "already_open_same_side"}
-            return {"status": "skip", "reason": "symbol_already_open_opposite_side"}
 
         extra = dict(meta0)
         extra.setdefault("trail_pct", meta0.get("trail_pct", None))
@@ -1839,7 +2553,6 @@ class TradeExecutor:
 
         whale_bias_now = self._whale_bias(side=side0, extra=extra)
         extra["whale_bias"] = whale_bias_now
-
         try:
             if self.logger:
                 self.logger.info(
@@ -1979,6 +2692,40 @@ class TradeExecutor:
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         extra0 = self._extract_whale_context(extra if isinstance(extra, dict) else {})
+        raw_signal = str(signal or "").strip().lower()
+
+        if raw_signal in ("close", "exit", "flat"):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE] explicit close signal received | symbol=%s signal=%s interval=%s",
+                        str(symbol).upper().strip(),
+                        raw_signal,
+                        str(interval or ""),
+                    )
+            except Exception:
+                pass
+
+            try:
+                self.close_position(
+                    symbol=str(symbol).upper().strip(),
+                    price=price,
+                    reason=f"signal_{raw_signal}",
+                    interval=str(interval or ""),
+                    intent_id=str(extra0.get("intent_id") or ""),
+                )
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][CLOSE] explicit close execution failed | symbol=%s signal=%s",
+                            str(symbol).upper().strip(),
+                            raw_signal,
+                        )
+                except Exception:
+                    pass
+            return
+
         signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
         sym_u = str(symbol).upper().strip()
@@ -2078,29 +2825,65 @@ class TradeExecutor:
         except Exception:
             pass
 
+        cur = self._get_effective_position(sym_u)
+        cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None
+
+        if cur_side in ("long", "short"):
+            if cur_side == side_norm:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] symbol already open same-side | symbol=%s current=%s incoming=%s",
+                            sym_u,
+                            cur_side,
+                            side_norm,
+                        )
+                except Exception:
+                    pass
+                return
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][REVERSE] opposite-side signal -> closing current position | symbol=%s current=%s incoming=%s",
+                        sym_u,
+                        cur_side,
+                        side_norm,
+                    )
+            except Exception:
+                pass
+
+            try:
+                self.close_position(
+                    symbol=sym_u,
+                    price=price,
+                    reason=f"reverse_to_{side_norm}",
+                    interval=str(interval or ""),
+                    intent_id=str(extra0.get("intent_id") or ""),
+                )
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][REVERSE] close-before-open failed | symbol=%s current=%s incoming=%s",
+                            sym_u,
+                            cur_side,
+                            side_norm,
+                        )
+                except Exception:
+                    pass
+            return
+
         try:
             open_count = int(self._count_open_positions())
             if open_count >= int(self.max_open_positions):
                 if self.logger:
                     self.logger.info(
-                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s "
-                        "open_count=%s limit=%s",
+                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s open_count=%s limit=%s",
                         sym_u,
                         side_norm,
                         int(open_count),
                         int(self.max_open_positions),
-                    )
-                return
-        except Exception:
-            pass
-
-        try:
-            if self.block_same_symbol_reentry and self._has_open_position_on_symbol(sym_u):
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][OPEN-BLOCK] symbol already open | symbol=%s side=%s",
-                        sym_u,
-                        side_norm,
                     )
                 return
         except Exception:
@@ -2251,34 +3034,6 @@ class TradeExecutor:
         target_leverage = self._resolve_target_leverage(extra0)
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         extra0["target_leverage"] = int(target_leverage)
-
-        cur = self._get_position(sym_u)
-        cur_side = str(cur.get("side")).lower() if cur else None
-
-        if cur_side in ("long", "short"):
-            if cur_side == side_norm:
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC] same-side already open -> skip | symbol=%s side=%s",
-                            sym_u,
-                            side_norm,
-                        )
-                except Exception:
-                    pass
-                return
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][OPEN-BLOCK] opposite-side position already open | symbol=%s current=%s incoming=%s",
-                        sym_u,
-                        cur_side,
-                        side_norm,
-                    )
-            except Exception:
-                pass
-            return
 
         try:
             ens = extra0.get("ensemble_p")
@@ -2432,6 +3187,7 @@ class TradeExecutor:
                 pass
 
         return
+
     # ---------------------------------------------------------
     # compatibility wrappers
     # ---------------------------------------------------------

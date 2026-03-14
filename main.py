@@ -970,15 +970,41 @@ def create_trading_objects(
         price_cache=price_cache,
         redis_price_cache=redis_price_cache,
     )
-    try:
-        if hasattr(trade_executor, "set_price_cache"):
-            trade_executor.set_price_cache(price_cache)
-            if system_logger:
-                system_logger.info("[PRICE_CACHE] TradeExecutor price_cache injected.")
-    except Exception as e:
-        if system_logger:
-            system_logger.warning("[PRICE_CACHE] TradeExecutor inject failed: %s", e)
 
+    try:
+        system_logger.info("[MAIN][SYNC] wiring position sync hooks...")
+    except Exception:
+        pass
+
+    try:
+        if hasattr(trade_executor, "sync_positions_with_exchange"):
+            system_logger.info("[MAIN][SYNC] initial sync callable found.")
+            trade_executor.sync_positions_with_exchange()
+            system_logger.info("[MAIN][SYNC] initial sync_positions_with_exchange completed.")
+        else:
+            system_logger.warning("[MAIN][SYNC] sync_positions_with_exchange missing on TradeExecutor")
+    except Exception:
+        try:
+            if system_logger:
+                system_logger.exception("[MAIN][SYNC] initial sync_positions_with_exchange failed")
+        except Exception:
+            pass
+
+    try:
+        if hasattr(trade_executor, "_position_sync_loop"):
+            asyncio.create_task(trade_executor._position_sync_loop())
+            system_logger.info(
+                "[MAIN][SYNC] periodic position sync started interval_sec=%s",
+                int(getattr(trade_executor, "position_sync_interval_sec", 300)),
+            )
+        else:
+            system_logger.warning("[MAIN][SYNC] _position_sync_loop missing on TradeExecutor")
+    except Exception:
+        try:
+            if system_logger:
+                system_logger.exception("[MAIN][SYNC] failed to start periodic position sync loop")
+        except Exception:
+            pass
     okx_ws = None
     try:
         if tg_bot is not None and getattr(tg_bot, "dispatcher", None):
