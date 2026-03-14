@@ -41,19 +41,10 @@ class TradeExecutor:
         self.dry_run = bool(dry_run)
         self.base_order_notional = float(base_order_notional or 120.0)
         self.max_position_notional = float(max_position_notional or 500.0)
-        self.max_leverage = float(max_leverage or 5.0)
+        self.max_leverage = float(max_leverage or 3.0)
 
-        self.max_open_positions = int(
-            float(os.getenv("MAX_OPEN_POSITIONS", "3") or 3)
-        )
-        self.per_position_balance_pct = float(
-            os.getenv("PER_POSITION_BALANCE_PCT", "0.30") or 0.30
-        )
-        self.block_same_symbol_reentry = str(
-            os.getenv("BLOCK_SAME_SYMBOL_REENTRY", "1")
-        ).strip().lower() in ("1", "true", "yes", "on")
         self.default_order_leverage = int(
-            float(os.getenv("DEFAULT_ORDER_LEVERAGE", str(int(self.max_leverage or 5))))
+            float(os.getenv("DEFAULT_ORDER_LEVERAGE", str(int(self.max_leverage or 3))))
         )
         self.enable_dynamic_leverage = str(
             os.getenv("ENABLE_DYNAMIC_LEVERAGE", "1")
@@ -87,17 +78,35 @@ class TradeExecutor:
             os.getenv("WHALE_REDUCE_FACTOR", "0.50") or 0.50
         )
 
+        self.max_open_positions = int(os.getenv("MAX_OPEN_POSITIONS", "3") or 3)
+        self.block_same_symbol_reentry = str(
+            os.getenv("BLOCK_SAME_SYMBOL_REENTRY", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.use_available_balance_for_sizing = str(
+            os.getenv("USE_AVAILABLE_BALANCE_FOR_SIZING", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.per_position_balance_pct = float(
+            os.getenv("PER_POSITION_BALANCE_PCT", "0.30") or 0.30
+        )
+
         self.last_snapshot: Dict[str, Any] = {}
 
         if self.logger:
             try:
                 self.logger.info(
                     "[EXEC][INIT] dry_run=%s base_order_notional=%.2f "
-                    "max_position_notional=%.2f max_leverage=%.2f",
+                    "max_position_notional=%.2f max_leverage=%.2f "
+                    "max_open_positions=%s per_position_balance_pct=%.4f "
+                    "block_same_symbol_reentry=%s",
                     self.dry_run,
                     self.base_order_notional,
                     self.max_position_notional,
                     self.max_leverage,
+                    self.max_open_positions,
+                    self.per_position_balance_pct,
+                    self.block_same_symbol_reentry,
                 )
             except Exception:
                 pass
@@ -252,11 +261,91 @@ class TradeExecutor:
 
         return out
 
-    def _count_open_positions(self) -> int:
+    def _get_exchange_open_positions(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        client = getattr(self, "client", None)
+        if client is None:
+            return out
+
         try:
-            return len(self._get_all_local_positions())
+            fn = getattr(client, "futures_position_information", None)
+            if not callable(fn):
+                return out
+
+            rows = fn()
+            if not isinstance(rows, list):
+                return out
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+
+                try:
+                    amt = float(row.get("positionAmt") or 0.0)
+                except Exception:
+                    amt = 0.0
+
+                if abs(amt) <= 1e-12:
+                    continue
+
+                sym = str(row.get("symbol") or "").upper().strip()
+                if not sym:
+                    continue
+
+                if amt > 0:
+                    side = "long"
+                else:
+                    side = "short"
+
+                out.append(
+                    {
+                        "symbol": sym,
+                        "side": side,
+                        "qty": abs(float(amt)),
+                        "raw": row,
+                    }
+                )
         except Exception:
-            return 0
+            return out
+
+        return out
+
+    def _count_open_positions(self) -> int:
+        seen: Dict[str, Dict[str, Any]] = {}
+
+        try:
+            ex_rows = self._get_exchange_open_positions()
+            for row in ex_rows:
+                sym = str(row.get("symbol") or "").upper().strip()
+                if sym:
+                    seen[sym] = row
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None:
+                keys = self.redis.keys("bot:positions:*") or []
+                for key in keys:
+                    try:
+                        raw = self.redis.get(key)
+                        if not raw:
+                            continue
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8", errors="ignore")
+                        obj = json.loads(raw)
+                        if not isinstance(obj, dict):
+                            continue
+                        sym = str(obj.get("symbol") or "").upper().strip()
+                        side = str(obj.get("side") or "").lower().strip()
+                        qty = float(obj.get("qty") or 0.0)
+                        if sym and side in ("long", "short") and qty > 0:
+                            seen.setdefault(sym, {"symbol": sym, "side": side, "qty": qty})
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        return int(len(seen))
 
     def _has_open_position_on_symbol(self, symbol: str) -> bool:
         sym_u = str(symbol).upper().strip()
@@ -264,28 +353,23 @@ class TradeExecutor:
             return False
 
         try:
-            pos = self._get_position(sym_u)
-            if isinstance(pos, dict):
-                qty = float(pos.get("qty", 0.0) or 0.0)
-                side = str(pos.get("side", "")).strip().lower()
-                if qty > 0 and side in ("long", "short"):
+            for row in self._get_exchange_open_positions():
+                if str(row.get("symbol") or "").upper().strip() == sym_u:
                     return True
         except Exception:
             pass
 
         try:
-            all_pos = self._get_all_local_positions()
-            p = all_pos.get(sym_u)
-            if isinstance(p, dict):
-                qty = float(p.get("qty", 0.0) or 0.0)
-                side = str(p.get("side", "")).strip().lower()
-                if qty > 0 and side in ("long", "short"):
+            pos = self._get_position(sym_u)
+            if isinstance(pos, dict):
+                side = str(pos.get("side") or "").lower().strip()
+                qty = float(pos.get("qty") or 0.0)
+                if side in ("long", "short") and qty > 0:
                     return True
         except Exception:
             pass
 
         return False
-
     def _get_available_balance_usdt_sync(self) -> float:
         client = getattr(self, "client", None)
         if client is None:
@@ -314,42 +398,57 @@ class TradeExecutor:
         except Exception:
             return 0.0
 
-    def _compute_balance_based_notional(self, symbol: str, side: str, price: float, extra: Dict[str, Any]) -> float:
-        available = 0.0
+    def _compute_balance_based_notional(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        extra0 = extra if isinstance(extra, dict) else {}
 
-        try:
-            available = float(extra.get("available_balance_usdt", 0.0) or 0.0)
-        except Exception:
-            available = 0.0
+        available_balance = self._clip_float(
+            extra0.get("available_balance_usdt"),
+            None,
+        )
+        equity_usdt = self._clip_float(
+            extra0.get("equity_usdt"),
+            None,
+        )
 
-        if available <= 0:
-            try:
-                available = float(self._get_available_balance_usdt_sync())
-            except Exception:
-                available = 0.0
+        if self.use_available_balance_for_sizing and available_balance is not None and available_balance > 0:
+            base_balance = float(available_balance)
+            balance_source = "available_balance"
+        elif equity_usdt is not None and equity_usdt > 0:
+            base_balance = float(equity_usdt)
+            balance_source = "equity"
+        else:
+            base_balance = self._clip_float(
+                os.getenv("DEFAULT_EQUITY_USDT", "1000"),
+                1000.0,
+            ) or 1000.0
+            balance_source = "fallback"
 
-        if available <= 0:
-            try:
-                available = float(extra.get("equity_usdt", 0.0) or 0.0)
-            except Exception:
-                available = 0.0
+        pct = float(self.per_position_balance_pct)
+        pct = max(0.01, min(pct, 1.0))
 
-        if available <= 0:
-            available = float(self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0)
-
-        notional = float(available) * float(self.per_position_balance_pct)
-        notional = float(max(10.0, notional))
+        notional = float(base_balance) * float(pct)
         notional = float(min(notional, float(self.max_position_notional)))
+        notional = float(max(10.0, notional))
 
         try:
-            self.logger.info(
-                "[EXEC][NOTIONAL] symbol=%s side=%s available_balance=%.4f pct=%.4f notional=%.4f",
-                str(symbol).upper(),
-                str(side).lower(),
-                float(available),
-                float(self.per_position_balance_pct),
-                float(notional),
-            )
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][NOTIONAL] symbol=%s side=%s price=%.6f balance_source=%s "
+                    "base_balance=%.2f pct=%.4f notional=%.2f",
+                    str(symbol).upper(),
+                    str(side).lower(),
+                    float(price),
+                    balance_source,
+                    float(base_balance),
+                    float(pct),
+                    float(notional),
+                )
         except Exception:
             pass
 
@@ -1542,6 +1641,7 @@ class TradeExecutor:
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
+
         order_price: Optional[float] = None
 
         try:
@@ -1607,10 +1707,43 @@ class TradeExecutor:
                 "side": side0,
             }
 
-        npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
-        if npct is None:
-            npct = self._clip_float(meta0.get("notional_pct"), None)
-        npct = float(npct) if npct is not None else None
+        try:
+            open_count = int(self._count_open_positions())
+            if open_count >= int(self.max_open_positions):
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s "
+                        "open_count=%s limit=%s",
+                        sym_u,
+                        side0,
+                        int(open_count),
+                        int(self.max_open_positions),
+                    )
+                return {
+                    "status": "skip",
+                    "reason": "max_open_positions_reached",
+                    "symbol": sym_u,
+                    "side": side0,
+                }
+        except Exception:
+            pass
+
+        try:
+            if self.block_same_symbol_reentry and self._has_open_position_on_symbol(sym_u):
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] symbol already open | symbol=%s side=%s",
+                        sym_u,
+                        side0,
+                    )
+                return {
+                    "status": "skip",
+                    "reason": "symbol_already_open",
+                    "symbol": sym_u,
+                    "side": side0,
+                }
+        except Exception:
+            pass
 
         try:
             eq_live = self._get_futures_equity_usdt_sync()
@@ -1619,15 +1752,24 @@ class TradeExecutor:
         except Exception:
             pass
 
-        eq_fallback = self._clip_float(os.getenv("DEFAULT_EQUITY_USDT", "1000"), 1000.0) or 1000.0
+        try:
+            avail_live = self._get_available_balance_usdt_sync()
+            if avail_live > 0:
+                meta0["available_balance_usdt"] = float(avail_live)
+        except Exception:
+            pass
 
-        notional: Optional[float] = None
-        if npct is not None and npct > 0:
-            base_eq = float(meta0.get("equity_usdt") or eq_fallback)
-            notional = float(base_eq) * float(npct)
+        npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
+        if npct is None:
+            npct = self._clip_float(meta0.get("notional_pct"), None)
+        npct = float(npct) if npct is not None else None
 
-        if notional is None or notional <= 0:
-            notional = self._compute_notional(sym_u, side0, float(order_price), meta0)
+        notional = self._compute_balance_based_notional(
+            sym_u,
+            side0,
+            float(order_price),
+            meta0,
+        )
 
         raw_notional = float(notional)
         notional = self._apply_whale_open_adjustments(side0, float(notional), meta0)
@@ -1678,12 +1820,7 @@ class TradeExecutor:
         if cur_side in ("long", "short"):
             if cur_side == side0:
                 return {"status": "ok", "reason": "already_open_same_side"}
-            self._close_position(
-                sym_u,
-                float(order_price),
-                reason="FLIP_INTENT",
-                interval=str(interval or ""),
-            )
+            return {"status": "skip", "reason": "symbol_already_open_opposite_side"}
 
         extra = dict(meta0)
         extra.setdefault("trail_pct", meta0.get("trail_pct", None))
@@ -1696,7 +1833,6 @@ class TradeExecutor:
         extra["whale_notional_adjusted"] = bool(
             abs(float(final_notional) - float(raw_notional)) > 1e-12
         )
-
         target_leverage = self._resolve_target_leverage(extra)
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         extra["target_leverage"] = int(target_leverage)
@@ -1826,6 +1962,7 @@ class TradeExecutor:
             "whale_action": whale_action,
             "whale_bias": whale_bias_now,
         }
+
     # ---------------------------------------------------------
     # async decision executor
     # ---------------------------------------------------------
@@ -1918,7 +2055,6 @@ class TradeExecutor:
             except Exception:
                 pass
             return
-
         if self._truthy_env("SHADOW_MODE", "0"):
             return
         if training_mode:
@@ -1942,6 +2078,34 @@ class TradeExecutor:
         except Exception:
             pass
 
+        try:
+            open_count = int(self._count_open_positions())
+            if open_count >= int(self.max_open_positions):
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s "
+                        "open_count=%s limit=%s",
+                        sym_u,
+                        side_norm,
+                        int(open_count),
+                        int(self.max_open_positions),
+                    )
+                return
+        except Exception:
+            pass
+
+        try:
+            if self.block_same_symbol_reentry and self._has_open_position_on_symbol(sym_u):
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] symbol already open | symbol=%s side=%s",
+                        sym_u,
+                        side_norm,
+                    )
+                return
+        except Exception:
+            pass
+
         intent_price = self._resolve_price(
             symbol=sym_u,
             price=price,
@@ -1959,6 +2123,7 @@ class TradeExecutor:
             except Exception:
                 pass
             return
+
         order_price: Optional[float] = None
 
         try:
@@ -2013,7 +2178,21 @@ class TradeExecutor:
             except Exception:
                 pass
 
-            raw_notional = float(self._compute_notional(sym_u, side_norm, float(order_price), extra0))
+            try:
+                avail_live = await self._get_available_balance_usdt()
+                if avail_live > 0:
+                    extra0["available_balance_usdt"] = float(avail_live)
+            except Exception:
+                pass
+
+            raw_notional = float(
+                self._compute_balance_based_notional(
+                    sym_u,
+                    side_norm,
+                    float(order_price),
+                    extra0,
+                )
+            )
             notional_pre = float(self._apply_whale_open_adjustments(side_norm, float(raw_notional), extra0))
             raw_qty = self._round_qty(float(notional_pre) / float(order_price))
 
@@ -2076,18 +2255,25 @@ class TradeExecutor:
         cur = self._get_position(sym_u)
         cur_side = str(cur.get("side")).lower() if cur else None
 
-        if cur_side in ("long", "short") and cur_side != side_norm:
-            self._close_position(sym_u, float(order_price), reason="FLIP", interval=interval)
+        if cur_side in ("long", "short"):
+            if cur_side == side_norm:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC] same-side already open -> skip | symbol=%s side=%s",
+                            sym_u,
+                            side_norm,
+                        )
+                except Exception:
+                    pass
+                return
 
-        cur2 = self._get_position(sym_u)
-        cur2_side = str(cur2.get("side")).lower() if cur2 else None
-
-        if cur2_side == side_norm:
             try:
                 if self.logger:
                     self.logger.info(
-                        "[EXEC] same-side already open -> skip | symbol=%s side=%s",
+                        "[EXEC][OPEN-BLOCK] opposite-side position already open | symbol=%s current=%s incoming=%s",
                         sym_u,
+                        cur_side,
                         side_norm,
                     )
             except Exception:
@@ -2246,7 +2432,6 @@ class TradeExecutor:
                 pass
 
         return
-
     # ---------------------------------------------------------
     # compatibility wrappers
     # ---------------------------------------------------------
