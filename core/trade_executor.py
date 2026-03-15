@@ -103,6 +103,33 @@ class TradeExecutor:
         self.position_sync_remove_orphans = str(
             os.getenv("POSITION_SYNC_REMOVE_ORPHANS", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
+        self.position_lifecycle_enabled = str(
+            os.getenv("POSITION_LIFECYCLE_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.position_lifecycle_interval_sec = int(
+            float(os.getenv("POSITION_LIFECYCLE_INTERVAL_SEC", "15") or 15)
+        )
+
+        self.hold_close_enabled = str(
+            os.getenv("HOLD_CLOSE_ENABLED", "0")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.hold_close_min_pnl_pct = float(
+            os.getenv("HOLD_CLOSE_MIN_PNL_PCT", "0.008") or 0.008
+        )
+
+        self.reverse_close_enabled = str(
+            os.getenv("REVERSE_CLOSE_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.sl_pct_default = float(os.getenv("SL_PCT", "0.015") or 0.015)
+        self.tp_pct_default = float(os.getenv("TP_PCT", "0.025") or 0.025)
+        self.trailing_pct_default = float(os.getenv("TRAILING_PCT", "0.03") or 0.03)
+
+        self.stall_close_enabled = str(
+            os.getenv("STALL_CLOSE_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
         if self.logger:
             try:
                 self.logger.info(
@@ -1312,6 +1339,48 @@ class TradeExecutor:
                 await asyncio.sleep(max(30, int(self.position_sync_interval_sec)))
             except Exception:
                 await asyncio.sleep(300)
+    async def _position_lifecycle_loop(self) -> None:
+        while True:
+            try:
+                if self.position_lifecycle_enabled:
+                    local_map = self._get_all_local_positions()
+
+                    for sym, pos in local_map.items():
+                        try:
+                            px = self._resolve_price(symbol=sym)
+                            if px is None or px <= 0:
+                                ex_pos = self._get_exchange_position(sym)
+                                if isinstance(ex_pos, dict):
+                                    px = self._clip_float(ex_pos.get("mark_price"), None)
+
+                            if px is None or px <= 0:
+                                continue
+
+                            self._check_sl_tp_trailing(
+                                symbol=sym,
+                                price=float(px),
+                                interval=str(pos.get("interval") or ""),
+                            )
+                        except Exception:
+                            try:
+                                if self.logger:
+                                    self.logger.exception(
+                                        "[EXEC][LIFECYCLE] per-symbol monitor failed | symbol=%s",
+                                        sym,
+                                    )
+                            except Exception:
+                                pass
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception("[EXEC][LIFECYCLE] loop failed")
+                except Exception:
+                    pass
+
+            try:
+                await asyncio.sleep(max(5, int(self.position_lifecycle_interval_sec)))
+            except Exception:
+                await asyncio.sleep(15)
     def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
         sym = str(symbol).upper().strip()
         side0 = str(side or "").strip().lower()
@@ -2269,9 +2338,119 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # monitoring stubs
     # ---------------------------------------------------------
-    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
-        return
+    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return None
 
+        pos = self._get_position(sym)
+        if not isinstance(pos, dict):
+            return None
+
+        side = str(pos.get("side") or "").strip().lower()
+        qty = float(pos.get("qty") or 0.0)
+        entry_price = float(pos.get("entry_price") or 0.0)
+
+        if side not in ("long", "short") or qty <= 0 or entry_price <= 0 or price <= 0:
+            return None
+
+        now_ts = time.time()
+
+        trailing_pct = float(pos.get("trailing_pct") or self.trailing_pct_default or 0.03)
+        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
+
+        sl_price = float(pos.get("sl_price") or 0.0)
+        tp_price = float(pos.get("tp_price") or 0.0)
+
+        if sl_price <= 0:
+            if side == "long":
+                sl_price = float(entry_price) * (1.0 - float(self.sl_pct_default))
+            else:
+                sl_price = float(entry_price) * (1.0 + float(self.sl_pct_default))
+
+        if tp_price <= 0:
+            if side == "long":
+                tp_price = float(entry_price) * (1.0 + float(self.tp_pct_default))
+            else:
+                tp_price = float(entry_price) * (1.0 - float(self.tp_pct_default))
+
+        highest_price = float(pos.get("highest_price") or entry_price)
+        lowest_price = float(pos.get("lowest_price") or entry_price)
+        best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
+        last_best_ts = float(pos.get("last_best_ts") or now_ts)
+
+        if side == "long":
+            highest_price = max(highest_price, float(price))
+            pnl_pct = (float(price) - float(entry_price)) / max(float(entry_price), 1e-12)
+            trail_stop_price = highest_price * (1.0 - float(trailing_pct))
+            sl_hit = float(price) <= float(sl_price)
+            tp_hit = float(price) >= float(tp_price)
+            trail_hit = best_pnl_pct > 0 and float(price) <= float(trail_stop_price)
+        else:
+            lowest_price = min(lowest_price, float(price))
+            pnl_pct = (float(entry_price) - float(price)) / max(float(entry_price), 1e-12)
+            trail_stop_price = lowest_price * (1.0 + float(trailing_pct))
+            sl_hit = float(price) >= float(sl_price)
+            tp_hit = float(price) <= float(tp_price)
+            trail_hit = best_pnl_pct > 0 and float(price) >= float(trail_stop_price)
+
+        if pnl_pct > best_pnl_pct:
+            best_pnl_pct = float(pnl_pct)
+            last_best_ts = float(now_ts)
+
+        stall_hit = False
+        if self.stall_close_enabled and stall_ttl_sec > 0:
+            stall_hit = (now_ts - float(last_best_ts)) >= float(stall_ttl_sec)
+
+        pos["highest_price"] = float(highest_price)
+        pos["lowest_price"] = float(lowest_price)
+        pos["best_pnl_pct"] = float(best_pnl_pct)
+        pos["last_best_ts"] = float(last_best_ts)
+        pos["sl_price"] = float(sl_price)
+        pos["tp_price"] = float(tp_price)
+
+        self._set_position(sym, pos)
+
+        close_reason = None
+        if sl_hit:
+            close_reason = "stop_loss"
+        elif tp_hit:
+            close_reason = "take_profit"
+        elif trail_hit:
+            close_reason = "trailing_stop"
+        elif stall_hit:
+            close_reason = "stall_ttl"
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][MONITOR] symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f "
+                    "best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_pct=%.6f trail_stop=%.6f stall_hit=%s close_reason=%s",
+                    sym,
+                    side,
+                    float(price),
+                    float(entry_price),
+                    float(pnl_pct),
+                    float(best_pnl_pct),
+                    float(sl_price),
+                    float(tp_price),
+                    float(trailing_pct),
+                    float(trail_stop_price),
+                    bool(stall_hit),
+                    str(close_reason or "-"),
+                )
+        except Exception:
+            pass
+
+        if close_reason:
+            return self._close_position(
+                symbol=sym,
+                price=float(price),
+                reason=str(close_reason),
+                interval=str(interval or pos.get("interval") or ""),
+            )
+
+        return None
     def _append_hold_csv(self, row: Dict[str, Any]) -> None:
         return
 
@@ -2801,6 +2980,47 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
+            try:
+                cur = self._get_effective_position(sym_u)
+                if isinstance(cur, dict):
+                    hold_price = self._resolve_price(
+                        symbol=sym_u,
+                        price=price,
+                        mark_price=extra0.get("mark_price"),
+                        last_price=extra0.get("last_price"),
+                    )
+                    if hold_price is not None and hold_price > 0:
+                        self._check_sl_tp_trailing(
+                            symbol=sym_u,
+                            price=float(hold_price),
+                            interval=str(interval or ""),
+                        )
+
+                    if self.hold_close_enabled:
+                        side_cur = str(cur.get("side") or "").strip().lower()
+                        entry_cur = float(cur.get("entry_price") or 0.0)
+                        if side_cur in ("long", "short") and entry_cur > 0 and hold_price and hold_price > 0:
+                            if side_cur == "long":
+                                pnl_pct_cur = (float(hold_price) - float(entry_cur)) / max(float(entry_cur), 1e-12)
+                            else:
+                                pnl_pct_cur = (float(entry_cur) - float(hold_price)) / max(float(entry_cur), 1e-12)
+
+                            if pnl_pct_cur >= float(self.hold_close_min_pnl_pct):
+                                self.close_position(
+                                    symbol=sym_u,
+                                    price=float(hold_price),
+                                    reason="hold_take_profit",
+                                    interval=str(interval or ""),
+                                    intent_id=str(extra0.get("intent_id") or ""),
+                                )
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception("[EXEC][HOLD] monitor/close check failed | symbol=%s", sym_u)
+                except Exception:
+                    pass
+
             return
         if self._truthy_env("SHADOW_MODE", "0"):
             return
@@ -2831,9 +3051,38 @@ class TradeExecutor:
         if cur_side in ("long", "short"):
             if cur_side == side_norm:
                 try:
+                    current_price = self._resolve_price(
+                        symbol=sym_u,
+                        price=price,
+                        mark_price=extra0.get("mark_price"),
+                        last_price=extra0.get("last_price"),
+                    )
+                    if current_price is not None and current_price > 0:
+                        self._check_sl_tp_trailing(
+                            symbol=sym_u,
+                            price=float(current_price),
+                            interval=str(interval or ""),
+                        )
+                except Exception:
+                    pass
+
+                try:
                     if self.logger:
                         self.logger.info(
                             "[EXEC][OPEN-BLOCK] symbol already open same-side | symbol=%s current=%s incoming=%s",
+                            sym_u,
+                            cur_side,
+                            side_norm,
+                        )
+                except Exception:
+                    pass
+                return
+
+            if not self.reverse_close_enabled:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][REVERSE] reverse close disabled | symbol=%s current=%s incoming=%s",
                             sym_u,
                             cur_side,
                             side_norm,
@@ -2873,7 +3122,6 @@ class TradeExecutor:
                 except Exception:
                     pass
             return
-
         try:
             open_count = int(self._count_open_positions())
             if open_count >= int(self.max_open_positions):
