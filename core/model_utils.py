@@ -66,7 +66,7 @@ def _clamp01(v: float) -> float:
             src = "predict"
         except Exception as e:
             # en kötü durumda bile botu düşürmeyelim
-            logger.exception("[safe_p_buy] predict fallback failed: %s", e)
+            logger.exception("[safe_p_buy] predict fallback failed")
             return 0.5
 
     p = _clamp01(p)

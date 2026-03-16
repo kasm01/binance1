@@ -20,7 +20,7 @@ try:
     from models.hybrid_mtf import HybridMTF, MultiTimeframeHybridEnsemble  # noqa: F401
 except Exception as e:
     # Import zamanında log düşsün ama crash etmeyelim (özellikle tooling sırasında).
-    system_logger.exception("[core.hybrid_mtf] Failed to import from models.hybrid_mtf: %s", e)
+    system_logger.exception("[core.hybrid_mtf] Failed to import from models.hybrid_mtf")
     raise
 
 __all__ = ["HybridMTF", "MultiTimeframeHybridEnsemble"]
