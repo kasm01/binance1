@@ -87,7 +87,7 @@ def _tail_csv(path: str, n: int = 10) -> List[List[str]]:
 
     except Exception as e:
         try:
-            system_logger.exception("[TG] _tail_csv failed path=%s err=%s", path, e)
+            system_logger.exception(f"[TG] _tail_csv failed | path={path}")
         except Exception:
             pass
         return []

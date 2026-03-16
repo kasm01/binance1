@@ -41,8 +41,7 @@ class TelegramBot:
             )
         except Exception as e:
             self.bot = None
-            error_logger.exception("[TelegramBot] init failed: %s", e)
-
+            error_logger.exception("[TelegramBot] init failed")
     def set_risk_manager(self, risk_manager) -> None:
         self.risk_manager = risk_manager
         try:

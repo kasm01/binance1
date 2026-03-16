@@ -811,7 +811,7 @@ def create_trading_objects(
     except Exception as e:
         tg_bot = None
         if system_logger:
-            system_logger.exception("[MAIN] TelegramBot init hata: %s", e)
+            system_logger.exception("[MAIN] TelegramBot init hata")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "bot:positions")
 
@@ -1525,7 +1525,7 @@ async def bot_loop_single_symbol(engine: HeavyEngine, symbol: str) -> None:
             raise
         except Exception as e:
             if system_logger:
-                system_logger.exception("[LOOP ERROR] %s", e)
+                system_logger.exception("[LOOP ERROR]")
             else:
                 print("[LOOP ERROR]", e)
 
@@ -1673,7 +1673,9 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             scan_failures += 1
             backoff = min(err_backoff_max, err_backoff_base * (2 ** max(0, scan_failures - 1)))
             if system_logger:
-                system_logger.exception("[SCAN LOOP ERROR] %s | backoff=%.1fs failures=%d", e, backoff, scan_failures)
+                system_logger.exception(
+                    f"[SCAN LOOP ERROR] backoff={backoff:.1f}s failures={scan_failures}"
+                )
             await asyncio.sleep(_sleep_jitter(backoff, 0.20))
 # ----------------------------------------------------------------------
 # Telegram ENV compat (TELEGRAM_* -> TG_*)  [OPEN/CLOSE ONLY]
@@ -1787,7 +1789,7 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                     try:
                         payload = json.loads(pkg["json"])
                     except Exception:
-                        logger.exception("[EXEC-EVENTS] json parse failed sid=%s", sid)
+                        logger.exception(f"[EXEC-EVENTS] json parse failed sid={sid}")
                         continue
 
                 items = (payload or {}).get("items") or []
@@ -1868,9 +1870,9 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                             logger.warning("[EXEC-EVENTS] unknown side=%s intent=%s", side, intent_id)
 
                     except TypeError:
-                        logger.exception("[EXEC-EVENTS] method signature mismatch for item=%s", it)
+                        logger.exception(f"[EXEC-EVENTS] method signature mismatch for item={it}")
                     except Exception:
-                        logger.exception("[EXEC-EVENTS] failed to apply item=%s", it)
+                        logger.exception(f"[EXEC-EVENTS] failed to apply item={it}")
 
             if ids:
                 xack_safe(r, stream, group, ids)
@@ -2055,7 +2057,7 @@ def main() -> None:
             raise
         except Exception as e:
             if system_logger:
-                system_logger.exception("[MAIN] async_main crashed: %s", e)
+                system_logger.exception("[MAIN] async_main crashed")
             else:
                 import traceback
                 traceback.print_exc()

@@ -211,20 +211,14 @@ class TradeExecutor:
         if self.logger:
             try:
                 self.logger.info(
-                    "[EXEC][INIT] dry_run=%s base_order_notional=%.2f "
-                    "max_position_notional=%.2f max_leverage=%.2f "
-                    "max_open_positions=%s per_position_balance_pct=%.4f "
-                    "block_same_symbol_reentry=%s",
-                    "block_same_symbol_reentry=%s lifecycle_enabled=%s lifecycle_interval=%s",
-                    self.dry_run,
-                    self.base_order_notional,
-                    self.max_position_notional,
-                    self.max_leverage,
-                    self.max_open_positions,
-                    self.per_position_balance_pct,
-                    self.block_same_symbol_reentry,
-                    self.position_lifecycle_enabled,
-                    self.position_lifecycle_interval_sec,
+                    f"[EXEC][INIT] "
+                    f"dry_run={bool(self.dry_run)} "
+                    f"base_order_notional={float(self.base_order_notional):.2f} "
+                    f"max_position_notional={float(self.max_position_notional):.2f} "
+                    f"max_leverage={float(self.max_leverage):.2f} "
+                    f"max_open_positions={int(self.max_open_positions)} "
+                    f"per_position_balance_pct={float(self.per_position_balance_pct):.4f} "
+                    f"block_same_symbol_reentry={bool(self.block_same_symbol_reentry)}"
                 )
             except Exception:
                 pass
@@ -681,7 +675,7 @@ class TradeExecutor:
         except Exception:
             try:
                 if self.logger:
-                    self.logger.exception("[EXEC] await %s failed", label)
+                    self.logger.exception(f"[EXEC] await failed | label={label}")
             except Exception:
                 pass
         return maybe
@@ -1215,14 +1209,22 @@ class TradeExecutor:
         # position_manager tarafını olabildiğince temizle
         try:
             if pm is not None:
-                for method_name in ("delete_position", "del_position", "remove_position", "close_position_state"):
+                for method_name in (
+                    "clear_position",
+                    "delete_position",
+                    "del_position",
+                    "remove_position",
+                    "close_position_state",
+                ):
                     fn = getattr(pm, method_name, None)
                     if callable(fn):
                         try:
                             fn(sym)
+                            break
                         except TypeError:
                             try:
                                 fn(symbol=sym)
+                                break
                             except Exception:
                                 pass
         except Exception:
@@ -2322,15 +2324,36 @@ class TradeExecutor:
                 if isinstance(resp, dict):
                     oid = resp.get("orderId")
                     coid = str(resp.get("clientOrderId") or resp.get("newClientOrderId") or client_oid or "")
+
                 pol = self._poll_order_status(
                     sym,
                     order_id=oid,
                     client_order_id=coid,
                     max_wait_s=self.order_poll_wait_s,
                 )
+
                 try:
                     if self.logger:
                         self.logger.info("[EXEC][CLOSE][POLL] %s", self._safe_json(pol, limit=900))
+                except Exception:
+                    pass
+
+                try:
+                    if (
+                        isinstance(pol, dict)
+                        and pol.get("poll") == "ok"
+                        and isinstance(pol.get("result"), dict)
+                    ):
+                        resp = dict(resp or {})
+                        resp["_poll_result"] = dict(pol["result"])
+
+                        avg_price = self._clip_float(pol["result"].get("avgPrice"), None)
+                        executed_qty = self._clip_float(pol["result"].get("executedQty"), None)
+
+                        if avg_price is not None and avg_price > 0:
+                            resp["avgPrice"] = avg_price
+                        if executed_qty is not None and executed_qty > 0:
+                            resp["executedQty"] = executed_qty
                 except Exception:
                     pass
         except Exception:
@@ -2424,6 +2447,16 @@ class TradeExecutor:
         if not self.dry_run:
             try:
                 exchange_resp = self._exchange_close_market(sym, side, float(qty))
+
+                # borsa dönüşünden gerçek fill fiyatını almaya çalış
+                try:
+                    if isinstance(exchange_resp, dict):
+                        avg_price = self._clip_float(exchange_resp.get("avgPrice"), None)
+                        if avg_price is not None and avg_price > 0:
+                            close_price = float(avg_price)
+                except Exception:
+                    pass
+
             except Exception:
                 try:
                     if self.logger:
@@ -2436,7 +2469,6 @@ class TradeExecutor:
                 except Exception:
                     pass
                 raise
-
         realized_pnl = 0.0
         if entry_price > 0 and close_price > 0:
             realized_pnl = float(self._calc_pnl(side, entry_price, float(close_price), float(qty)))
@@ -3600,7 +3632,7 @@ class TradeExecutor:
             except Exception:
                 try:
                     if self.logger:
-                        self.logger.exception("[EXEC][HOLD] monitor/close check failed | symbol=%s", sym_u)
+                        self.logger.exception(f"[EXEC][HOLD] monitor/close check failed | symbol={sym_u}")
                 except Exception:
                     pass
 
