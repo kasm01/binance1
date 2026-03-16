@@ -21,6 +21,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
+
 def _attach_close(client: Any, log: logging.Logger) -> Any:
     def _close():
         try:
@@ -37,14 +38,12 @@ def _attach_close(client: Any, log: logging.Logger) -> Any:
         pass
 
     return client
+
+
 def _patch_session_request_drop_version(client: Any, log: logging.Logger) -> Any:
     """
-    Bazı python-binance sürümlerinde requests.Session.request'e `version`
-    kwarg'ı sarkabiliyor ve şu hataya yol açıyor:
-
-        Session.request() got an unexpected keyword argument 'version'
-
-    En güvenli çözüm: session.request seviyesinde version'ı düşürmek.
+    Bazı kombinasyonlarda requests.Session.request içine yanlışlıkla
+    `version` kwarg'ı sarkabiliyor. Bunu sessizce düşürür.
     """
     try:
         sess = getattr(client, "session", None)
@@ -57,72 +56,62 @@ def _patch_session_request_drop_version(client: Any, log: logging.Logger) -> Any
             log.warning("[BINANCE_CLIENT] session patch skipped: request missing")
             return client
 
+        if getattr(sess, "_b1_version_patch_applied", False):
+            log.info("[BINANCE_CLIENT] session.request patch already active")
+            return client
+
         def _request_patched(method, url, **kwargs):
-            try:
-                kwargs.pop("version", None)
-            except Exception:
-                pass
+            kwargs.pop("version", None)
             return original_request(method, url, **kwargs)
 
         setattr(sess, "request", _request_patched)
+        setattr(sess, "_b1_version_patch_applied", True)
         log.info("[BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)")
     except Exception as e:
         log.warning("[BINANCE_CLIENT] session.request patch failed: %s", e)
 
     return client
-def _patch_python_binance_request(client: Any, log: logging.Logger) -> Any:
-    """
-    Bazı python-binance / requests kombinasyonlarında request kwargs içine
-    yanlışlıkla `version` sarkabiliyor ve şu hataya yol açıyor:
 
-        Session.request() got an unexpected keyword argument 'version'
 
-    Bu patch, client._request çağrısında version'ı güvenle temizler.
+def _patch_futures_v2_read_methods(client: Any, log: logging.Logger) -> Any:
     """
+    python-binance 1.0.16 içinde futures_account / futures_position_information /
+    futures_account_balance varsayılan olarak FUTURES_API_VERSION üzerinden gider.
+    Bu kurulumda v1 -> 404 verdiği için sadece read endpoint'lerini v2'ye zorluyoruz.
+
+    order/leverage/marginType vb endpoint'lere dokunmuyoruz.
+    """
+
     try:
-        original_request = getattr(client, "_request", None)
-        if not callable(original_request):
+        if getattr(client, "_b1_futures_v2_patch_applied", False):
+            log.info("[BINANCE_CLIENT] futures v2 read patch already active")
             return client
 
-        def _request_patched(method, uri: str, signed: bool, force_params: bool = False, **kwargs):
-            try:
-                if "version" in kwargs:
-                    kwargs.pop("version", None)
-            except Exception:
-                pass
+        def _futures_request_v2(method: str, path: str, signed: bool = False, **kwargs):
+            base = client.FUTURES_TESTNET_URL if getattr(client, "testnet", False) else client.FUTURES_URL
+            uri = f"{base}/v2/{path}"
+            return client._request(method, uri, signed, True, **kwargs)
 
-            return original_request(method, uri, signed, force_params, **kwargs)
+        def _futures_account_v2(**params):
+            return _futures_request_v2("get", "account", True, data=params)
 
-        setattr(client, "_request", _request_patched)
+        def _futures_account_balance_v2(**params):
+            return _futures_request_v2("get", "balance", True, data=params)
 
-        log.info("[BINANCE_CLIENT] _request patch applied (drops stray 'version' kwarg)")
+        def _futures_position_information_v2(**params):
+            return _futures_request_v2("get", "positionRisk", True, data=params)
+
+        setattr(client, "futures_account", _futures_account_v2)
+        setattr(client, "futures_account_balance", _futures_account_balance_v2)
+        setattr(client, "futures_position_information", _futures_position_information_v2)
+        setattr(client, "_b1_futures_v2_patch_applied", True)
+
+        log.info("[BINANCE_CLIENT] patched futures read methods -> v2 endpoints")
     except Exception as e:
-        log.warning("[BINANCE_CLIENT] _request patch failed: %s", e)
+        log.warning("[BINANCE_CLIENT] futures v2 read patch failed: %s", e)
 
     return client
-def _patch_problematic_futures_methods(client: Any, log: logging.Logger) -> Any:
-    """
-    python-binance futures read methods bazı sürümlerde problemli olabiliyor.
-    Bu yüzden account / balance / positionRisk okumalarını v2 endpoint'e zorlarız.
-    """
 
-    def _futures_account_v2(**params):
-        return client._request_futures_api("get", "account", True, version=2, data=params)
-
-    def _futures_account_balance_v2(**params):
-        return client._request_futures_api("get", "balance", True, version=2, data=params)
-
-    def _futures_position_information_v2(**params):
-        return client._request_futures_api("get", "positionRisk", True, version=2, data=params)
-
-    try:
-        client.futures_account = _futures_account_v2
-        client.futures_account_balance = _futures_account_balance_v2
-        client.futures_position_information = _futures_position_information_v2
-    except Exception as e:
-        log.warning("[BINANCE_CLIENT] futures method patch failed: %s", e)
-
-    return client
 
 def create_binance_client(
     api_key: Optional[str],
@@ -159,6 +148,7 @@ def create_binance_client(
 
     client = _attach_close(client, log)
     client = _patch_session_request_drop_version(client, log)
+    client = _patch_futures_v2_read_methods(client, log)
 
     try:
         log.info(

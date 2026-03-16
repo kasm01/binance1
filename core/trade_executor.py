@@ -111,6 +111,55 @@ class TradeExecutor:
             float(os.getenv("POSITION_LIFECYCLE_INTERVAL_SEC", "15") or 15)
         )
 
+        self.default_sl_pct = float(os.getenv("SL_PCT", "0.01") or 0.01)
+        self.default_tp_pct = float(os.getenv("TP_PCT", "0.02") or 0.02)
+        self.default_trailing_pct = float(os.getenv("TRAILING_PCT", "0.03") or 0.03)
+
+        self.trailing_activation_pct = float(
+            os.getenv("TRAILING_ACTIVATION_PCT", "0.003") or 0.003
+        )  # %0.3 kâra geçince trail arm
+
+        self.stall_min_pnl_pct = float(
+            os.getenv("STALL_MIN_PNL_PCT", "0.002") or 0.002
+        )  # stall exit için minimum istenen kâr
+
+        self.weak_signal_enabled = str(
+            os.getenv("WEAK_SIGNAL_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.weak_signal_grace_sec = int(
+            float(os.getenv("WEAK_SIGNAL_GRACE_SEC", "120") or 120)
+        )
+
+        self.weak_signal_fresh_sec = int(
+            float(os.getenv("WEAK_SIGNAL_FRESH_SEC", "180") or 180)
+        )
+
+        self.weak_signal_action = str(
+            os.getenv("WEAK_SIGNAL_ACTION", "protect")
+        ).strip().lower()  # protect / reduce / close
+
+        self.weak_signal_reduce_frac = float(
+            os.getenv("WEAK_SIGNAL_REDUCE_FRAC", "0.50") or 0.50
+        )
+
+        self.weak_signal_hold_below = float(
+            os.getenv("WEAK_SIGNAL_HOLD_BELOW", "0.55") or 0.55
+        )
+
+        self.weak_signal_reverse_above = float(
+            os.getenv("WEAK_SIGNAL_REVERSE_ABOVE", "0.60") or 0.60
+        )
+
+        self.last_snapshot_by_symbol: Dict[str, Dict[str, Any]] = {}
+        self.position_lifecycle_enabled = str(
+            os.getenv("POSITION_LIFECYCLE_ENABLED", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.position_lifecycle_interval_sec = int(
+            float(os.getenv("POSITION_LIFECYCLE_INTERVAL_SEC", "15") or 15)
+        )
+
         self.hold_close_enabled = str(
             os.getenv("HOLD_CLOSE_ENABLED", "0")
         ).strip().lower() in ("1", "true", "yes", "on")
@@ -137,6 +186,7 @@ class TradeExecutor:
                     "max_position_notional=%.2f max_leverage=%.2f "
                     "max_open_positions=%s per_position_balance_pct=%.4f "
                     "block_same_symbol_reentry=%s",
+                    "block_same_symbol_reentry=%s lifecycle_enabled=%s lifecycle_interval=%s",
                     self.dry_run,
                     self.base_order_notional,
                     self.max_position_notional,
@@ -144,6 +194,8 @@ class TradeExecutor:
                     self.max_open_positions,
                     self.per_position_balance_pct,
                     self.block_same_symbol_reentry,
+                    self.position_lifecycle_enabled,
+                    self.position_lifecycle_interval_sec,
                 )
             except Exception:
                 pass
@@ -1251,6 +1303,58 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+    def _upsert_bridge_state_on_open(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        intent_id: str = "",
+    ) -> None:
+        sym = str(symbol).upper().strip()
+        if not sym or self.redis is None:
+            return
+
+        key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
+
+        try:
+            raw = self.redis.get(key)
+            if raw:
+                if isinstance(raw, (bytes, bytearray)):
+                    raw = raw.decode("utf-8", errors="ignore")
+                obj = json.loads(raw)
+                if not isinstance(obj, dict):
+                    obj = {}
+            else:
+                obj = {}
+
+            obj[sym] = {
+                "side": str(side).lower().strip(),
+                "ts_utc": datetime.now(timezone.utc).isoformat(),
+                "intent_id": str(intent_id or ""),
+                "interval": str(interval or ""),
+                "expires_at": int(time.time()) + 12 * 3600,
+            }
+
+            self.redis.set(key, json.dumps(obj, ensure_ascii=False, default=str))
+
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE] bridge state upserted | key=%s symbol=%s side=%s interval=%s",
+                    key,
+                    sym,
+                    str(side).lower().strip(),
+                    str(interval or ""),
+                )
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] bridge state upsert failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+
     def sync_positions_with_exchange(self) -> Dict[str, Any]:
         summary = {
             "exchange_open": 0,
@@ -1340,36 +1444,83 @@ class TradeExecutor:
             except Exception:
                 await asyncio.sleep(300)
     async def _position_lifecycle_loop(self) -> None:
+        interval_sec = max(5, int(getattr(self, "position_lifecycle_interval_sec", 15)))
+
         while True:
             try:
-                if self.position_lifecycle_enabled:
-                    local_map = self._get_all_local_positions()
+                positions = self._get_all_local_positions()
 
-                    for sym, pos in local_map.items():
-                        try:
-                            px = self._resolve_price(symbol=sym)
-                            if px is None or px <= 0:
-                                ex_pos = self._get_exchange_position(sym)
-                                if isinstance(ex_pos, dict):
-                                    px = self._clip_float(ex_pos.get("mark_price"), None)
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][LIFECYCLE] tick | positions=%s symbols=%s",
+                            len(positions),
+                            list(positions.keys()),
+                        )
+                except Exception:
+                    pass
 
-                            if px is None or px <= 0:
-                                continue
+                for sym, pos in positions.items():
+                    try:
+                        side = str(pos.get("side") or "").strip().lower()
+                        qty = float(pos.get("qty") or 0.0)
+                        interval = str(pos.get("interval") or "")
 
-                            self._check_sl_tp_trailing(
-                                symbol=sym,
-                                price=float(px),
-                                interval=str(pos.get("interval") or ""),
-                            )
-                        except Exception:
+                        if side not in ("long", "short") or qty <= 0:
+                            continue
+
+                        px = self._resolve_price(symbol=sym)
+                        if px is None or px <= 0:
+                            try:
+                                client = getattr(self, "client", None)
+                                fn = getattr(client, "futures_mark_price", None) if client is not None else None
+                                if callable(fn):
+                                    mp = fn(symbol=sym)
+                                    if isinstance(mp, dict):
+                                        px = self._clip_float(mp.get("markPrice"), None)
+                            except Exception:
+                                px = None
+
+                        if px is None or px <= 0:
                             try:
                                 if self.logger:
-                                    self.logger.exception(
-                                        "[EXEC][LIFECYCLE] per-symbol monitor failed | symbol=%s",
+                                    self.logger.info(
+                                        "[EXEC][LIFECYCLE] skip no price | symbol=%s",
                                         sym,
                                     )
                             except Exception:
                                 pass
+                            continue
+
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][LIFECYCLE] check | symbol=%s side=%s qty=%.10f price=%.6f interval=%s",
+                                    sym,
+                                    side,
+                                    qty,
+                                    float(px),
+                                    interval,
+                                )
+                        except Exception:
+                            pass
+
+                        self._check_sl_tp_trailing(
+                            symbol=sym,
+                            price=float(px),
+                            interval=interval,
+                        )
+
+                    except Exception:
+                        try:
+                            if self.logger:
+                                self.logger.exception(
+                                    "[EXEC][LIFECYCLE] symbol processing failed | symbol=%s",
+                                    sym,
+                                )
+                        except Exception:
+                            pass
+
             except Exception:
                 try:
                     if self.logger:
@@ -1377,10 +1528,7 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-            try:
-                await asyncio.sleep(max(5, int(self.position_lifecycle_interval_sec)))
-            except Exception:
-                await asyncio.sleep(15)
+            await asyncio.sleep(interval_sec)
     def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
         sym = str(symbol).upper().strip()
         side0 = str(side or "").strip().lower()
@@ -1399,6 +1547,153 @@ class TradeExecutor:
             return 0.0
 
         return float(ex_qty)
+    def _iter_local_positions(self) -> List[Tuple[str, Dict[str, Any]]]:
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        try:
+            mp = self._get_all_local_positions()
+            for sym, pos in mp.items():
+                if isinstance(pos, dict):
+                    out.append((str(sym).upper().strip(), pos))
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def _calc_pnl_pct(side: str, entry_price: float, current_price: float) -> float:
+        ep = float(entry_price or 0.0)
+        cp = float(current_price or 0.0)
+        if ep <= 0 or cp <= 0:
+            return 0.0
+        s = str(side or "").strip().lower()
+        if s == "long":
+            return (cp / ep) - 1.0
+        if s == "short":
+            return (ep / cp) - 1.0
+        return 0.0
+
+    def _latest_symbol_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        snap = self.last_snapshot_by_symbol.get(sym)
+        if not isinstance(snap, dict):
+            return None
+
+        ts_epoch = float(snap.get("ts_epoch") or 0.0)
+        if ts_epoch <= 0:
+            return None
+
+        age = time.time() - ts_epoch
+        if age > float(self.weak_signal_fresh_sec):
+            return None
+        return snap
+
+    def _protect_position(self, symbol: str, pos: Dict[str, Any], current_price: float, reason: str) -> None:
+        sym = str(symbol).upper().strip()
+        side = str(pos.get("side") or "").strip().lower()
+        entry_price = float(pos.get("entry_price") or 0.0)
+        cp = float(current_price or 0.0)
+
+        if entry_price <= 0 or cp <= 0 or side not in ("long", "short"):
+            return
+
+        old_sl = float(pos.get("sl_price") or 0.0)
+
+        if side == "long":
+            new_sl = max(old_sl, entry_price)
+        else:
+            if old_sl > 0:
+                new_sl = min(old_sl, entry_price)
+            else:
+                new_sl = entry_price
+
+        pos["sl_price"] = float(new_sl)
+        self._set_position(sym, pos)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][PROTECT] symbol=%s side=%s old_sl=%.6f new_sl=%.6f reason=%s",
+                    sym,
+                    side,
+                    float(old_sl),
+                    float(new_sl),
+                    str(reason),
+                )
+        except Exception:
+            pass
+
+    def _reduce_position_partial(
+        self,
+        symbol: str,
+        pos: Dict[str, Any],
+        reduce_frac: float,
+        current_price: float,
+        reason: str,
+    ) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        side = str(pos.get("side") or "").strip().lower()
+        qty = float(pos.get("qty") or 0.0)
+
+        if side not in ("long", "short") or qty <= 0:
+            return {"status": "skip", "reason": "bad_position"}
+
+        frac = max(0.05, min(float(reduce_frac or 0.5), 0.95))
+        reduce_qty_raw = qty * frac
+
+        symbol_info = self._get_symbol_info(sym)
+        norm_qty, qmeta = self._normalize_order_qty(
+            symbol=sym,
+            raw_qty=float(reduce_qty_raw),
+            price=float(current_price or pos.get("entry_price") or 0.0),
+            symbol_info=symbol_info,
+        )
+
+        if norm_qty <= 0 or norm_qty >= qty:
+            return self._close_position(
+                symbol=sym,
+                price=float(current_price or 0.0),
+                reason=str(reason),
+                interval=str(pos.get("interval") or ""),
+            ) or {"status": "skip", "reason": "reduce_failed"}
+
+        if not self.dry_run:
+            self._exchange_close_market(sym, side, float(norm_qty))
+
+        remaining_qty = max(0.0, float(qty) - float(norm_qty))
+        if remaining_qty <= 0:
+            return self._close_position(
+                symbol=sym,
+                price=float(current_price or 0.0),
+                reason=str(reason),
+                interval=str(pos.get("interval") or ""),
+            ) or {"status": "skip", "reason": "reduce_to_zero"}
+
+        pos["qty"] = float(remaining_qty)
+        entry_price = float(pos.get("entry_price") or 0.0)
+        pos["notional"] = float(entry_price * remaining_qty) if entry_price > 0 else float(pos.get("notional") or 0.0)
+        self._set_position(sym, pos)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][REDUCE] symbol=%s side=%s reduced_qty=%.10f remain_qty=%.10f reason=%s qmeta=%s",
+                    sym,
+                    side,
+                    float(norm_qty),
+                    float(remaining_qty),
+                    str(reason),
+                    self._safe_json(qmeta, limit=600),
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": "reduced",
+            "symbol": sym,
+            "side": side,
+            "reduced_qty": float(norm_qty),
+            "remaining_qty": float(remaining_qty),
+            "reason": str(reason),
+        }
     # ---------------------------------------------------------
     # position dict / pnl / notify
     # ---------------------------------------------------------
@@ -2338,119 +2633,61 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # monitoring stubs
     # ---------------------------------------------------------
-    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Optional[Dict[str, Any]]:
+    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
-        if not sym:
-            return None
-
         pos = self._get_position(sym)
         if not isinstance(pos, dict):
-            return None
+            return
 
         side = str(pos.get("side") or "").strip().lower()
         qty = float(pos.get("qty") or 0.0)
         entry_price = float(pos.get("entry_price") or 0.0)
 
-        if side not in ("long", "short") or qty <= 0 or entry_price <= 0 or price <= 0:
-            return None
-
-        now_ts = time.time()
-
-        trailing_pct = float(pos.get("trailing_pct") or self.trailing_pct_default or 0.03)
-        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
-
-        sl_price = float(pos.get("sl_price") or 0.0)
-        tp_price = float(pos.get("tp_price") or 0.0)
-
-        if sl_price <= 0:
-            if side == "long":
-                sl_price = float(entry_price) * (1.0 - float(self.sl_pct_default))
-            else:
-                sl_price = float(entry_price) * (1.0 + float(self.sl_pct_default))
-
-        if tp_price <= 0:
-            if side == "long":
-                tp_price = float(entry_price) * (1.0 + float(self.tp_pct_default))
-            else:
-                tp_price = float(entry_price) * (1.0 - float(self.tp_pct_default))
+        if side not in ("long", "short") or qty <= 0 or price <= 0 or entry_price <= 0:
+            return
 
         highest_price = float(pos.get("highest_price") or entry_price)
         lowest_price = float(pos.get("lowest_price") or entry_price)
         best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
-        last_best_ts = float(pos.get("last_best_ts") or now_ts)
+        last_best_ts = float(pos.get("last_best_ts") or time.time())
 
         if side == "long":
             highest_price = max(highest_price, float(price))
-            pnl_pct = (float(price) - float(entry_price)) / max(float(entry_price), 1e-12)
-            trail_stop_price = highest_price * (1.0 - float(trailing_pct))
-            sl_hit = float(price) <= float(sl_price)
-            tp_hit = float(price) >= float(tp_price)
-            trail_hit = best_pnl_pct > 0 and float(price) <= float(trail_stop_price)
+            pnl_pct = ((float(price) - entry_price) / entry_price) if entry_price > 0 else 0.0
+            trail_ref_price = highest_price
+            trail_stop_price = highest_price * (1.0 - float(pos.get("trailing_pct") or 0.0))
         else:
             lowest_price = min(lowest_price, float(price))
-            pnl_pct = (float(entry_price) - float(price)) / max(float(entry_price), 1e-12)
-            trail_stop_price = lowest_price * (1.0 + float(trailing_pct))
-            sl_hit = float(price) >= float(sl_price)
-            tp_hit = float(price) <= float(tp_price)
-            trail_hit = best_pnl_pct > 0 and float(price) >= float(trail_stop_price)
+            pnl_pct = ((entry_price - float(price)) / entry_price) if entry_price > 0 else 0.0
+            trail_ref_price = lowest_price
+            trail_stop_price = lowest_price * (1.0 + float(pos.get("trailing_pct") or 0.0))
 
         if pnl_pct > best_pnl_pct:
             best_pnl_pct = float(pnl_pct)
-            last_best_ts = float(now_ts)
-
-        stall_hit = False
-        if self.stall_close_enabled and stall_ttl_sec > 0:
-            stall_hit = (now_ts - float(last_best_ts)) >= float(stall_ttl_sec)
+            last_best_ts = time.time()
 
         pos["highest_price"] = float(highest_price)
         pos["lowest_price"] = float(lowest_price)
         pos["best_pnl_pct"] = float(best_pnl_pct)
         pos["last_best_ts"] = float(last_best_ts)
-        pos["sl_price"] = float(sl_price)
-        pos["tp_price"] = float(tp_price)
 
         self._set_position(sym, pos)
-
-        close_reason = None
-        if sl_hit:
-            close_reason = "stop_loss"
-        elif tp_hit:
-            close_reason = "take_profit"
-        elif trail_hit:
-            close_reason = "trailing_stop"
-        elif stall_hit:
-            close_reason = "stall_ttl"
 
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][MONITOR] symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f "
-                    "best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_pct=%.6f trail_stop=%.6f stall_hit=%s close_reason=%s",
+                    "[EXEC][LIFECYCLE] updated | symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f trail_ref=%.6f trail_stop=%.6f",
                     sym,
                     side,
                     float(price),
                     float(entry_price),
                     float(pnl_pct),
                     float(best_pnl_pct),
-                    float(sl_price),
-                    float(tp_price),
-                    float(trailing_pct),
+                    float(trail_ref_price),
                     float(trail_stop_price),
-                    bool(stall_hit),
-                    str(close_reason or "-"),
                 )
         except Exception:
             pass
-
-        if close_reason:
-            return self._close_position(
-                symbol=sym,
-                price=float(price),
-                reason=str(close_reason),
-                interval=str(interval or pos.get("interval") or ""),
-            )
-
-        return None
     def _append_hold_csv(self, row: Dict[str, Any]) -> None:
         return
 
@@ -2483,6 +2720,23 @@ class TradeExecutor:
 
         if intent_price is None or intent_price <= 0:
             try:
+                client = getattr(self, "client", None)
+                fn = getattr(client, "futures_mark_price", None) if client is not None else None
+                if callable(fn):
+                    mp = fn(symbol=sym_u)
+                    if isinstance(mp, dict):
+                        intent_price = self._clip_float(mp.get("markPrice"), None)
+            except Exception:
+                intent_price = None
+
+        if intent_price is None or intent_price <= 0:
+            try:
+                intent_price = self._get_cached_mid_price(sym_u)
+            except Exception:
+                intent_price = None
+
+        if intent_price is None or intent_price <= 0:
+            try:
                 if self.logger:
                     self.logger.warning(
                         "[EXEC][INTENT] missing price -> skip open | symbol=%s side=%s",
@@ -2492,7 +2746,6 @@ class TradeExecutor:
             except Exception:
                 pass
             return {"status": "skip", "reason": "missing_price"}
-
         order_price: Optional[float] = None
 
         try:
@@ -2793,6 +3046,26 @@ class TradeExecutor:
         self._set_position(sym_u, pos)
 
         try:
+            self._upsert_bridge_state_on_open(
+                symbol=sym_u,
+                side=side0,   # execute_decision içinde burada side_norm kullan
+                interval=str(interval or ""),
+                intent_id=str(extra.get("intent_id") or ""),
+            )
+        except Exception:
+            pass
+
+        try:
+            self._upsert_bridge_state_on_open(
+                symbol=sym_u,
+                side=side0,
+                interval=str(interval or ""),
+                intent_id=str(extra.get("intent_id") or ""),
+            )
+        except Exception:
+            pass
+
+        try:
             if self.logger:
                 self.logger.info(
                     "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f "
@@ -2919,11 +3192,13 @@ class TradeExecutor:
             if p_used is None and isinstance(probs, dict):
                 p_used = probs.get("p_used") or probs.get("p_single")
 
-            self.last_snapshot = {
+            snap = {
                 "ts": datetime.utcnow().isoformat(),
+                "ts_epoch": time.time(),
                 "symbol": sym_u,
                 "interval": interval,
                 "signal": signal_u,
+                "signal_norm": side_norm,
                 "signal_source": str(extra0.get("signal_source") or extra0.get("p_buy_source") or ""),
                 "p_used": p_used,
                 "p_single": probs.get("p_single") if isinstance(probs, dict) else None,
@@ -2934,9 +3209,11 @@ class TradeExecutor:
                 "whale_action": whale_action,
                 "extra": extra0,
             }
+
+            self.last_snapshot = snap
+            self.last_snapshot_by_symbol[sym_u] = snap
         except Exception:
             pass
-
         if signal_u == "HOLD":
             try:
                 ens = extra0.get("ensemble_p")
@@ -3368,6 +3645,16 @@ class TradeExecutor:
         )
 
         self._set_position(sym_u, pos)
+
+        try:
+            self._upsert_bridge_state_on_open(
+                symbol=sym_u,
+                side=side_norm,
+                interval=str(interval or ""),
+                intent_id=str(extra0.get("intent_id") or ""),
+            )
+        except Exception:
+            pass
 
         try:
             if self.logger:

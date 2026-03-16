@@ -989,9 +989,6 @@ def create_trading_objects(
                 system_logger.exception("[MAIN][SYNC] initial sync_positions_with_exchange failed")
         except Exception:
             pass
-    # ---------------------------------------------------------
-    # periodic position sync loop
-    # ---------------------------------------------------------
     try:
         if hasattr(trade_executor, "_position_sync_loop"):
             asyncio.create_task(trade_executor._position_sync_loop())
@@ -1008,10 +1005,6 @@ def create_trading_objects(
         except Exception:
             pass
 
-
-    # ---------------------------------------------------------
-    # periodic position lifecycle loop (SL / TP / trailing / stall)
-    # ---------------------------------------------------------
     try:
         if hasattr(trade_executor, "_position_lifecycle_loop"):
             asyncio.create_task(trade_executor._position_lifecycle_loop())
@@ -1027,7 +1020,6 @@ def create_trading_objects(
                 system_logger.exception("[MAIN][LIFECYCLE] failed to start lifecycle loop")
         except Exception:
             pass
-
 
     okx_ws = None
     try:
