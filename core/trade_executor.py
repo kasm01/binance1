@@ -357,7 +357,7 @@ class TradeExecutor:
                             self.logger.info(
                                 "[EXEC][STATE] position_manager symbols | count=%s symbols=%s",
                                 len(symbols),
-                                list(symbols),
+                                [str(s).upper().strip() for s in symbols],
                             )
                     except Exception:
                         pass
@@ -365,9 +365,12 @@ class TradeExecutor:
                     for sym in symbols:
                         try:
                             sym_u = str(sym).upper().strip()
+                            if not sym_u:
+                                continue
+
                             pos = get_position_fn(sym_u)
                             if isinstance(pos, dict) and pos:
-                                out[sym_u] = pos
+                                out[sym_u] = dict(pos)
                         except Exception:
                             if self.logger:
                                 self.logger.exception(
@@ -381,10 +384,9 @@ class TradeExecutor:
         # 2) Redis fallback
         if not out:
             try:
-                r = (
-                    getattr(self, "redis", None)
-                    or getattr(self, "redis_client", None)
-                )
+                r = getattr(self, "redis", None)
+                if r is None:
+                    r = getattr(self, "redis_client", None)
 
                 if r is not None:
                     keys = r.keys("bot:positions:*") or []
@@ -392,15 +394,26 @@ class TradeExecutor:
                     try:
                         if self.logger:
                             self.logger.info(
-                                "[EXEC][STATE] redis fallback keys | count=%s keys=%s",
+                                "[EXEC][STATE] redis keys scan | count=%s keys=%s",
                                 len(keys),
-                                [str(k) for k in keys],
+                                [
+                                    k.decode("utf-8", errors="ignore")
+                                    if isinstance(k, (bytes, bytearray))
+                                    else str(k)
+                                    for k in keys
+                                ],
                             )
                     except Exception:
                         pass
 
                     for k in keys:
                         try:
+                            key_s = (
+                                k.decode("utf-8", errors="ignore")
+                                if isinstance(k, (bytes, bytearray))
+                                else str(k)
+                            )
+
                             raw = r.get(k)
                             if not raw:
                                 continue
@@ -413,10 +426,14 @@ class TradeExecutor:
                                 continue
 
                             sym_u = str(
-                                pos.get("symbol") or str(k).split(":")[-1]
+                                pos.get("symbol") or key_s.split(":")[-1]
                             ).upper().strip()
+                            if not sym_u:
+                                continue
 
-                            out[sym_u] = pos
+                            pos["symbol"] = sym_u
+                            out[sym_u] = dict(pos)
+
                         except Exception:
                             if self.logger:
                                 self.logger.exception(
@@ -435,41 +452,85 @@ class TradeExecutor:
                     for sym, pos in mem.items():
                         try:
                             sym_u = str(sym).upper().strip()
+                            if not sym_u:
+                                continue
+
                             if isinstance(pos, dict) and pos:
-                                out[sym_u] = pos
+                                cp = dict(pos)
+                                cp["symbol"] = sym_u
+                                out[sym_u] = cp
                         except Exception:
                             pass
-
-                    try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC][STATE] memory fallback used | count=%s symbols=%s",
-                                len(out),
-                                list(out.keys()),
-                            )
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
         # 4) normalize + sadece geçerli açık pozisyonlar
         norm: Dict[str, Dict[str, Any]] = {}
+
         for sym, pos in out.items():
             try:
                 if not isinstance(pos, dict):
                     continue
 
+                sym_u = str(sym or pos.get("symbol") or "").upper().strip()
+                if not sym_u:
+                    continue
+
                 side = str(pos.get("side") or "").strip().lower()
-                qty = float(pos.get("qty") or 0.0)
+
+                try:
+                    qty = float(pos.get("qty") or 0.0)
+                except Exception:
+                    qty = 0.0
+
+                try:
+                    entry_price = float(pos.get("entry_price") or 0.0)
+                except Exception:
+                    entry_price = 0.0
 
                 if side not in ("long", "short"):
                     continue
                 if qty <= 0:
                     continue
+                if entry_price <= 0:
+                    continue
 
-                sym_u = str(sym).upper().strip()
-                pos["symbol"] = sym_u
-                norm[sym_u] = pos
+                cp = dict(pos)
+                cp["symbol"] = sym_u
+                cp["side"] = side
+                cp["qty"] = float(qty)
+                cp["entry_price"] = float(entry_price)
+                cp["interval"] = str(cp.get("interval") or "5m").strip() or "5m"
+                cp["notional"] = float(cp.get("notional") or (qty * entry_price))
+                cp["sl_price"] = float(cp.get("sl_price") or 0.0)
+                cp["tp_price"] = float(cp.get("tp_price") or 0.0)
+                cp["trailing_pct"] = float(
+                    cp.get("trailing_pct")
+                    or getattr(self, "default_trailing_pct", 0.03)
+                    or 0.03
+                )
+                cp["stall_ttl_sec"] = int(
+                    cp.get("stall_ttl_sec")
+                    or getattr(self, "default_stall_ttl_sec", 7200)
+                    or 7200
+                )
+                cp["best_pnl_pct"] = float(cp.get("best_pnl_pct") or 0.0)
+                cp["last_best_ts"] = float(cp.get("last_best_ts") or time.time())
+                cp["atr_value"] = float(cp.get("atr_value") or 0.0)
+                cp["highest_price"] = float(cp.get("highest_price") or entry_price)
+                cp["lowest_price"] = float(cp.get("lowest_price") or entry_price)
+
+                meta = cp.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                if not isinstance(meta.get("probs"), dict):
+                    meta["probs"] = {}
+                if not isinstance(meta.get("extra"), dict):
+                    meta["extra"] = {}
+                cp["meta"] = meta
+
+                norm[sym_u] = cp
+
             except Exception:
                 if self.logger:
                     self.logger.exception(
@@ -488,6 +549,7 @@ class TradeExecutor:
             pass
 
         return norm
+
     def _get_exchange_open_positions(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         client = getattr(self, "client", None)
@@ -1449,6 +1511,46 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
+    def _get_bridge_state(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return {}
+
+        r = getattr(self, "redis", None)
+        if r is None:
+            r = getattr(self, "redis_client", None)
+
+        if r is None:
+            return {}
+
+        key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
+
+        try:
+            raw = r.get(key)
+            if not raw:
+                return {}
+
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                return {}
+
+            st = obj.get(sym)
+            return st if isinstance(st, dict) else {}
+
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] bridge state read failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+            return {}
     def _upsert_bridge_state_on_open(
         self,
         symbol: str,
@@ -1544,8 +1646,122 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # local var, exchange yok -> temizle
-        for sym, pos in local_map.items():
+        # 1) exchange'de var ama local'de yok -> hydrate et
+        for sym, ex_pos in exchange_map.items():
+            if sym in local_map:
+                summary["kept"].append(sym)
+                continue
+
+            try:
+                bridge_st = self._get_bridge_state(sym)
+
+                hydrated = {
+                    "symbol": sym,
+                    "side": str(ex_pos.get("side") or "").strip().lower(),
+                    "qty": float(ex_pos.get("qty") or 0.0),
+                    "entry_price": float(ex_pos.get("entry_price") or 0.0),
+                    "notional": float(ex_pos.get("notional") or 0.0),
+                    "interval": str(bridge_st.get("interval") or "5m").strip() or "5m",
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                    "sl_price": 0.0,
+                    "tp_price": 0.0,
+                    "trailing_pct": float(
+                        getattr(self, "default_trailing_pct", 0.03) or 0.03
+                    ),
+                    "stall_ttl_sec": int(
+                        getattr(self, "default_stall_ttl_sec", 7200) or 7200
+                    ),
+                    "best_pnl_pct": 0.0,
+                    "last_best_ts": float(time.time()),
+                    "atr_value": 0.0,
+                    "highest_price": float(ex_pos.get("entry_price") or 0.0),
+                    "lowest_price": float(ex_pos.get("entry_price") or 0.0),
+                    "meta": {
+                        "probs": {},
+                        "extra": {
+                            "hydrated_from_exchange": True,
+                            "bridge_state": bridge_st,
+                        },
+                    },
+                }
+
+                self._set_position(sym, hydrated)
+
+                try:
+                    chk = self._get_position(sym)
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SYNC] post-set local verify | symbol=%s exists=%s",
+                            sym,
+                            bool(isinstance(chk, dict) and chk),
+                        )
+                except Exception:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][SYNC] post-set local verify failed | symbol=%s",
+                            sym,
+                        )
+
+                # _set_position çalışmasa bile redis fallback'e düşmesi için zorla yaz
+                try:
+                    r = getattr(self, "redis", None)
+                    if r is None:
+                        r = getattr(self, "redis_client", None)
+
+                    if r is not None:
+                        r.set(
+                            f"bot:positions:{sym}",
+                            json.dumps(hydrated, ensure_ascii=False, default=str),
+                        )
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYNC] redis fallback write ok | symbol=%s",
+                                sym,
+                            )
+                except Exception:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][SYNC] redis fallback write failed | symbol=%s",
+                            sym,
+                        )
+
+                self._upsert_bridge_state_on_open(
+                    symbol=sym,
+                    side=str(hydrated.get("side") or ""),
+                    interval=str(hydrated.get("interval") or "5m"),
+                    intent_id=str(bridge_st.get("intent_id") or ""),
+                )
+
+                summary["added_local"].append(sym)
+                summary["added_bridge"].append(sym)
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SYNC] hydrated missing local position from exchange | symbol=%s side=%s qty=%.10f entry=%.10f interval=%s",
+                            sym,
+                            str(hydrated.get("side") or ""),
+                            float(hydrated.get("qty") or 0.0),
+                            float(hydrated.get("entry_price") or 0.0),
+                            str(hydrated.get("interval") or ""),
+                        )
+                except Exception:
+                    pass
+
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][SYNC] hydrate failed | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
+
+        # 2) local'de var ama exchange'de yok -> temizle
+        refreshed_local_map = self._get_all_local_positions()
+
+        for sym, pos in refreshed_local_map.items():
             if sym not in exchange_map:
                 try:
                     if self.position_sync_remove_orphans:
@@ -1574,125 +1790,8 @@ class TradeExecutor:
                     except Exception:
                         pass
             else:
-                summary["kept"].append(sym)
-
-        # exchange var, local yok -> hydrate et
-        for sym, ex_pos in exchange_map.items():
-            if sym in local_map:
                 if sym not in summary["kept"]:
                     summary["kept"].append(sym)
-                continue
-
-            try:
-                side = str(ex_pos.get("side") or "").strip().lower()
-                qty = float(ex_pos.get("qty") or 0.0)
-                entry_price = float(ex_pos.get("entry_price") or 0.0)
-
-                if side not in ("long", "short") or qty <= 0 or entry_price <= 0:
-                    continue
-
-                bridge_state = self._get_bridge_state(sym)
-
-                interval = str(
-                    (bridge_state or {}).get("interval")
-                    or ex_pos.get("interval")
-                    or "5m"
-                ).strip() or "5m"
-
-                intent_id = str(
-                    (bridge_state or {}).get("intent_id")
-                    or ex_pos.get("intent_id")
-                    or ""
-                ).strip()
-
-                trailing_pct = float(
-                    ex_pos.get("trailing_pct")
-                    or getattr(self, "default_trailing_pct", 0.03)
-                    or 0.03
-                )
-                stall_ttl_sec = int(
-                    ex_pos.get("stall_ttl_sec")
-                    or getattr(self, "default_stall_ttl_sec", 7200)
-                    or 7200
-                )
-
-                now_ts = time.time()
-
-                hydrated = {
-                    "symbol": sym,
-                    "side": side,
-                    "qty": qty,
-                    "entry_price": entry_price,
-                    "notional": float(qty * entry_price),
-                    "interval": interval,
-                    "opened_at": datetime.now(timezone.utc).isoformat(),
-                    "sl_price": 0.0,
-                    "tp_price": 0.0,
-                    "trailing_pct": trailing_pct,
-                    "stall_ttl_sec": stall_ttl_sec,
-                    "best_pnl_pct": 0.0,
-                    "last_best_ts": now_ts,
-                    "atr_value": 0.0,
-                    "highest_price": entry_price,
-                    "lowest_price": entry_price,
-                    "meta": {
-                        "probs": {},
-                        "extra": {
-                            "hydrated_from_exchange": True,
-                            "intent_id": intent_id,
-                        },
-                    },
-                }
-
-                self._set_position(sym, hydrated)
-
-                try:
-                    chk = self._get_position(sym)
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][SYNC] post-set local verify | symbol=%s exists=%s",
-                            sym,
-                            bool(isinstance(chk, dict) and chk),
-                        )
-                except Exception:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][SYNC] post-set local verify failed | symbol=%s",
-                            sym,
-                        )
-
-                self._upsert_bridge_state_on_open(
-                    symbol=sym,
-                    side=side,
-                    interval=interval,
-                    intent_id=intent_id,
-                )
-
-                summary["added_local"].append(sym)
-                summary["added_bridge"].append(sym)
-
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][SYNC] hydrated missing local position from exchange | symbol=%s side=%s qty=%.10f entry=%.10f interval=%s",
-                            sym,
-                            side,
-                            qty,
-                            entry_price,
-                            interval,
-                        )
-                except Exception:
-                    pass
-
-            except Exception:
-                try:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][SYNC] hydrate failed | symbol=%s",
-                            sym,
-                        )
-                except Exception:
-                    pass
 
         try:
             if self.logger:
@@ -1710,6 +1809,7 @@ class TradeExecutor:
             pass
 
         return summary
+
     async def _position_sync_loop(self) -> None:
         while True:
             try:
