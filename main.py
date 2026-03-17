@@ -1816,6 +1816,35 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                                 logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
                                 continue
 
+                            try:
+                                store_latest_signal_m = getattr(trade_executor, "_store_latest_signal", None)
+                                if callable(store_latest_signal_m):
+                                    store_latest_signal_m(
+                                        symbol=symbol,
+                                        side=side,
+                                        interval=interval,
+                                        score=float(it.get("score") or 0.0),
+                                        raw=it if isinstance(it, dict) else {},
+                                    )
+                                    logger.info(
+                                        "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s intent=%s",
+                                        symbol,
+                                        side,
+                                        interval,
+                                        intent_id,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[EXEC-EVENTS] _store_latest_signal missing on trade_executor | symbol=%s",
+                                        symbol,
+                                    )
+                            except Exception:
+                                logger.exception(
+                                    "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
+                                    symbol,
+                                    intent_id,
+                                )
+
                             if getattr(open_m, "__name__", "") in ("open_position_from_signal", "open_from_intent"):
                                 await _maybe_await(open_m(
                                     symbol=symbol,
@@ -1841,7 +1870,6 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                                     intent_id=intent_id,
                                     raw=it,
                                 ))
-
                         elif side in ("close", "flat", "exit"):
                             if close_m is None:
                                 logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)

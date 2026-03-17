@@ -1319,6 +1319,197 @@ class TradeExecutor:
             pass
 
         return None
+
+    def _store_latest_signal(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        score: float,
+        raw: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return
+
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+        if r is None:
+            return
+
+        try:
+            payload = {
+                "symbol": sym,
+                "side": str(side or "").strip().lower(),
+                "interval": str(interval or "").strip(),
+                "score": float(score or 0.0),
+                "ts": float(time.time()),
+                "raw": raw if isinstance(raw, dict) else {},
+            }
+
+            serialized = json.dumps(payload, ensure_ascii=False, default=str)
+
+            try:
+                r.set(f"bot:last_signal:{sym}", serialized, ex=3600)
+            except TypeError:
+                r.set(f"bot:last_signal:{sym}", serialized)
+                try:
+                    r.expire(f"bot:last_signal:{sym}", 3600)
+                except Exception:
+                    pass
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][WEAK] latest signal stored | symbol=%s side=%s interval=%s score=%.6f",
+                        sym,
+                        str(side or "").strip().lower(),
+                        str(interval or "").strip(),
+                        float(score or 0.0),
+                    )
+            except Exception:
+                pass
+
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][WEAK] latest signal store failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+
+    def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return {}
+
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+        if r is None:
+            return {}
+
+        try:
+            raw = r.get(f"bot:last_signal:{sym}")
+            if not raw:
+                return {}
+
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][WEAK] latest signal read failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+            return {}
+
+    def _check_opposite_signal_close(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        price: float,
+    ) -> Optional[str]:
+        sym = str(symbol).upper().strip()
+        pos_side = str(side or "").strip().lower()
+        itv = str(interval or "").strip()
+
+        if not sym or pos_side not in ("long", "short"):
+            return None
+
+        sig = self._get_latest_signal(sym)
+        if not isinstance(sig, dict) or not sig:
+            return None
+
+        sig_side = str(sig.get("side") or "").strip().lower()
+        sig_interval = str(sig.get("interval") or "").strip()
+        sig_score = float(sig.get("score") or 0.0)
+        sig_ts = float(sig.get("ts") or 0.0)
+
+        now_ts = time.time()
+
+        try:
+            max_age_sec = float(getattr(self, "opposite_signal_max_age_sec", 900) or 900.0)
+        except Exception:
+            max_age_sec = 900.0
+
+        try:
+            min_score = float(getattr(self, "opposite_signal_min_score", 0.55) or 0.55)
+        except Exception:
+            min_score = 0.55
+
+        try:
+            confirm_count_req = int(getattr(self, "opposite_signal_confirm_count", 1) or 1)
+        except Exception:
+            confirm_count_req = 1
+
+        if sig_side not in ("long", "short"):
+            return None
+
+        if sig_interval and itv and sig_interval != itv:
+            return None
+
+        if sig_ts <= 0 or (now_ts - sig_ts) > max_age_sec:
+            return None
+
+        if sig_score < min_score:
+            return None
+
+        is_opposite = (
+            (pos_side == "long" and sig_side == "short")
+            or (pos_side == "short" and sig_side == "long")
+        )
+        if not is_opposite:
+            return None
+
+        confirm_key = f"bot:opposite_counter:{sym}"
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+
+        confirm_count = 1
+        if r is not None:
+            try:
+                new_v = r.incr(confirm_key)
+                confirm_count = int(new_v or 1)
+                try:
+                    r.expire(confirm_key, int(max(30, max_age_sec)))
+                except Exception:
+                    pass
+            except Exception:
+                confirm_count = 1
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WEAK] opposite signal seen | symbol=%s pos_side=%s sig_side=%s score=%.6f confirm=%s/%s interval=%s price=%.6f",
+                    sym,
+                    pos_side,
+                    sig_side,
+                    float(sig_score),
+                    int(confirm_count),
+                    int(confirm_count_req),
+                    itv,
+                    float(price),
+                )
+        except Exception:
+            pass
+
+        if confirm_count < confirm_count_req:
+            return None
+
+        if r is not None:
+            try:
+                r.delete(confirm_key)
+            except Exception:
+                pass
+
+        return "opposite_signal"
+
     def _get_exchange_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         sym = str(symbol).upper().strip()
         if not sym:
@@ -1517,21 +1708,17 @@ class TradeExecutor:
             except Exception:
                 pass
 
-    def _get_bridge_state(self, symbol: str) -> Dict[str, Any]:
-        sym = str(symbol).upper().strip()
-        if not sym:
-            return {}
-
-        r = getattr(self, "redis", None)
-        if r is None:
-            r = getattr(self, "redis_client", None)
-
-        if r is None:
-            return {}
-
+    def _get_bridge_state(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
 
         try:
+            r = getattr(self, "redis", None)
+            if r is None:
+                r = getattr(self, "redis_client", None)
+
+            if r is None:
+                return {}
+
             raw = r.get(key)
             if not raw:
                 return {}
@@ -1543,19 +1730,34 @@ class TradeExecutor:
             if not isinstance(obj, dict):
                 return {}
 
+            if symbol is None:
+                return obj
+
+            sym = str(symbol).upper().strip()
+            if not sym:
+                return {}
+
             st = obj.get(sym)
             return st if isinstance(st, dict) else {}
 
         except Exception:
             try:
                 if self.logger:
-                    self.logger.exception(
-                        "[EXEC][STATE] bridge state read failed | symbol=%s",
-                        sym,
-                    )
+                    if symbol is None:
+                        self.logger.exception(
+                            "[EXEC][STATE] get bridge state failed | key=%s",
+                            key,
+                        )
+                    else:
+                        self.logger.exception(
+                            "[EXEC][STATE] bridge state read failed | symbol=%s key=%s",
+                            str(symbol).upper().strip(),
+                            key,
+                        )
             except Exception:
                 pass
             return {}
+
     def _upsert_bridge_state_on_open(
         self,
         symbol: str,
@@ -2758,14 +2960,16 @@ class TradeExecutor:
     def _close_position(
         self,
         symbol: str,
-        price: float,
+        price: float = 0.0,
         reason: str = "manual",
         interval: str = "",
     ) -> Optional[Dict[str, Any]]:
         sym = str(symbol).upper().strip()
+        if not sym:
+            return None
 
-        pos = self._get_effective_position(sym)
-        if not isinstance(pos, dict):
+        pos = self._get_position(sym)
+        if not isinstance(pos, dict) or not pos:
             try:
                 if self.logger:
                     self.logger.info(
@@ -2777,95 +2981,137 @@ class TradeExecutor:
             except Exception:
                 pass
 
-            self._del_position(sym)
-
-            bridge_removed = False
             try:
+                self._del_position(sym)
                 self._remove_from_bridge_state(sym)
-                bridge_removed = True
-            except Exception:
-                try:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][STATE] remove_from_bridge_state failed | symbol=%s",
-                            sym,
-                        )
-                except Exception:
-                    pass
-
-            try:
-                if self.redis is not None:
-                    bridge_key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
-
-                    raw_state = self.redis.get(bridge_key)
-                    if raw_state:
-                        if isinstance(raw_state, (bytes, bytearray)):
-                            raw_state = raw_state.decode("utf-8", errors="ignore")
-
-                        state_obj = json.loads(raw_state)
-                        if isinstance(state_obj, dict) and sym in state_obj:
-                            del state_obj[sym]
-                            self.redis.set(
-                                bridge_key,
-                                json.dumps(state_obj, ensure_ascii=False, default=str),
-                            )
-
-                    raw_verify = self.redis.get(bridge_key)
-                    still_in_bridge = False
-
-                    if raw_verify:
-                        if isinstance(raw_verify, (bytes, bytearray)):
-                            raw_verify = raw_verify.decode("utf-8", errors="ignore")
-                        verify_obj = json.loads(raw_verify)
-                        if isinstance(verify_obj, dict) and sym in verify_obj:
-                            still_in_bridge = True
-
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][STATE] cleanup on missing position executed | symbol=%s bridge_removed_call=%s still_in_bridge=%s key=%s",
-                            sym,
-                            str(bool(bridge_removed)),
-                            str(bool(still_in_bridge)),
-                            bridge_key,
-                        )
-                else:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][STATE] cleanup on missing position executed | symbol=%s bridge_removed_call=%s redis_unavailable=True",
-                            sym,
-                            str(bool(bridge_removed)),
-                        )
-            except Exception:
-                try:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][STATE] cleanup verify failed | symbol=%s",
-                            sym,
-                        )
-                except Exception:
-                    pass
-            return {
-                "status": "skip",
-                "reason": "no_open_position",
-                "symbol": sym,
-            }
-
-        side = str(pos.get("side", "")).strip().lower()
-        qty = float(pos.get("qty", 0.0) or 0.0)
-        entry_price = float(pos.get("entry_price", 0.0) or 0.0)
-        notional = float(pos.get("notional", 0.0) or 0.0)
-
-        if qty <= 0 or side not in ("long", "short"):
-            try:
                 if self.logger:
                     self.logger.info(
-                        "[EXEC][CLOSE-BLOCK] invalid position snapshot | symbol=%s side=%s qty=%.10f",
+                        "[EXEC][STATE] cleanup on missing position executed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] cleanup on missing position failed | symbol=%s",
+                        sym,
+                    )
+            return None
+
+        side = str(pos.get("side") or "").strip().lower()
+        qty = float(pos.get("qty") or 0.0)
+        entry_price = float(pos.get("entry_price") or 0.0)
+
+        if side not in ("long", "short") or qty <= 0:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][CLOSE-BLOCK] invalid local position | symbol=%s side=%s qty=%.10f",
                         sym,
                         side,
                         float(qty),
                     )
             except Exception:
                 pass
+            return None
+
+        close_price = self._resolve_price(symbol=sym, price=price)
+        if close_price is None or float(close_price) <= 0:
+            close_price = float(entry_price or 0.0)
+
+        exchange_pos_before = self._get_exchange_position(symbol=sym)
+        if isinstance(exchange_pos_before, dict):
+            try:
+                qty = abs(float(exchange_pos_before.get("qty") or qty or 0.0))
+            except Exception:
+                pass
+            try:
+                ex_side = str(exchange_pos_before.get("side") or side).strip().lower()
+                if ex_side in ("long", "short"):
+                    side = ex_side
+            except Exception:
+                pass
+            try:
+                ex_entry = float(exchange_pos_before.get("entry_price") or entry_price or 0.0)
+                if ex_entry > 0:
+                    entry_price = ex_entry
+            except Exception:
+                pass
+
+        qty_meta = self._normalize_close_quantity(
+            symbol=sym,
+            qty=float(qty),
+            price=float(close_price or 0.0),
+        )
+
+        norm_qty = float(qty_meta.get("qty") or 0.0)
+        step = float(qty_meta.get("step") or 0.0)
+        min_qty = float(qty_meta.get("min_qty") or 0.0)
+        min_notional = float(qty_meta.get("min_notional") or 0.0)
+        reject = str(qty_meta.get("reject") or "-")
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][CLOSE][QTY] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                    sym,
+                    float(qty),
+                    float(norm_qty),
+                    float(close_price or 0.0),
+                    float(step),
+                    float(min_qty),
+                    float(min_notional),
+                    reject,
+                )
+        except Exception:
+            pass
+
+        if norm_qty <= 0:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][CLOSE-BLOCK] normalized qty invalid | symbol=%s raw_qty=%.10f norm_qty=%.10f reject=%s",
+                        sym,
+                        float(qty),
+                        float(norm_qty),
+                        reject,
+                    )
+            except Exception:
+                pass
+            return None
+
+        if bool(getattr(self, "dry_run", False)):
+            realized_pnl = 0.0
+            if entry_price > 0 and norm_qty > 0:
+                if side == "long":
+                    realized_pnl = (float(close_price) - float(entry_price)) * float(norm_qty)
+                else:
+                    realized_pnl = (float(entry_price) - float(close_price)) * float(norm_qty)
+
+            try:
+                rm = getattr(self, "risk_manager", None)
+                if rm is not None and hasattr(rm, "on_position_close"):
+                    rm.on_position_close(
+                        symbol=sym,
+                        side=side,
+                        qty=float(norm_qty),
+                        notional=float(pos.get("notional") or (norm_qty * entry_price)),
+                        price=float(close_price),
+                        interval=str(interval or pos.get("interval") or ""),
+                        realized_pnl=float(realized_pnl),
+                        meta={
+                            "reason": str(reason),
+                            "entry_price": float(entry_price),
+                            "closed_side": side,
+                            "interval": str(interval or pos.get("interval") or ""),
+                            "qty": float(norm_qty),
+                            "notional": float(pos.get("notional") or (norm_qty * entry_price)),
+                            "probs": dict(pos.get("meta", {}).get("probs", {}) if isinstance(pos.get("meta"), dict) else {}),
+                            "extra": dict(pos.get("meta", {}).get("extra", {}) if isinstance(pos.get("meta"), dict) else {}),
+                        },
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception("[RISK] on_position_close failed")
 
             self._del_position(sym)
             self._remove_from_bridge_state(sym)
@@ -2873,237 +3119,290 @@ class TradeExecutor:
             try:
                 if self.logger:
                     self.logger.info(
-                        "[EXEC][STATE] cleanup on invalid snapshot executed | symbol=%s",
+                        "[EXEC] DRY_RUN=True close emri gönderilmeyecek | symbol=%s side=%s qty=%.10f reason=%s",
                         sym,
+                        side,
+                        float(norm_qty),
+                        str(reason),
                     )
             except Exception:
                 pass
 
             return {
-                "status": "skip",
-                "reason": "invalid_position_snapshot",
                 "symbol": sym,
+                "side": side,
+                "qty": float(norm_qty),
+                "close_price": float(close_price),
+                "entry_price": float(entry_price),
+                "realized_pnl": 0.0,
+                "reason": str(reason),
+                "dry_run": True,
             }
 
-        close_price = self._resolve_price(symbol=sym, price=price)
-        if close_price is None or close_price <= 0:
-            close_price = entry_price if entry_price > 0 else 0.0
-
-        exchange_resp: Optional[Dict[str, Any]] = None
-
-        if not self.dry_run:
+        client = getattr(self, "client", None)
+        fn = getattr(client, "futures_create_order", None) if client is not None else None
+        if not callable(fn):
             try:
-                exchange_resp = self._exchange_close_market(sym, side, float(qty))
-
-                # borsa dönüşünden gerçek fill fiyatını almaya çalış
-                try:
-                    if isinstance(exchange_resp, dict):
-                        avg_price = self._clip_float(exchange_resp.get("avgPrice"), None)
-                        if avg_price is not None and avg_price > 0:
-                            close_price = float(avg_price)
-                except Exception:
-                    pass
-
+                if self.logger:
+                    self.logger.error(
+                        "[EXEC][CLOSE-BLOCK] futures_create_order unavailable | symbol=%s",
+                        sym,
+                    )
             except Exception:
-                try:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][CLOSE] exchange close failed -> state korunuyor | symbol=%s side=%s qty=%.10f",
-                            sym,
-                            side,
-                            float(qty),
-                        )
-                except Exception:
-                    pass
-                raise
-        realized_pnl = 0.0
-        if entry_price > 0 and close_price > 0:
-            realized_pnl = float(self._calc_pnl(side, entry_price, float(close_price), float(qty)))
+                pass
+            return None
 
-        daily_realized_pnl = 0.0
+        order_side = "SELL" if side == "long" else "BUY"
+        position_side = "LONG" if side == "long" else "SHORT"
 
-        extra_dict: Dict[str, Any] = {}
-        probs_dict: Dict[str, float] = {}
+        started_ms = int(time.time() * 1000)
+        order_resp: Dict[str, Any] = {}
 
         try:
-            meta = pos.get("meta", {})
-            if isinstance(meta, dict):
-                extra_obj = meta.get("extra", {})
-                probs_obj = meta.get("probs", {})
-                if isinstance(extra_obj, dict):
-                    extra_dict = dict(extra_obj)
-                if isinstance(probs_obj, dict):
-                    probs_dict = dict(probs_obj)
+            order_resp = fn(
+                symbol=sym,
+                side=order_side,
+                type="MARKET",
+                quantity=self._fmt_qty(sym, norm_qty),
+                reduceOnly=True,
+                positionSide=position_side,
+                newClientOrderId=f"b1_close_{sym}_{uuid.uuid4().hex[:12]}",
+            ) or {}
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][CLOSE-BLOCK] close order failed | symbol=%s side=%s qty=%.10f err=%s",
+                        sym,
+                        side,
+                        float(norm_qty),
+                        str(e),
+                    )
+            except Exception:
+                pass
+            return None
+
+        dt_ms = int(time.time() * 1000) - started_ms
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][ORDER] CLOSE OK | fn=futures_create_order symbol=%s side=%s posSide=%s qty=%.10f dt_ms=%s summary=%s",
+                    sym,
+                    order_side,
+                    position_side,
+                    float(norm_qty),
+                    int(dt_ms),
+                    self._safe_json(order_resp, limit=900),
+                )
         except Exception:
             pass
 
-        residual_qty = 0.0
-        try:
-            residual_qty = float(self._get_exchange_residual_qty(sym, side))
-        except Exception:
-            residual_qty = 0.0
+        poll_result = self._poll_order_fill(
+            symbol=sym,
+            order_response=order_resp,
+            timeout_sec=5.0,
+            sleep_sec=0.20,
+        )
 
-        if residual_qty > 0:
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][CLOSE][POLL] %s",
+                    self._safe_json(poll_result, limit=900),
+                )
+        except Exception:
+            pass
+
+        filled = {}
+        if isinstance(poll_result, dict):
+            filled = poll_result.get("result") if isinstance(poll_result.get("result"), dict) else {}
+        if not filled:
+            filled = order_resp if isinstance(order_resp, dict) else {}
+
+        try:
+            avg_price = float(filled.get("avgPrice") or 0.0)
+        except Exception:
+            avg_price = 0.0
+        if avg_price > 0:
+            close_price = avg_price
+
+        realized_pnl = 0.0
+        if entry_price > 0 and norm_qty > 0:
+            if side == "long":
+                realized_pnl = (float(close_price) - float(entry_price)) * float(norm_qty)
+            else:
+                realized_pnl = (float(entry_price) - float(close_price)) * float(norm_qty)
+
+        try:
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None and hasattr(rm, "on_position_close"):
+                rm.on_position_close(
+                    symbol=sym,
+                    side=side,
+                    qty=float(norm_qty),
+                    notional=float(pos.get("notional") or (norm_qty * entry_price)),
+                    price=float(close_price),
+                    interval=str(interval or pos.get("interval") or ""),
+                    realized_pnl=float(realized_pnl),
+                    meta={
+                        "reason": str(reason),
+                        "entry_price": float(entry_price),
+                        "closed_side": side,
+                        "interval": str(interval or pos.get("interval") or ""),
+                        "qty": float(norm_qty),
+                        "notional": float(pos.get("notional") or (norm_qty * entry_price)),
+                        "probs": dict(pos.get("meta", {}).get("probs", {}) if isinstance(pos.get("meta"), dict) else {}),
+                        "extra": dict(pos.get("meta", {}).get("extra", {}) if isinstance(pos.get("meta"), dict) else {}),
+                    },
+                )
+        except Exception:
+            if self.logger:
+                self.logger.exception("[RISK] on_position_close failed")
+
+        exchange_pos_after = self._get_exchange_position(symbol=sym)
+        residual_qty = 0.0
+        residual_side = side
+
+        if isinstance(exchange_pos_after, dict):
+            try:
+                residual_qty = abs(float(exchange_pos_after.get("qty") or 0.0))
+            except Exception:
+                residual_qty = 0.0
+            try:
+                residual_side = str(
+                    exchange_pos_after.get("side") or side
+                ).strip().lower() or side
+            except Exception:
+                residual_side = side
+
+        min_qty = 0.0
+        try:
+            s_info = self._get_symbol_info(sym)
+            if isinstance(s_info, dict):
+                min_qty = float(s_info.get("min_qty") or 0.0)
+        except Exception:
+            min_qty = 0.0
+
+        dust_threshold = max(min_qty, 0.0)
+
+        if residual_qty <= 0.0:
+            self._del_position(sym)
+            self._remove_from_bridge_state(sym)
+
+            try:
+                chk_local = self._get_position(sym)
+                chk_bridge_all = self._get_bridge_state()
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] cleanup after close | symbol=%s local_exists=%s bridge_exists=%s",
+                        sym,
+                        bool(isinstance(chk_local, dict) and chk_local),
+                        bool(isinstance(chk_bridge_all, dict) and sym in chk_bridge_all),
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] cleanup verify failed | symbol=%s",
+                        sym,
+                    )
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE] CLOSED | symbol=%s side=%s qty=%.10f entry=%.6f close=%.6f realized_pnl=%.6f reason=%s",
+                        sym,
+                        side,
+                        float(norm_qty),
+                        float(entry_price),
+                        float(close_price),
+                        float(realized_pnl),
+                        str(reason),
+                    )
+            except Exception:
+                pass
+
+        elif dust_threshold > 0.0 and residual_qty <= dust_threshold:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][CLOSE] residual dust remains on exchange | symbol=%s side=%s residual_qty=%.10f dust_threshold=%.10f",
+                        sym,
+                        residual_side,
+                        float(residual_qty),
+                        float(dust_threshold),
+                    )
+            except Exception:
+                pass
+
+            residual_pos = dict(pos) if isinstance(pos, dict) else {}
+            residual_pos["symbol"] = sym
+            residual_pos["side"] = residual_side
+            residual_pos["qty"] = float(residual_qty)
+
+            if isinstance(exchange_pos_after, dict):
+                try:
+                    residual_pos["entry_price"] = float(
+                        exchange_pos_after.get("entry_price")
+                        or residual_pos.get("entry_price")
+                        or 0.0
+                    )
+                except Exception:
+                    pass
+
+            self._set_position(sym, residual_pos)
+            self._upsert_bridge_state_on_open(
+                symbol=sym,
+                side=residual_side,
+                interval=str(interval or residual_pos.get("interval") or "5m"),
+                intent_id="",
+            )
+
+        else:
             try:
                 if self.logger:
                     self.logger.warning(
                         "[EXEC][CLOSE] residual position remains on exchange | symbol=%s side=%s residual_qty=%.10f",
                         sym,
-                        side,
+                        residual_side,
                         float(residual_qty),
                     )
             except Exception:
                 pass
 
-            pos["qty"] = float(residual_qty)
-            if close_price > 0:
-                pos["entry_price"] = float(close_price)
+            residual_pos = dict(pos) if isinstance(pos, dict) else {}
+            residual_pos["symbol"] = sym
+            residual_pos["side"] = residual_side
+            residual_pos["qty"] = float(residual_qty)
 
-            self._set_position(sym, pos)
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][STATE] partial close state updated | symbol=%s residual_qty=%.10f",
-                        sym,
-                        float(residual_qty),
+            if isinstance(exchange_pos_after, dict):
+                try:
+                    residual_pos["entry_price"] = float(
+                        exchange_pos_after.get("entry_price")
+                        or residual_pos.get("entry_price")
+                        or 0.0
                     )
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-            return {
-                "status": "partial_close",
-                "symbol": sym,
-                "side": side,
-                "qty": float(residual_qty),
-                "entry_price": float(entry_price),
-                "close_price": float(close_price),
-                "realized_pnl": float(realized_pnl),
-                "daily_realized_pnl": float(daily_realized_pnl),
-                "reason": str(reason),
-                "exchange_resp": exchange_resp,
-            }
-
-        self._del_position(sym)
-        self._remove_from_bridge_state(sym)
-
-        # Zorlayıcı cleanup doğrulaması
-        try:
-            if self.redis is not None:
-                # local pozisyon key'ini bir daha zorla sil
-                self.redis.delete(self._pos_key(sym))
-
-                # bridge state içinden bir daha zorla kaldır
-                bridge_key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
-                raw_state = self.redis.get(bridge_key)
-                if raw_state:
-                    if isinstance(raw_state, (bytes, bytearray)):
-                        raw_state = raw_state.decode("utf-8", errors="ignore")
-                    state_obj = json.loads(raw_state)
-                    if isinstance(state_obj, dict) and sym in state_obj:
-                        del state_obj[sym]
-                        self.redis.set(bridge_key, json.dumps(state_obj, ensure_ascii=False, default=str))
-
-                # doğrulama
-                local_after = self.redis.get(self._pos_key(sym))
-                bridge_after_raw = self.redis.get(bridge_key)
-
-                bridge_has_symbol = False
-                if bridge_after_raw:
-                    if isinstance(bridge_after_raw, (bytes, bytearray)):
-                        bridge_after_raw = bridge_after_raw.decode("utf-8", errors="ignore")
-                    bridge_after_obj = json.loads(bridge_after_raw)
-                    if isinstance(bridge_after_obj, dict) and sym in bridge_after_obj:
-                        bridge_has_symbol = True
-
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][STATE] close cleanup executed | symbol=%s local_deleted=%s bridge_deleted=%s",
-                        sym,
-                        str(local_after is None),
-                        str(not bridge_has_symbol),
-                    )
-        except Exception:
-            try:
-                if self.logger:
-                    self.logger.exception(
-                        "[EXEC][STATE] forced close cleanup verify failed | symbol=%s",
-                        sym,
-                    )
-            except Exception:
-                pass
-        try:
-            rm = getattr(self, "risk_manager", None)
-            if rm is not None:
-                payload_meta = {
-                    "reason": str(reason),
-                    "entry_price": float(entry_price),
-                    "closed_side": str(side),
-                    "interval": str(interval or ""),
-                    "qty": float(qty),
-                    "notional": float(notional),
-                    "probs": probs_dict,
-                    "extra": extra_dict,
-                }
-
-                out = rm.on_position_close(
-                    symbol=sym,
-                    side=str(side),
-                    qty=float(qty),
-                    notional=float(notional),
-                    price=float(close_price),
-                    interval=str(interval or ""),
-                    realized_pnl=float(realized_pnl),
-                    meta=payload_meta,
-                )
-                self._fire_and_forget(out, label="risk_on_close")
-        except Exception:
-            try:
-                if getattr(self, "logger", None):
-                    self.logger.exception("[RISK] on_position_close failed")
-            except Exception:
-                pass
-
-        try:
-            self._notify_position_close(
+            self._set_position(sym, residual_pos)
+            self._upsert_bridge_state_on_open(
                 symbol=sym,
-                interval=str(interval or ""),
-                side=str(side),
-                qty=float(qty),
-                price=float(close_price),
-                realized_pnl=float(realized_pnl),
-                daily_realized_pnl=float(daily_realized_pnl),
+                side=residual_side,
+                interval=str(interval or residual_pos.get("interval") or "5m"),
+                intent_id="",
             )
-        except Exception:
-            pass
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][CLOSE] CLOSED | symbol=%s side=%s qty=%.10f entry=%.6f close=%.6f realized_pnl=%.6f reason=%s",
-                    sym,
-                    side,
-                    float(qty),
-                    float(entry_price),
-                    float(close_price),
-                    float(realized_pnl),
-                    str(reason),
-                )
-        except Exception:
-            pass
 
         return {
-            "status": "closed" if not self.dry_run else "dry_run",
             "symbol": sym,
             "side": side,
-            "qty": float(qty),
-            "entry_price": float(entry_price),
+            "qty": float(norm_qty),
             "close_price": float(close_price),
+            "entry_price": float(entry_price),
             "realized_pnl": float(realized_pnl),
-            "daily_realized_pnl": float(daily_realized_pnl),
             "reason": str(reason),
-            "exchange_resp": exchange_resp,
+            "order": filled if isinstance(filled, dict) else {},
         }
+
     def close_position(
         self,
         symbol: str,
@@ -3139,6 +3438,102 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # monitoring stubs
     # ---------------------------------------------------------
+    def _get_latest_signal_for_symbol(self, symbol: str) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return {}
+
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+        if r is None:
+            return {}
+
+        try:
+            key = f"bot:last_signal:{sym}"
+            raw = r.get(key)
+            if not raw:
+                return {}
+
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][WEAK] latest signal read failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+            return {}
+
+    def _check_opposite_signal_close(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        price: float,
+    ) -> Optional[str]:
+        try:
+            enabled = bool(int(str(os.getenv("OPPOSITE_SIGNAL_CLOSE_ENABLE", "1")).strip()))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return None
+
+        try:
+            min_score = float(str(os.getenv("OPPOSITE_SIGNAL_MIN_SCORE", "0.58")).strip())
+        except Exception:
+            min_score = 0.58
+
+        sig = self._get_latest_signal_for_symbol(symbol)
+        if not isinstance(sig, dict) or not sig:
+            return None
+
+        sig_side = str(sig.get("side") or "").strip().lower()
+        sig_interval = str(sig.get("interval") or "").strip()
+        sig_score = float(sig.get("score") or 0.0)
+
+        if sig_interval and interval and sig_interval != interval:
+            return None
+
+        if side == "long" and sig_side == "short" and sig_score >= min_score:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][WEAK] opposite signal close trigger | symbol=%s pos_side=%s sig_side=%s score=%.6f interval=%s price=%.6f",
+                        str(symbol).upper().strip(),
+                        side,
+                        sig_side,
+                        float(sig_score),
+                        str(interval or ""),
+                        float(price),
+                    )
+            except Exception:
+                pass
+            return "opposite_signal"
+
+        if side == "short" and sig_side == "long" and sig_score >= min_score:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][WEAK] opposite signal close trigger | symbol=%s pos_side=%s sig_side=%s score=%.6f interval=%s price=%.6f",
+                        str(symbol).upper().strip(),
+                        side,
+                        sig_side,
+                        float(sig_score),
+                        str(interval or ""),
+                        float(price),
+                    )
+            except Exception:
+                pass
+            return "opposite_signal"
+
+        return None
+
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
         pos = self._get_position(sym)
@@ -3157,35 +3552,58 @@ class TradeExecutor:
         best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
         last_best_ts = float(pos.get("last_best_ts") or time.time())
 
-        trailing_pct = float(pos.get("trailing_pct") or 0.0)
-        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
-
         sl_price = float(pos.get("sl_price") or 0.0)
         tp_price = float(pos.get("tp_price") or 0.0)
 
-        if sl_price <= 0:
-            try:
-                sl_pct = float(getattr(self, "sl_pct", 0.0) or 0.0)
-            except Exception:
-                sl_pct = 0.0
+        try:
+            trailing_pct = float(
+                pos.get("trailing_pct")
+                or getattr(self, "trailing_pct", 0.0)
+                or os.getenv("TRAILING_PCT", "0")
+                or 0.0
+            )
+        except Exception:
+            trailing_pct = 0.0
 
-            if sl_pct > 0:
-                if side == "long":
-                    sl_price = entry_price * (1.0 - sl_pct)
-                else:
-                    sl_price = entry_price * (1.0 + sl_pct)
+        try:
+            stall_ttl_sec = int(
+                pos.get("stall_ttl_sec")
+                or getattr(self, "stall_ttl_sec", 0)
+                or os.getenv("STALL_TTL_SEC", "0")
+                or 0
+            )
+        except Exception:
+            stall_ttl_sec = 0
 
-        if tp_price <= 0:
-            try:
-                tp_pct = float(getattr(self, "tp_pct", 0.0) or 0.0)
-            except Exception:
-                tp_pct = 0.0
+        try:
+            sl_pct = float(
+                getattr(self, "sl_pct", 0.0)
+                or os.getenv("SL_PCT", "0")
+                or 0.0
+            )
+        except Exception:
+            sl_pct = 0.0
 
-            if tp_pct > 0:
-                if side == "long":
-                    tp_price = entry_price * (1.0 + tp_pct)
-                else:
-                    tp_price = entry_price * (1.0 - tp_pct)
+        try:
+            tp_pct = float(
+                getattr(self, "tp_pct", 0.0)
+                or os.getenv("TP_PCT", "0")
+                or 0.0
+            )
+        except Exception:
+            tp_pct = 0.0
+
+        if sl_price <= 0 and sl_pct > 0:
+            if side == "long":
+                sl_price = entry_price * (1.0 - sl_pct)
+            else:
+                sl_price = entry_price * (1.0 + sl_pct)
+
+        if tp_price <= 0 and tp_pct > 0:
+            if side == "long":
+                tp_price = entry_price * (1.0 + tp_pct)
+            else:
+                tp_price = entry_price * (1.0 - tp_pct)
 
         close_reason = None
         trail_ref_price = entry_price
@@ -3229,6 +3647,27 @@ class TradeExecutor:
             elif trailing_pct > 0 and lowest_price < entry_price and float(price) >= float(trail_stop_price):
                 close_reason = "trailing_hit"
 
+        if close_reason is None:
+            opposite_close_reason = self._check_opposite_signal_close(
+                symbol=sym,
+                side=side,
+                interval=str(interval or ""),
+                price=float(price),
+            )
+            if opposite_close_reason is not None:
+                close_reason = str(opposite_close_reason)
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][WEAK] close trigger | symbol=%s side=%s reason=%s price=%.6f",
+                            sym,
+                            side,
+                            str(close_reason),
+                            float(price),
+                        )
+                except Exception:
+                    pass
+
         if close_reason is None and stall_ttl_sec > 0:
             stalled_for = float(time.time()) - float(last_best_ts)
             if stalled_for >= float(stall_ttl_sec):
@@ -3236,7 +3675,11 @@ class TradeExecutor:
                 try:
                     if self.logger:
                         self.logger.info(
-                            f"[EXEC][STALL] exit trigger | symbol={sym} side={side} stalled_for={stalled_for:.1f}s stall_ttl_sec={stall_ttl_sec}"
+                            "[EXEC][STALL] exit trigger | symbol=%s side=%s stalled_for=%.1fs stall_ttl_sec=%s",
+                            sym,
+                            side,
+                            float(stalled_for),
+                            int(stall_ttl_sec),
                         )
                 except Exception:
                     pass
@@ -3247,17 +3690,25 @@ class TradeExecutor:
         pos["last_best_ts"] = float(last_best_ts)
         pos["sl_price"] = float(sl_price)
         pos["tp_price"] = float(tp_price)
+        pos["trailing_pct"] = float(trailing_pct)
+        pos["stall_ttl_sec"] = int(stall_ttl_sec)
 
         self._set_position(sym, pos)
 
         try:
             if self.logger:
                 self.logger.info(
-                    f"[EXEC][LIFECYCLE] updated | symbol={sym} side={side} price={float(price):.6f} "
-                    f"entry={float(entry_price):.6f} pnl_pct={float(pnl_pct):.6f} "
-                    f"best_pnl_pct={float(best_pnl_pct):.6f} sl={float(sl_price):.6f} "
-                    f"tp={float(tp_price):.6f} trail_ref={float(trail_ref_price):.6f} "
-                    f"trail_stop={float(trail_stop_price):.6f}"
+                    "[EXEC][LIFECYCLE] updated | symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_ref=%.6f trail_stop=%.6f",
+                    sym,
+                    side,
+                    float(price),
+                    float(entry_price),
+                    float(pnl_pct),
+                    float(best_pnl_pct),
+                    float(sl_price),
+                    float(tp_price),
+                    float(trail_ref_price),
+                    float(trail_stop_price),
                 )
         except Exception:
             pass
@@ -3266,7 +3717,11 @@ class TradeExecutor:
             try:
                 if self.logger:
                     self.logger.info(
-                        f"[EXEC][CLOSE] lifecycle trigger | symbol={sym} side={side} reason={close_reason} price={float(price):.6f}"
+                        "[EXEC][CLOSE] lifecycle trigger | symbol=%s side=%s reason=%s price=%.6f",
+                        sym,
+                        side,
+                        str(close_reason),
+                        float(price),
                     )
             except Exception:
                 pass
@@ -3277,6 +3732,7 @@ class TradeExecutor:
                 reason=str(close_reason),
                 interval=str(interval or ""),
             )
+
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
         pos = self._get_position(sym)
