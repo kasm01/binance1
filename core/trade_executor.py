@@ -341,38 +341,108 @@ class TradeExecutor:
     def _get_all_local_positions(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
 
+        # 1) PositionManager üzerinden oku
         try:
-            if self.redis is None:
-                return out
+            pm = getattr(self, "position_manager", None)
+            if pm is not None:
+                list_symbols_fn = getattr(pm, "list_symbols", None)
+                get_position_fn = getattr(pm, "get_position", None)
 
-            keys = self.redis.keys("bot:positions:*")
-            for k in keys:
-                try:
-                    key_s = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                    raw = self.redis.get(k)
-                    if not raw:
-                        continue
-
-                    if isinstance(raw, (bytes, bytearray)):
-                        raw = raw.decode("utf-8", errors="ignore")
-
-                    obj = json.loads(raw)
-                    if not isinstance(obj, dict):
-                        continue
-
-                    sym = str(obj.get("symbol") or key_s.split(":")[-1]).upper().strip()
-                    qty = float(obj.get("qty", 0.0) or 0.0)
-                    side = str(obj.get("side", "")).strip().lower()
-
-                    if sym and qty > 0 and side in ("long", "short"):
-                        out[sym] = obj
-                except Exception:
-                    continue
+                if callable(list_symbols_fn) and callable(get_position_fn):
+                    symbols = list_symbols_fn() or []
+                    for sym in symbols:
+                        try:
+                            sym_u = str(sym).upper().strip()
+                            pos = get_position_fn(sym_u)
+                            if isinstance(pos, dict) and pos:
+                                out[sym_u] = pos
+                        except Exception:
+                            if self.logger:
+                                self.logger.exception(
+                                    "[EXEC][STATE] position_manager get failed | symbol=%s",
+                                    sym,
+                                )
         except Exception:
-            return out
+            if self.logger:
+                self.logger.exception("[EXEC][STATE] position_manager list failed")
 
-        return out
+        # 2) Redis fallback
+        if not out:
+            try:
+                r = getattr(self, "redis_client", None)
+                if r is not None:
+                    keys = r.keys("bot:positions:*") or []
+                    for k in keys:
+                        try:
+                            raw = r.get(k)
+                            if not raw:
+                                continue
+                            pos = json.loads(raw)
+                            if not isinstance(pos, dict):
+                                continue
+                            sym_u = str(pos.get("symbol") or str(k).split(":")[-1]).upper().strip()
+                            out[sym_u] = pos
+                        except Exception:
+                            if self.logger:
+                                self.logger.exception(
+                                    "[EXEC][STATE] redis position parse failed | key=%s",
+                                    k,
+                                )
+            except Exception:
+                if self.logger:
+                    self.logger.exception("[EXEC][STATE] redis fallback list failed")
 
+        # 3) In-memory fallback
+        if not out:
+            try:
+                mem = getattr(self, "_positions", None)
+                if isinstance(mem, dict):
+                    for sym, pos in mem.items():
+                        try:
+                            sym_u = str(sym).upper().strip()
+                            if isinstance(pos, dict) and pos:
+                                out[sym_u] = pos
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # 4) normalize + sadece geçerli açık pozisyonlar
+        norm: Dict[str, Dict[str, Any]] = {}
+        for sym, pos in out.items():
+            try:
+                if not isinstance(pos, dict):
+                    continue
+
+                side = str(pos.get("side") or "").strip().lower()
+                qty = float(pos.get("qty") or 0.0)
+
+                if side not in ("long", "short"):
+                    continue
+                if qty <= 0:
+                    continue
+
+                sym_u = str(sym).upper().strip()
+                pos["symbol"] = sym_u
+                norm[sym_u] = pos
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] normalize failed | symbol=%s",
+                        sym,
+                    )
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE] local positions resolved | count=%s symbols=%s",
+                    len(norm),
+                    list(norm.keys()),
+                )
+        except Exception:
+            pass
+
+        return norm
     def _get_exchange_open_positions(self) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         client = getattr(self, "client", None)
@@ -1475,18 +1545,18 @@ class TradeExecutor:
             except Exception:
                 await asyncio.sleep(300)
     async def _position_lifecycle_loop(self) -> None:
-        interval_sec = max(5, int(getattr(self, "position_lifecycle_interval_sec", 15)))
+        interval_sec = max(3, int(getattr(self, "position_lifecycle_interval_sec", 15)))
 
         while True:
             try:
                 positions = self._get_all_local_positions()
-                if not isinstance(positions, dict):
-                    positions = {}
 
                 try:
                     if self.logger:
                         self.logger.info(
-                            f"[EXEC][LIFECYCLE] tick | positions={len(positions)} symbols={list(positions.keys())}"
+                            "[EXEC][LIFECYCLE] tick | positions=%s symbols=%s",
+                            len(positions),
+                            list(positions.keys()),
                         )
                 except Exception:
                     pass
@@ -1495,7 +1565,7 @@ class TradeExecutor:
                     try:
                         side = str(pos.get("side") or "").strip().lower()
                         qty = float(pos.get("qty") or 0.0)
-                        pos_interval = str(pos.get("interval") or "")
+                        interval = str(pos.get("interval") or "5m").strip() or "5m"
 
                         if side not in ("long", "short") or qty <= 0:
                             continue
@@ -1505,7 +1575,7 @@ class TradeExecutor:
                         if px is None or px <= 0:
                             try:
                                 client = getattr(self, "client", None)
-                                fn = getattr(client, "futures_mark_price", None) if client else None
+                                fn = getattr(client, "futures_mark_price", None) if client is not None else None
                                 if callable(fn):
                                     mp = fn(symbol=sym)
                                     if isinstance(mp, dict):
@@ -1517,7 +1587,8 @@ class TradeExecutor:
                             try:
                                 if self.logger:
                                     self.logger.info(
-                                        f"[EXEC][LIFECYCLE] skip no price | symbol={sym}"
+                                        "[EXEC][LIFECYCLE] skip no price | symbol=%s",
+                                        sym,
                                     )
                             except Exception:
                                 pass
@@ -1526,7 +1597,12 @@ class TradeExecutor:
                         try:
                             if self.logger:
                                 self.logger.info(
-                                    f"[EXEC][LIFECYCLE] check | symbol={sym} side={side} qty={qty:.10f} price={float(px):.6f} interval={pos_interval}"
+                                    "[EXEC][LIFECYCLE] check | symbol=%s side=%s qty=%.10f price=%.6f interval=%s",
+                                    sym,
+                                    side,
+                                    qty,
+                                    float(px),
+                                    interval,
                                 )
                         except Exception:
                             pass
@@ -1534,18 +1610,15 @@ class TradeExecutor:
                         self._check_sl_tp_trailing(
                             symbol=sym,
                             price=float(px),
-                            interval=pos_interval,
-                        )
-                        self._handle_weak_signal_position(
-                            symbol=sym,
-                            price=float(px),
                             interval=interval,
                         )
+
                     except Exception:
                         try:
                             if self.logger:
                                 self.logger.exception(
-                                    f"[EXEC][LIFECYCLE] symbol processing failed | symbol={sym}"
+                                    "[EXEC][LIFECYCLE] symbol processing failed | symbol=%s",
+                                    sym,
                                 )
                         except Exception:
                             pass
@@ -1557,7 +1630,10 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-            await asyncio.sleep(interval_sec)
+            try:
+                await asyncio.sleep(interval_sec)
+            except Exception:
+                await asyncio.sleep(5)
     def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
         sym = str(symbol).upper().strip()
         side0 = str(side or "").strip().lower()
@@ -2386,17 +2462,72 @@ class TradeExecutor:
                 pass
 
             self._del_position(sym)
-            self._remove_from_bridge_state(sym)
+
+            bridge_removed = False
+            try:
+                self._remove_from_bridge_state(sym)
+                bridge_removed = True
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][STATE] remove_from_bridge_state failed | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
 
             try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][STATE] cleanup on missing position executed | symbol=%s",
-                        sym,
-                    )
-            except Exception:
-                pass
+                if self.redis is not None:
+                    bridge_key = str(os.getenv("BRIDGE_STATE_KEY", "open_positions_state")).strip() or "open_positions_state"
 
+                    raw_state = self.redis.get(bridge_key)
+                    if raw_state:
+                        if isinstance(raw_state, (bytes, bytearray)):
+                            raw_state = raw_state.decode("utf-8", errors="ignore")
+
+                        state_obj = json.loads(raw_state)
+                        if isinstance(state_obj, dict) and sym in state_obj:
+                            del state_obj[sym]
+                            self.redis.set(
+                                bridge_key,
+                                json.dumps(state_obj, ensure_ascii=False, default=str),
+                            )
+
+                    raw_verify = self.redis.get(bridge_key)
+                    still_in_bridge = False
+
+                    if raw_verify:
+                        if isinstance(raw_verify, (bytes, bytearray)):
+                            raw_verify = raw_verify.decode("utf-8", errors="ignore")
+                        verify_obj = json.loads(raw_verify)
+                        if isinstance(verify_obj, dict) and sym in verify_obj:
+                            still_in_bridge = True
+
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][STATE] cleanup on missing position executed | symbol=%s bridge_removed_call=%s still_in_bridge=%s key=%s",
+                            sym,
+                            str(bool(bridge_removed)),
+                            str(bool(still_in_bridge)),
+                            bridge_key,
+                        )
+                else:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][STATE] cleanup on missing position executed | symbol=%s bridge_removed_call=%s redis_unavailable=True",
+                            sym,
+                            str(bool(bridge_removed)),
+                        )
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][STATE] cleanup verify failed | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
             return {
                 "status": "skip",
                 "reason": "no_open_position",

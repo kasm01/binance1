@@ -64,11 +64,11 @@ class WhaleDetector:
 
         self.whale_confirm_thr = self._env_float(
             "WHALE_CONFIRM_THR",
-            self.boost_thr,
+            0.58,
         )
         self.whale_veto_thr = self._env_float(
             "WHALE_VETO_THR",
-            self.veto_thr,
+            0.68,
         )
         self.whale_short_veto_thr = self._env_float(
             "WHALE_SHORT_VETO_THR",
@@ -77,17 +77,29 @@ class WhaleDetector:
 
         self.whale_trend_thr = self._env_float("WHALE_TREND_THR", 0.80)
         self.whale_range_thr = self._env_float("WHALE_RANGE_THR", 0.30)
-        self.whale_range_penalty = self._env_float("WHALE_RANGE_PENALTY", 0.65)
-        self.whale_trend_bonus = self._env_float("WHALE_TREND_BONUS", 1.15)
-        self.whale_xconf_bonus = self._env_float("WHALE_XCONF_BONUS", 1.10)
+        self.whale_range_penalty = self._env_float("WHALE_RANGE_PENALTY", 0.75)
+        self.whale_trend_bonus = self._env_float("WHALE_TREND_BONUS", 1.18)
+        self.whale_xconf_bonus = self._env_float("WHALE_XCONF_BONUS", 1.12)
 
         self.whale_force_exit_enable = self._env_bool(
             "WHALE_FORCE_EXIT_ENABLE",
-            False,
+            True,
         )
         self.whale_force_exit_thr = self._env_float(
             "WHALE_FORCE_EXIT_THR",
-            force_exit_thr,
+            0.70,
+        )
+        self.whale_force_exit_min_pnl_pct = self._env_float(
+            "WHALE_FORCE_EXIT_MIN_PNL_PCT",
+            -0.0015,
+        )
+        self.whale_force_exit_on_profit_only = self._env_bool(
+            "WHALE_FORCE_EXIT_ON_PROFIT_ONLY",
+            False,
+        )
+        self.whale_force_exit_confirm_bars = self._env_int(
+            "WHALE_FORCE_EXIT_CONFIRM_BARS",
+            1,
         )
 
         self.whale_block_actions = {
@@ -112,19 +124,18 @@ class WhaleDetector:
             for x in str(
                 os.getenv(
                     "WHALE_BOOST_ACTIONS",
-                    "confirm,strong_confirm,hold_winner",
+                    "confirm,strong_confirm,hold_winner,soft_confirm",
                 )
             ).split(",")
             if x.strip()
         }
 
         self.ema_whale_only = self._env_bool("EMA_WHALE_ONLY", False)
-        self.ema_whale_thr = self._env_float("EMA_WHALE_THR", 0.50)
+        self.ema_whale_thr = self._env_float("EMA_WHALE_THR", 0.45)
         self.min_mtf_agreement_score = self._env_float(
             "WHALE_MTF_MIN_AGREEMENT_SCORE",
             0.55,
         )
-
     # ------------------------------------------------------------------
     # yardımcılar
     # ------------------------------------------------------------------
@@ -448,8 +459,10 @@ class WhaleDetector:
             return "ignore"
 
         if regime == "watch":
-            if opposed_to_trade or opposed_to_pos:
+            if opposed_to_trade:
                 return "avoid_open"
+            if opposed_to_pos:
+                return "tighten_risk"
             if aligned_with_trade or aligned_with_pos:
                 return "soft_confirm"
             return "watch"
@@ -479,7 +492,6 @@ class WhaleDetector:
             return "veto"
 
         return "ignore"
-
     def _generate_signal(self, df: pd.DataFrame, multiplier: float = 1.0) -> WhaleSignal:
         tail = df.tail(self.window)
         if len(tail) < 5:
@@ -547,14 +559,20 @@ class WhaleDetector:
     # ------------------------------------------------------------------
     def classify_regime(self, signal: WhaleSignal) -> str:
         score = self._safe_float(signal.score, 0.0)
-        direction = str(signal.direction or "none")
+        direction = str(signal.direction or "none").lower()
 
-        if direction == "none" or score < 0.35:
+        if direction not in ("long", "short"):
             return "ignore"
+
+        if score < 0.30:
+            return "ignore"
+
         if score < self.whale_confirm_thr:
             return "watch"
+
         if score < self.whale_veto_thr:
             return "boost"
+
         return "veto"
     def final_whale_vote(
         self,
@@ -638,12 +656,14 @@ class WhaleDetector:
                 "boost_thr": float(self.whale_confirm_thr),
                 "veto_thr": float(self.whale_veto_thr),
                 "force_exit_thr": float(self.whale_force_exit_thr),
+                "force_exit_min_pnl_pct": float(self.whale_force_exit_min_pnl_pct),
+                "force_exit_on_profit_only": bool(self.whale_force_exit_on_profit_only),
+                "force_exit_confirm_bars": int(self.whale_force_exit_confirm_bars),
                 "block_actions": sorted(self.whale_block_actions),
                 "reduce_actions": sorted(self.whale_reduce_actions),
                 "boost_actions": sorted(self.whale_boost_actions),
             }
         )
-
         return WhaleDecision(
             direction=sig_dir if sig_dir in ("long", "short") else "none",
             score=float(score),
@@ -682,17 +702,17 @@ class WhaleDetector:
         )
         out["whale_should_block_open"] = (
             dec.action in self.whale_block_actions
-            or dec.action in ("block", "hard_block", "soft_block")
+            or dec.action in ("block", "hard_block", "soft_block", "avoid_open")
         )
         out["whale_should_force_exit"] = dec.action == "force_exit"
         out["whale_should_tighten_risk"] = (
             dec.action in self.whale_reduce_actions
             or dec.action == "tighten_risk"
         )
+        out["whale_should_reduce"] = dec.action == "reduce_size"
         out["whale_should_hold"] = dec.action == "hold_winner"
 
         return out
-
 
 class MultiTimeframeWhaleDetector(WhaleDetector):
     """
@@ -796,46 +816,44 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
 
         long_score_n = float(long_score / total_w)
         short_score_n = float(short_score / total_w)
-        if (
-            long_score_n > short_score_n
-            and long_score_n >= self.min_mtf_agreement_score
-        ):
+        consensus_thr = float(self.min_mtf_agreement_score)
+
+        if long_score_n > short_score_n and long_score_n >= consensus_thr:
             base_signal = WhaleSignal(
                 direction="long",
                 score=float(self._clip01(long_score_n)),
                 reason="mtf_long_alignment",
                 meta={
                     "per_tf": per_tf,
-                    "long_score": long_score_n,
-                    "short_score": short_score_n,
+                    "long_score": float(long_score_n),
+                    "short_score": float(short_score_n),
+                    "consensus_thr": float(consensus_thr),
                 },
             )
-        elif (
-            short_score_n > long_score_n
-            and short_score_n >= self.min_mtf_agreement_score
-        ):
+        elif short_score_n > long_score_n and short_score_n >= consensus_thr:
             base_signal = WhaleSignal(
                 direction="short",
                 score=float(self._clip01(short_score_n)),
                 reason="mtf_short_alignment",
                 meta={
                     "per_tf": per_tf,
-                    "long_score": long_score_n,
-                    "short_score": short_score_n,
+                    "long_score": float(long_score_n),
+                    "short_score": float(short_score_n),
+                    "consensus_thr": float(consensus_thr),
                 },
             )
         else:
             base_signal = WhaleSignal(
                 direction="none",
-                score=float(max(long_score_n, short_score_n)),
+                score=float(self._clip01(max(long_score_n, short_score_n))),
                 reason="mtf_no_consensus",
                 meta={
                     "per_tf": per_tf,
-                    "long_score": long_score_n,
-                    "short_score": short_score_n,
+                    "long_score": float(long_score_n),
+                    "short_score": float(short_score_n),
+                    "consensus_thr": float(consensus_thr),
                 },
             )
-
         decision = self.final_whale_vote(
             signal=base_signal,
             trade_side=trade_side,
