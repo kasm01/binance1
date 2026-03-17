@@ -338,6 +338,7 @@ class TradeExecutor:
                 out[k] = resp.get(k)
 
         return out
+
     def _get_all_local_positions(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
 
@@ -350,6 +351,17 @@ class TradeExecutor:
 
                 if callable(list_symbols_fn) and callable(get_position_fn):
                     symbols = list_symbols_fn() or []
+
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][STATE] position_manager symbols | count=%s symbols=%s",
+                                len(symbols),
+                                list(symbols),
+                            )
+                    except Exception:
+                        pass
+
                     for sym in symbols:
                         try:
                             sym_u = str(sym).upper().strip()
@@ -369,18 +381,41 @@ class TradeExecutor:
         # 2) Redis fallback
         if not out:
             try:
-                r = getattr(self, "redis_client", None)
+                r = (
+                    getattr(self, "redis", None)
+                    or getattr(self, "redis_client", None)
+                )
+
                 if r is not None:
                     keys = r.keys("bot:positions:*") or []
+
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][STATE] redis fallback keys | count=%s keys=%s",
+                                len(keys),
+                                [str(k) for k in keys],
+                            )
+                    except Exception:
+                        pass
+
                     for k in keys:
                         try:
                             raw = r.get(k)
                             if not raw:
                                 continue
+
+                            if isinstance(raw, (bytes, bytearray)):
+                                raw = raw.decode("utf-8", errors="ignore")
+
                             pos = json.loads(raw)
                             if not isinstance(pos, dict):
                                 continue
-                            sym_u = str(pos.get("symbol") or str(k).split(":")[-1]).upper().strip()
+
+                            sym_u = str(
+                                pos.get("symbol") or str(k).split(":")[-1]
+                            ).upper().strip()
+
                             out[sym_u] = pos
                         except Exception:
                             if self.logger:
@@ -404,6 +439,16 @@ class TradeExecutor:
                                 out[sym_u] = pos
                         except Exception:
                             pass
+
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][STATE] memory fallback used | count=%s symbols=%s",
+                                len(out),
+                                list(out.keys()),
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1412,6 +1457,8 @@ class TradeExecutor:
         intent_id: str = "",
     ) -> None:
         sym = str(symbol).upper().strip()
+        side_n = str(side or "").lower().strip()
+        interval_n = str(interval or "").strip()
         if not sym or self.redis is None:
             return
 
@@ -1419,33 +1466,44 @@ class TradeExecutor:
 
         try:
             raw = self.redis.get(key)
+            obj: Dict[str, Any] = {}
+
             if raw:
                 if isinstance(raw, (bytes, bytearray)):
                     raw = raw.decode("utf-8", errors="ignore")
-                obj = json.loads(raw)
-                if not isinstance(obj, dict):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        obj = parsed
+                except Exception:
                     obj = {}
-            else:
-                obj = {}
 
             obj[sym] = {
-                "side": str(side).lower().strip(),
+                "side": side_n,
                 "ts_utc": datetime.now(timezone.utc).isoformat(),
-                "intent_id": str(intent_id or ""),
-                "interval": str(interval or ""),
-                "expires_at": int(time.time()) + 12 * 3600,
+                "intent_id": str(intent_id or "").strip(),
+                "interval": interval_n,
+                "expires_at": float(time.time()) + float(12 * 3600),
             }
 
-            self.redis.set(key, json.dumps(obj, ensure_ascii=False, default=str))
+            self.redis.set(
+                key,
+                json.dumps(obj, ensure_ascii=False, default=str),
+            )
 
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][STATE] bridge state upserted | key=%s symbol=%s side=%s interval=%s",
-                    key,
-                    sym,
-                    str(side).lower().strip(),
-                    str(interval or ""),
-                )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] bridge state upserted | key=%s symbol=%s side=%s interval=%s intent_id=%s",
+                        key,
+                        sym,
+                        side_n,
+                        interval_n,
+                        str(intent_id or "").strip(),
+                    )
+            except Exception:
+                pass
+
         except Exception:
             try:
                 if self.logger:
@@ -1462,6 +1520,8 @@ class TradeExecutor:
             "local_open": 0,
             "removed_local": [],
             "removed_bridge": [],
+            "added_local": [],
+            "added_bridge": [],
             "kept": [],
         }
 
@@ -1491,6 +1551,7 @@ class TradeExecutor:
                     if self.position_sync_remove_orphans:
                         self._del_position(sym)
                         summary["removed_local"].append(sym)
+
                         try:
                             if self.logger:
                                 self.logger.info(
@@ -1502,6 +1563,7 @@ class TradeExecutor:
 
                     self._remove_from_bridge_state(sym)
                     summary["removed_bridge"].append(sym)
+
                 except Exception:
                     try:
                         if self.logger:
@@ -1514,21 +1576,140 @@ class TradeExecutor:
             else:
                 summary["kept"].append(sym)
 
+        # exchange var, local yok -> hydrate et
+        for sym, ex_pos in exchange_map.items():
+            if sym in local_map:
+                if sym not in summary["kept"]:
+                    summary["kept"].append(sym)
+                continue
+
+            try:
+                side = str(ex_pos.get("side") or "").strip().lower()
+                qty = float(ex_pos.get("qty") or 0.0)
+                entry_price = float(ex_pos.get("entry_price") or 0.0)
+
+                if side not in ("long", "short") or qty <= 0 or entry_price <= 0:
+                    continue
+
+                bridge_state = self._get_bridge_state(sym)
+
+                interval = str(
+                    (bridge_state or {}).get("interval")
+                    or ex_pos.get("interval")
+                    or "5m"
+                ).strip() or "5m"
+
+                intent_id = str(
+                    (bridge_state or {}).get("intent_id")
+                    or ex_pos.get("intent_id")
+                    or ""
+                ).strip()
+
+                trailing_pct = float(
+                    ex_pos.get("trailing_pct")
+                    or getattr(self, "default_trailing_pct", 0.03)
+                    or 0.03
+                )
+                stall_ttl_sec = int(
+                    ex_pos.get("stall_ttl_sec")
+                    or getattr(self, "default_stall_ttl_sec", 7200)
+                    or 7200
+                )
+
+                now_ts = time.time()
+
+                hydrated = {
+                    "symbol": sym,
+                    "side": side,
+                    "qty": qty,
+                    "entry_price": entry_price,
+                    "notional": float(qty * entry_price),
+                    "interval": interval,
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                    "sl_price": 0.0,
+                    "tp_price": 0.0,
+                    "trailing_pct": trailing_pct,
+                    "stall_ttl_sec": stall_ttl_sec,
+                    "best_pnl_pct": 0.0,
+                    "last_best_ts": now_ts,
+                    "atr_value": 0.0,
+                    "highest_price": entry_price,
+                    "lowest_price": entry_price,
+                    "meta": {
+                        "probs": {},
+                        "extra": {
+                            "hydrated_from_exchange": True,
+                            "intent_id": intent_id,
+                        },
+                    },
+                }
+
+                self._set_position(sym, hydrated)
+
+                try:
+                    chk = self._get_position(sym)
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SYNC] post-set local verify | symbol=%s exists=%s",
+                            sym,
+                            bool(isinstance(chk, dict) and chk),
+                        )
+                except Exception:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][SYNC] post-set local verify failed | symbol=%s",
+                            sym,
+                        )
+
+                self._upsert_bridge_state_on_open(
+                    symbol=sym,
+                    side=side,
+                    interval=interval,
+                    intent_id=intent_id,
+                )
+
+                summary["added_local"].append(sym)
+                summary["added_bridge"].append(sym)
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SYNC] hydrated missing local position from exchange | symbol=%s side=%s qty=%.10f entry=%.10f interval=%s",
+                            sym,
+                            side,
+                            qty,
+                            entry_price,
+                            interval,
+                        )
+                except Exception:
+                    pass
+
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][SYNC] hydrate failed | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
+
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s removed_local=%s removed_bridge=%s kept=%s",
+                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s removed_local=%s removed_bridge=%s added_local=%s added_bridge=%s kept=%s",
                     int(summary["exchange_open"]),
                     int(summary["local_open"]),
                     summary["removed_local"],
                     summary["removed_bridge"],
+                    summary["added_local"],
+                    summary["added_bridge"],
                     summary["kept"],
                 )
         except Exception:
             pass
 
         return summary
-
     async def _position_sync_loop(self) -> None:
         while True:
             try:
@@ -1544,6 +1725,7 @@ class TradeExecutor:
                 await asyncio.sleep(max(30, int(self.position_sync_interval_sec)))
             except Exception:
                 await asyncio.sleep(300)
+
     async def _position_lifecycle_loop(self) -> None:
         interval_sec = max(3, int(getattr(self, "position_lifecycle_interval_sec", 15)))
 
@@ -1563,23 +1745,45 @@ class TradeExecutor:
 
                 for sym, pos in positions.items():
                     try:
+                        sym_u = str(sym).upper().strip()
                         side = str(pos.get("side") or "").strip().lower()
                         qty = float(pos.get("qty") or 0.0)
                         interval = str(pos.get("interval") or "5m").strip() or "5m"
+                        entry_price = float(pos.get("entry_price") or 0.0)
 
                         if side not in ("long", "short") or qty <= 0:
+                            try:
+                                if self.logger:
+                                    self.logger.info(
+                                        "[EXEC][LIFECYCLE] skip invalid position | symbol=%s side=%s qty=%.10f",
+                                        sym_u,
+                                        side,
+                                        qty,
+                                    )
+                            except Exception:
+                                pass
                             continue
 
-                        px = self._resolve_price(symbol=sym)
+                        px = None
+                        price_source = ""
+
+                        try:
+                            px = self._resolve_price(symbol=sym_u)
+                            if px is not None and px > 0:
+                                price_source = "cache"
+                        except Exception:
+                            px = None
 
                         if px is None or px <= 0:
                             try:
                                 client = getattr(self, "client", None)
                                 fn = getattr(client, "futures_mark_price", None) if client is not None else None
                                 if callable(fn):
-                                    mp = fn(symbol=sym)
+                                    mp = fn(symbol=sym_u)
                                     if isinstance(mp, dict):
                                         px = self._clip_float(mp.get("markPrice"), None)
+                                        if px is not None and px > 0:
+                                            price_source = "mark_price"
                             except Exception:
                                 px = None
 
@@ -1587,8 +1791,12 @@ class TradeExecutor:
                             try:
                                 if self.logger:
                                     self.logger.info(
-                                        "[EXEC][LIFECYCLE] skip no price | symbol=%s",
-                                        sym,
+                                        "[EXEC][LIFECYCLE] skip no price | symbol=%s side=%s qty=%.10f interval=%s entry=%.6f",
+                                        sym_u,
+                                        side,
+                                        qty,
+                                        interval,
+                                        entry_price,
                                     )
                             except Exception:
                                 pass
@@ -1597,18 +1805,20 @@ class TradeExecutor:
                         try:
                             if self.logger:
                                 self.logger.info(
-                                    "[EXEC][LIFECYCLE] check | symbol=%s side=%s qty=%.10f price=%.6f interval=%s",
-                                    sym,
+                                    "[EXEC][LIFECYCLE] check | symbol=%s side=%s qty=%.10f entry=%.6f price=%.6f interval=%s src=%s",
+                                    sym_u,
                                     side,
                                     qty,
+                                    entry_price,
                                     float(px),
                                     interval,
+                                    price_source or "-",
                                 )
                         except Exception:
                             pass
 
                         self._check_sl_tp_trailing(
-                            symbol=sym,
+                            symbol=sym_u,
                             price=float(px),
                             interval=interval,
                         )
@@ -1634,6 +1844,7 @@ class TradeExecutor:
                 await asyncio.sleep(interval_sec)
             except Exception:
                 await asyncio.sleep(5)
+
     def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
         sym = str(symbol).upper().strip()
         side0 = str(side or "").strip().lower()
