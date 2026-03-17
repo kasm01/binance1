@@ -342,41 +342,50 @@ class TradeExecutor:
     def _get_all_local_positions(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
 
-        # 1) PositionManager üzerinden oku
+        # 1) Önce PositionManager/list_symbols üzerinden sembolleri bul,
+        #    ama pozisyonu çalışan wrapper olan self._get_position ile oku.
         try:
             pm = getattr(self, "position_manager", None)
-            if pm is not None:
-                list_symbols_fn = getattr(pm, "list_symbols", None)
-                get_position_fn = getattr(pm, "get_position", None)
+            list_symbols_fn = getattr(pm, "list_symbols", None) if pm is not None else None
 
-                if callable(list_symbols_fn) and callable(get_position_fn):
-                    symbols = list_symbols_fn() or []
+            if callable(list_symbols_fn):
+                raw_symbols = list_symbols_fn() or []
 
+                norm_symbols = []
+                for s in raw_symbols:
                     try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC][STATE] position_manager symbols | count=%s symbols=%s",
-                                len(symbols),
-                                [str(s).upper().strip() for s in symbols],
-                            )
+                        s_text = str(s).strip()
+                        if ":" in s_text:
+                            s_text = s_text.split(":")[-1]
+                        s_text = s_text.upper().strip()
+                        if s_text:
+                            norm_symbols.append(s_text)
                     except Exception:
                         pass
 
-                    for sym in symbols:
-                        try:
-                            sym_u = str(sym).upper().strip()
-                            if not sym_u:
-                                continue
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][STATE] position_manager symbols | count=%s symbols=%s",
+                            len(norm_symbols),
+                            norm_symbols,
+                        )
+                except Exception:
+                    pass
 
-                            pos = get_position_fn(sym_u)
-                            if isinstance(pos, dict) and pos:
-                                out[sym_u] = dict(pos)
-                        except Exception:
-                            if self.logger:
-                                self.logger.exception(
-                                    "[EXEC][STATE] position_manager get failed | symbol=%s",
-                                    sym,
-                                )
+                for sym_u in norm_symbols:
+                    try:
+                        pos = self._get_position(sym_u)
+                        if isinstance(pos, dict) and pos:
+                            cp = dict(pos)
+                            cp["symbol"] = sym_u
+                            out[sym_u] = cp
+                    except Exception:
+                        if self.logger:
+                            self.logger.exception(
+                                "[EXEC][STATE] _get_position failed | symbol=%s",
+                                sym_u,
+                            )
         except Exception:
             if self.logger:
                 self.logger.exception("[EXEC][STATE] position_manager list failed")
@@ -391,30 +400,26 @@ class TradeExecutor:
                 if r is not None:
                     keys = r.keys("bot:positions:*") or []
 
+                    key_list = []
+                    for k in keys:
+                        if isinstance(k, (bytes, bytearray)):
+                            key_list.append(k.decode("utf-8", errors="ignore"))
+                        else:
+                            key_list.append(str(k))
+
                     try:
                         if self.logger:
                             self.logger.info(
                                 "[EXEC][STATE] redis keys scan | count=%s keys=%s",
-                                len(keys),
-                                [
-                                    k.decode("utf-8", errors="ignore")
-                                    if isinstance(k, (bytes, bytearray))
-                                    else str(k)
-                                    for k in keys
-                                ],
+                                len(key_list),
+                                key_list,
                             )
                     except Exception:
                         pass
 
-                    for k in keys:
+                    for key_s in key_list:
                         try:
-                            key_s = (
-                                k.decode("utf-8", errors="ignore")
-                                if isinstance(k, (bytes, bytearray))
-                                else str(k)
-                            )
-
-                            raw = r.get(k)
+                            raw = r.get(key_s)
                             if not raw:
                                 continue
 
@@ -431,14 +436,15 @@ class TradeExecutor:
                             if not sym_u:
                                 continue
 
-                            pos["symbol"] = sym_u
-                            out[sym_u] = dict(pos)
+                            cp = dict(pos)
+                            cp["symbol"] = sym_u
+                            out[sym_u] = cp
 
                         except Exception:
                             if self.logger:
                                 self.logger.exception(
                                     "[EXEC][STATE] redis position parse failed | key=%s",
-                                    k,
+                                    key_s,
                                 )
             except Exception:
                 if self.logger:
@@ -454,7 +460,6 @@ class TradeExecutor:
                             sym_u = str(sym).upper().strip()
                             if not sym_u:
                                 continue
-
                             if isinstance(pos, dict) and pos:
                                 cp = dict(pos)
                                 cp["symbol"] = sym_u
