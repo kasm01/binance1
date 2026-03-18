@@ -591,69 +591,9 @@ class TradeExecutor:
         if client is None:
             return out
 
-        # 1) Önce futures_account() içindeki positions alanını dene
-        try:
-            fn_acc = getattr(client, "futures_account", None)
-            if callable(fn_acc):
-                acc = fn_acc()
-                if isinstance(acc, dict):
-                    rows = acc.get("positions", []) or []
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-
-                        try:
-                            amt = float(row.get("positionAmt") or 0.0)
-                        except Exception:
-                            amt = 0.0
-
-                        if abs(amt) <= 1e-12:
-                            continue
-
-                        sym = str(row.get("symbol") or "").upper().strip()
-                        if not sym:
-                            continue
-
-                        side = "long" if amt > 0 else "short"
-
-                        entry_price = self._clip_float(row.get("entryPrice"), 0.0) or 0.0
-                        mark_price = self._clip_float(row.get("markPrice"), 0.0) or 0.0
-                        px = float(mark_price if mark_price > 0 else entry_price)
-                        notional = float(abs(amt) * px) if px > 0 else 0.0
-
-                        out.append(
-                            {
-                                "symbol": sym,
-                                "side": side,
-                                "qty": abs(float(amt)),
-                                "entry_price": float(entry_price),
-                                "mark_price": float(mark_price),
-                                "notional": float(notional),
-                                "raw": row,
-                            }
-                        )
-
-                    if out:
-                        return out
-        except Exception as e:
-            try:
-                if self.logger:
-                    self.logger.warning(
-                        "[EXEC][EXCHANGE-POS] futures_account positions read failed err=%s",
-                        str(e)[:300],
-                    )
-            except Exception:
-                pass
-
-        # 2) Fallback: futures_position_information()
-        try:
-            fn = getattr(client, "futures_position_information", None)
-            if not callable(fn):
-                return out
-
-            rows = fn()
+        def _append_from_rows(rows: Any) -> None:
             if not isinstance(rows, list):
-                return out
+                return
 
             for row in rows:
                 if not isinstance(row, dict):
@@ -672,8 +612,10 @@ class TradeExecutor:
                     continue
 
                 side = "long" if amt > 0 else "short"
+
                 entry_price = self._clip_float(row.get("entryPrice"), 0.0) or 0.0
                 mark_price = self._clip_float(row.get("markPrice"), 0.0) or 0.0
+
                 px = float(mark_price if mark_price > 0 else entry_price)
                 notional = float(abs(amt) * px) if px > 0 else 0.0
 
@@ -688,17 +630,44 @@ class TradeExecutor:
                         "raw": row,
                     }
                 )
+
+        # 1) Önce futures_account() -> positions
+        try:
+            fn_acc = getattr(client, "futures_account", None)
+            if callable(fn_acc):
+                acc = fn_acc()
+                if isinstance(acc, dict):
+                    _append_from_rows(acc.get("positions", []) or [])
+                    if out:
+                        return out
         except Exception as e:
             try:
                 if self.logger:
                     self.logger.warning(
-                        "[EXEC][EXCHANGE-POS] futures_position_information read failed err=%s",
+                        "[EXEC][EXCHANGE-POS] futures_account positions read failed | err=%s",
+                        str(e)[:300],
+                    )
+            except Exception:
+                pass
+
+        # 2) Fallback: futures_position_information()
+        try:
+            fn = getattr(client, "futures_position_information", None)
+            if callable(fn):
+                rows = fn()
+                _append_from_rows(rows)
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][EXCHANGE-POS] futures_position_information read failed | err=%s",
                         str(e)[:300],
                     )
             except Exception:
                 pass
 
         return out
+
     def _get_exchange_open_positions_map(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
 
@@ -712,43 +681,66 @@ class TradeExecutor:
                 side = str(row.get("side") or "").lower().strip()
                 qty = float(row.get("qty") or 0.0)
 
-                if sym and side in ("long", "short") and qty > 0:
-                    out[sym] = row
+                if not sym or side not in ("long", "short") or qty <= 0:
+                    continue
+
+                out[sym] = row
         except Exception:
-            pass
+            try:
+                if self.logger:
+                    self.logger.exception("[EXEC][EXCHANGE-POS] map build failed")
+            except Exception:
+                pass
 
         return out
 
     def _count_open_positions(self) -> int:
         seen: Dict[str, Dict[str, Any]] = {}
 
+        # 1) Exchange
         try:
             ex_rows = self._get_exchange_open_positions()
             for row in ex_rows:
+                if not isinstance(row, dict):
+                    continue
                 sym = str(row.get("symbol") or "").upper().strip()
-                if sym:
+                side = str(row.get("side") or "").lower().strip()
+                qty = float(row.get("qty") or 0.0)
+                if sym and side in ("long", "short") and qty > 0:
                     seen[sym] = row
         except Exception:
             pass
 
+        # 2) Redis fallback / tamamlayıcı kaynak
         try:
-            if self.redis is not None:
-                keys = self.redis.keys("bot:positions:*") or []
+            r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+            if r is not None:
+                keys = r.keys("bot:positions:*") or []
                 for key in keys:
                     try:
-                        raw = self.redis.get(key)
+                        raw = r.get(key)
                         if not raw:
                             continue
-                        if isinstance(raw, bytes):
+                        if isinstance(raw, (bytes, bytearray)):
                             raw = raw.decode("utf-8", errors="ignore")
+
                         obj = json.loads(raw)
                         if not isinstance(obj, dict):
                             continue
-                        sym = str(obj.get("symbol") or "").upper().strip()
+
+                        sym = str(obj.get("symbol") or str(key).split(":")[-1]).upper().strip()
                         side = str(obj.get("side") or "").lower().strip()
                         qty = float(obj.get("qty") or 0.0)
+
                         if sym and side in ("long", "short") and qty > 0:
-                            seen.setdefault(sym, {"symbol": sym, "side": side, "qty": qty})
+                            seen.setdefault(
+                                sym,
+                                {
+                                    "symbol": sym,
+                                    "side": side,
+                                    "qty": qty,
+                                },
+                            )
                     except Exception:
                         continue
         except Exception:
@@ -1186,6 +1178,39 @@ class TradeExecutor:
             "min_qty": 0.0,
             "min_notional": 0.0,
         }
+
+    def _fmt_qty(self, symbol: str, qty: float) -> str:
+        sym = str(symbol).upper().strip()
+        q = float(qty or 0.0)
+
+        if q <= 0:
+            return "0"
+
+        step = 0.0
+        try:
+            s_info = self._get_symbol_info(sym)
+            if isinstance(s_info, dict):
+                step = float(s_info.get("step_size") or s_info.get("step") or 0.0)
+        except Exception:
+            step = 0.0
+
+        if step <= 0:
+            try:
+                if abs(q - round(q)) < 1e-12:
+                    return str(int(round(q)))
+            except Exception:
+                pass
+            return ("%.10f" % q).rstrip("0").rstrip(".")
+
+        step_s = ("%.16f" % step).rstrip("0").rstrip(".")
+        if "." in step_s:
+            decimals = len(step_s.split(".")[1])
+        else:
+            decimals = 0
+
+        fmt = "{:0." + str(decimals) + "f}"
+        return fmt.format(q)
+
     def _normalize_close_quantity(
         self,
         symbol: str,
@@ -1647,6 +1672,143 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
+    def _evaluate_position_signal_exit(
+        self,
+        symbol: str,
+        pos: Dict[str, Any],
+        price: float,
+    ) -> Optional[Dict[str, Any]]:
+        sym = str(symbol).upper().strip()
+        if not sym or not isinstance(pos, dict):
+            return None
+
+        if not bool(getattr(self, "reverse_close_enabled", True)):
+            return None
+
+        side = str(pos.get("side") or "").strip().lower()
+        if side not in ("long", "short"):
+            return None
+
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+        if r is None:
+            return None
+
+        try:
+            raw = r.get(f"bot:last_signal:{sym}")
+            if not raw:
+                return None
+
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+
+            sig = json.loads(raw)
+            if not isinstance(sig, dict):
+                return None
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][WEAK] latest signal read failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+            return None
+
+        sig_side = str(sig.get("side") or "").strip().lower()
+        sig_interval = str(sig.get("interval") or "").strip()
+        sig_score = float(sig.get("score") or 0.0)
+        sig_ts = float(sig.get("ts") or 0.0)
+
+        now_ts = time.time()
+
+        try:
+            max_age = float(getattr(self, "opposite_signal_max_age_sec", 600.0) or 600.0)
+        except Exception:
+            max_age = 600.0
+
+        try:
+            min_score = float(getattr(self, "opposite_signal_min_score", 0.58) or 0.58)
+        except Exception:
+            min_score = 0.58
+
+        try:
+            confirm_need = int(getattr(self, "opposite_signal_confirm_count", 1) or 1)
+        except Exception:
+            confirm_need = 1
+
+        if sig_side not in ("long", "short"):
+            return None
+
+        if not sig_ts or (now_ts - sig_ts) > max_age:
+            return None
+
+        if sig_score < min_score:
+            return None
+
+        pos_interval = str(pos.get("interval") or "").strip()
+        if pos_interval and sig_interval and pos_interval != sig_interval:
+            return None
+
+        opposite = (
+            (side == "long" and sig_side == "short")
+            or (side == "short" and sig_side == "long")
+        )
+        if not opposite:
+            return None
+
+        confirm_key = f"bot:reverse_confirm:{sym}:{side}:{sig_side}"
+        confirm_count = 1
+
+        try:
+            confirm_count = int(r.incr(confirm_key))
+            r.expire(confirm_key, int(max(30, max_age)))
+        except Exception:
+            confirm_count = 1
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WEAK] reverse signal seen | symbol=%s pos_side=%s sig_side=%s sig_score=%.4f confirm=%s/%s",
+                    sym,
+                    side,
+                    sig_side,
+                    float(sig_score),
+                    int(confirm_count),
+                    int(confirm_need),
+                )
+        except Exception:
+            pass
+
+        if confirm_count < confirm_need:
+            return None
+
+        try:
+            r.delete(confirm_key)
+        except Exception:
+            pass
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WEAK] reverse close approved | symbol=%s pos_side=%s sig_side=%s sig_score=%.4f price=%.6f",
+                    sym,
+                    side,
+                    sig_side,
+                    float(sig_score),
+                    float(price or 0.0),
+                )
+        except Exception:
+            pass
+
+        return {
+            "action": "close",
+            "reason": "reverse_signal",
+            "signal_side": sig_side,
+            "signal_score": float(sig_score),
+            "price": float(price or 0.0),
+        }
 
     def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
@@ -2923,7 +3085,10 @@ class TradeExecutor:
         if self.dry_run:
             return {"poll": "skip", "reason": "dry_run"}
 
-        sym = str(symbol).upper()
+        sym = str(symbol).upper().strip()
+        if not sym:
+            return {"poll": "skip", "reason": "empty_symbol"}
+
         client = getattr(self, "client", None)
         if client is None:
             return {"poll": "skip", "reason": "client_none"}
@@ -2932,30 +3097,74 @@ class TradeExecutor:
         if not callable(fn):
             return {"poll": "skip", "reason": "fn_missing"}
 
-        t_end = time.time() + float(max_wait_s)
+        if order_id is None and not str(client_order_id or "").strip():
+            return {"poll": "skip", "reason": "no_order_ref"}
+
+        started = time.time()
+        t_end = started + max(0.2, float(max_wait_s or 2.0))
         last: Any = None
+        last_err = ""
 
         while time.time() < t_end:
             try:
                 payload: Dict[str, Any] = {"symbol": sym}
                 if order_id is not None:
                     payload["orderId"] = order_id
-                elif client_order_id:
-                    payload["origClientOrderId"] = client_order_id
                 else:
-                    return {"poll": "skip", "reason": "no_order_ref"}
+                    payload["origClientOrderId"] = str(client_order_id).strip()
 
                 last = fn(**payload)
+
                 if isinstance(last, dict):
-                    status = str(last.get("status", "")).upper()
+                    status = str(last.get("status", "")).upper().strip()
+
                     if status in ("FILLED", "CANCELED", "REJECTED", "EXPIRED"):
-                        return {"poll": "ok", "result": self._summarize_order(last)}
+                        return {
+                            "poll": "ok",
+                            "result": self._summarize_order(last),
+                            "terminal_status": status,
+                            "waited_sec": round(time.time() - started, 3),
+                        }
+
+                    if status in ("NEW", "PARTIALLY_FILLED", "PENDING_NEW"):
+                        time.sleep(0.2)
+                        continue
+
+                    # tanınmayan ama dict döndü
+                    return {
+                        "poll": "ok",
+                        "result": self._summarize_order(last),
+                        "terminal_status": status or "UNKNOWN",
+                        "waited_sec": round(time.time() - started, 3),
+                    }
+
+                time.sleep(0.2)
+
             except Exception as e:
-                return {"poll": "error", "err": str(e)[:300]}
+                last_err = str(e)[:300]
+                time.sleep(0.2)
 
-            time.sleep(0.2)
+        if isinstance(last, dict):
+            return {
+                "poll": "timeout",
+                "result": self._summarize_order(last),
+                "terminal_status": str(last.get("status", "")).upper().strip(),
+                "waited_sec": round(time.time() - started, 3),
+                "err": last_err,
+            }
 
-        return {"poll": "timeout", "last": self._summarize_order(last)}
+        if last_err:
+            return {
+                "poll": "error",
+                "err": last_err,
+                "waited_sec": round(time.time() - started, 3),
+            }
+
+        return {
+            "poll": "timeout",
+            "reason": "no_terminal_status",
+            "waited_sec": round(time.time() - started, 3),
+        }
     # ---------------------------------------------------------
     # exchange order functions
     # ---------------------------------------------------------
@@ -3645,13 +3854,12 @@ class TradeExecutor:
         except Exception:
             pass
 
-        poll_result = self._poll_order_fill(
+        poll_result = self._poll_order_status(
             symbol=sym,
-            order_response=order_resp,
-            timeout_sec=5.0,
-            sleep_sec=0.20,
+            order_id=order_resp.get("orderId") if isinstance(order_resp, dict) else None,
+            client_order_id=str(order_resp.get("clientOrderId") or "") if isinstance(order_resp, dict) else "",
+            max_wait_s=5.0,
         )
-
         try:
             if self.logger:
                 self.logger.info(
@@ -4005,123 +4213,157 @@ class TradeExecutor:
         sl_price = float(pos.get("sl_price") or 0.0)
         tp_price = float(pos.get("tp_price") or 0.0)
 
-        sl_pct_default = float(
-            getattr(self, "default_sl_pct", 0.0)
-            or getattr(self, "sl_pct_default", 0.0)
-            or getattr(self, "sl_pct", 0.0)
-            or 0.0
-        )
-        tp_pct_default = float(
-            getattr(self, "default_tp_pct", 0.0)
-            or getattr(self, "tp_pct_default", 0.0)
-            or getattr(self, "tp_pct", 0.0)
-            or 0.0
-        )
+        try:
+            sl_pct = float(
+                getattr(self, "default_sl_pct", 0.0)
+                or getattr(self, "sl_pct_default", 0.0)
+                or getattr(self, "sl_pct", 0.0)
+                or 0.0
+            )
+        except Exception:
+            sl_pct = 0.0
 
-        trailing_activation_pct = float(
-            getattr(self, "trailing_activation_pct", 0.0) or 0.0
-        )
-        stall_min_pnl_pct = float(
-            getattr(self, "stall_min_pnl_pct", 0.04) or 0.04
-        )
-        stall_close_after_profit_sec = int(
-            getattr(self, "stall_close_after_profit_sec", 900) or 900
-        )
-        stall_close_enabled = bool(
-            getattr(self, "stall_close_enabled", True)
-        )
+        try:
+            tp_pct = float(
+                getattr(self, "default_tp_pct", 0.0)
+                or getattr(self, "tp_pct_default", 0.0)
+                or getattr(self, "tp_pct", 0.0)
+                or 0.0
+            )
+        except Exception:
+            tp_pct = 0.0
 
-        if sl_price <= 0 and sl_pct_default > 0:
+        try:
+            trailing_activation_pct = float(
+                getattr(self, "trailing_activation_pct", 0.0) or 0.0
+            )
+        except Exception:
+            trailing_activation_pct = 0.0
+
+        try:
+            stall_close_enabled = bool(
+                getattr(self, "stall_close_enabled", True)
+            )
+        except Exception:
+            stall_close_enabled = True
+
+        try:
+            stall_min_pnl_pct = float(
+                getattr(self, "stall_min_pnl_pct", 0.04) or 0.04
+            )
+        except Exception:
+            stall_min_pnl_pct = 0.04
+
+        try:
+            stall_close_after_profit_sec = int(
+                float(getattr(self, "stall_close_after_profit_sec", 900) or 900)
+            )
+        except Exception:
+            stall_close_after_profit_sec = 900
+
+        if sl_price <= 0 and sl_pct > 0:
             if side == "long":
-                sl_price = entry_price * (1.0 - sl_pct_default)
+                sl_price = entry_price * (1.0 - sl_pct)
             else:
-                sl_price = entry_price * (1.0 + sl_pct_default)
+                sl_price = entry_price * (1.0 + sl_pct)
 
-        if tp_price <= 0 and tp_pct_default > 0:
+        if tp_price <= 0 and tp_pct > 0:
             if side == "long":
-                tp_price = entry_price * (1.0 + tp_pct_default)
+                tp_price = entry_price * (1.0 + tp_pct)
             else:
-                tp_price = entry_price * (1.0 - tp_pct_default)
+                tp_price = entry_price * (1.0 - tp_pct)
 
         close_reason = None
-        trail_ref_price = entry_price
+        trail_ref_price = float(entry_price)
         trail_stop_price = 0.0
         trailing_armed = False
+        now_ts = time.time()
 
         if side == "long":
-            highest_price = max(highest_price, float(price))
-            pnl_pct = ((float(price) - entry_price) / entry_price) if entry_price > 0 else 0.0
-            trail_ref_price = highest_price
+            highest_price = max(float(highest_price), float(price))
+            pnl_pct = (
+                (float(price) - float(entry_price)) / float(entry_price)
+                if float(entry_price) > 0
+                else 0.0
+            )
+            trail_ref_price = float(highest_price)
 
-            if pnl_pct > best_pnl_pct:
+            if float(pnl_pct) > float(best_pnl_pct):
                 best_pnl_pct = float(pnl_pct)
-                last_best_ts = time.time()
+                last_best_ts = float(now_ts)
 
-            trailing_armed = (
-                trailing_pct > 0
-                and highest_price > entry_price
+            trailing_armed = bool(
+                float(trailing_pct) > 0
+                and float(highest_price) > float(entry_price)
                 and (
-                    trailing_activation_pct <= 0
-                    or best_pnl_pct >= trailing_activation_pct
+                    float(trailing_activation_pct) <= 0
+                    or float(best_pnl_pct) >= float(trailing_activation_pct)
                 )
             )
 
             if trailing_armed:
-                trail_stop_price = highest_price * (1.0 - trailing_pct)
+                trail_stop_price = float(highest_price) * (1.0 - float(trailing_pct))
 
-            if sl_price > 0 and float(price) <= float(sl_price):
+            if float(sl_price) > 0 and float(price) <= float(sl_price):
                 close_reason = "sl_hit"
-            elif tp_price > 0 and float(price) >= float(tp_price):
+            elif float(tp_price) > 0 and float(price) >= float(tp_price):
                 close_reason = "tp_hit"
             elif trailing_armed and float(price) <= float(trail_stop_price):
                 close_reason = "trailing_hit"
 
         else:
-            lowest_price = min(lowest_price, float(price))
-            pnl_pct = ((entry_price - float(price)) / entry_price) if entry_price > 0 else 0.0
-            trail_ref_price = lowest_price
+            lowest_price = min(float(lowest_price), float(price))
+            pnl_pct = (
+                (float(entry_price) - float(price)) / float(entry_price)
+                if float(entry_price) > 0
+                else 0.0
+            )
+            trail_ref_price = float(lowest_price)
 
-            if pnl_pct > best_pnl_pct:
+            if float(pnl_pct) > float(best_pnl_pct):
                 best_pnl_pct = float(pnl_pct)
-                last_best_ts = time.time()
+                last_best_ts = float(now_ts)
 
-            trailing_armed = (
-                trailing_pct > 0
-                and lowest_price < entry_price
+            trailing_armed = bool(
+                float(trailing_pct) > 0
+                and float(lowest_price) < float(entry_price)
                 and (
-                    trailing_activation_pct <= 0
-                    or best_pnl_pct >= trailing_activation_pct
+                    float(trailing_activation_pct) <= 0
+                    or float(best_pnl_pct) >= float(trailing_activation_pct)
                 )
             )
 
             if trailing_armed:
-                trail_stop_price = lowest_price * (1.0 + trailing_pct)
+                trail_stop_price = float(lowest_price) * (1.0 + float(trailing_pct))
 
-            if sl_price > 0 and float(price) >= float(sl_price):
+            if float(sl_price) > 0 and float(price) >= float(sl_price):
                 close_reason = "sl_hit"
-            elif tp_price > 0 and float(price) <= float(tp_price):
+            elif float(tp_price) > 0 and float(price) <= float(tp_price):
                 close_reason = "tp_hit"
             elif trailing_armed and float(price) >= float(trail_stop_price):
                 close_reason = "trailing_hit"
+
         weak_reason = None
         try:
             if close_reason is None and bool(getattr(self, "weak_signal_enabled", False)):
                 weak_reason = self._evaluate_position_signal_exit(
                     symbol=sym,
-                    position=pos,
-                    current_price=float(price),
-                    current_pnl_pct=float(pnl_pct),
-                    interval=str(interval or pos.get("interval") or "5m"),
+                    pos=pos,
+                    price=float(price),
                 )
                 if weak_reason:
-                    close_reason = str(weak_reason)
+                    close_reason = str(
+                        weak_reason.get("reason")
+                        if isinstance(weak_reason, dict)
+                        else weak_reason
+                    )
                     try:
                         if self.logger:
                             self.logger.info(
                                 "[EXEC][WEAK] exit trigger | symbol=%s side=%s reason=%s pnl_pct=%.6f",
                                 sym,
                                 side,
-                                str(weak_reason),
+                                str(close_reason),
                                 float(pnl_pct),
                             )
                     except Exception:
@@ -4137,12 +4379,12 @@ class TradeExecutor:
                 pass
 
         if close_reason is None:
-            stalled_for = float(time.time()) - float(last_best_ts)
+            stalled_for = float(now_ts) - float(last_best_ts)
 
             if (
-                stall_close_enabled
+                bool(stall_close_enabled)
                 and float(best_pnl_pct) >= float(stall_min_pnl_pct)
-                and stalled_for >= float(stall_close_after_profit_sec)
+                and float(stalled_for) >= float(stall_close_after_profit_sec)
             ):
                 close_reason = "stall_exit"
                 try:
@@ -4158,7 +4400,7 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-            elif stall_ttl_sec > 0 and stalled_for >= float(stall_ttl_sec):
+            elif int(stall_ttl_sec) > 0 and float(stalled_for) >= float(stall_ttl_sec):
                 close_reason = "stall_exit"
                 try:
                     if self.logger:
@@ -4218,7 +4460,7 @@ class TradeExecutor:
                 symbol=sym,
                 price=float(price),
                 reason=str(close_reason),
-                interval=str(interval or ""),
+                interval=str(interval or pos.get("interval") or ""),
             )
 
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:

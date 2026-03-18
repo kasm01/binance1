@@ -1812,39 +1812,44 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                         )
 
                         if side in ("long", "short"):
-                            if open_m is None:
-                                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
-                                continue
-
                             try:
-                                store_latest_signal_m = getattr(trade_executor, "_store_latest_signal", None)
-                                if callable(store_latest_signal_m):
-                                    store_latest_signal_m(
+                                owner = getattr(open_m, "__self__", None)
+                                store_m = getattr(owner, "_store_latest_signal", None)
+
+                                if callable(store_m):
+                                    store_m(
                                         symbol=symbol,
                                         side=side,
                                         interval=interval,
                                         score=float(it.get("score") or 0.0),
                                         raw=it if isinstance(it, dict) else {},
                                     )
-                                    logger.info(
-                                        "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s intent=%s",
+                                    if logger:
+                                        logger.info(
+                                            "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                                            symbol,
+                                            side,
+                                            interval,
+                                            float(it.get("score") or 0.0),
+                                            intent_id,
+                                        )
+                                else:
+                                    if logger:
+                                        logger.warning(
+                                            "[EXEC-EVENTS] _store_latest_signal missing on open method owner | symbol=%s",
+                                            symbol,
+                                        )
+                            except Exception:
+                                if logger:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
                                         symbol,
-                                        side,
-                                        interval,
                                         intent_id,
                                     )
-                                else:
-                                    logger.warning(
-                                        "[EXEC-EVENTS] _store_latest_signal missing on trade_executor | symbol=%s",
-                                        symbol,
-                                    )
-                            except Exception:
-                                logger.exception(
-                                    "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
-                                    symbol,
-                                    intent_id,
-                                )
 
+                            if open_m is None:
+                                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
+                                continue
                             if getattr(open_m, "__name__", "") in ("open_position_from_signal", "open_from_intent"):
                                 await _maybe_await(open_m(
                                     symbol=symbol,
