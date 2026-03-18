@@ -1901,6 +1901,169 @@ class TradeExecutor:
                         )
         except Exception:
             pass
+
+    def _finalize_close_state(
+        self,
+        symbol: str,
+        side: str,
+        pos: Optional[Dict[str, Any]],
+        interval: str,
+        realized_pnl: float,
+        close_price: float,
+        reason: str,
+        exchange_pos_after: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+        pos = pos if isinstance(pos, dict) else {}
+
+        residual_qty = 0.0
+        residual_side = str(side or "").strip().lower() or str(pos.get("side") or "").strip().lower()
+
+        if isinstance(exchange_pos_after, dict):
+            try:
+                residual_qty = abs(float(exchange_pos_after.get("qty") or 0.0))
+            except Exception:
+                residual_qty = 0.0
+            try:
+                residual_side = str(exchange_pos_after.get("side") or residual_side).strip().lower() or residual_side
+            except Exception:
+                pass
+
+        min_qty = 0.0
+        min_notional = 0.0
+        try:
+            s_info = self._get_symbol_info(sym)
+            if isinstance(s_info, dict):
+                min_qty = float(s_info.get("min_qty") or 0.0)
+                min_notional = float(s_info.get("min_notional") or 0.0)
+        except Exception:
+            min_qty = 0.0
+            min_notional = 0.0
+
+        dust_threshold = max(float(min_qty), 0.0)
+
+        result = {
+            "symbol": sym,
+            "residual_qty": float(residual_qty),
+            "residual_side": residual_side,
+            "dust_threshold": float(dust_threshold),
+            "min_notional": float(min_notional),
+            "fully_closed": False,
+            "dust_remaining": False,
+            "partial_remaining": False,
+        }
+
+        if residual_qty <= 0.0:
+            self._del_position(sym)
+            self._remove_from_bridge_state(sym)
+
+            try:
+                chk_local = self._get_position(sym)
+                chk_bridge = self._get_bridge_state()
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] cleanup after close | symbol=%s local_exists=%s bridge_exists=%s",
+                        sym,
+                        bool(isinstance(chk_local, dict) and chk_local),
+                        bool(isinstance(chk_bridge, dict) and sym in chk_bridge),
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] cleanup verify failed | symbol=%s",
+                        sym,
+                    )
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE] CLOSED | symbol=%s side=%s qty=%.10f close=%.6f realized_pnl=%.6f reason=%s",
+                        sym,
+                        residual_side or side,
+                        float(pos.get("qty") or 0.0),
+                        float(close_price),
+                        float(realized_pnl),
+                        str(reason),
+                    )
+            except Exception:
+                pass
+
+            result["fully_closed"] = True
+            return result
+
+        residual_pos = dict(pos) if isinstance(pos, dict) else {}
+        residual_pos["symbol"] = sym
+        residual_pos["side"] = residual_side
+        residual_pos["qty"] = float(residual_qty)
+
+        if isinstance(exchange_pos_after, dict):
+            try:
+                residual_pos["entry_price"] = float(
+                    exchange_pos_after.get("entry_price")
+                    or residual_pos.get("entry_price")
+                    or 0.0
+                )
+            except Exception:
+                pass
+
+        self._set_position(sym, residual_pos)
+        self._upsert_bridge_state_on_open(
+            symbol=sym,
+            side=residual_side,
+            interval=str(interval or residual_pos.get("interval") or "5m"),
+            intent_id="",
+        )
+
+        if dust_threshold > 0.0 and residual_qty <= dust_threshold:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][CLOSE] residual dust remains on exchange | symbol=%s side=%s residual_qty=%.10f dust_threshold=%.10f",
+                        sym,
+                        residual_side,
+                        float(residual_qty),
+                        float(dust_threshold),
+                    )
+            except Exception:
+                pass
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] partial close state updated | symbol=%s residual_qty=%.10f",
+                        sym,
+                        float(residual_qty),
+                    )
+            except Exception:
+                pass
+
+            result["dust_remaining"] = True
+            return result
+
+        try:
+            if self.logger:
+                self.logger.warning(
+                    "[EXEC][CLOSE] residual position remains on exchange | symbol=%s side=%s residual_qty=%.10f",
+                    sym,
+                    residual_side,
+                    float(residual_qty),
+                )
+        except Exception:
+            pass
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE] partial close state updated | symbol=%s residual_qty=%.10f",
+                    sym,
+                    float(residual_qty),
+                )
+        except Exception:
+            pass
+
+        result["partial_remaining"] = True
+        return result
+
     def _remove_from_bridge_state(self, symbol: str) -> None:
         sym = str(symbol).upper().strip()
         if not sym or self.redis is None:
@@ -3312,11 +3475,11 @@ class TradeExecutor:
             price=float(close_price or 0.0),
         )
 
-        norm_qty = float(qty_meta.get("qty") or 0.0)
+        norm_qty = float(qty_meta.get("norm_qty") or 0.0)
         step = float(qty_meta.get("step") or 0.0)
         min_qty = float(qty_meta.get("min_qty") or 0.0)
         min_notional = float(qty_meta.get("min_notional") or 0.0)
-        reject = str(qty_meta.get("reject") or "-")
+        reject = str(qty_meta.get("reject_reason") or "-")
 
         try:
             if self.logger:
@@ -3386,6 +3549,23 @@ class TradeExecutor:
             self._remove_from_bridge_state(sym)
 
             try:
+                chk_local = self._get_position(sym)
+                chk_bridge_all = self._get_bridge_state()
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] dry-run cleanup verify | symbol=%s local_exists=%s bridge_exists=%s",
+                        sym,
+                        bool(isinstance(chk_local, dict) and chk_local),
+                        bool(isinstance(chk_bridge_all, dict) and sym in chk_bridge_all),
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] dry-run cleanup verify failed | symbol=%s",
+                        sym,
+                    )
+
+            try:
                 if self.logger:
                     self.logger.info(
                         "[EXEC] DRY_RUN=True close emri gönderilmeyecek | symbol=%s side=%s qty=%.10f reason=%s",
@@ -3403,7 +3583,7 @@ class TradeExecutor:
                 "qty": float(norm_qty),
                 "close_price": float(close_price),
                 "entry_price": float(entry_price),
-                "realized_pnl": 0.0,
+                "realized_pnl": float(realized_pnl),
                 "reason": str(reason),
                 "dry_run": True,
             }
@@ -3450,7 +3630,6 @@ class TradeExecutor:
             except Exception:
                 pass
             return None
-
         dt_ms = int(time.time() * 1000) - started_ms
         try:
             if self.logger:
@@ -3538,21 +3717,11 @@ class TradeExecutor:
             except Exception:
                 residual_qty = 0.0
             try:
-                residual_side = str(
-                    exchange_pos_after.get("side") or side
-                ).strip().lower() or side
+                residual_side = str(exchange_pos_after.get("side") or side).strip().lower() or side
             except Exception:
                 residual_side = side
 
-        min_qty = 0.0
-        try:
-            s_info = self._get_symbol_info(sym)
-            if isinstance(s_info, dict):
-                min_qty = float(s_info.get("min_qty") or 0.0)
-        except Exception:
-            min_qty = 0.0
-
-        dust_threshold = max(min_qty, 0.0)
+        dust_threshold = max(float(min_qty or 0.0), 0.0)
 
         if residual_qty <= 0.0:
             self._del_position(sym)
@@ -3590,54 +3759,7 @@ class TradeExecutor:
             except Exception:
                 pass
 
-        elif dust_threshold > 0.0 and residual_qty <= dust_threshold:
-            try:
-                if self.logger:
-                    self.logger.warning(
-                        "[EXEC][CLOSE] residual dust remains on exchange | symbol=%s side=%s residual_qty=%.10f dust_threshold=%.10f",
-                        sym,
-                        residual_side,
-                        float(residual_qty),
-                        float(dust_threshold),
-                    )
-            except Exception:
-                pass
-
-            residual_pos = dict(pos) if isinstance(pos, dict) else {}
-            residual_pos["symbol"] = sym
-            residual_pos["side"] = residual_side
-            residual_pos["qty"] = float(residual_qty)
-
-            if isinstance(exchange_pos_after, dict):
-                try:
-                    residual_pos["entry_price"] = float(
-                        exchange_pos_after.get("entry_price")
-                        or residual_pos.get("entry_price")
-                        or 0.0
-                    )
-                except Exception:
-                    pass
-
-            self._set_position(sym, residual_pos)
-            self._upsert_bridge_state_on_open(
-                symbol=sym,
-                side=residual_side,
-                interval=str(interval or residual_pos.get("interval") or "5m"),
-                intent_id="",
-            )
-
         else:
-            try:
-                if self.logger:
-                    self.logger.warning(
-                        "[EXEC][CLOSE] residual position remains on exchange | symbol=%s side=%s residual_qty=%.10f",
-                        sym,
-                        residual_side,
-                        float(residual_qty),
-                    )
-            except Exception:
-                pass
-
             residual_pos = dict(pos) if isinstance(pos, dict) else {}
             residual_pos["symbol"] = sym
             residual_pos["side"] = residual_side
@@ -3645,11 +3767,13 @@ class TradeExecutor:
 
             if isinstance(exchange_pos_after, dict):
                 try:
-                    residual_pos["entry_price"] = float(
+                    residual_entry = float(
                         exchange_pos_after.get("entry_price")
                         or residual_pos.get("entry_price")
                         or 0.0
                     )
+                    if residual_entry > 0:
+                        residual_pos["entry_price"] = residual_entry
                 except Exception:
                     pass
 
@@ -3660,6 +3784,48 @@ class TradeExecutor:
                 interval=str(interval or residual_pos.get("interval") or "5m"),
                 intent_id="",
             )
+
+            try:
+                chk_local = self._get_position(sym)
+                chk_bridge_all = self._get_bridge_state()
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] partial close state updated | symbol=%s residual_qty=%.10f local_exists=%s bridge_exists=%s",
+                        sym,
+                        float(residual_qty),
+                        bool(isinstance(chk_local, dict) and chk_local),
+                        bool(isinstance(chk_bridge_all, dict) and sym in chk_bridge_all),
+                    )
+            except Exception:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] partial close verify failed | symbol=%s",
+                        sym,
+                    )
+
+            if dust_threshold > 0.0 and residual_qty <= dust_threshold:
+                try:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][CLOSE] residual dust remains on exchange | symbol=%s side=%s residual_qty=%.10f dust_threshold=%.10f",
+                            sym,
+                            residual_side,
+                            float(residual_qty),
+                            float(dust_threshold),
+                        )
+                except Exception:
+                    pass
+            else:
+                try:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][CLOSE] residual position remains on exchange | symbol=%s side=%s residual_qty=%.10f",
+                            sym,
+                            residual_side,
+                            float(residual_qty),
+                        )
+                except Exception:
+                    pass
 
         return {
             "symbol": sym,
@@ -3670,6 +3836,8 @@ class TradeExecutor:
             "realized_pnl": float(realized_pnl),
             "reason": str(reason),
             "order": filled if isinstance(filled, dict) else {},
+            "residual_qty": float(residual_qty),
+            "residual_side": str(residual_side),
         }
 
     def close_position(
@@ -3686,9 +3854,14 @@ class TradeExecutor:
             return None
 
         try:
-            if intent_id and self.logger:
+            if self.logger:
                 self.logger.info(
-                    f"[CLOSE] intent_id={intent_id} symbol={sym} price={price} interval={interval}"
+                    "[EXEC][CLOSE] request | symbol=%s reason=%s interval=%s intent_id=%s input_price=%s",
+                    sym,
+                    str(reason or "manual"),
+                    str(interval or ""),
+                    str(intent_id or ""),
+                    str(price),
                 )
         except Exception:
             pass
