@@ -103,6 +103,7 @@ class TradeExecutor:
         self.position_sync_remove_orphans = str(
             os.getenv("POSITION_SYNC_REMOVE_ORPHANS", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
+
         self.position_lifecycle_interval_sec = int(
             float(os.getenv("POSITION_LIFECYCLE_INTERVAL_SEC", "15") or 15)
         )
@@ -201,6 +202,27 @@ class TradeExecutor:
             os.getenv("REVERSE_CLOSE_ENABLED", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
 
+        try:
+            self.opposite_signal_min_score = float(
+                os.getenv("OPPOSITE_SIGNAL_MIN_SCORE", "0.55") or 0.55
+            )
+        except Exception:
+            self.opposite_signal_min_score = 0.55
+
+        try:
+            self.opposite_signal_max_age_sec = float(
+                os.getenv("OPPOSITE_SIGNAL_MAX_AGE_SEC", "900") or 900.0
+            )
+        except Exception:
+            self.opposite_signal_max_age_sec = 900.0
+
+        try:
+            self.opposite_signal_confirm_count = int(
+                float(os.getenv("OPPOSITE_SIGNAL_CONFIRM_COUNT", "1") or 1)
+            )
+        except Exception:
+            self.opposite_signal_confirm_count = 1
+
         self.sl_pct_default = float(os.getenv("SL_PCT", "0.015") or 0.015)
         self.tp_pct_default = float(os.getenv("TP_PCT", "0.025") or 0.025)
         self.trailing_pct_default = float(os.getenv("TRAILING_PCT", "0.03") or 0.03)
@@ -208,6 +230,7 @@ class TradeExecutor:
         self.stall_close_enabled = str(
             os.getenv("STALL_CLOSE_ENABLED", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
+
         if self.logger:
             try:
                 self.logger.info(
@@ -218,7 +241,10 @@ class TradeExecutor:
                     f"max_leverage={float(self.max_leverage):.2f} "
                     f"max_open_positions={int(self.max_open_positions)} "
                     f"per_position_balance_pct={float(self.per_position_balance_pct):.4f} "
-                    f"block_same_symbol_reentry={bool(self.block_same_symbol_reentry)}"
+                    f"block_same_symbol_reentry={bool(self.block_same_symbol_reentry)} "
+                    f"opposite_signal_min_score={float(self.opposite_signal_min_score):.4f} "
+                    f"opposite_signal_max_age_sec={float(self.opposite_signal_max_age_sec):.1f} "
+                    f"opposite_signal_confirm_count={int(self.opposite_signal_confirm_count)}"
                 )
             except Exception:
                 pass
@@ -1068,6 +1094,97 @@ class TradeExecutor:
                 pass
 
         return {}
+
+    def _normalize_close_quantity(
+        self,
+        symbol: str,
+        qty: float,
+        price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        sym = str(symbol).upper().strip()
+
+        out: Dict[str, Any] = {
+            "symbol": sym,
+            "raw_qty": 0.0,
+            "norm_qty": 0.0,
+            "price": 0.0,
+            "step": 0.0,
+            "min_qty": 0.0,
+            "min_notional": 0.0,
+            "reject_reason": "",
+        }
+
+        try:
+            raw_qty = float(qty or 0.0)
+        except Exception:
+            raw_qty = 0.0
+
+        try:
+            px = float(price or 0.0)
+        except Exception:
+            px = 0.0
+
+        out["raw_qty"] = float(raw_qty)
+        out["price"] = float(px)
+
+        if not sym or raw_qty <= 0:
+            out["reject_reason"] = "qty_invalid"
+            return out
+
+        step = 0.0
+        min_qty = 0.0
+        min_notional = 0.0
+
+        try:
+            s_info = self._get_symbol_info(sym)
+            if isinstance(s_info, dict):
+                step = float(
+                    s_info.get("step")
+                    or s_info.get("step_size")
+                    or 0.0
+                )
+                min_qty = float(s_info.get("min_qty") or 0.0)
+                min_notional = float(s_info.get("min_notional") or 0.0)
+        except Exception:
+            step = 0.0
+            min_qty = 0.0
+            min_notional = 0.0
+
+        out["step"] = float(step)
+        out["min_qty"] = float(min_qty)
+        out["min_notional"] = float(min_notional)
+
+        norm_qty = float(raw_qty)
+
+        try:
+            if step > 0:
+                precision = 0
+                s = f"{step:.12f}".rstrip("0")
+                if "." in s:
+                    precision = len(s.split(".", 1)[1])
+
+                norm_qty = math.floor(raw_qty / step) * step
+                norm_qty = round(norm_qty, precision)
+        except Exception:
+            norm_qty = float(raw_qty)
+
+        if norm_qty <= 0:
+            out["reject_reason"] = "qty_rounded_to_zero"
+            out["norm_qty"] = 0.0
+            return out
+
+        if min_qty > 0 and norm_qty < min_qty:
+            out["reject_reason"] = "below_min_qty"
+            out["norm_qty"] = float(norm_qty)
+            return out
+
+        if px > 0 and min_notional > 0 and (norm_qty * px) < min_notional:
+            out["reject_reason"] = "below_min_notional"
+            out["norm_qty"] = float(norm_qty)
+            return out
+
+        out["norm_qty"] = float(norm_qty)
+        return out
 
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
         out = {
@@ -3552,58 +3669,35 @@ class TradeExecutor:
         best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
         last_best_ts = float(pos.get("last_best_ts") or time.time())
 
+        trailing_pct = float(pos.get("trailing_pct") or 0.0)
+        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
+
         sl_price = float(pos.get("sl_price") or 0.0)
         tp_price = float(pos.get("tp_price") or 0.0)
 
-        try:
-            trailing_pct = float(
-                pos.get("trailing_pct")
-                or getattr(self, "trailing_pct", 0.0)
-                or os.getenv("TRAILING_PCT", "0")
-                or 0.0
-            )
-        except Exception:
-            trailing_pct = 0.0
+        if sl_price <= 0:
+            try:
+                sl_pct = float(getattr(self, "sl_pct_default", 0.0) or 0.0)
+            except Exception:
+                sl_pct = 0.0
 
-        try:
-            stall_ttl_sec = int(
-                pos.get("stall_ttl_sec")
-                or getattr(self, "stall_ttl_sec", 0)
-                or os.getenv("STALL_TTL_SEC", "0")
-                or 0
-            )
-        except Exception:
-            stall_ttl_sec = 0
+            if sl_pct > 0:
+                if side == "long":
+                    sl_price = entry_price * (1.0 - sl_pct)
+                else:
+                    sl_price = entry_price * (1.0 + sl_pct)
 
-        try:
-            sl_pct = float(
-                getattr(self, "sl_pct", 0.0)
-                or os.getenv("SL_PCT", "0")
-                or 0.0
-            )
-        except Exception:
-            sl_pct = 0.0
+        if tp_price <= 0:
+            try:
+                tp_pct = float(getattr(self, "tp_pct_default", 0.0) or 0.0)
+            except Exception:
+                tp_pct = 0.0
 
-        try:
-            tp_pct = float(
-                getattr(self, "tp_pct", 0.0)
-                or os.getenv("TP_PCT", "0")
-                or 0.0
-            )
-        except Exception:
-            tp_pct = 0.0
-
-        if sl_price <= 0 and sl_pct > 0:
-            if side == "long":
-                sl_price = entry_price * (1.0 - sl_pct)
-            else:
-                sl_price = entry_price * (1.0 + sl_pct)
-
-        if tp_price <= 0 and tp_pct > 0:
-            if side == "long":
-                tp_price = entry_price * (1.0 + tp_pct)
-            else:
-                tp_price = entry_price * (1.0 - tp_pct)
+            if tp_pct > 0:
+                if side == "long":
+                    tp_price = entry_price * (1.0 + tp_pct)
+                else:
+                    tp_price = entry_price * (1.0 - tp_pct)
 
         close_reason = None
         trail_ref_price = entry_price
@@ -3647,7 +3741,7 @@ class TradeExecutor:
             elif trailing_pct > 0 and lowest_price < entry_price and float(price) >= float(trail_stop_price):
                 close_reason = "trailing_hit"
 
-        if close_reason is None:
+        if close_reason is None and bool(getattr(self, "reverse_close_enabled", True)):
             opposite_close_reason = self._check_opposite_signal_close(
                 symbol=sym,
                 side=side,
@@ -3668,7 +3762,7 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-        if close_reason is None and stall_ttl_sec > 0:
+        if close_reason is None and stall_ttl_sec > 0 and bool(getattr(self, "stall_close_enabled", True)):
             stalled_for = float(time.time()) - float(last_best_ts)
             if stalled_for >= float(stall_ttl_sec):
                 close_reason = "stall_exit"
@@ -3690,8 +3784,6 @@ class TradeExecutor:
         pos["last_best_ts"] = float(last_best_ts)
         pos["sl_price"] = float(sl_price)
         pos["tp_price"] = float(tp_price)
-        pos["trailing_pct"] = float(trailing_pct)
-        pos["stall_ttl_sec"] = int(stall_ttl_sec)
 
         self._set_position(sym, pos)
 
