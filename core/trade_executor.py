@@ -153,6 +153,10 @@ class TradeExecutor:
             os.getenv("STALL_MIN_PNL_PCT", "0.002") or 0.002
         )  # stall exit için minimum istenen kâr
 
+        self.stall_close_after_profit_sec = int(
+            float(os.getenv("STALL_CLOSE_AFTER_PROFIT_SEC", "900") or 900)
+        )  # %4+ kârdan sonra 15 dk yeni best gelmezse kapat
+
         self.weak_signal_enabled = str(
             os.getenv("WEAK_SIGNAL_ENABLED", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
@@ -1069,14 +1073,78 @@ class TradeExecutor:
         return self._exchange_info_cache or {}
 
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
-        sym = str(symbol).upper()
+        sym = str(symbol).upper().strip()
+
+        def _extract(symbol_row: Dict[str, Any]) -> Dict[str, Any]:
+            filters = symbol_row.get("filters") or []
+            if not isinstance(filters, list):
+                filters = []
+
+            tick_size = 0.0
+            step_size = 0.0
+            min_qty = 0.0
+            min_notional = 0.0
+
+            for f in filters:
+                if not isinstance(f, dict):
+                    continue
+
+                ftype = str(f.get("filterType") or "").strip().upper()
+
+                if ftype == "PRICE_FILTER":
+                    try:
+                        tick_size = float(f.get("tickSize") or 0.0)
+                    except Exception:
+                        pass
+
+                elif ftype == "LOT_SIZE":
+                    try:
+                        step_size = float(f.get("stepSize") or 0.0)
+                    except Exception:
+                        pass
+                    try:
+                        min_qty = float(f.get("minQty") or 0.0)
+                    except Exception:
+                        pass
+
+                elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
+                    try:
+                        min_notional = float(
+                            f.get("notional")
+                            or f.get("minNotional")
+                            or 0.0
+                        )
+                    except Exception:
+                        pass
+
+            out = dict(symbol_row)
+            out["symbol"] = sym
+            out["tick_size"] = float(tick_size)
+            out["step"] = float(step_size)
+            out["step_size"] = float(step_size)
+            out["min_qty"] = float(min_qty)
+            out["min_notional"] = float(min_notional)
+            return out
 
         try:
             exch = self._get_exchange_info_cached(force_refresh=False)
             symbols = exch.get("symbols", []) if isinstance(exch, dict) else []
             for s in symbols:
-                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                    return s
+                if isinstance(s, dict) and str(s.get("symbol", "")).upper().strip() == sym:
+                    info = _extract(s)
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYMBOL_INFO] resolved | symbol=%s tick_size=%.10f step=%.10f min_qty=%.10f min_notional=%.10f",
+                                sym,
+                                float(info.get("tick_size") or 0.0),
+                                float(info.get("step") or 0.0),
+                                float(info.get("min_qty") or 0.0),
+                                float(info.get("min_notional") or 0.0),
+                            )
+                    except Exception:
+                        pass
+                    return info
         except Exception:
             pass
 
@@ -1084,38 +1152,61 @@ class TradeExecutor:
             exch = self._get_exchange_info_cached(force_refresh=True)
             symbols = exch.get("symbols", []) if isinstance(exch, dict) else []
             for s in symbols:
-                if isinstance(s, dict) and str(s.get("symbol", "")).upper() == sym:
-                    return s
+                if isinstance(s, dict) and str(s.get("symbol", "")).upper().strip() == sym:
+                    info = _extract(s)
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYMBOL_INFO] resolved(refresh) | symbol=%s tick_size=%.10f step=%.10f min_qty=%.10f min_notional=%.10f",
+                                sym,
+                                float(info.get("tick_size") or 0.0),
+                                float(info.get("step") or 0.0),
+                                float(info.get("min_qty") or 0.0),
+                                float(info.get("min_notional") or 0.0),
+                            )
+                    except Exception:
+                        pass
+                    return info
         except Exception as e:
             try:
                 if self.logger:
-                    self.logger.warning("[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s", sym, str(e))
+                    self.logger.warning(
+                        "[EXEC][SYMBOL_INFO] fetch failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
             except Exception:
                 pass
 
-        return {}
-
+        return {
+            "symbol": sym,
+            "tick_size": 0.0,
+            "step": 0.0,
+            "step_size": 0.0,
+            "min_qty": 0.0,
+            "min_notional": 0.0,
+        }
     def _normalize_close_quantity(
         self,
         symbol: str,
         qty: float,
-        price: Optional[float] = None,
+        price: float,
     ) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
 
         out: Dict[str, Any] = {
             "symbol": sym,
-            "raw_qty": 0.0,
+            "raw_qty": float(qty or 0.0),
             "norm_qty": 0.0,
-            "price": 0.0,
+            "price": float(price or 0.0),
             "step": 0.0,
             "min_qty": 0.0,
             "min_notional": 0.0,
-            "reject_reason": "",
+            "reject_reason": "-",
         }
 
         try:
-            raw_qty = float(qty or 0.0)
+            raw_qty = abs(float(qty or 0.0))
         except Exception:
             raw_qty = 0.0
 
@@ -1127,28 +1218,33 @@ class TradeExecutor:
         out["raw_qty"] = float(raw_qty)
         out["price"] = float(px)
 
-        if not sym or raw_qty <= 0:
-            out["reject_reason"] = "qty_invalid"
+        if not sym or raw_qty <= 0.0:
+            out["reject_reason"] = "raw_qty_invalid"
             return out
 
-        step = 0.0
-        min_qty = 0.0
-        min_notional = 0.0
-
+        info = {}
         try:
-            s_info = self._get_symbol_info(sym)
-            if isinstance(s_info, dict):
-                step = float(
-                    s_info.get("step")
-                    or s_info.get("step_size")
-                    or 0.0
-                )
-                min_qty = float(s_info.get("min_qty") or 0.0)
-                min_notional = float(s_info.get("min_notional") or 0.0)
+            info = self._get_symbol_info(sym)
         except Exception:
-            step = 0.0
-            min_qty = 0.0
-            min_notional = 0.0
+            info = {}
+
+        def _f(x: Any, default: float = 0.0) -> float:
+            try:
+                v = float(x)
+                if v < 0:
+                    return float(default)
+                return v
+            except Exception:
+                return float(default)
+
+        step = _f(
+            (info or {}).get("step")
+            or (info or {}).get("step_size")
+            or 0.0,
+            0.0,
+        )
+        min_qty = _f((info or {}).get("min_qty") or 0.0, 0.0)
+        min_notional = _f((info or {}).get("min_notional") or 0.0, 0.0)
 
         out["step"] = float(step)
         out["min_qty"] = float(min_qty)
@@ -1156,34 +1252,90 @@ class TradeExecutor:
 
         norm_qty = float(raw_qty)
 
-        try:
-            if step > 0:
-                precision = 0
-                s = f"{step:.12f}".rstrip("0")
-                if "." in s:
-                    precision = len(s.split(".", 1)[1])
+        # step varsa aşağı yuvarla
+        if step > 0.0:
+            try:
+                steps = int(raw_qty / step)
+                norm_qty = float(steps * step)
+            except Exception:
+                norm_qty = 0.0
 
-                norm_qty = math.floor(raw_qty / step) * step
-                norm_qty = round(norm_qty, precision)
-        except Exception:
+            # kayan nokta artıklarını temizle
+            try:
+                step_str = f"{step:.16f}".rstrip("0")
+                if "." in step_str:
+                    decimals = len(step_str.split(".")[1])
+                    norm_qty = round(norm_qty, decimals)
+                else:
+                    norm_qty = round(norm_qty, 0)
+            except Exception:
+                pass
+
+        # step yoksa ham qty ile devam et
+        else:
             norm_qty = float(raw_qty)
 
-        if norm_qty <= 0:
-            out["reject_reason"] = "qty_rounded_to_zero"
+        # min_qty kontrolü
+        if min_qty > 0.0 and norm_qty < min_qty:
             out["norm_qty"] = 0.0
-            return out
-
-        if min_qty > 0 and norm_qty < min_qty:
             out["reject_reason"] = "below_min_qty"
-            out["norm_qty"] = float(norm_qty)
             return out
 
-        if px > 0 and min_notional > 0 and (norm_qty * px) < min_notional:
-            out["reject_reason"] = "below_min_notional"
-            out["norm_qty"] = float(norm_qty)
+        # min_notional kontrolü
+        if px > 0.0 and min_notional > 0.0:
+            if (norm_qty * px) < min_notional:
+                # close'ta mümkünse min_notional yüzünden pozisyonu sıfırlamaya çalış:
+                # önce raw qty yeterliyse ham qty'yi tekrar deneyelim
+                retry_qty = float(raw_qty)
+
+                if step > 0.0:
+                    try:
+                        steps = int(retry_qty / step)
+                        retry_qty = float(steps * step)
+                    except Exception:
+                        retry_qty = 0.0
+
+                    try:
+                        step_str = f"{step:.16f}".rstrip("0")
+                        if "." in step_str:
+                            decimals = len(step_str.split(".")[1])
+                            retry_qty = round(retry_qty, decimals)
+                        else:
+                            retry_qty = round(retry_qty, 0)
+                    except Exception:
+                        pass
+
+                if retry_qty > 0.0 and retry_qty >= norm_qty and (retry_qty * px) >= min_notional:
+                    norm_qty = float(retry_qty)
+                else:
+                    out["norm_qty"] = 0.0
+                    out["reject_reason"] = "below_min_notional"
+                    return out
+
+        if norm_qty <= 0.0:
+            out["norm_qty"] = 0.0
+            out["reject_reason"] = "normalized_zero"
             return out
 
         out["norm_qty"] = float(norm_qty)
+        out["reject_reason"] = "-"
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][CLOSE][QTY] symbol=%s raw_qty=%.10f norm_qty=%.10f price=%.6f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
+                    sym,
+                    float(out["raw_qty"]),
+                    float(out["norm_qty"]),
+                    float(out["price"]),
+                    float(out["step"]),
+                    float(out["min_qty"]),
+                    float(out["min_notional"]),
+                    str(out["reject_reason"]),
+                )
+        except Exception:
+            pass
+
         return out
 
     def _extract_symbol_filters(self, symbol_info: Dict[str, Any]) -> Dict[str, float]:
@@ -3669,57 +3821,86 @@ class TradeExecutor:
         best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
         last_best_ts = float(pos.get("last_best_ts") or time.time())
 
-        trailing_pct = float(pos.get("trailing_pct") or 0.0)
+        trailing_pct = float(
+            pos.get("trailing_pct")
+            or getattr(self, "default_trailing_pct", 0.0)
+            or getattr(self, "trailing_pct_default", 0.0)
+            or 0.0
+        )
         stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
 
         sl_price = float(pos.get("sl_price") or 0.0)
         tp_price = float(pos.get("tp_price") or 0.0)
 
-        if sl_price <= 0:
-            try:
-                sl_pct = float(getattr(self, "sl_pct_default", 0.0) or 0.0)
-            except Exception:
-                sl_pct = 0.0
+        sl_pct_default = float(
+            getattr(self, "default_sl_pct", 0.0)
+            or getattr(self, "sl_pct_default", 0.0)
+            or getattr(self, "sl_pct", 0.0)
+            or 0.0
+        )
+        tp_pct_default = float(
+            getattr(self, "default_tp_pct", 0.0)
+            or getattr(self, "tp_pct_default", 0.0)
+            or getattr(self, "tp_pct", 0.0)
+            or 0.0
+        )
 
-            if sl_pct > 0:
-                if side == "long":
-                    sl_price = entry_price * (1.0 - sl_pct)
-                else:
-                    sl_price = entry_price * (1.0 + sl_pct)
+        trailing_activation_pct = float(
+            getattr(self, "trailing_activation_pct", 0.0) or 0.0
+        )
+        stall_min_pnl_pct = float(
+            getattr(self, "stall_min_pnl_pct", 0.04) or 0.04
+        )
+        stall_close_after_profit_sec = int(
+            getattr(self, "stall_close_after_profit_sec", 900) or 900
+        )
+        stall_close_enabled = bool(
+            getattr(self, "stall_close_enabled", True)
+        )
 
-        if tp_price <= 0:
-            try:
-                tp_pct = float(getattr(self, "tp_pct_default", 0.0) or 0.0)
-            except Exception:
-                tp_pct = 0.0
+        if sl_price <= 0 and sl_pct_default > 0:
+            if side == "long":
+                sl_price = entry_price * (1.0 - sl_pct_default)
+            else:
+                sl_price = entry_price * (1.0 + sl_pct_default)
 
-            if tp_pct > 0:
-                if side == "long":
-                    tp_price = entry_price * (1.0 + tp_pct)
-                else:
-                    tp_price = entry_price * (1.0 - tp_pct)
+        if tp_price <= 0 and tp_pct_default > 0:
+            if side == "long":
+                tp_price = entry_price * (1.0 + tp_pct_default)
+            else:
+                tp_price = entry_price * (1.0 - tp_pct_default)
 
         close_reason = None
         trail_ref_price = entry_price
         trail_stop_price = 0.0
+        trailing_armed = False
 
         if side == "long":
             highest_price = max(highest_price, float(price))
             pnl_pct = ((float(price) - entry_price) / entry_price) if entry_price > 0 else 0.0
             trail_ref_price = highest_price
 
-            if trailing_pct > 0:
-                trail_stop_price = highest_price * (1.0 - trailing_pct)
-
             if pnl_pct > best_pnl_pct:
                 best_pnl_pct = float(pnl_pct)
                 last_best_ts = time.time()
+
+            trailing_armed = (
+                trailing_pct > 0
+                and highest_price > entry_price
+                and (
+                    trailing_activation_pct <= 0
+                    or best_pnl_pct >= trailing_activation_pct
+                )
+            )
+
+            if trailing_armed:
+                trail_stop_price = highest_price * (1.0 - trailing_pct)
 
             if sl_price > 0 and float(price) <= float(sl_price):
                 close_reason = "sl_hit"
             elif tp_price > 0 and float(price) >= float(tp_price):
                 close_reason = "tp_hit"
-            elif trailing_pct > 0 and highest_price > entry_price and float(price) <= float(trail_stop_price):
+            elif trailing_armed and float(price) <= float(trail_stop_price):
                 close_reason = "trailing_hit"
 
         else:
@@ -3727,49 +3908,89 @@ class TradeExecutor:
             pnl_pct = ((entry_price - float(price)) / entry_price) if entry_price > 0 else 0.0
             trail_ref_price = lowest_price
 
-            if trailing_pct > 0:
-                trail_stop_price = lowest_price * (1.0 + trailing_pct)
-
             if pnl_pct > best_pnl_pct:
                 best_pnl_pct = float(pnl_pct)
                 last_best_ts = time.time()
+
+            trailing_armed = (
+                trailing_pct > 0
+                and lowest_price < entry_price
+                and (
+                    trailing_activation_pct <= 0
+                    or best_pnl_pct >= trailing_activation_pct
+                )
+            )
+
+            if trailing_armed:
+                trail_stop_price = lowest_price * (1.0 + trailing_pct)
 
             if sl_price > 0 and float(price) >= float(sl_price):
                 close_reason = "sl_hit"
             elif tp_price > 0 and float(price) <= float(tp_price):
                 close_reason = "tp_hit"
-            elif trailing_pct > 0 and lowest_price < entry_price and float(price) >= float(trail_stop_price):
+            elif trailing_armed and float(price) >= float(trail_stop_price):
                 close_reason = "trailing_hit"
+        weak_reason = None
+        try:
+            if close_reason is None and bool(getattr(self, "weak_signal_enabled", False)):
+                weak_reason = self._evaluate_position_signal_exit(
+                    symbol=sym,
+                    position=pos,
+                    current_price=float(price),
+                    current_pnl_pct=float(pnl_pct),
+                    interval=str(interval or pos.get("interval") or "5m"),
+                )
+                if weak_reason:
+                    close_reason = str(weak_reason)
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][WEAK] exit trigger | symbol=%s side=%s reason=%s pnl_pct=%.6f",
+                                sym,
+                                side,
+                                str(weak_reason),
+                                float(pnl_pct),
+                            )
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][WEAK] evaluate failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
 
-        if close_reason is None and bool(getattr(self, "reverse_close_enabled", True)):
-            opposite_close_reason = self._check_opposite_signal_close(
-                symbol=sym,
-                side=side,
-                interval=str(interval or ""),
-                price=float(price),
-            )
-            if opposite_close_reason is not None:
-                close_reason = str(opposite_close_reason)
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][WEAK] close trigger | symbol=%s side=%s reason=%s price=%.6f",
-                            sym,
-                            side,
-                            str(close_reason),
-                            float(price),
-                        )
-                except Exception:
-                    pass
-
-        if close_reason is None and stall_ttl_sec > 0 and bool(getattr(self, "stall_close_enabled", True)):
+        if close_reason is None:
             stalled_for = float(time.time()) - float(last_best_ts)
-            if stalled_for >= float(stall_ttl_sec):
+
+            if (
+                stall_close_enabled
+                and float(best_pnl_pct) >= float(stall_min_pnl_pct)
+                and stalled_for >= float(stall_close_after_profit_sec)
+            ):
                 close_reason = "stall_exit"
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC][STALL] exit trigger | symbol=%s side=%s stalled_for=%.1fs stall_ttl_sec=%s",
+                            "[EXEC][STALL] profit stall exit | symbol=%s side=%s best_pnl_pct=%.6f stalled_for=%.1fs threshold_sec=%s",
+                            sym,
+                            side,
+                            float(best_pnl_pct),
+                            float(stalled_for),
+                            int(stall_close_after_profit_sec),
+                        )
+                except Exception:
+                    pass
+
+            elif stall_ttl_sec > 0 and stalled_for >= float(stall_ttl_sec):
+                close_reason = "stall_exit"
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][STALL] ttl exit | symbol=%s side=%s stalled_for=%.1fs stall_ttl_sec=%s",
                             sym,
                             side,
                             float(stalled_for),
@@ -3784,13 +4005,14 @@ class TradeExecutor:
         pos["last_best_ts"] = float(last_best_ts)
         pos["sl_price"] = float(sl_price)
         pos["tp_price"] = float(tp_price)
+        pos["trailing_pct"] = float(trailing_pct)
 
         self._set_position(sym, pos)
 
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][LIFECYCLE] updated | symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_ref=%.6f trail_stop=%.6f",
+                    "[EXEC][LIFECYCLE] updated | symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_ref=%.6f trail_stop=%.6f trailing_armed=%s",
                     sym,
                     side,
                     float(price),
@@ -3801,6 +4023,7 @@ class TradeExecutor:
                     float(tp_price),
                     float(trail_ref_price),
                     float(trail_stop_price),
+                    bool(trailing_armed),
                 )
         except Exception:
             pass
