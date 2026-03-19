@@ -950,8 +950,11 @@ def create_trading_objects(
 
     whale_risk_boost = float(os.getenv("WHALE_RISK_BOOST", "2.0"))
 
+    exec_redis = redis.Redis.from_url(redis_url, decode_responses=True)
+
     trade_executor = TradeExecutor(
         client=client,
+        redis_client=exec_redis,
         risk_manager=risk_manager,
         position_manager=position_manager,
         logger=system_logger,
@@ -970,7 +973,6 @@ def create_trading_objects(
         price_cache=price_cache,
         redis_price_cache=redis_price_cache,
     )
-
     try:
         system_logger.info("[MAIN][SYNC] wiring position sync hooks...")
     except Exception:
@@ -1813,7 +1815,7 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
 
                         if side in ("long", "short"):
                             try:
-                                owner = getattr(open_m, "__self__", None)
+                                owner = getattr(open_m, "__self__", None) if open_m is not None else None
                                 store_m = getattr(owner, "_store_latest_signal", None)
 
                                 if callable(store_m):

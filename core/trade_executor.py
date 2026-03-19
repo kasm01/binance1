@@ -1679,6 +1679,9 @@ class TradeExecutor:
         pos: Dict[str, Any],
         price: float,
     ) -> Optional[Dict[str, Any]]:
+        import json
+        import time
+
         sym = str(symbol).upper().strip()
         if not sym or not isinstance(pos, dict):
             return None
@@ -1809,7 +1812,6 @@ class TradeExecutor:
             "signal_score": float(sig_score),
             "price": float(price or 0.0),
         }
-
     def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
         if not sym:
@@ -3809,23 +3811,39 @@ class TradeExecutor:
             except Exception:
                 pass
             return None
-
         order_side = "SELL" if side == "long" else "BUY"
         position_side = "LONG" if side == "long" else "SHORT"
 
         started_ms = int(time.time() * 1000)
         order_resp: Dict[str, Any] = {}
 
+        base_order_kwargs = {
+            "symbol": sym,
+            "side": order_side,
+            "type": "MARKET",
+            "quantity": self._fmt_qty(sym, norm_qty),
+            "positionSide": position_side,
+            "newClientOrderId": f"b1_close_{sym}_{uuid.uuid4().hex[:12]}",
+        }
+
         try:
-            order_resp = fn(
-                symbol=sym,
-                side=order_side,
-                type="MARKET",
-                quantity=self._fmt_qty(sym, norm_qty),
-                reduceOnly=True,
-                positionSide=position_side,
-                newClientOrderId=f"b1_close_{sym}_{uuid.uuid4().hex[:12]}",
-            ) or {}
+            try:
+                order_resp = fn(**{**base_order_kwargs, "reduceOnly": True}) or {}
+            except Exception as e:
+                msg = str(e).lower()
+                if "reduceonly" in msg or "reduce only" in msg or "1106" in msg:
+                    try:
+                        if self.logger:
+                            self.logger.warning(
+                                "[EXEC][CLOSE] retry without reduceOnly | symbol=%s",
+                                sym,
+                            )
+                    except Exception:
+                        pass
+
+                    order_resp = fn(**base_order_kwargs) or {}
+                else:
+                    raise
         except Exception as e:
             try:
                 if self.logger:
@@ -3839,6 +3857,7 @@ class TradeExecutor:
             except Exception:
                 pass
             return None
+
         dt_ms = int(time.time() * 1000) - started_ms
         try:
             if self.logger:

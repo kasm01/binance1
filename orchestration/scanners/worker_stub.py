@@ -54,9 +54,50 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _wait_redis(
+    bus: RedisBus,
+    *,
+    name: str,
+    retries: int = 12,
+    base_sleep: float = 1.0,
+    max_sleep: float = 15.0,
+) -> bool:
+    sleep_s = float(base_sleep)
+    last_err = None
+
+    for attempt in range(1, int(retries) + 1):
+        try:
+            if bus.ping():
+                print(f"[{name}] Redis ping ok on attempt={attempt}", flush=True)
+                return True
+        except Exception as e:
+            last_err = e
+            print(
+                f"[{name}] Redis ping failed attempt={attempt}/{retries} err={e}",
+                flush=True,
+            )
+
+        time.sleep(sleep_s)
+        sleep_s = min(float(max_sleep), sleep_s * 2.0)
+
+    print(
+        f"[{name}] Redis unavailable after retries={retries} last_err={last_err}",
+        flush=True,
+    )
+    return False
+
+
 def main() -> None:
     bus = RedisBus()
-    assert bus.ping(), "[WorkerStub] Redis ping failed."
+
+    if not _wait_redis(
+        bus,
+        name="WorkerStub",
+        retries=_env_int("WORKER_REDIS_RETRIES", 12),
+        base_sleep=_env_float("WORKER_REDIS_RETRY_BASE_SLEEP", 1.0),
+        max_sleep=_env_float("WORKER_REDIS_RETRY_MAX_SLEEP", 15.0),
+    ):
+        raise RuntimeError("[WorkerStub] Redis unavailable after retry window")
 
     # Identity / routing
     source = os.getenv("WORKER_ID", "w0").strip() or "w0"
@@ -69,25 +110,28 @@ def main() -> None:
     scanner_mode = os.getenv("SCANNER_MODE", "fast").strip().lower() or "fast"
 
     # Publish controls
-    publish_hold = _env_bool("WORKER_PUBLISH_HOLD", False)  # side=none bile bas (debug)
+    publish_hold = _env_bool("WORKER_PUBLISH_HOLD", False)
     simulate_whale = _env_bool("WORKER_SIM_WHALE", True)
-    emit_meta = _env_bool("WORKER_EMIT_META", True)  # meta şişmesini istersen kapat
+    emit_meta = _env_bool("WORKER_EMIT_META", True)
 
     # Pace (base)
     sleep_sec = _env_float("WORKER_SLEEP_SEC", 0.80)
     hold_skip_sleep_sec = _env_float("WORKER_HOLD_SKIP_SLEEP_SEC", 0.30)
 
     # Backpressure throttle (set by supervisor)
-    throttle_key = os.getenv("WORKER_THROTTLE_KEY", "scanner:throttle_factor").strip() or "scanner:throttle_factor"
+    throttle_key = (
+        os.getenv("WORKER_THROTTLE_KEY", "scanner:throttle_factor").strip()
+        or "scanner:throttle_factor"
+    )
     throttle_min = _env_int("WORKER_THROTTLE_MIN", 1)
     throttle_max = _env_int("WORKER_THROTTLE_MAX", 20)
-    throttle_poll_every = _env_int("WORKER_THROTTLE_POLL_EVERY", 10)  # loops
-    throttle_jitter = _env_float("WORKER_THROTTLE_JITTER", 0.02)      # +/- 2% jitter
+    throttle_poll_every = _env_int("WORKER_THROTTLE_POLL_EVERY", 10)
+    throttle_jitter = _env_float("WORKER_THROTTLE_JITTER", 0.02)
 
     # Anti-spam / quality gates (Worker layer)
-    max_spread_pct = _env_float("WORKER_MAX_SPREAD_PCT", 0.0010)  # default %0.10
-    max_atr_pct = _env_float("WORKER_MAX_ATR_PCT", 0.0300)        # default %3.0
-    min_conf = _env_float("WORKER_MIN_CONF", 0.45)                # default 0.45
+    max_spread_pct = _env_float("WORKER_MAX_SPREAD_PCT", 0.0010)
+    max_atr_pct = _env_float("WORKER_MAX_ATR_PCT", 0.0300)
+    min_conf = _env_float("WORKER_MIN_CONF", 0.45)
 
     # Scoring weights (stub only)
     w_whale = _env_float("W_SCORE_WHALE", 0.60)
@@ -102,7 +146,6 @@ def main() -> None:
         except Exception:
             random.seed(seed)
 
-    # throttle state
     throttle_factor = 1
     loops = 0
 
@@ -112,7 +155,6 @@ def main() -> None:
         Fail-open to 1 if anything goes wrong.
         """
         try:
-            # RedisBus usually keeps a redis client; try common attribute names.
             r = getattr(bus, "redis", None) or getattr(bus, "r", None) or getattr(bus, "_redis", None)
             if r is None:
                 return 1
@@ -127,7 +169,6 @@ def main() -> None:
             return 1
 
     def _sleep_effective(base_seconds: float) -> None:
-        # Apply throttle and small jitter to avoid synchronization between workers.
         eff = max(0.0, float(base_seconds) * float(throttle_factor))
         if throttle_jitter > 0:
             j = random.uniform(-throttle_jitter, throttle_jitter)
@@ -138,16 +179,16 @@ def main() -> None:
         f"[WorkerStub] started. publishing to {bus.signals_stream} | "
         f"source={source} mode={scanner_mode} itv={interval} syms={symbols} | "
         f"gates(min_conf={min_conf} max_spread={max_spread_pct} max_atr={max_atr_pct}) | "
-        f"sleep={sleep_sec}s meta={emit_meta} throttle_key={throttle_key}"
+        f"sleep={sleep_sec}s meta={emit_meta} throttle_key={throttle_key}",
+        flush=True,
     )
-
     while True:
         loops += 1
         if loops == 1 or (throttle_poll_every > 0 and (loops % throttle_poll_every) == 0):
             new_tf = _read_throttle_factor()
             if new_tf != throttle_factor:
                 throttle_factor = new_tf
-                print(f"[WorkerStub] throttle_factor={throttle_factor} (key={throttle_key})")
+                print(f"[WorkerStub] throttle_factor={throttle_factor} (key={throttle_key})", flush=True)
 
         sym = random.choice(symbols)
 
@@ -169,14 +210,13 @@ def main() -> None:
         if simulate_whale and random.random() < 0.35:
             ws = random.uniform(0.05, 0.60)
             whale_score = float(_clamp(ws))
-            # sometimes align, sometimes contra
             if random.random() < 0.65:
                 whale_dir = "buy" if side_candidate == "long" else "sell"
             else:
                 whale_dir = "sell" if side_candidate == "long" else "buy"
 
-        atr_pct = float(random.uniform(0.004, 0.035))          # 0.004 = %0.4
-        spread_pct = float(random.uniform(0.0001, 0.0012))     # 0.0010 = %0.10
+        atr_pct = float(random.uniform(0.004, 0.035))
+        spread_pct = float(random.uniform(0.0001, 0.0012))
 
         # Liquidity proxy (stub)
         liq_base = random.uniform(0.0, 1.0)
@@ -221,29 +261,24 @@ def main() -> None:
             if confidence < min_conf:
                 _sleep_effective(min(0.25, sleep_sec))
                 continue
+
         # ----- SignalEvent (standard) -----
         ts_utc = _utc_now_iso()
         dedup_key = f"{sym}|{interval}|{side_candidate}"
         evt = {
             "event_id": str(uuid.uuid4()),
             "ts_utc": ts_utc,
-            "source": source,  # w1..w8
-
+            "source": source,
             "symbol": sym,
             "interval": interval,
-            "side_candidate": side_candidate,  # long|short|none
-
-            # IMPORTANT: price top-level
+            "side_candidate": side_candidate,
             "price": float(random.uniform(0.5, 2.0)),
             "score_edge": float(score_edge),
             "confidence": float(confidence),
-
             "atr_pct": float(atr_pct),
             "spread_pct": float(spread_pct),
             "liq_score": float(liq_score),
-
             "whale_dir": str(whale_dir),
-
             "dedup_key": dedup_key,
         }
 
@@ -259,13 +294,16 @@ def main() -> None:
                 "p_used": float(p),
                 "fast_model_score": float(fast_model_score),
                 "micro_score": float(micro_score),
-                "weights": {"w_whale": w_whale, "w_fast": w_fast, "w_micro": w_micro},
+                "weights": {
+                    "w_whale": w_whale,
+                    "w_fast": w_fast,
+                    "w_micro": w_micro,
+                },
                 "gates": {
                     "min_conf": min_conf,
                     "max_spread_pct": max_spread_pct,
                     "max_atr_pct": max_atr_pct,
                 },
-                # useful for observability
                 "throttle": {
                     "key": throttle_key,
                     "factor": int(throttle_factor),

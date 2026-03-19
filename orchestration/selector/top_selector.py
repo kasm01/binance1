@@ -108,7 +108,10 @@ class TopSelector:
     Notes:
       - MIN_SCORE fallback supported for min_score
       - W_MIN / TOPSEL_W_MIN whale gate: candidate must have whale_score >= threshold (if threshold > 0)
-      - price alanını korur (top-level + raw içinde).
+      - price alanını korur (top-level + raw içinde)
+      - Redis bağlantı sorunlarında retry / reconnect yapar
+      - cooldown cache aşırı büyürse prune eder
+      - log spam azaltılmıştır
     """
 
     def __init__(self) -> None:
@@ -117,8 +120,14 @@ class TopSelector:
         self.redis_password = os.getenv("REDIS_PASSWORD") or None
         self.redis_db = _env_int("REDIS_DB", 0)
 
-        self.in_stream = os.getenv("TOPSEL_IN_STREAM", os.getenv("CANDIDATES_STREAM", "candidates_stream"))
-        self.out_stream = os.getenv("TOPSEL_OUT_STREAM", os.getenv("TOP5_STREAM", "top5_stream"))
+        self.in_stream = os.getenv(
+            "TOPSEL_IN_STREAM",
+            os.getenv("CANDIDATES_STREAM", "candidates_stream"),
+        )
+        self.out_stream = os.getenv(
+            "TOPSEL_OUT_STREAM",
+            os.getenv("TOP5_STREAM", "top5_stream"),
+        )
 
         self.group = os.getenv("TOPSEL_GROUP", "topsel_g")
         self.consumer = os.getenv("TOPSEL_CONSUMER", "topsel_1")
@@ -133,19 +142,18 @@ class TopSelector:
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
 
-        # cooldown: prevent repeating same dedup_key too frequently
-        self.cooldown_sec = _env_int("TOPSEL_COOLDOWN_SEC", _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20))
+        self.cooldown_sec = _env_int(
+            "TOPSEL_COOLDOWN_SEC",
+            _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20),
+        )
 
-        # "0 trade normal" threshold
         self.min_score = _env_float(
             "TOPSEL_MIN_SCORE",
             _env_float("MIN_TOPSEL_SCORE", _env_float("MIN_SCORE", 0.10)),
         )
 
-        # whale minimum gate (TopSelector stage)
         self.w_min = _env_float("TOPSEL_W_MIN", _env_float("W_MIN", 0.0))
 
-        # penalties
         self.penalty_wide_spread = _env_float("TOPSEL_PENALTY_WIDE_SPREAD", 0.15)
         self.penalty_high_vol = _env_float("TOPSEL_PENALTY_HIGH_VOL", 0.05)
 
@@ -154,10 +162,41 @@ class TopSelector:
         self.out_maxlen = _env_int("TOPSEL_OUT_MAXLEN", 5000)
         self.buffer_max = _env_int("TOPSEL_BUFFER_MAX", 2000)
 
-        # If 1: ack immediately (at-most-once). Default 0: ack after flush (at-least-once)
         self.ack_immediate = _env_bool("TOPSEL_ACK_IMMEDIATE", False)
 
-        self.r = redis.Redis(
+        # runtime / health tuning
+        self.loop_sleep_sec = _env_float("TOPSEL_LOOP_SLEEP_SEC", 0.05)
+        self.idle_log_sec = _env_int("TOPSEL_IDLE_LOG_SEC", 300)
+        self.cooldown_cache_max = _env_int("TOPSEL_COOLDOWN_CACHE_MAX", 50000)
+        self.cooldown_prune_every = _env_int("TOPSEL_COOLDOWN_PRUNE_EVERY", 200)
+        self.redis_retries = _env_int("TOPSEL_REDIS_RETRIES", 10)
+        self.redis_retry_base_sleep = _env_float("TOPSEL_REDIS_RETRY_BASE_SLEEP", 1.0)
+        self.redis_retry_max_sleep = _env_float("TOPSEL_REDIS_RETRY_MAX_SLEEP", 15.0)
+
+        self.r = self._build_redis_client()
+        self._ensure_redis_ready()
+        self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+
+        self.last_sent: Dict[str, float] = {}
+
+        self._buf: List[Tuple[str, Dict[str, Any]]] = []
+        self._buf_ids: List[str] = []
+        self._window_started_at: float = time.time()
+
+        self._loops = 0
+        self._last_idle_log_at = 0.0
+
+        print(
+            f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} "
+            f"group={self.group} consumer={self.consumer} "
+            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s "
+            f"min_score={self.min_score} w_min={self.w_min} "
+            f"ack_immediate={self.ack_immediate}",
+            flush=True,
+        )
+
+    def _build_redis_client(self) -> redis.Redis:
+        return redis.Redis(
             host=self.redis_host,
             port=self.redis_port,
             password=self.redis_password,
@@ -165,33 +204,58 @@ class TopSelector:
             decode_responses=True,
             socket_timeout=5,
             socket_connect_timeout=5,
+            health_check_interval=30,
         )
 
-        self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+    def _ensure_redis_ready(self) -> None:
+        sleep_s = max(0.2, float(self.redis_retry_base_sleep))
+        last_err: Optional[Exception] = None
 
-        self.last_sent: Dict[str, float] = {}  # cooldown_key -> epoch_sec
+        for attempt in range(1, max(1, int(self.redis_retries)) + 1):
+            try:
+                if self.r.ping():
+                    if attempt > 1:
+                        print(
+                            f"[TopSelector] Redis ping recovered on attempt={attempt}",
+                            flush=True,
+                        )
+                    return
+            except Exception as e:
+                last_err = e
+                print(
+                    f"[TopSelector] Redis ping failed attempt={attempt}/{self.redis_retries} err={e}",
+                    flush=True,
+                )
 
-        # Window buffers
-        self._buf: List[Tuple[str, Dict[str, Any]]] = []   # (sid, candidate)
-        self._buf_ids: List[str] = []                      # sids to ACK after flush
-        self._window_started_at: float = time.time()
+            time.sleep(sleep_s)
+            sleep_s = min(float(self.redis_retry_max_sleep), sleep_s * 2.0)
 
-        print(
-            f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} group={self.group} consumer={self.consumer} "
-            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s min_score={self.min_score} "
-            f"w_min={self.w_min} ack_immediate={self.ack_immediate}"
-        )
+        raise RuntimeError(f"[TopSelector] Redis unavailable: {last_err}")
+
+    def _reconnect_redis(self) -> None:
+        try:
+            self.r = self._build_redis_client()
+            self._ensure_redis_ready()
+            self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+            print("[TopSelector] Redis reconnected.", flush=True)
+        except Exception as e:
+            print(f"[TopSelector] Redis reconnect failed: {e}", flush=True)
+            raise
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
         try:
             self.r.xgroup_create(stream, group, id=start_id, mkstream=True)
-            print(f"[TopSelector] XGROUP created: stream={stream} group={group} start_id={start_id}")
+            print(
+                f"[TopSelector] XGROUP created: stream={stream} group={group} start_id={start_id}",
+                flush=True,
+            )
         except redis.exceptions.ResponseError as e:
             if "BUSYGROUP" in str(e):
                 return
             raise
-        except Exception:
-            return
+        except Exception as e:
+            print(f"[TopSelector] XGROUP ensure failed: {e}", flush=True)
+            raise
 
     def _normalize_candidate(self, c: Dict[str, Any], stream_id: str) -> Dict[str, Any]:
         d = dict(c) if isinstance(c, dict) else {}
@@ -210,19 +274,16 @@ class TopSelector:
 
         dk = str(d.get("dedup_key", "") or "").strip()
         if not dk and sym:
-            dk = f"{sym}|{itv}|{d.get('side','')}"
+            dk = f"{sym}|{itv}|{d.get('side', '')}"
             d["dedup_key"] = dk
 
-        # risk_tags normalize
         d["risk_tags"] = _as_str_list(d.get("risk_tags", []))
 
-        # price normalize (keep top-level)
         price = _safe_float(d.get("price", 0.0), 0.0)
         if price < 0:
             price = 0.0
         d["price"] = float(price)
 
-        # whale_score normalize (top-level preferred)
         ws = d.get("whale_score", None)
         if ws is None:
             raw = d.get("raw") or {}
@@ -231,7 +292,6 @@ class TopSelector:
         if ws is not None:
             d["whale_score"] = _clamp(_safe_float(ws, 0.0), 0.0, 1.0)
 
-        # score_total fallback normalization
         st = d.get("score_total", None)
         if st is None:
             st = d.get("_score_total", None)
@@ -244,7 +304,6 @@ class TopSelector:
         if st is not None:
             d["score_total"] = _clamp(_safe_float(st, 0.0), 0.0, 1.0)
 
-        # ensure raw carries price too (downstream fallback)
         try:
             raw = d.get("raw")
             if isinstance(raw, dict):
@@ -253,7 +312,6 @@ class TopSelector:
             pass
 
         return d
-
     def _required_ok(self, c: Dict[str, Any]) -> bool:
         if not self.require_fields:
             return True
@@ -291,7 +349,29 @@ class TopSelector:
             ck = raw.get("cooldown_key")
             if ck:
                 return str(ck)
-        return f"{c.get('symbol','')}|{c.get('interval','')}|{c.get('side','')}"
+        return f"{c.get('symbol', '')}|{c.get('interval', '')}|{c.get('side', '')}"
+
+    def _prune_last_sent(self) -> None:
+        if not self.last_sent:
+            return
+
+        if len(self.last_sent) <= int(self.cooldown_cache_max):
+            cutoff = time.time() - max(float(self.cooldown_sec) * 3.0, 600.0)
+            stale = [k for k, ts in self.last_sent.items() if float(ts) < cutoff]
+            if stale:
+                for k in stale:
+                    self.last_sent.pop(k, None)
+            return
+
+        cutoff = time.time() - max(float(self.cooldown_sec) * 2.0, 300.0)
+        stale = [k for k, ts in self.last_sent.items() if float(ts) < cutoff]
+        for k in stale:
+            self.last_sent.pop(k, None)
+
+        if len(self.last_sent) > int(self.cooldown_cache_max):
+            items = sorted(self.last_sent.items(), key=lambda kv: kv[1], reverse=True)
+            self.last_sent = dict(items[: int(self.cooldown_cache_max)])
+
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
             resp = self.r.xreadgroup(
@@ -304,10 +384,22 @@ class TopSelector:
         except redis.exceptions.ResponseError as e:
             msg = str(e)
             if "UNBLOCKED" in msg and "no longer exists" in msg:
-                self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+                try:
+                    self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
+                except Exception:
+                    pass
                 return []
+            print(f"[TopSelector] xreadgroup response error: {e}", flush=True)
             return []
-        except Exception:
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+            print(f"[TopSelector] xreadgroup connection error: {e}", flush=True)
+            try:
+                self._reconnect_redis()
+            except Exception:
+                time.sleep(1.0)
+            return []
+        except Exception as e:
+            print(f"[TopSelector] xreadgroup unexpected error: {e}", flush=True)
             return []
 
         if not resp:
@@ -332,8 +424,14 @@ class TopSelector:
             return
         try:
             self.r.xack(self.in_stream, self.group, *ids)
-        except Exception:
-            pass
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+            print(f"[TopSelector] xack connection error: {e}", flush=True)
+            try:
+                self._reconnect_redis()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[TopSelector] xack error: {e}", flush=True)
 
     def _select_topk(self, items: List[Tuple[str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         if not items:
@@ -355,7 +453,6 @@ class TopSelector:
             if not self._required_ok(c2):
                 continue
 
-            # whale gate (optional)
             if float(self.w_min) > 0.0:
                 ws = self._extract_whale_score(c2)
                 if ws < float(self.w_min):
@@ -366,7 +463,6 @@ class TopSelector:
         if not windowed:
             return []
 
-        # best per cooldown key
         best_by_key: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
         for sid, c in windowed:
             ck = self._cooldown_key(c)
@@ -417,7 +513,15 @@ class TopSelector:
                 maxlen=self.out_maxlen,
                 approximate=True,
             )
-        except Exception:
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+            print(f"[TopSelector] xadd connection error: {e}", flush=True)
+            try:
+                self._reconnect_redis()
+            except Exception:
+                pass
+            return None
+        except Exception as e:
+            print(f"[TopSelector] xadd error: {e}", flush=True)
             return None
 
         now_sec = time.time()
@@ -460,11 +564,9 @@ class TopSelector:
         top = self._select_topk(self._buf)
         out_id = self._publish(top) if top else None
 
-        # ACK after flush (at-least-once)
         if not self.ack_immediate and self._buf_ids:
             self._ack(self._buf_ids)
 
-        # reset window
         self._buf = []
         self._buf_ids = []
         self._window_started_at = time.time()
@@ -472,17 +574,18 @@ class TopSelector:
         if out_id:
             return str(out_id), top
         return None
-
     def run_forever(self) -> None:
         print(
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s min_score={self.min_score} "
-            f"w_min={self.w_min} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s "
+            f"min_score={self.min_score} w_min={self.w_min} "
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}",
+            flush=True,
         )
 
         if self.drain_pending:
-            print("[TopSelector] draining pending (PEL) ...")
+            print("[TopSelector] draining pending (PEL) ...", flush=True)
             while True:
                 rows = self._xreadgroup("0")
                 if not rows:
@@ -492,30 +595,56 @@ class TopSelector:
                 out_id = self._publish(top) if top else None
                 if out_id:
                     syms = ", ".join(
-                        [f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top]
+                        [
+                            f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})"
+                            for x in top
+                        ]
                     )
-                    print(f"[TopSelector] (PEL) published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
+                    print(
+                        f"[TopSelector] (PEL) published {len(top)} -> {self.out_stream} id={out_id} | {syms}",
+                        flush=True,
+                    )
 
                 self._ack([sid for sid, _ in rows])
                 time.sleep(0.05)
 
-            print("[TopSelector] pending drained.")
+            print("[TopSelector] pending drained.", flush=True)
 
         while True:
+            self._loops += 1
+
             rows = self._xreadgroup(">")
             if rows:
                 self._buffer_add(rows)
+            else:
+                now = time.time()
+                if self.idle_log_sec > 0 and (now - self._last_idle_log_at) >= float(self.idle_log_sec):
+                    self._last_idle_log_at = now
+                    print(
+                        f"[TopSelector] idle... buf={len(self._buf)} "
+                        f"window_age={now - self._window_started_at:.1f}s",
+                        flush=True,
+                    )
 
             if self._window_ready():
                 res = self._flush_window()
                 if res:
                     out_id, top = res
                     syms = ", ".join(
-                        [f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})" for x in top]
+                        [
+                            f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})"
+                            for x in top
+                        ]
                     )
-                    print(f"[TopSelector] published {len(top)} -> {self.out_stream} id={out_id} | {syms}")
+                    print(
+                        f"[TopSelector] published {len(top)} -> {self.out_stream} id={out_id} | {syms}",
+                        flush=True,
+                    )
 
-            time.sleep(0.05)
+            if self.cooldown_prune_every > 0 and (self._loops % int(self.cooldown_prune_every) == 0):
+                self._prune_last_sent()
+
+            time.sleep(max(0.01, float(self.loop_sleep_sec)))
 
 
 if __name__ == "__main__":
