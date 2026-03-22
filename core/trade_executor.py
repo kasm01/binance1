@@ -217,6 +217,13 @@ class TradeExecutor:
         self.manual_close_detect_enable = str(
             os.getenv("MANUAL_CLOSE_DETECT_ENABLE", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
+        self.hard_stop_enable = str(
+            os.getenv("HARD_STOP_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.hard_stop_loss_pct = float(
+            os.getenv("HARD_STOP_LOSS_PCT", "0.040") or 0.040
+        )
 
         self.manual_close_reconcile_on_lifecycle = str(
             os.getenv("MANUAL_CLOSE_RECONCILE_ON_LIFECYCLE", "1")
@@ -1710,17 +1717,33 @@ class TradeExecutor:
         if not sym or not isinstance(pos, dict):
             return None
 
-        if not bool(getattr(self, "reverse_close_enabled", True)):
+        side = str(pos.get("side") or "").strip().lower()
+        entry_price = float(pos.get("entry_price") or 0.0)
+
+        if side not in ("long", "short") or entry_price <= 0:
             return None
 
-        side = str(pos.get("side") or "").strip().lower()
-        if side not in ("long", "short"):
+        # ---------------------------------
+        # PNL hesap
+        # ---------------------------------
+        if side == "long":
+            pnl_pct = (price - entry_price) / entry_price
+        else:
+            pnl_pct = (entry_price - price) / entry_price
+
+        # ---------------------------------
+        # reverse / weak enable
+        # ---------------------------------
+        if not bool(getattr(self, "reverse_close_enabled", True)):
             return None
 
         r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
         if r is None:
             return None
 
+        # ---------------------------------
+        # son sinyal oku
+        # ---------------------------------
         try:
             raw = r.get(f"bot:last_signal:{sym}")
             if not raw:
@@ -1733,37 +1756,22 @@ class TradeExecutor:
             if not isinstance(sig, dict):
                 return None
         except Exception:
-            try:
-                if self.logger:
-                    self.logger.exception(
-                        "[EXEC][WEAK] latest signal read failed | symbol=%s",
-                        sym,
-                    )
-            except Exception:
-                pass
             return None
 
         sig_side = str(sig.get("side") or "").strip().lower()
-        sig_interval = str(sig.get("interval") or "").strip()
         sig_score = float(sig.get("score") or 0.0)
         sig_ts = float(sig.get("ts") or 0.0)
 
         now_ts = time.time()
 
-        try:
-            max_age = float(getattr(self, "opposite_signal_max_age_sec", 600.0) or 600.0)
-        except Exception:
-            max_age = 600.0
+        # ---------------------------------
+        # thresholdlar
+        # ---------------------------------
+        min_score = float(getattr(self, "opposite_signal_min_score", 0.58))
+        max_age = float(getattr(self, "opposite_signal_max_age_sec", 600))
+        confirm_need = int(getattr(self, "opposite_signal_confirm_count", 1))
 
-        try:
-            min_score = float(getattr(self, "opposite_signal_min_score", 0.58) or 0.58)
-        except Exception:
-            min_score = 0.58
-
-        try:
-            confirm_need = int(getattr(self, "opposite_signal_confirm_count", 1) or 1)
-        except Exception:
-            confirm_need = 1
+        tp_arm = float(getattr(self, "tp_arm_pnl_pct", 0.02))  # %2
 
         if sig_side not in ("long", "short"):
             return None
@@ -1774,39 +1782,23 @@ class TradeExecutor:
         if sig_score < min_score:
             return None
 
-        pos_interval = str(pos.get("interval") or "").strip()
-        if pos_interval and sig_interval and pos_interval != sig_interval:
-            return None
-
         opposite = (
             (side == "long" and sig_side == "short")
             or (side == "short" and sig_side == "long")
         )
+
         if not opposite:
             return None
-
+        # ---------------------------------
+        # CONFIRMATION (anti noise)
+        # ---------------------------------
         confirm_key = f"bot:reverse_confirm:{sym}:{side}:{sig_side}"
-        confirm_count = 1
 
         try:
             confirm_count = int(r.incr(confirm_key))
             r.expire(confirm_key, int(max(30, max_age)))
         except Exception:
             confirm_count = 1
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][WEAK] reverse signal seen | symbol=%s pos_side=%s sig_side=%s sig_score=%.4f confirm=%s/%s",
-                    sym,
-                    side,
-                    sig_side,
-                    float(sig_score),
-                    int(confirm_count),
-                    int(confirm_need),
-                )
-        except Exception:
-            pass
 
         if confirm_count < confirm_need:
             return None
@@ -1816,26 +1808,55 @@ class TradeExecutor:
         except Exception:
             pass
 
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][WEAK] reverse close approved | symbol=%s pos_side=%s sig_side=%s sig_score=%.4f price=%.6f",
-                    sym,
-                    side,
-                    sig_side,
-                    float(sig_score),
-                    float(price or 0.0),
-                )
-        except Exception:
-            pass
+        # ---------------------------------
+        # 🔥 ANA MANTIK
+        # ---------------------------------
 
-        return {
-            "action": "close",
-            "reason": "reverse_signal",
-            "signal_side": sig_side,
-            "signal_score": float(sig_score),
-            "price": float(price or 0.0),
-        }
+        # 1️⃣ %2+ KÂR VAR → TERS SİNYALDE ANINDA ÇIK
+        if pnl_pct >= tp_arm:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][PROFIT-REVERSE] close | symbol=%s side=%s pnl=%.4f sig=%s score=%.4f",
+                        sym,
+                        side,
+                        pnl_pct,
+                        sig_side,
+                        sig_score,
+                    )
+            except Exception:
+                pass
+
+            return {
+                "action": "close",
+                "reason": "profit_reverse",
+                "pnl_pct": float(pnl_pct),
+                "signal_score": float(sig_score),
+            }
+
+        # 2️⃣ düşük kâr / zarar → klasik reverse close
+        if pnl_pct < tp_arm:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][REVERSE] close | symbol=%s side=%s pnl=%.4f sig=%s",
+                        sym,
+                        side,
+                        pnl_pct,
+                        sig_side,
+                    )
+            except Exception:
+                pass
+
+            return {
+                "action": "close",
+                "reason": "reverse_signal",
+                "pnl_pct": float(pnl_pct),
+                "signal_score": float(sig_score),
+            }
+
+        return None
+
     def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
         if not sym:
@@ -4600,6 +4621,18 @@ class TradeExecutor:
             tp_runner_pullback_pct = 0.006
 
         try:
+            hard_stop_enable = bool(getattr(self, "hard_stop_enable", True))
+        except Exception:
+            hard_stop_enable = True
+
+        try:
+            hard_stop_loss_pct = float(
+                getattr(self, "hard_stop_loss_pct", 0.04) or 0.04
+            )
+        except Exception:
+            hard_stop_loss_pct = 0.04
+
+        try:
             manual_close_detect_enable = bool(
                 getattr(self, "manual_close_detect_enable", True)
             )
@@ -4638,7 +4671,6 @@ class TradeExecutor:
                             if abs(amt) <= 0.0:
                                 continue
 
-                            row_side = ""
                             ps = str(row.get("positionSide") or "").upper().strip()
                             if ps == "LONG":
                                 row_side = "long"
@@ -4693,6 +4725,7 @@ class TradeExecutor:
                 tp_price = entry_price * (1.0 + tp_pct)
             else:
                 tp_price = entry_price * (1.0 - tp_pct)
+
         if side == "long":
             highest_price = max(float(highest_price), float(price))
             pnl_pct = (
@@ -4728,7 +4761,9 @@ class TradeExecutor:
             if trailing_armed:
                 trail_stop_price = float(highest_price) * (1.0 - float(trailing_pct))
 
-            if float(sl_price) > 0 and float(price) <= float(sl_price):
+            if hard_stop_enable and float(pnl_pct) <= -abs(float(hard_stop_loss_pct)):
+                close_reason = "hard_stop_hit"
+            elif float(sl_price) > 0 and float(price) <= float(sl_price):
                 close_reason = "sl_hit"
             elif trailing_armed and float(price) <= float(trail_stop_price):
                 close_reason = "trailing_hit"
@@ -4746,7 +4781,6 @@ class TradeExecutor:
                 and float(price) >= float(tp_price)
             ):
                 close_reason = "tp_hit"
-
         else:
             lowest_price = min(float(lowest_price), float(price))
             pnl_pct = (
@@ -4782,7 +4816,9 @@ class TradeExecutor:
             if trailing_armed:
                 trail_stop_price = float(lowest_price) * (1.0 + float(trailing_pct))
 
-            if float(sl_price) > 0 and float(price) >= float(sl_price):
+            if hard_stop_enable and float(pnl_pct) <= -abs(float(hard_stop_loss_pct)):
+                close_reason = "hard_stop_hit"
+            elif float(sl_price) > 0 and float(price) >= float(sl_price):
                 close_reason = "sl_hit"
             elif trailing_armed and float(price) >= float(trail_stop_price):
                 close_reason = "trailing_hit"
@@ -4928,6 +4964,7 @@ class TradeExecutor:
                 reason=str(close_reason),
                 interval=str(interval or pos.get("interval") or ""),
             )
+
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
         pos = self._get_position(sym)
