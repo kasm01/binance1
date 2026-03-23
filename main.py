@@ -1721,7 +1721,6 @@ def _pick_method(obj, names):
             return getattr(obj, n)
     return None
 
-
 async def consume_exec_events_stream(logger, executor, *, redis_url: str):
     if os.getenv("EXEC_EVENTS_ENABLE", "1").strip() not in ("1", "true", "True", "yes", "YES"):
         logger.info("[EXEC-EVENTS] disabled via EXEC_EVENTS_ENABLE")
@@ -1738,6 +1737,14 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
     ensure_group(r, stream, group, start_id=start_id)
 
     logger.info("[EXEC-EVENTS] consuming stream=%s group=%s consumer=%s", stream, group, consumer)
+
+    decision_m = getattr(executor, "execute_decision", None)
+    if not callable(decision_m):
+        decision_m = None
+
+    store_signal_m = getattr(executor, "_store_latest_signal", None)
+    if not callable(store_signal_m):
+        store_signal_m = None
 
     open_m = _pick_method(
         executor,
@@ -1762,8 +1769,10 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
         ],
     )
 
-    if open_m is None and close_m is None:
-        logger.error("[EXEC-EVENTS] TradeExecutor open/close method not found. Check core/trade_executor.py")
+    if decision_m is None and open_m is None and close_m is None:
+        logger.error(
+            "[EXEC-EVENTS] TradeExecutor decision/open/close method not found. Check core/trade_executor.py"
+        )
         return
 
     while True:
@@ -1783,6 +1792,7 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                 continue
 
             ids = []
+
             for sid, pkg in entries:
                 ids.append(sid)
                 payload = pkg
@@ -1791,7 +1801,7 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
                     try:
                         payload = json.loads(pkg["json"])
                     except Exception:
-                        logger.exception(f"[EXEC-EVENTS] json parse failed sid={sid}")
+                        logger.exception("[EXEC-EVENTS] json parse failed sid=%s", sid)
                         continue
 
                 items = (payload or {}).get("items") or []
@@ -1800,114 +1810,256 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
 
                 for it in items:
                     try:
-                        symbol = str(it.get("symbol", "")).upper()
-                        side = str(it.get("side", "")).lower()
-                        interval = str(it.get("interval", "") or "5m")
+                        if not isinstance(it, dict):
+                            logger.warning("[EXEC-EVENTS] skip non-dict item sid=%s item=%r", sid, it)
+                            continue
+
+                        symbol = str(it.get("symbol", "")).upper().strip()
+                        side = str(it.get("side", "")).lower().strip()
+                        interval = str(it.get("interval", "") or "5m").strip() or "5m"
                         intent_id = str(it.get("intent_id", "") or "")
                         price = it.get("price", None)
                         trail_pct = it.get("trail_pct", None)
                         stall_ttl_sec = it.get("stall_ttl_sec", None)
+                        score = float(it.get("score") or 0.0)
 
                         logger.info(
                             "[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
-                            intent_id, side, symbol, interval, price
+                            intent_id,
+                            side,
+                            symbol,
+                            interval,
+                            price,
                         )
+
+                        if not symbol:
+                            logger.warning(
+                                "[EXEC-EVENTS] missing symbol; skip intent=%s item=%s",
+                                intent_id,
+                                it,
+                            )
+                            continue
 
                         if side in ("long", "short"):
                             try:
-                                owner = getattr(open_m, "__self__", None) if open_m is not None else None
-                                store_m = getattr(owner, "_store_latest_signal", None)
-
-                                if callable(store_m):
-                                    store_m(
+                                if callable(store_signal_m):
+                                    store_signal_m(
                                         symbol=symbol,
                                         side=side,
                                         interval=interval,
-                                        score=float(it.get("score") or 0.0),
-                                        raw=it if isinstance(it, dict) else {},
+                                        score=score,
+                                        raw=it,
                                     )
-                                    if logger:
-                                        logger.info(
-                                            "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                                            symbol,
-                                            side,
-                                            interval,
-                                            float(it.get("score") or 0.0),
-                                            intent_id,
-                                        )
-                                else:
-                                    if logger:
-                                        logger.warning(
-                                            "[EXEC-EVENTS] _store_latest_signal missing on open method owner | symbol=%s",
-                                            symbol,
-                                        )
-                            except Exception:
-                                if logger:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
+                                    logger.info(
+                                        "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
                                         symbol,
+                                        side,
+                                        interval,
+                                        score,
+                                        intent_id,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[EXEC-EVENTS] _store_latest_signal missing on executor | symbol=%s",
+                                        symbol,
+                                    )
+                            except Exception:
+                                logger.exception(
+                                    "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
+                                    symbol,
+                                    intent_id,
+                                )
+
+                            if callable(decision_m):
+                                try:
+                                    logger.info(
+                                        "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                                        symbol,
+                                        side,
+                                        interval,
+                                        score,
                                         intent_id,
                                     )
 
+                                    await _maybe_await(
+                                        decision_m(
+                                            signal=side,
+                                            symbol=symbol,
+                                            price=float(price or 0.0),
+                                            size=None,
+                                            interval=interval,
+                                            training_mode=False,
+                                            hybrid_mode=True,
+                                            probs={},
+                                            extra={
+                                                "price": price,
+                                                "trail_pct": trail_pct,
+                                                "stall_ttl_sec": stall_ttl_sec,
+                                                "intent_id": intent_id,
+                                                "score": score,
+                                                "raw": it,
+                                            },
+                                        )
+                                    )
+
+                                    logger.info(
+                                        "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
+                                        symbol,
+                                        side,
+                                        score,
+                                        intent_id,
+                                    )
+                                    continue
+                                except TypeError:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] execute_decision signature mismatch | item=%s",
+                                        it,
+                                    )
+                                    continue
+                                except Exception:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] execute_decision failed | item=%s",
+                                        it,
+                                    )
+                                    continue
                             if open_m is None:
                                 logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
                                 continue
-                            if getattr(open_m, "__name__", "") in ("open_position_from_signal", "open_from_intent"):
-                                await _maybe_await(open_m(
-                                    symbol=symbol,
-                                    side=side,
-                                    interval=interval,
-                                    meta={
-                                        "price": price,
-                                        "trail_pct": trail_pct,
-                                        "stall_ttl_sec": stall_ttl_sec,
-                                        "intent_id": intent_id,
-                                        "score": it.get("score"),
-                                        "raw": it,
-                                    },
-                                ))
+
+                            if getattr(open_m, "__name__", "") in (
+                                "open_position_from_signal",
+                                "open_from_intent",
+                            ):
+                                await _maybe_await(
+                                    open_m(
+                                        symbol=symbol,
+                                        side=side,
+                                        interval=interval,
+                                        meta={
+                                            "price": price,
+                                            "trail_pct": trail_pct,
+                                            "stall_ttl_sec": stall_ttl_sec,
+                                            "intent_id": intent_id,
+                                            "score": score,
+                                            "raw": it,
+                                        },
+                                    )
+                                )
                             else:
-                                await _maybe_await(open_m(
-                                    symbol=symbol,
-                                    side=side,
-                                    interval=interval,
-                                    price=price,
-                                    trail_pct=trail_pct,
-                                    stall_ttl_sec=stall_ttl_sec,
-                                    intent_id=intent_id,
-                                    raw=it,
-                                ))
+                                await _maybe_await(
+                                    open_m(
+                                        symbol=symbol,
+                                        side=side,
+                                        interval=interval,
+                                        price=price,
+                                        trail_pct=trail_pct,
+                                        stall_ttl_sec=stall_ttl_sec,
+                                        intent_id=intent_id,
+                                        raw=it,
+                                    )
+                                )
+
+                            logger.info(
+                                "[EXEC-EVENTS] fallback open applied | symbol=%s side=%s score=%.4f intent=%s",
+                                symbol,
+                                side,
+                                score,
+                                intent_id,
+                            )
+
                         elif side in ("close", "flat", "exit"):
+                            if callable(decision_m):
+                                try:
+                                    logger.info(
+                                        "[EXEC-EVENTS] dispatch decision close | symbol=%s side=%s interval=%s intent=%s",
+                                        symbol,
+                                        side,
+                                        interval,
+                                        intent_id,
+                                    )
+
+                                    await _maybe_await(
+                                        decision_m(
+                                            signal="close",
+                                            symbol=symbol,
+                                            price=float(price or 0.0),
+                                            size=None,
+                                            interval=interval,
+                                            training_mode=False,
+                                            hybrid_mode=True,
+                                            probs={},
+                                            extra={
+                                                "intent_id": intent_id,
+                                                "score": score,
+                                                "raw": it,
+                                            },
+                                        )
+                                    )
+
+                                    logger.info(
+                                        "[EXEC-EVENTS] decision close dispatched | symbol=%s side=%s intent=%s",
+                                        symbol,
+                                        side,
+                                        intent_id,
+                                    )
+                                    continue
+                                except TypeError:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] execute_decision close signature mismatch | item=%s",
+                                        it,
+                                    )
+                                    continue
+                                except Exception:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] execute_decision close failed | item=%s",
+                                        it,
+                                    )
+                                    continue
+
                             if close_m is None:
                                 logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
                                 continue
 
-                            if getattr(close_m, "__name__", "") in ("close_position_from_signal", "close_from_intent"):
-                                await _maybe_await(close_m(
-                                    symbol=symbol,
-                                    interval=interval,
-                                    meta={
-                                        "intent_id": intent_id,
-                                        "raw": it,
-                                    },
-                                    price=price,
-                                ))
+                            if getattr(close_m, "__name__", "") in (
+                                "close_position_from_signal",
+                                "close_from_intent",
+                            ):
+                                await _maybe_await(
+                                    close_m(
+                                        symbol=symbol,
+                                        interval=interval,
+                                        meta={
+                                            "intent_id": intent_id,
+                                            "raw": it,
+                                        },
+                                        price=price,
+                                    )
+                                )
                             else:
-                                await _maybe_await(close_m(
-                                    symbol=symbol,
-                                    interval=interval,
-                                    intent_id=intent_id,
-                                    raw=it,
-                                    price=price,
-                                ))
+                                await _maybe_await(
+                                    close_m(
+                                        symbol=symbol,
+                                        interval=interval,
+                                        intent_id=intent_id,
+                                        raw=it,
+                                        price=price,
+                                    )
+                                )
+
+                            logger.info(
+                                "[EXEC-EVENTS] fallback close applied | symbol=%s side=%s intent=%s",
+                                symbol,
+                                side,
+                                intent_id,
+                            )
 
                         else:
                             logger.warning("[EXEC-EVENTS] unknown side=%s intent=%s", side, intent_id)
 
                     except TypeError:
-                        logger.exception(f"[EXEC-EVENTS] method signature mismatch for item={it}")
+                        logger.exception("[EXEC-EVENTS] method signature mismatch for item=%s", it)
                     except Exception:
-                        logger.exception(f"[EXEC-EVENTS] failed to apply item={it}")
+                        logger.exception("[EXEC-EVENTS] failed to apply item=%s", it)
 
             if ids:
                 xack_safe(r, stream, group, ids)

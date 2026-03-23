@@ -1,0 +1,725 @@
+2026-03-22 10:56:13,238 | INFO | system | [EXEC-EVENTS] recv intent=55b21aaa-231a-4e69-acf9-5f360c9235d1 side=long symbol=LTCUSDT interval=5m price=0.5615624145383773
+2026-03-22 10:56:13,243 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=LTCUSDT side=long interval=5m score=0.696382
+2026-03-22 10:56:13,243 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=LTCUSDT side=long interval=5m score=0.6964 intent=55b21aaa-231a-4e69-acf9-5f360c9235d1
+2026-03-22 10:56:13,530 | INFO | system | [EXEC][LEV][INTENT] symbol=LTCUSDT side=long recommended=None
+2026-03-22 10:56:14,527 | INFO | system | [EXEC][NOTIONAL] symbol=LTCUSDT side=long price=53.996258 balance_source=available_balance base_balance=296.40 pct=0.3000 notional=88.92
+2026-03-22 10:56:14,804 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 10:56:14,804 | INFO | system | [EXEC][INTENT][QTY] symbol=LTCUSDT intent_price=0.561562 order_price=53.996258 raw_qty=1.6467877132 norm_qty=1.6460000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 10:56:14,804 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=LTCUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=88.92 final_notional=88.88 target_leverage=5
+2026-03-22 10:56:15,054 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 10:56:15,055 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=LTCUSDT raw_qty=1.6460000000 norm_qty=1.6450000000 price=53.996258 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 10:56:15,055 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "LTCUSDT", "raw_qty": 1.646, "price": 53.99625761, "step_size": 0.001, "min_qty": 0.001, "min_notional": 20.0, "normalized_qty": 1.645, "normalized_notional": 88.82384376845, "reject_reason": ""}
+2026-03-22 10:56:15,277 | INFO | system | [EXEC][LEV][SET] symbol=LTCUSDT requested=5 response={"symbol": "LTCUSDT", "leverage": 5, "maxNotionalValue": "16000000"}
+2026-03-22 10:56:15,278 | INFO | system | [EXEC][LEV] symbol=LTCUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 10:56:15,499 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=LTCUSDT side=BUY qty=1.6450000000 reduceOnly=False lev=5 dt_ms=220 summary={"symbol": "LTCUSDT", "side": "BUY", "type": "MARKET", "orderId": 42004997075, "clientOrderId": "b1_open_LTCUSDT_575199826089", "status": "NEW", "price": "0.00", "avgPrice": "0.00", "origQty": "1.645", "executedQty": "0.000", "cumQty": "0.000", "cumQuote": "0.00000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774176975391}
+2026-03-22 10:56:15,725 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "LTCUSDT", "side": "BUY", "type": "MARKET", "orderId": 42004997075, "clientOrderId": "b1_open_LTCUSDT_575199826089", "status": "FILLED", "price": "0.00", "avgPrice": "53.99000", "origQty": "1.645", "executedQty": "1.645", "cumQuote": "88.81355", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774176975391}, "terminal_status": "FILLED", "waited_sec": 0.225}
+2026-03-22 10:56:15,948 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "LTCUSDT", "positionAmt": 1.645, "entryPrice": 53.99, "unrealized": 0.02228813, "leverage": 5.0}
+2026-03-22 10:56:16,201 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=LTCUSDT side=long interval=5m intent_id=55b21aaa-231a-4e69-acf9-5f360c9235d1
+2026-03-22 10:56:16,202 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=LTCUSDT side=long interval=5m intent_id=55b21aaa-231a-4e69-acf9-5f360c9235d1
+2026-03-22 10:56:16,202 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=LTCUSDT qty=1.6460000000 intent_price=0.561562 order_price=53.996258 notional=88.88 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 10:56:16,203 | INFO | system | [RISK] Yeni gün tespit edildi (2026-03-21 -> 2026-03-22), günlük metrikler resetleniyor. Önceki daily_realized_pnl=-0.39, consecutive_losses=1
+2026-03-22 10:56:16,203 | INFO | system | [RISK] on_position_open | symbol=LTCUSDT side=long qty=1.646000 notional=88.88 price=54.00 interval=5m open_trades=2 meta={'reason': 'INTENT_OPEN', 'price': 0.5615624145383773, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '55b21aaa-231a-4e69-acf9-5f360c9235d1', 'score': 0.6963818176124392, 'raw': {'symbol': 'LTCUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '55b21aaa-231a-4e69-acf9-5f360c9235d1', 'score': 0.6963818176124392, 'price': 0.5615624145383773, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "55b21aaa-231a-4e69-acf9-5f360c9235d1", "ts_utc": "2026-03-22T10:56:12.721198+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 0.5615624145383773, "score": 0.6963818176124392, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "whale_align_long", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "e4498b2d-4d8b-4503-8c48-994f5db4f1eb", "ts_utc": "2026-03-22T10:55:56.487102+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 0.5615624145383773, "score_total": 0.5957569499073084, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "whale_align_long", "whale_confirm"], "source": "w4", "dedup_key": "LTCUSDT|5m|long", "whale_score": 0.5993260558635127, "whale_dir": "long", "raw": {"price": 0.5615624145383773, "whale_score": 0.5993260558635127, "whale_dir": "long", "meta": {"p_used": 0.7471447363773263, "fast_model_score": 0.7471447363773263, "micro_score": 1.0, "confidence": 0.6672951866369421, "spread_pct": 0.000303572946973468, "liq_score": 0.4795980606918223, "atr_pct": 0.01710720981530995}}, "_score_selected": 0.5957569499073084, "_source_stream_id": "1774176956488-0", "_score_total_final": 0.6963818176124392, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 316.77642552, 'available_balance_usdt': 296.40124531, 'whale_action': '', 'intent_price': 0.5615624145383773, 'order_price': 53.99625761, 'whale_open_notional_before': 88.920373593, 'whale_open_notional_after': 88.87784002606, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 11:01:51,910 | INFO | system | [EXEC-EVENTS] recv intent=41373289-2a1c-43d0-8472-2a18a68ec190 side=long symbol=SOLUSDT interval=5m price=0.9366574151049946
+2026-03-22 11:01:51,911 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=SOLUSDT side=long interval=5m score=0.700600
+2026-03-22 11:01:51,911 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=SOLUSDT side=long interval=5m score=0.7006 intent=41373289-2a1c-43d0-8472-2a18a68ec190
+2026-03-22 11:01:52,154 | INFO | system | [EXEC][LEV][INTENT] symbol=SOLUSDT side=long recommended=None
+2026-03-22 11:01:53,116 | INFO | system | [EXEC][NOTIONAL] symbol=SOLUSDT side=long price=87.300000 balance_source=available_balance base_balance=278.54 pct=0.3000 notional=83.56
+2026-03-22 11:01:53,367 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 11:01:53,368 | INFO | system | [EXEC][INTENT][QTY] symbol=SOLUSDT intent_price=0.936657 order_price=87.300000 raw_qty=0.9571913889 norm_qty=0.9500000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 11:01:53,368 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=SOLUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=83.56 final_notional=82.93 target_leverage=5
+2026-03-22 11:01:53,615 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 11:01:53,616 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=SOLUSDT raw_qty=0.9500000000 norm_qty=0.9500000000 price=87.300000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 11:01:53,616 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "SOLUSDT", "raw_qty": 0.95, "price": 87.3, "step_size": 0.01, "min_qty": 0.01, "min_notional": 5.0, "normalized_qty": 0.95, "normalized_notional": 82.93499999999999, "reject_reason": ""}
+2026-03-22 11:01:53,843 | INFO | system | [EXEC][LEV][SET] symbol=SOLUSDT requested=5 response={"symbol": "SOLUSDT", "leverage": 5, "maxNotionalValue": "80000000"}
+2026-03-22 11:01:53,843 | INFO | system | [EXEC][LEV] symbol=SOLUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 11:01:54,068 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=SOLUSDT side=BUY qty=0.9500000000 reduceOnly=False lev=5 dt_ms=225 summary={"symbol": "SOLUSDT", "side": "BUY", "type": "MARKET", "orderId": 204640414780, "clientOrderId": "b1_open_SOLUSDT_812672845365", "status": "NEW", "price": "0.0000", "avgPrice": "0.00", "origQty": "0.95", "executedQty": "0.00", "cumQty": "0.00", "cumQuote": "0.000000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774177313957}
+2026-03-22 11:01:54,292 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "SOLUSDT", "side": "BUY", "type": "MARKET", "orderId": 204640414780, "clientOrderId": "b1_open_SOLUSDT_812672845365", "status": "FILLED", "price": "0.0000", "avgPrice": "87.270000", "origQty": "0.95", "executedQty": "0.95", "cumQuote": "82.906500", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774177313957}, "terminal_status": "FILLED", "waited_sec": 0.223}
+2026-03-22 11:01:54,518 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "SOLUSDT", "positionAmt": 0.95, "entryPrice": 87.27, "unrealized": 0.00598672, "leverage": 5.0}
+2026-03-22 11:01:54,523 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=SOLUSDT side=long interval=5m intent_id=41373289-2a1c-43d0-8472-2a18a68ec190
+2026-03-22 11:01:54,523 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=SOLUSDT side=long interval=5m intent_id=41373289-2a1c-43d0-8472-2a18a68ec190
+2026-03-22 11:01:54,524 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=SOLUSDT qty=0.9500000000 intent_price=0.936657 order_price=87.300000 notional=82.93 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 11:01:54,524 | INFO | system | [RISK] on_position_open | symbol=SOLUSDT side=long qty=0.950000 notional=82.93 price=87.30 interval=5m open_trades=3 meta={'reason': 'INTENT_OPEN', 'price': 0.9366574151049946, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '41373289-2a1c-43d0-8472-2a18a68ec190', 'score': 0.7006002910164635, 'raw': {'symbol': 'SOLUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '41373289-2a1c-43d0-8472-2a18a68ec190', 'score': 0.7006002910164635, 'price': 0.9366574151049946, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "41373289-2a1c-43d0-8472-2a18a68ec190", "ts_utc": "2026-03-22T11:01:51.908463+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.9366574151049946, "score": 0.7006002910164635, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_strong", "liq_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "532f7067-b510-4948-a489-7669194b0072", "ts_utc": "2026-03-22T11:01:36.080107+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.9366574151049946, "score_total": 0.5851078977718828, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_strong", "liq_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "source": "w2", "dedup_key": "SOLUSDT|5m|long", "whale_score": 0.5418461327009598, "whale_dir": "long", "raw": {"price": 0.9366574151049946, "whale_score": 0.5418461327009598, "whale_dir": "long", "meta": {"p_used": 0.9220392497355856, "fast_model_score": 0.9220392497355856, "micro_score": 0.9665519930799416, "confidence": 0.8084462603151851, "spread_pct": 0.0006388514697859839, "liq_score": 0.6307414895369667, "atr_pct": 0.004449658344483264}}, "_score_selected": 0.5851078977718828, "_source_stream_id": "1774177296081-0", "_score_total_final": 0.7006002910164635, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 316.73201875, 'available_balance_usdt': 278.54269417, 'whale_action': '', 'intent_price': 0.9366574151049946, 'order_price': 87.3, 'whale_open_notional_before': 83.56280825099999, 'whale_open_notional_after': 82.93499999999999, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 11:07:00,585 | INFO | system | [EXEC-EVENTS] recv intent=df65b490-0d95-4ead-9dee-60cf4abdedf8 side=short symbol=MATICUSDT interval=5m price=0.5063839150377867
+2026-03-22 11:07:00,585 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=MATICUSDT side=short interval=5m score=0.558807
+2026-03-22 11:07:00,585 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=MATICUSDT side=short interval=5m score=0.5588 intent=df65b490-0d95-4ead-9dee-60cf4abdedf8
+2026-03-22 11:07:00,828 | INFO | system | [EXEC][LEV][INTENT] symbol=MATICUSDT side=short recommended=None
+2026-03-22 11:07:01,317 | INFO | system | [EXEC][OPEN-BLOCK] max_open_positions reached | symbol=MATICUSDT side=short open_count=3 limit=3
+2026-03-22 19:17:54,101 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2026-03-22 19:17:54,146 | INFO | system | [ENV][SECRETS] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'BINANCE_API_KEY': 'SET', 'BINANCE_API_SECRET': 'SET', 'BINANCETESTNET_API_KEY': 'MISSING', 'BINANCETESTNET_API_SECRET': 'MISSING', 'BINANCE_TESTNET_API_KEY': 'SET', 'BINANCE_TESTNET_API_SECRET': 'SET', 'OKX_API_KEY': 'SET', 'OKX_API_SECRET': 'SET', 'OKX_PASSPHRASE': 'SET', 'REDIS_PASSWORD': 'MISSING', 'PG_DSN': 'SET', 'ETH_API_KEY': 'SET', 'ALCHEMY_ETH_API_KEY': 'SET', 'INFURA_API_KEY': 'SET', 'POLYGON_API_KEY': 'SET', 'ARBI_API_KEY': 'SET', 'THE_GRAPH_API_KEY': 'SET', 'GRAPH_API_KEY': 'SET', 'COINGLASS_API_KEY': 'SET', 'BSCSCAN_API_KEY': 'SET', 'ETHERSCAN_API_KEY': 'SET', 'CRYPTOQUANT_API_KEY': 'SET', 'COINMARKETCAP_API_KEY': 'SET', 'SANTIMENT_API_KEY': 'SET'}
+2026-03-22 19:17:54,146 | WARNING | system | [ENV] Missing environment variables: ['REDIS_PASSWORD']
+2026-03-22 19:17:54,146 | INFO | system | [MAIN] TRAINING_MODE=False
+2026-03-22 19:17:54,146 | INFO | system | [MAIN] HYBRID_MODE=True
+2026-03-22 19:17:54,147 | INFO | system | [MAIN] USE_MTF_ENS=True
+2026-03-22 19:17:54,147 | INFO | system | [MAIN] DRY_RUN=False
+2026-03-22 19:17:54,147 | INFO | system | [ENV][TG-COMPAT] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'TG_NOTIFY_OPEN_CLOSE': 'SET', 'TG_OPEN_CLOSE_ONLY_REAL': 'SET', 'TG_NOTIFY_TRADES': 'SET', 'TG_DUPLICATE_SIGNAL_COOLDOWN_SEC': 'SET'}
+2026-03-22 19:17:54,147 | INFO | system | [WebSocket] Connecting to: wss://fstream.binance.com/ws/btcusdt@trade
+2026-03-22 19:17:54,148 | INFO | system | [WebSocket] WebSocket thread started.
+2026-03-22 19:17:54,148 | INFO | system | [WS] ENABLE_WS=true -> websocket started. symbol=BTCUSDT
+2026-03-22 19:17:54,149 | INFO | system | [PRICECACHE] initialized | memory_cache=True redis_cache=True
+2026-03-22 19:17:54,149 | INFO | system | [MODE] DRY_RUN=0 ARMED=1 LIVE_KILL_SWITCH=0 BINANCE_TESTNET=0
+2026-03-22 19:17:54,388 | INFO | system | [BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)
+2026-03-22 19:17:54,388 | INFO | system | [BINANCE_CLIENT] patched futures read methods -> v2 endpoints
+2026-03-22 19:17:54,388 | INFO | system | [BINANCE_CLIENT] Futures Client oluşturuldu | testnet=False | dry_run=False
+2026-03-22 19:17:54,388 | INFO | system | [RISK] Init: daily_max_loss_usdt=300.00, daily_max_loss_pct=0.2500, max_consecutive_losses=5, max_open_trades=3, equity_start_of_day=10000.00
+2026-03-22 19:17:54,473 | INFO | system | [TelegramBot] risk_manager attached
+2026-03-22 19:17:54,474 | INFO | system | [MAIN] TelegramBot init OK (send-only mode).
+2026-03-22 19:17:54,474 | INFO | system | [POS][ENV] ENABLE_PG_POS_LOG=1 enable_pg_flag=True
+2026-03-22 19:17:54,474 | INFO | system | [POS][ENV] PG_DSN=postgresql://botuser:***@localhost:5432/binancebot
+2026-03-22 19:17:54,477 | INFO | system | [POS] Redis OK (redis://localhost:6379/0)
+2026-03-22 19:17:54,839 | INFO | system | [POS] Postgres OK + schema checked.
+2026-03-22 19:17:54,840 | INFO | system | [DEPTHWS] thread started url=wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 19:17:54,841 | INFO | system | [DEPTHWS] connecting wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 19:17:54,841 | INFO | system | [DEPTHWS] enabled | symbol=BTCUSDT tfs=['1m', '3m', '5m', '15m', '30m', '1h'] price_cache=True redis_price_cache=True
+2026-03-22 19:17:54,897 | INFO | system | [HYBRID] SGD model loaded from models/online_model_5m_best.joblib (interval=5m)
+2026-03-22 19:17:54,929 | INFO | system | [HYBRID] Meta loaded from models/model_meta_5m.json
+2026-03-22 19:17:54,998 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:17:55,110 | INFO | system | [WebSocket] Connection opened.
+2026-03-22 19:17:56,481 | INFO | system | [HYBRID] LSTM models and scaler loaded for 5m (use_lstm_hybrid=True)
+2026-03-22 19:17:56,487 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1m_best.joblib (interval=1m)
+2026-03-22 19:17:56,487 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1m.json
+2026-03-22 19:17:56,489 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:17:57,964 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1m (use_lstm_hybrid=True)
+2026-03-22 19:17:57,966 | INFO | system | [HYBRID] SGD model loaded from models/online_model_3m_best.joblib (interval=3m)
+2026-03-22 19:17:57,968 | INFO | system | [HYBRID] Meta loaded from models/model_meta_3m.json
+2026-03-22 19:17:57,970 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:17:59,078 | INFO | system | [HYBRID] LSTM models and scaler loaded for 3m (use_lstm_hybrid=True)
+2026-03-22 19:17:59,081 | INFO | system | [HYBRID] SGD model loaded from models/online_model_15m_best.joblib (interval=15m)
+2026-03-22 19:17:59,082 | INFO | system | [HYBRID] Meta loaded from models/model_meta_15m.json
+2026-03-22 19:17:59,083 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:18:00,270 | INFO | system | [HYBRID] LSTM models and scaler loaded for 15m (use_lstm_hybrid=True)
+2026-03-22 19:18:00,271 | INFO | system | [HYBRID] SGD model loaded from models/online_model_30m_best.joblib (interval=30m)
+2026-03-22 19:18:00,273 | INFO | system | [HYBRID] Meta loaded from models/model_meta_30m.json
+2026-03-22 19:18:00,274 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:18:01,390 | INFO | system | [HYBRID] LSTM models and scaler loaded for 30m (use_lstm_hybrid=True)
+2026-03-22 19:18:01,391 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1h_best.joblib (interval=1h)
+2026-03-22 19:18:01,392 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1h.json
+2026-03-22 19:18:01,394 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 19:18:02,497 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1h (use_lstm_hybrid=True)
+2026-03-22 19:18:02,497 | INFO | system | [MAIN] MTF ensemble aktif: intervals=['1m', '3m', '5m', '15m', '30m', '1h']
+2026-03-22 19:18:02,498 | INFO | system | [WHALE] MultiTimeframeWhaleDetector init OK.
+2026-03-22 19:18:02,498 | INFO | system | [MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=120 MAX_POSITION_NOTIONAL=500 MAX_LEVERAGE=5
+2026-03-22 19:18:02,499 | INFO | system | [MAIN][SYNC] wiring position sync hooks...
+2026-03-22 19:18:02,499 | INFO | system | [MAIN][SYNC] initial sync callable found.
+2026-03-22 19:18:02,777 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,778 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,779 | INFO | system | [EXEC][SYNC] start | exchange_open=3 local_open=2 bridge_open=2
+2026-03-22 19:18:02,785 | INFO | system | [EXEC][SYNC] post-set local verify | symbol=AAVEUSDT exists=True
+2026-03-22 19:18:02,786 | INFO | system | [EXEC][SYNC] redis fallback write ok | symbol=AAVEUSDT
+2026-03-22 19:18:02,786 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=AAVEUSDT side=long interval=5m intent_id=
+2026-03-22 19:18:02,787 | INFO | system | [EXEC][SYNC] hydrated missing local position from exchange | symbol=AAVEUSDT side=long qty=0.8000000000 entry=111.2100000000 interval=5m
+2026-03-22 19:18:02,787 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,788 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,788 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,789 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,789 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,790 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,791 | INFO | system | [EXEC][SYNC] done | exchange_open=3 local_open=3 bridge_open=3 removed_local=[] removed_bridge=[] added_local=['AAVEUSDT'] added_bridge=['AAVEUSDT'] kept=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:02,791 | INFO | system | [MAIN][SYNC] initial sync_positions_with_exchange completed.
+2026-03-22 19:18:02,791 | INFO | system | [MAIN][SYNC] periodic position sync started interval_sec=30
+2026-03-22 19:18:02,791 | INFO | system | [MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=5
+2026-03-22 19:18:02,791 | INFO | system | [EXEC-EVENTS] consumer task started.
+2026-03-22 19:18:02,791 | INFO | system | [SCAN] enabled | symbols=5 interval=1m topk=3 every=10.0s conc=4 fast=True aggressive=False adaptive=True
+2026-03-22 19:18:03,035 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,036 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,036 | INFO | system | [EXEC][SYNC] start | exchange_open=3 local_open=3 bridge_open=3
+2026-03-22 19:18:03,037 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,037 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,038 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,039 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,040 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,041 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,041 | INFO | system | [EXEC][SYNC] done | exchange_open=3 local_open=3 bridge_open=3 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,041 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,042 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,042 | INFO | system | [EXEC][LIFECYCLE] tick | positions=3 symbols=['AAVEUSDT', 'LTCUSDT', 'SOLUSDT']
+2026-03-22 19:18:03,742 | INFO | system | [EXEC][SYMBOL_INFO] resolved | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:18:03,970 | INFO | system | [EXEC][LIFECYCLE] check | symbol=AAVEUSDT side=long qty=0.8000000000 entry=111.210000 price=106.170000 interval=5m src=mark_price
+2026-03-22 19:18:04,200 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=AAVEUSDT side=long price=106.170000 entry=111.210000 pnl_pct=-0.045320 best_pnl_pct=0.000000 sl=110.320320 tp=113.434200 trail_ref=111.210000 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 19:18:04,201 | INFO | system | [EXEC][CLOSE] lifecycle trigger | symbol=AAVEUSDT side=long reason=sl_hit price=106.170000
+2026-03-22 19:18:04,201 | INFO | system | [EXEC][CLOSE] request | symbol=AAVEUSDT reason=sl_hit interval=5m intent_id= input_price=106.17
+2026-03-22 19:18:04,695 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:18:04,696 | INFO | system | [EXEC][CLOSE][QTY] symbol=AAVEUSDT raw_qty=0.8000000000 norm_qty=0.8000000000 price=106.170000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:04,696 | INFO | system | [EXEC][CLOSE][QTY] symbol=AAVEUSDT raw_qty=0.8000000000 norm_qty=0.8000000000 price=106.170000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:05,625 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:18:05,851 | WARNING | system | [EXEC][CLOSE] retry without reduceOnly | symbol=AAVEUSDT
+2026-03-22 19:18:06,075 | INFO | system | [EXEC][ORDER] CLOSE OK | fn=futures_create_order symbol=AAVEUSDT side=SELL posSide=LONG qty=0.8000000000 dt_ms=1379 summary={"orderId": 25174459820, "symbol": "AAVEUSDT", "status": "NEW", "clientOrderId": "b1_close_AAVEUSDT_381306f7964f", "price": "0.000", "avgPrice": "0.00", "origQty": "0.8", "executedQty": "0.0", "cumQty": "0.0", "cumQuote": "0.0000", "timeInForce": "GTC", "type": "MARKET", "reduceOnly": true, "closePosition": false, "side": "SELL", "positionSide": "LONG", "stopPrice": "0.000", "workingType": "CONTRACT_PRICE", "priceProtect": false, "origType": "MARKET", "priceMatch": "NONE", "selfTradePreventionMode": "EXPIRE_MAKER", "goodTillDate": 0, "updateTime": 1774207085964}
+2026-03-22 19:18:06,304 | INFO | system | [EXEC][CLOSE][POLL] {"poll": "ok", "result": {"symbol": "AAVEUSDT", "side": "SELL", "type": "MARKET", "orderId": 25174459820, "clientOrderId": "b1_close_AAVEUSDT_381306f7964f", "status": "FILLED", "price": "0.000", "avgPrice": "106.1500", "origQty": "0.8", "executedQty": "0.8", "cumQuote": "84.9200", "reduceOnly": true, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207085964}, "terminal_status": "FILLED", "waited_sec": 0.229}
+2026-03-22 19:18:06,304 | INFO | system | [RISK] on_position_close | symbol=AAVEUSDT side=long qty=0.800000 notional=88.97 price=106.15 interval=5m realized_pnl=-4.0480 daily_realized_pnl=-4.0480 consecutive_losses=1 open_trades=0 total_trades=1 wins=0 losses=1 meta={'reason': 'sl_hit', 'entry_price': 111.21, 'closed_side': 'long', 'interval': '5m', 'qty': 0.8, 'notional': 88.968, 'probs': {}, 'extra': {'hydrated_from_exchange': True, 'bridge_state': {}}}
+2026-03-22 19:18:06,588 | INFO | system | [EXEC][STATE] local position removed | symbol=AAVEUSDT
+2026-03-22 19:18:06,589 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=AAVEUSDT
+2026-03-22 19:18:06,589 | INFO | system | [EXEC][STATE] cleanup after close | symbol=AAVEUSDT local_exists=False bridge_exists=False
+2026-03-22 19:18:06,589 | INFO | system | [EXEC][CLOSE] CLOSED | symbol=AAVEUSDT side=long qty=0.8000000000 entry=111.210000 close=106.150000 realized_pnl=-4.048000 reason=sl_hit
+2026-03-22 19:18:07,078 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 19:18:07,306 | INFO | system | [EXEC][LIFECYCLE] check | symbol=LTCUSDT side=long qty=1.6460000000 entry=53.996258 price=53.821217 interval=5m src=mark_price
+2026-03-22 19:18:07,535 | INFO | system | [EXEC][STALL] ttl exit | symbol=LTCUSDT side=long stalled_for=30111.4s stall_ttl_sec=7200
+2026-03-22 19:18:07,538 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=LTCUSDT side=long price=53.821217 entry=53.996258 pnl_pct=-0.003242 best_pnl_pct=0.000000 sl=53.564288 tp=55.076183 trail_ref=53.996258 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 19:18:07,538 | INFO | system | [EXEC][CLOSE] lifecycle trigger | symbol=LTCUSDT side=long reason=stall_exit price=53.821217
+2026-03-22 19:18:07,538 | INFO | system | [EXEC][CLOSE] request | symbol=LTCUSDT reason=stall_exit interval=5m intent_id= input_price=53.82121704
+2026-03-22 19:18:08,034 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 19:18:08,034 | INFO | system | [EXEC][CLOSE][QTY] symbol=LTCUSDT raw_qty=1.6450000000 norm_qty=1.6450000000 price=53.821217 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 19:18:08,034 | INFO | system | [EXEC][CLOSE][QTY] symbol=LTCUSDT raw_qty=1.6450000000 norm_qty=1.6450000000 price=53.821217 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 19:18:08,283 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 19:18:08,507 | WARNING | system | [EXEC][CLOSE] retry without reduceOnly | symbol=LTCUSDT
+2026-03-22 19:18:08,735 | INFO | system | [EXEC][ORDER] CLOSE OK | fn=futures_create_order symbol=LTCUSDT side=SELL posSide=LONG qty=1.6450000000 dt_ms=701 summary={"orderId": 42009086185, "symbol": "LTCUSDT", "status": "NEW", "clientOrderId": "b1_close_LTCUSDT_7b5953005aaa", "price": "0.00", "avgPrice": "0.00", "origQty": "1.645", "executedQty": "0.000", "cumQty": "0.000", "cumQuote": "0.00000", "timeInForce": "GTC", "type": "MARKET", "reduceOnly": true, "closePosition": false, "side": "SELL", "positionSide": "LONG", "stopPrice": "0.00", "workingType": "CONTRACT_PRICE", "priceProtect": false, "origType": "MARKET", "priceMatch": "NONE", "selfTradePreventionMode": "EXPIRE_MAKER", "goodTillDate": 0, "updateTime": 1774207088624}
+2026-03-22 19:18:08,961 | INFO | system | [EXEC][CLOSE][POLL] {"poll": "ok", "result": {"symbol": "LTCUSDT", "side": "SELL", "type": "MARKET", "orderId": 42009086185, "clientOrderId": "b1_close_LTCUSDT_7b5953005aaa", "status": "FILLED", "price": "0.00", "avgPrice": "53.82000", "origQty": "1.645", "executedQty": "1.645", "cumQuote": "88.53390", "reduceOnly": true, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207088624}, "terminal_status": "FILLED", "waited_sec": 0.225}
+2026-03-22 19:18:08,961 | INFO | system | [RISK] on_position_close | symbol=LTCUSDT side=long qty=1.645000 notional=88.88 price=53.82 interval=5m realized_pnl=-0.2797 daily_realized_pnl=-4.3276 consecutive_losses=2 open_trades=0 total_trades=2 wins=0 losses=2 meta={'reason': 'stall_exit', 'entry_price': 53.99, 'closed_side': 'long', 'interval': '5m', 'qty': 1.645, 'notional': 88.87784002606, 'probs': {}, 'extra': {'price': 0.5615624145383773, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '55b21aaa-231a-4e69-acf9-5f360c9235d1', 'score': 0.6963818176124392, 'raw': {'symbol': 'LTCUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '55b21aaa-231a-4e69-acf9-5f360c9235d1', 'score': 0.6963818176124392, 'price': 0.5615624145383773, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "55b21aaa-231a-4e69-acf9-5f360c9235d1", "ts_utc": "2026-03-22T10:56:12.721198+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 0.5615624145383773, "score": 0.6963818176124392, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "whale_align_long", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "e4498b2d-4d8b-4503-8c48-994f5db4f1eb", "ts_utc": "2026-03-22T10:55:56.487102+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 0.5615624145383773, "score_total": 0.5957569499073084, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "whale_align_long", "whale_confirm"], "source": "w4", "dedup_key": "LTCUSDT|5m|long", "whale_score": 0.5993260558635127, "whale_dir": "long", "raw": {"price": 0.5615624145383773, "whale_score": 0.5993260558635127, "whale_dir": "long", "meta": {"p_used": 0.7471447363773263, "fast_model_score": 0.7471447363773263, "micro_score": 1.0, "confidence": 0.6672951866369421, "spread_pct": 0.000303572946973468, "liq_score": 0.4795980606918223, "atr_pct": 0.01710720981530995}}, "_score_selected": 0.5957569499073084, "_source_stream_id": "1774176956488-0", "_score_total_final": 0.6963818176124392, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 316.77642552, 'available_balance_usdt': 296.40124531, 'whale_action': '', 'intent_price': 0.5615624145383773, 'order_price': 53.99625761, 'whale_open_notional_before': 88.920373593, 'whale_open_notional_after': 88.87784002606, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}}
+2026-03-22 19:18:09,232 | INFO | system | [EXEC][STATE] local position removed | symbol=LTCUSDT
+2026-03-22 19:18:09,233 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=LTCUSDT
+2026-03-22 19:18:09,234 | INFO | system | [EXEC][STATE] cleanup after close | symbol=LTCUSDT local_exists=False bridge_exists=False
+2026-03-22 19:18:09,234 | INFO | system | [EXEC][CLOSE] CLOSED | symbol=LTCUSDT side=long qty=1.6450000000 entry=53.990000 close=53.820000 realized_pnl=-0.279650 reason=stall_exit
+2026-03-22 19:18:09,732 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 19:18:09,951 | INFO | system | [EXEC][LIFECYCLE] check | symbol=SOLUSDT side=long qty=0.9500000000 entry=87.300000 price=86.690000 interval=5m src=mark_price
+2026-03-22 19:18:10,180 | INFO | system | [EXEC][STALL] ttl exit | symbol=SOLUSDT side=long stalled_for=29775.4s stall_ttl_sec=7200
+2026-03-22 19:18:10,182 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=SOLUSDT side=long price=86.690000 entry=87.300000 pnl_pct=-0.006987 best_pnl_pct=0.000000 sl=86.601600 tp=89.046000 trail_ref=87.300000 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 19:18:10,183 | INFO | system | [EXEC][CLOSE] lifecycle trigger | symbol=SOLUSDT side=long reason=stall_exit price=86.690000
+2026-03-22 19:18:10,183 | INFO | system | [EXEC][CLOSE] request | symbol=SOLUSDT reason=stall_exit interval=5m intent_id= input_price=86.69
+2026-03-22 19:18:10,884 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 19:18:10,884 | INFO | system | [EXEC][CLOSE][QTY] symbol=SOLUSDT raw_qty=0.9500000000 norm_qty=0.9500000000 price=86.690000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:10,884 | INFO | system | [EXEC][CLOSE][QTY] symbol=SOLUSDT raw_qty=0.9500000000 norm_qty=0.9500000000 price=86.690000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:11,129 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 19:18:11,352 | WARNING | system | [EXEC][CLOSE] retry without reduceOnly | symbol=SOLUSDT
+2026-03-22 19:18:11,575 | INFO | system | [EXEC][ORDER] CLOSE OK | fn=futures_create_order symbol=SOLUSDT side=SELL posSide=LONG qty=0.9500000000 dt_ms=691 summary={"orderId": 204694788767, "symbol": "SOLUSDT", "status": "NEW", "clientOrderId": "b1_close_SOLUSDT_35d203f038f4", "price": "0.0000", "avgPrice": "0.00", "origQty": "0.95", "executedQty": "0.00", "cumQty": "0.00", "cumQuote": "0.000000", "timeInForce": "GTC", "type": "MARKET", "reduceOnly": true, "closePosition": false, "side": "SELL", "positionSide": "LONG", "stopPrice": "0.0000", "workingType": "CONTRACT_PRICE", "priceProtect": false, "origType": "MARKET", "priceMatch": "NONE", "selfTradePreventionMode": "EXPIRE_MAKER", "goodTillDate": 0, "updateTime": 1774207091467}
+2026-03-22 19:18:11,804 | INFO | system | [EXEC][CLOSE][POLL] {"poll": "ok", "result": {"symbol": "SOLUSDT", "side": "SELL", "type": "MARKET", "orderId": 204694788767, "clientOrderId": "b1_close_SOLUSDT_35d203f038f4", "status": "FILLED", "price": "0.0000", "avgPrice": "86.680000", "origQty": "0.95", "executedQty": "0.95", "cumQuote": "82.346000", "reduceOnly": true, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207091467}, "terminal_status": "FILLED", "waited_sec": 0.228}
+2026-03-22 19:18:11,804 | INFO | system | [RISK] on_position_close | symbol=SOLUSDT side=long qty=0.950000 notional=82.93 price=86.68 interval=5m realized_pnl=-0.5605 daily_realized_pnl=-4.8881 consecutive_losses=3 open_trades=0 total_trades=3 wins=0 losses=3 meta={'reason': 'stall_exit', 'entry_price': 87.27, 'closed_side': 'long', 'interval': '5m', 'qty': 0.95, 'notional': 82.93499999999999, 'probs': {}, 'extra': {'price': 0.9366574151049946, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '41373289-2a1c-43d0-8472-2a18a68ec190', 'score': 0.7006002910164635, 'raw': {'symbol': 'SOLUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '41373289-2a1c-43d0-8472-2a18a68ec190', 'score': 0.7006002910164635, 'price': 0.9366574151049946, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "41373289-2a1c-43d0-8472-2a18a68ec190", "ts_utc": "2026-03-22T11:01:51.908463+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.9366574151049946, "score": 0.7006002910164635, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_strong", "liq_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "532f7067-b510-4948-a489-7669194b0072", "ts_utc": "2026-03-22T11:01:36.080107+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.9366574151049946, "score_total": 0.5851078977718828, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_strong", "liq_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "source": "w2", "dedup_key": "SOLUSDT|5m|long", "whale_score": 0.5418461327009598, "whale_dir": "long", "raw": {"price": 0.9366574151049946, "whale_score": 0.5418461327009598, "whale_dir": "long", "meta": {"p_used": 0.9220392497355856, "fast_model_score": 0.9220392497355856, "micro_score": 0.9665519930799416, "confidence": 0.8084462603151851, "spread_pct": 0.0006388514697859839, "liq_score": 0.6307414895369667, "atr_pct": 0.004449658344483264}}, "_score_selected": 0.5851078977718828, "_source_stream_id": "1774177296081-0", "_score_total_final": 0.7006002910164635, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 316.73201875, 'available_balance_usdt': 278.54269417, 'whale_action': '', 'intent_price': 0.9366574151049946, 'order_price': 87.3, 'whale_open_notional_before': 83.56280825099999, 'whale_open_notional_after': 82.93499999999999, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}}
+2026-03-22 19:18:12,283 | INFO | system | [EXEC][STATE] local position removed | symbol=SOLUSDT
+2026-03-22 19:18:12,283 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=SOLUSDT
+2026-03-22 19:18:12,284 | INFO | system | [EXEC][STATE] cleanup after close | symbol=SOLUSDT local_exists=False bridge_exists=False
+2026-03-22 19:18:12,284 | INFO | system | [EXEC][CLOSE] CLOSED | symbol=SOLUSDT side=long qty=0.9500000000 entry=87.270000 close=86.680000 realized_pnl=-0.560500 reason=stall_exit
+2026-03-22 19:18:12,286 | INFO | system | [EXEC-EVENTS] consuming stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-03-22 19:18:12,286 | INFO | system | [EXEC-EVENTS] recv intent=679c325a-2056-4e54-b50d-75971fe7baa9 side=long symbol=ADAUSDT interval=5m price=0.991920464808024
+2026-03-22 19:18:12,287 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=ADAUSDT side=long interval=5m score=0.719523
+2026-03-22 19:18:12,287 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=ADAUSDT side=long interval=5m score=0.7195 intent=679c325a-2056-4e54-b50d-75971fe7baa9
+2026-03-22 19:18:12,511 | INFO | system | [EXEC][LEV][INTENT] symbol=ADAUSDT side=long recommended=None
+2026-03-22 19:18:13,952 | INFO | system | [EXEC][NOTIONAL] symbol=ADAUSDT side=long price=0.251533 balance_source=available_balance base_balance=311.69 pct=0.3000 notional=93.51
+2026-03-22 19:18:14,200 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ADAUSDT tick_size=0.0001000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-03-22 19:18:14,200 | INFO | system | [EXEC][INTENT][QTY] symbol=ADAUSDT intent_price=0.991920 order_price=0.251533 raw_qty=371.7495589054 norm_qty=371.0000000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:14,200 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=ADAUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=93.51 final_notional=93.32 target_leverage=5
+2026-03-22 19:18:14,449 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ADAUSDT tick_size=0.0001000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-03-22 19:18:14,449 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=ADAUSDT raw_qty=371.0000000000 norm_qty=371.0000000000 price=0.251533 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-03-22 19:18:14,449 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "ADAUSDT", "raw_qty": 371.0, "price": 0.25153334, "step_size": 1.0, "min_qty": 1.0, "min_notional": 5.0, "normalized_qty": 371.0, "normalized_notional": 93.31886914, "reject_reason": ""}
+2026-03-22 19:18:14,669 | INFO | system | [EXEC][LEV][SET] symbol=ADAUSDT requested=5 response={"symbol": "ADAUSDT", "leverage": 5, "maxNotionalValue": "20000000"}
+2026-03-22 19:18:14,669 | INFO | system | [EXEC][LEV] symbol=ADAUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 19:18:14,893 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=ADAUSDT side=BUY qty=371.0000000000 reduceOnly=False lev=5 dt_ms=223 summary={"symbol": "ADAUSDT", "side": "BUY", "type": "MARKET", "orderId": 63572947112, "clientOrderId": "b1_open_ADAUSDT_8c65f61e17e5", "status": "NEW", "price": "0.00000", "avgPrice": "0.00", "origQty": "371", "executedQty": "0", "cumQty": "0", "cumQuote": "0.00000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207094781}
+2026-03-22 19:18:15,111 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "ADAUSDT", "side": "BUY", "type": "MARKET", "orderId": 63572947112, "clientOrderId": "b1_open_ADAUSDT_8c65f61e17e5", "status": "FILLED", "price": "0.00000", "avgPrice": "0.25160", "origQty": "371", "executedQty": "371", "cumQuote": "93.34360", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207094781}, "terminal_status": "FILLED", "waited_sec": 0.219}
+2026-03-22 19:18:15,344 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "ADAUSDT", "positionAmt": 371.0, "entryPrice": 0.2516, "unrealized": -0.024857, "leverage": 5.0}
+2026-03-22 19:18:15,347 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=ADAUSDT side=long interval=5m intent_id=679c325a-2056-4e54-b50d-75971fe7baa9
+2026-03-22 19:18:15,348 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=ADAUSDT side=long interval=5m intent_id=679c325a-2056-4e54-b50d-75971fe7baa9
+2026-03-22 19:18:15,348 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=ADAUSDT qty=371.0000000000 intent_price=0.991920 order_price=0.251533 notional=93.32 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 19:18:15,348 | INFO | system | [RISK] on_position_open | symbol=ADAUSDT side=long qty=371.000000 notional=93.32 price=0.25 interval=5m open_trades=1 meta={'reason': 'INTENT_OPEN', 'price': 0.991920464808024, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '679c325a-2056-4e54-b50d-75971fe7baa9', 'score': 0.7195232992477513, 'raw': {'symbol': 'ADAUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '679c325a-2056-4e54-b50d-75971fe7baa9', 'score': 0.7195232992477513, 'price': 0.991920464808024, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "679c325a-2056-4e54-b50d-75971fe7baa9", "ts_utc": "2026-03-22T19:18:08.618711+00:00", "symbol": "ADAUSDT", "interval": "5m", "side": "long", "price": 0.991920464808024, "score": 0.7195232992477513, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "liq_ok", "whale_seen", "whale_strong", "tight_spread", "whale_align_long", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "64a6fc90-7c20-410b-8de4-1a4d8de501a8", "ts_utc": "2026-03-22T19:17:45.779334+00:00", "symbol": "ADAUSDT", "interval": "5m", "side": "long", "price": 0.991920464808024, "score_total": 0.6856206244831844, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "liq_ok", "whale_seen", "whale_strong", "tight_spread", "whale_align_long", "whale_confirm"], "source": "w2", "dedup_key": "ADAUSDT|5m|long", "whale_score": 0.5994999486816794, "whale_dir": "long", "raw": {"price": 0.991920464808024, "whale_score": 0.5994999486816794, "whale_dir": "long", "meta": {"p_used": 0.8392933201549746, "fast_model_score": 0.8392933201549746, "micro_score": 1.0, "confidence": 0.6847093131200146, "spread_pct": 0.00015581388125662825, "liq_score": 0.6273931703907137, "atr_pct": 0.017878992152420992}}, "_score_selected": 0.6856206244831844, "_source_stream_id": "1774207065781-0", "_score_total_final": 0.7195232992477513, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 311.69136065, 'available_balance_usdt': 311.69136065, 'whale_action': '', 'intent_price': 0.991920464808024, 'order_price': 0.25153334, 'whale_open_notional_before': 93.507408195, 'whale_open_notional_after': 93.31886914, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 19:25:48,141 | INFO | system | [EXEC-EVENTS] recv intent=2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0 side=short symbol=AAVEUSDT interval=5m price=0.6022542167546325
+2026-03-22 19:25:48,142 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=AAVEUSDT side=short interval=5m score=0.584983
+2026-03-22 19:25:48,142 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=AAVEUSDT side=short interval=5m score=0.5850 intent=2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0
+2026-03-22 19:25:48,393 | INFO | system | [EXEC][LEV][INTENT] symbol=AAVEUSDT side=short recommended=None
+2026-03-22 19:25:49,347 | INFO | system | [EXEC][NOTIONAL] symbol=AAVEUSDT side=short price=105.960000 balance_source=available_balance base_balance=292.73 pct=0.3000 notional=87.82
+2026-03-22 19:25:49,599 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:25:49,599 | INFO | system | [EXEC][INTENT][QTY] symbol=AAVEUSDT intent_price=0.602254 order_price=105.960000 raw_qty=0.8287970239 norm_qty=0.8000000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:25:49,600 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=AAVEUSDT side=short action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=87.82 final_notional=84.77 target_leverage=5
+2026-03-22 19:25:49,842 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:25:49,842 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=AAVEUSDT raw_qty=0.8000000000 norm_qty=0.8000000000 price=105.960000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:25:49,842 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "AAVEUSDT", "raw_qty": 0.8, "price": 105.96, "step_size": 0.1, "min_qty": 0.1, "min_notional": 5.0, "normalized_qty": 0.8, "normalized_notional": 84.768, "reject_reason": ""}
+2026-03-22 19:25:50,064 | INFO | system | [EXEC][LEV][SET] symbol=AAVEUSDT requested=5 response={"symbol": "AAVEUSDT", "leverage": 5, "maxNotionalValue": "6000000"}
+2026-03-22 19:25:50,064 | INFO | system | [EXEC][LEV] symbol=AAVEUSDT side=short reduce_only=False target=5 applied=5 positionSide=SHORT
+2026-03-22 19:25:50,286 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=AAVEUSDT side=SELL qty=0.8000000000 reduceOnly=False lev=5 dt_ms=222 summary={"symbol": "AAVEUSDT", "side": "SELL", "type": "MARKET", "orderId": 25174490773, "clientOrderId": "b1_open_AAVEUSDT_397cd5a5ab34", "status": "NEW", "price": "0.000", "avgPrice": "0.00", "origQty": "0.8", "executedQty": "0.0", "cumQty": "0.0", "cumQuote": "0.0000", "reduceOnly": false, "positionSide": "SHORT", "timeInForce": "GTC", "updateTime": 1774207550179}
+2026-03-22 19:25:50,511 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "AAVEUSDT", "side": "SELL", "type": "MARKET", "orderId": 25174490773, "clientOrderId": "b1_open_AAVEUSDT_397cd5a5ab34", "status": "FILLED", "price": "0.000", "avgPrice": "105.9500", "origQty": "0.8", "executedQty": "0.8", "cumQuote": "84.7600", "reduceOnly": false, "positionSide": "SHORT", "timeInForce": "GTC", "updateTime": 1774207550179}, "terminal_status": "FILLED", "waited_sec": 0.225}
+2026-03-22 19:25:50,733 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "AAVEUSDT", "positionAmt": -0.8, "entryPrice": 105.95, "unrealized": -0.008, "leverage": 5.0}
+2026-03-22 19:25:50,770 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=AAVEUSDT side=short interval=5m intent_id=2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0
+2026-03-22 19:25:50,771 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=AAVEUSDT side=short interval=5m intent_id=2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0
+2026-03-22 19:25:50,771 | INFO | system | [EXEC][INTENT] OPEN SHORT | symbol=AAVEUSDT qty=0.8000000000 intent_price=0.602254 order_price=105.960000 notional=84.77 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 19:25:50,771 | INFO | system | [RISK] on_position_open | symbol=AAVEUSDT side=short qty=0.800000 notional=84.77 price=105.96 interval=5m open_trades=2 meta={'reason': 'INTENT_OPEN', 'price': 0.6022542167546325, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0', 'score': 0.5849826315267302, 'raw': {'symbol': 'AAVEUSDT', 'interval': '5m', 'side': 'short', 'intent_id': '2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0', 'score': 0.5849826315267302, 'price': 0.6022542167546325, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "2c7e3467-9c5d-4198-bc7f-9cf7f6e145a0", "ts_utc": "2026-03-22T19:25:48.138503+00:00", "symbol": "AAVEUSDT", "interval": "5m", "side": "short", "price": 0.6022542167546325, "score": 0.5849826315267302, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "whale_seen", "whale_strong", "tight_spread", "vol_ok", "whale_align_short"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "b1f3b7c7-8f93-43c4-8711-52c9ab65fc18", "ts_utc": "2026-03-22T19:25:36.778103+00:00", "symbol": "AAVEUSDT", "interval": "5m", "side": "short", "price": 0.6022542167546325, "score_total": 0.5408579191159703, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "whale_seen", "whale_strong", "tight_spread", "vol_ok", "whale_align_short"], "source": "w8", "dedup_key": "AAVEUSDT|5m|short", "whale_score": 0.5721221658246044, "whale_dir": "short", "raw": {"price": 0.6022542167546325, "whale_score": 0.5721221658246044, "whale_dir": "short", "meta": {"p_used": 0.3668373281278705, "fast_model_score": 0.3668373281278705, "micro_score": 1.0, "confidence": 0.6483095799520242, "spread_pct": 0.00018749790141160108, "liq_score": 0.37491328276537705, "atr_pct": 0.010402060339185996}}, "_score_selected": 0.5408579191159703, "_source_stream_id": "1774207536780-0", "_score_total_final": 0.5849826315267302, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 311.64468885, 'available_balance_usdt': 292.73110885, 'whale_action': '', 'intent_price': 0.6022542167546325, 'order_price': 105.96, 'whale_open_notional_before': 87.819332655, 'whale_open_notional_after': 84.768, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 19:27:51,275 | INFO | system | [EXEC-EVENTS] recv intent=84ce6c9b-69b1-4039-b87e-feb3a16e128f side=long symbol=OPUSDT interval=5m price=1.066104959439667
+2026-03-22 19:27:51,275 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=OPUSDT side=long interval=5m score=0.709179
+2026-03-22 19:27:51,276 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=OPUSDT side=long interval=5m score=0.7092 intent=84ce6c9b-69b1-4039-b87e-feb3a16e128f
+2026-03-22 19:27:51,499 | INFO | system | [EXEC][LEV][INTENT] symbol=OPUSDT side=long recommended=None
+2026-03-22 19:27:52,448 | INFO | system | [EXEC][NOTIONAL] symbol=OPUSDT side=long price=0.114151 balance_source=available_balance base_balance=275.76 pct=0.3000 notional=82.73
+2026-03-22 19:27:52,701 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=OPUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:27:52,702 | INFO | system | [EXEC][INTENT][QTY] symbol=OPUSDT intent_price=1.066105 order_price=0.114151 raw_qty=724.7170973789 norm_qty=724.7000000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:27:52,702 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=OPUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=82.73 final_notional=82.73 target_leverage=5
+2026-03-22 19:27:52,947 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=OPUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 19:27:52,947 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=OPUSDT raw_qty=724.7000000000 norm_qty=724.7000000000 price=0.114151 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 19:27:52,947 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "OPUSDT", "raw_qty": 724.7, "price": 0.11415124, "step_size": 0.1, "min_qty": 0.1, "min_notional": 5.0, "normalized_qty": 724.7, "normalized_notional": 82.72540362800001, "reject_reason": ""}
+2026-03-22 19:27:53,174 | INFO | system | [EXEC][LEV][SET] symbol=OPUSDT requested=5 response={"symbol": "OPUSDT", "leverage": 5, "maxNotionalValue": "6000000"}
+2026-03-22 19:27:53,174 | INFO | system | [EXEC][LEV] symbol=OPUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 19:27:53,396 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=OPUSDT side=BUY qty=724.7000000000 reduceOnly=False lev=5 dt_ms=222 summary={"symbol": "OPUSDT", "side": "BUY", "type": "MARKET", "orderId": 19237699612, "clientOrderId": "b1_open_OPUSDT_effe978f1952", "status": "NEW", "price": "0.0000000", "avgPrice": "0.00", "origQty": "724.7", "executedQty": "0.0", "cumQty": "0.0", "cumQuote": "0.00000000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207673285}
+2026-03-22 19:27:53,615 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "OPUSDT", "side": "BUY", "type": "MARKET", "orderId": 19237699612, "clientOrderId": "b1_open_OPUSDT_effe978f1952", "status": "FILLED", "price": "0.0000000", "avgPrice": "0.11420000", "origQty": "724.7", "executedQty": "724.7", "cumQuote": "82.76074000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774207673285}, "terminal_status": "FILLED", "waited_sec": 0.218}
+2026-03-22 19:27:53,834 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "OPUSDT", "positionAmt": 724.7, "entryPrice": 0.1142, "unrealized": -0.03551754, "leverage": 5.0}
+2026-03-22 19:27:53,838 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=OPUSDT side=long interval=5m intent_id=84ce6c9b-69b1-4039-b87e-feb3a16e128f
+2026-03-22 19:27:53,839 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=OPUSDT side=long interval=5m intent_id=84ce6c9b-69b1-4039-b87e-feb3a16e128f
+2026-03-22 19:27:53,839 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=OPUSDT qty=724.7000000000 intent_price=1.066105 order_price=0.114151 notional=82.73 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 19:27:53,839 | INFO | system | [RISK] on_position_open | symbol=OPUSDT side=long qty=724.700000 notional=82.73 price=0.11 interval=5m open_trades=3 meta={'reason': 'INTENT_OPEN', 'price': 1.066104959439667, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '84ce6c9b-69b1-4039-b87e-feb3a16e128f', 'score': 0.7091789060013887, 'raw': {'symbol': 'OPUSDT', 'interval': '5m', 'side': 'long', 'intent_id': '84ce6c9b-69b1-4039-b87e-feb3a16e128f', 'score': 0.7091789060013887, 'price': 1.066104959439667, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "84ce6c9b-69b1-4039-b87e-feb3a16e128f", "ts_utc": "2026-03-22T19:27:51.272684+00:00", "symbol": "OPUSDT", "interval": "5m", "side": "long", "price": 1.066104959439667, "score": 0.7091789060013887, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "32d96c4a-6fbc-486c-8934-2c997a0fac86", "ts_utc": "2026-03-22T19:27:45.972936+00:00", "symbol": "OPUSDT", "interval": "5m", "side": "long", "price": 1.066104959439667, "score_total": 0.55132665921547, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "liq_mid", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "source": "w5", "dedup_key": "OPUSDT|5m|long", "whale_score": 0.5419933359472016, "whale_dir": "long", "raw": {"price": 1.066104959439667, "whale_score": 0.5419933359472016, "whale_dir": "long", "meta": {"p_used": 0.9359316177322711, "fast_model_score": 0.9359316177322711, "micro_score": 1.0, "confidence": 0.5508313503612203, "spread_pct": 0.00046474359449831347, "liq_score": 0.5430568307049192, "atr_pct": 0.006695373902374943}}, "_score_selected": 0.55132665921547, "_source_stream_id": "1774207665974-0", "_score_total_final": 0.7091789060013887, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 311.60230885, 'available_balance_usdt': 275.75785105, 'whale_action': '', 'intent_price': 1.066104959439667, 'order_price': 0.11415124, 'whale_open_notional_before': 82.727355315, 'whale_open_notional_after': 82.72540362800001, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 21:04:47,932 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2026-03-22 21:04:47,952 | INFO | system | [ENV][SECRETS] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'BINANCE_API_KEY': 'SET', 'BINANCE_API_SECRET': 'SET', 'BINANCETESTNET_API_KEY': 'MISSING', 'BINANCETESTNET_API_SECRET': 'MISSING', 'BINANCE_TESTNET_API_KEY': 'SET', 'BINANCE_TESTNET_API_SECRET': 'SET', 'OKX_API_KEY': 'SET', 'OKX_API_SECRET': 'SET', 'OKX_PASSPHRASE': 'SET', 'REDIS_PASSWORD': 'MISSING', 'PG_DSN': 'SET', 'ETH_API_KEY': 'SET', 'ALCHEMY_ETH_API_KEY': 'SET', 'INFURA_API_KEY': 'SET', 'POLYGON_API_KEY': 'SET', 'ARBI_API_KEY': 'SET', 'THE_GRAPH_API_KEY': 'SET', 'GRAPH_API_KEY': 'SET', 'COINGLASS_API_KEY': 'SET', 'BSCSCAN_API_KEY': 'SET', 'ETHERSCAN_API_KEY': 'SET', 'CRYPTOQUANT_API_KEY': 'SET', 'COINMARKETCAP_API_KEY': 'SET', 'SANTIMENT_API_KEY': 'SET'}
+2026-03-22 21:04:47,953 | WARNING | system | [ENV] Missing environment variables: ['REDIS_PASSWORD']
+2026-03-22 21:04:47,953 | INFO | system | [MAIN] TRAINING_MODE=False
+2026-03-22 21:04:47,953 | INFO | system | [MAIN] HYBRID_MODE=True
+2026-03-22 21:04:47,953 | INFO | system | [MAIN] USE_MTF_ENS=True
+2026-03-22 21:04:47,954 | INFO | system | [MAIN] DRY_RUN=False
+2026-03-22 21:04:47,954 | INFO | system | [ENV][TG-COMPAT] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'TG_NOTIFY_OPEN_CLOSE': 'SET', 'TG_OPEN_CLOSE_ONLY_REAL': 'SET', 'TG_NOTIFY_TRADES': 'SET', 'TG_DUPLICATE_SIGNAL_COOLDOWN_SEC': 'SET'}
+2026-03-22 21:04:47,954 | INFO | system | [WebSocket] Connecting to: wss://fstream.binance.com/ws/btcusdt@trade
+2026-03-22 21:04:47,955 | INFO | system | [WebSocket] WebSocket thread started.
+2026-03-22 21:04:47,955 | INFO | system | [WS] ENABLE_WS=true -> websocket started. symbol=BTCUSDT
+2026-03-22 21:04:47,956 | INFO | system | [PRICECACHE] initialized | memory_cache=True redis_cache=True
+2026-03-22 21:04:47,956 | INFO | system | [MODE] DRY_RUN=0 ARMED=1 LIVE_KILL_SWITCH=0 BINANCE_TESTNET=0
+2026-03-22 21:04:48,207 | INFO | system | [BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)
+2026-03-22 21:04:48,207 | INFO | system | [BINANCE_CLIENT] patched futures read methods -> v2 endpoints
+2026-03-22 21:04:48,207 | INFO | system | [BINANCE_CLIENT] Futures Client oluşturuldu | testnet=False | dry_run=False
+2026-03-22 21:04:48,207 | INFO | system | [RISK] Init: daily_max_loss_usdt=300.00, daily_max_loss_pct=0.2500, max_consecutive_losses=5, max_open_trades=3, equity_start_of_day=10000.00
+2026-03-22 21:04:48,261 | INFO | system | [TelegramBot] risk_manager attached
+2026-03-22 21:04:48,261 | INFO | system | [MAIN] TelegramBot init OK (send-only mode).
+2026-03-22 21:04:48,261 | INFO | system | [POS][ENV] ENABLE_PG_POS_LOG=1 enable_pg_flag=True
+2026-03-22 21:04:48,262 | INFO | system | [POS][ENV] PG_DSN=postgresql://botuser:***@localhost:5432/binancebot
+2026-03-22 21:04:48,263 | INFO | system | [POS] Redis OK (redis://localhost:6379/0)
+2026-03-22 21:04:48,446 | INFO | system | [POS] Postgres OK + schema checked.
+2026-03-22 21:04:48,447 | INFO | system | [DEPTHWS] thread started url=wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:04:48,447 | INFO | system | [DEPTHWS] connecting wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:04:48,448 | INFO | system | [DEPTHWS] enabled | symbol=BTCUSDT tfs=['1m', '3m', '5m', '15m', '30m', '1h'] price_cache=True redis_price_cache=True
+2026-03-22 21:04:48,498 | INFO | system | [HYBRID] SGD model loaded from models/online_model_5m_best.joblib (interval=5m)
+2026-03-22 21:04:48,499 | INFO | system | [HYBRID] Meta loaded from models/model_meta_5m.json
+2026-03-22 21:04:48,544 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:48,738 | INFO | system | [WebSocket] Connection opened.
+2026-03-22 21:04:50,471 | INFO | system | [HYBRID] LSTM models and scaler loaded for 5m (use_lstm_hybrid=True)
+2026-03-22 21:04:50,473 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1m_best.joblib (interval=1m)
+2026-03-22 21:04:50,474 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1m.json
+2026-03-22 21:04:50,475 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:51,648 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1m (use_lstm_hybrid=True)
+2026-03-22 21:04:51,664 | INFO | system | [HYBRID] SGD model loaded from models/online_model_3m_best.joblib (interval=3m)
+2026-03-22 21:04:51,665 | INFO | system | [HYBRID] Meta loaded from models/model_meta_3m.json
+2026-03-22 21:04:51,667 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:53,018 | INFO | system | [HYBRID] LSTM models and scaler loaded for 3m (use_lstm_hybrid=True)
+2026-03-22 21:04:53,020 | INFO | system | [HYBRID] SGD model loaded from models/online_model_15m_best.joblib (interval=15m)
+2026-03-22 21:04:53,020 | INFO | system | [HYBRID] Meta loaded from models/model_meta_15m.json
+2026-03-22 21:04:53,022 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:54,179 | INFO | system | [HYBRID] LSTM models and scaler loaded for 15m (use_lstm_hybrid=True)
+2026-03-22 21:04:54,182 | INFO | system | [HYBRID] SGD model loaded from models/online_model_30m_best.joblib (interval=30m)
+2026-03-22 21:04:54,183 | INFO | system | [HYBRID] Meta loaded from models/model_meta_30m.json
+2026-03-22 21:04:54,185 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:55,316 | INFO | system | [HYBRID] LSTM models and scaler loaded for 30m (use_lstm_hybrid=True)
+2026-03-22 21:04:55,318 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1h_best.joblib (interval=1h)
+2026-03-22 21:04:55,319 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1h.json
+2026-03-22 21:04:55,321 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:04:56,431 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1h (use_lstm_hybrid=True)
+2026-03-22 21:04:56,431 | INFO | system | [MAIN] MTF ensemble aktif: intervals=['1m', '3m', '5m', '15m', '30m', '1h']
+2026-03-22 21:04:56,432 | INFO | system | [WHALE] MultiTimeframeWhaleDetector init OK.
+2026-03-22 21:04:56,432 | INFO | system | [MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=120 MAX_POSITION_NOTIONAL=500 MAX_LEVERAGE=5
+2026-03-22 21:04:56,432 | INFO | system | [MAIN][SYNC] wiring position sync hooks...
+2026-03-22 21:04:56,432 | INFO | system | [MAIN][SYNC] initial sync callable found.
+2026-03-22 21:04:56,716 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,717 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,718 | INFO | system | [EXEC][SYNC] start | exchange_open=3 local_open=3 bridge_open=3
+2026-03-22 21:04:56,719 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,720 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,720 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,721 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,721 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,722 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,723 | INFO | system | [EXEC][SYNC] done | exchange_open=3 local_open=3 bridge_open=3 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT', 'ADAUSDT', 'OPUSDT']
+2026-03-22 21:04:56,723 | INFO | system | [MAIN][SYNC] initial sync_positions_with_exchange completed.
+2026-03-22 21:04:56,723 | INFO | system | [MAIN][SYNC] periodic position sync started interval_sec=30
+2026-03-22 21:04:56,723 | INFO | system | [MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=5
+2026-03-22 21:04:56,723 | INFO | system | [EXEC-EVENTS] consumer task started.
+2026-03-22 21:04:56,723 | INFO | system | [SCAN] enabled | symbols=5 interval=1m topk=3 every=10.0s conc=4 fast=True aggressive=False adaptive=True
+2026-03-22 21:04:56,971 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,973 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,973 | INFO | system | [EXEC][SYNC] start | exchange_open=3 local_open=3 bridge_open=3
+2026-03-22 21:04:56,974 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,975 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,975 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,976 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,976 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,977 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,977 | INFO | system | [EXEC][SYNC] done | exchange_open=3 local_open=3 bridge_open=3 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT', 'ADAUSDT', 'OPUSDT']
+2026-03-22 21:04:56,978 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,979 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:56,979 | INFO | system | [EXEC][LIFECYCLE] tick | positions=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:04:57,471 | INFO | system | [EXEC][SYMBOL_INFO] resolved | symbol=ADAUSDT tick_size=0.0001000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-03-22 21:04:57,693 | INFO | system | [EXEC][LIFECYCLE] check | symbol=ADAUSDT side=long qty=371.0000000000 entry=0.251533 price=0.250632 interval=5m src=mark_price
+2026-03-22 21:04:57,930 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=ADAUSDT side=long price=0.250632 entry=0.251533 pnl_pct=-0.003585 best_pnl_pct=0.000000 sl=0.249521 tp=0.256564 trail_ref=0.251533 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:04:58,422 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:04:58,639 | INFO | system | [EXEC][LIFECYCLE] check | symbol=AAVEUSDT side=short qty=0.8000000000 entry=105.960000 price=105.970000 interval=5m src=mark_price
+2026-03-22 21:04:58,871 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=AAVEUSDT side=short price=105.970000 entry=105.960000 pnl_pct=-0.000094 best_pnl_pct=0.000000 sl=106.807680 tp=103.840800 trail_ref=105.960000 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:04:59,360 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=OPUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:04:59,586 | INFO | system | [EXEC][LIFECYCLE] check | symbol=OPUSDT side=long qty=724.7000000000 entry=0.114151 price=0.114259 interval=5m src=mark_price
+2026-03-22 21:04:59,813 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=OPUSDT side=long price=0.114259 entry=0.114151 pnl_pct=0.000943 best_pnl_pct=0.000943 sl=0.113238 tp=0.116434 trail_ref=0.114259 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:04:59,815 | INFO | system | [EXEC-EVENTS] consuming stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-03-22 21:07:41,536 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2026-03-22 21:07:41,537 | INFO | system | [ENV][SECRETS] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'BINANCE_API_KEY': 'SET', 'BINANCE_API_SECRET': 'SET', 'BINANCETESTNET_API_KEY': 'MISSING', 'BINANCETESTNET_API_SECRET': 'MISSING', 'BINANCE_TESTNET_API_KEY': 'SET', 'BINANCE_TESTNET_API_SECRET': 'SET', 'OKX_API_KEY': 'SET', 'OKX_API_SECRET': 'SET', 'OKX_PASSPHRASE': 'SET', 'REDIS_PASSWORD': 'MISSING', 'PG_DSN': 'SET', 'ETH_API_KEY': 'SET', 'ALCHEMY_ETH_API_KEY': 'SET', 'INFURA_API_KEY': 'SET', 'POLYGON_API_KEY': 'SET', 'ARBI_API_KEY': 'SET', 'THE_GRAPH_API_KEY': 'SET', 'GRAPH_API_KEY': 'SET', 'COINGLASS_API_KEY': 'SET', 'BSCSCAN_API_KEY': 'SET', 'ETHERSCAN_API_KEY': 'SET', 'CRYPTOQUANT_API_KEY': 'SET', 'COINMARKETCAP_API_KEY': 'SET', 'SANTIMENT_API_KEY': 'SET'}
+2026-03-22 21:07:41,537 | WARNING | system | [ENV] Missing environment variables: ['REDIS_PASSWORD']
+2026-03-22 21:07:41,537 | INFO | system | [MAIN] TRAINING_MODE=False
+2026-03-22 21:07:41,537 | INFO | system | [MAIN] HYBRID_MODE=True
+2026-03-22 21:07:41,538 | INFO | system | [MAIN] USE_MTF_ENS=True
+2026-03-22 21:07:41,538 | INFO | system | [MAIN] DRY_RUN=False
+2026-03-22 21:07:41,538 | INFO | system | [ENV][TG-COMPAT] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'TG_NOTIFY_OPEN_CLOSE': 'SET', 'TG_OPEN_CLOSE_ONLY_REAL': 'SET', 'TG_NOTIFY_TRADES': 'SET', 'TG_DUPLICATE_SIGNAL_COOLDOWN_SEC': 'SET'}
+2026-03-22 21:07:41,538 | INFO | system | [WebSocket] Connecting to: wss://fstream.binance.com/ws/btcusdt@trade
+2026-03-22 21:07:41,539 | INFO | system | [WebSocket] WebSocket thread started.
+2026-03-22 21:07:41,539 | INFO | system | [WS] ENABLE_WS=true -> websocket started. symbol=BTCUSDT
+2026-03-22 21:07:41,540 | INFO | system | [PRICECACHE] initialized | memory_cache=True redis_cache=True
+2026-03-22 21:07:41,540 | INFO | system | [MODE] DRY_RUN=0 ARMED=1 LIVE_KILL_SWITCH=0 BINANCE_TESTNET=0
+2026-03-22 21:07:41,783 | INFO | system | [BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)
+2026-03-22 21:07:41,783 | INFO | system | [BINANCE_CLIENT] patched futures read methods -> v2 endpoints
+2026-03-22 21:07:41,783 | INFO | system | [BINANCE_CLIENT] Futures Client oluşturuldu | testnet=False | dry_run=False
+2026-03-22 21:07:41,783 | INFO | system | [RISK] Init: daily_max_loss_usdt=300.00, daily_max_loss_pct=0.2500, max_consecutive_losses=5, max_open_trades=3, equity_start_of_day=10000.00
+2026-03-22 21:07:41,786 | INFO | system | [TelegramBot] risk_manager attached
+2026-03-22 21:07:41,786 | INFO | system | [MAIN] TelegramBot init OK (send-only mode).
+2026-03-22 21:07:41,786 | INFO | system | [POS][ENV] ENABLE_PG_POS_LOG=1 enable_pg_flag=True
+2026-03-22 21:07:41,787 | INFO | system | [POS][ENV] PG_DSN=postgresql://botuser:***@localhost:5432/binancebot
+2026-03-22 21:07:41,788 | INFO | system | [POS] Redis OK (redis://localhost:6379/0)
+2026-03-22 21:07:41,822 | INFO | system | [POS] Postgres OK + schema checked.
+2026-03-22 21:07:41,823 | INFO | system | [DEPTHWS] thread started url=wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:07:41,823 | INFO | system | [DEPTHWS] enabled | symbol=BTCUSDT tfs=['1m', '3m', '5m', '15m', '30m', '1h'] price_cache=True redis_price_cache=True
+2026-03-22 21:07:41,827 | INFO | system | [HYBRID] SGD model loaded from models/online_model_5m_best.joblib (interval=5m)
+2026-03-22 21:07:41,827 | INFO | system | [HYBRID] Meta loaded from models/model_meta_5m.json
+2026-03-22 21:07:41,835 | INFO | system | [DEPTHWS] connecting wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:07:41,838 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:42,305 | INFO | system | [WebSocket] Connection opened.
+2026-03-22 21:07:43,076 | INFO | system | [HYBRID] LSTM models and scaler loaded for 5m (use_lstm_hybrid=True)
+2026-03-22 21:07:43,078 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1m_best.joblib (interval=1m)
+2026-03-22 21:07:43,079 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1m.json
+2026-03-22 21:07:43,081 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:44,545 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1m (use_lstm_hybrid=True)
+2026-03-22 21:07:44,546 | INFO | system | [HYBRID] SGD model loaded from models/online_model_3m_best.joblib (interval=3m)
+2026-03-22 21:07:44,546 | INFO | system | [HYBRID] Meta loaded from models/model_meta_3m.json
+2026-03-22 21:07:44,548 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:45,693 | INFO | system | [HYBRID] LSTM models and scaler loaded for 3m (use_lstm_hybrid=True)
+2026-03-22 21:07:45,694 | INFO | system | [HYBRID] SGD model loaded from models/online_model_15m_best.joblib (interval=15m)
+2026-03-22 21:07:45,694 | INFO | system | [HYBRID] Meta loaded from models/model_meta_15m.json
+2026-03-22 21:07:45,696 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:46,789 | INFO | system | [HYBRID] LSTM models and scaler loaded for 15m (use_lstm_hybrid=True)
+2026-03-22 21:07:46,790 | INFO | system | [HYBRID] SGD model loaded from models/online_model_30m_best.joblib (interval=30m)
+2026-03-22 21:07:46,790 | INFO | system | [HYBRID] Meta loaded from models/model_meta_30m.json
+2026-03-22 21:07:46,791 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:47,892 | INFO | system | [HYBRID] LSTM models and scaler loaded for 30m (use_lstm_hybrid=True)
+2026-03-22 21:07:47,893 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1h_best.joblib (interval=1h)
+2026-03-22 21:07:47,893 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1h.json
+2026-03-22 21:07:47,895 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:07:49,012 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1h (use_lstm_hybrid=True)
+2026-03-22 21:07:49,012 | INFO | system | [MAIN] MTF ensemble aktif: intervals=['1m', '3m', '5m', '15m', '30m', '1h']
+2026-03-22 21:07:49,013 | INFO | system | [WHALE] MultiTimeframeWhaleDetector init OK.
+2026-03-22 21:07:49,013 | INFO | system | [MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=120 MAX_POSITION_NOTIONAL=500 MAX_LEVERAGE=5
+2026-03-22 21:07:49,013 | INFO | system | [MAIN][SYNC] wiring position sync hooks...
+2026-03-22 21:07:49,013 | INFO | system | [MAIN][SYNC] initial sync callable found.
+2026-03-22 21:07:49,284 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:07:49,286 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:07:49,287 | INFO | system | [EXEC][SYNC] start | exchange_open=1 local_open=3 bridge_open=3
+2026-03-22 21:07:49,287 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:07:49,288 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['ADAUSDT', 'AAVEUSDT', 'OPUSDT']
+2026-03-22 21:07:49,321 | INFO | system | [EXEC][STATE] local position removed | symbol=ADAUSDT
+2026-03-22 21:07:49,321 | INFO | system | [EXEC][SYNC] removed orphan local position | symbol=ADAUSDT
+2026-03-22 21:07:49,322 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=ADAUSDT
+2026-03-22 21:07:49,322 | INFO | system | [EXEC][SYNC] removed orphan bridge state | symbol=ADAUSDT
+2026-03-22 21:07:49,324 | INFO | system | [EXEC][STATE] local position removed | symbol=OPUSDT
+2026-03-22 21:07:49,324 | INFO | system | [EXEC][SYNC] removed orphan local position | symbol=OPUSDT
+2026-03-22 21:07:49,325 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=OPUSDT
+2026-03-22 21:07:49,326 | INFO | system | [EXEC][SYNC] removed orphan bridge state | symbol=OPUSDT
+2026-03-22 21:07:49,326 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,326 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,327 | INFO | system | [EXEC][STATE] bridge state symbol already absent | key=open_positions_state symbol=ADAUSDT
+2026-03-22 21:07:49,327 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=ADAUSDT
+2026-03-22 21:07:49,327 | INFO | system | [EXEC][STATE] bridge state symbol already absent | key=open_positions_state symbol=OPUSDT
+2026-03-22 21:07:49,328 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=OPUSDT
+2026-03-22 21:07:49,328 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,328 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,329 | INFO | system | [EXEC][SYNC] done | exchange_open=1 local_open=1 bridge_open=1 removed_local=['ADAUSDT', 'OPUSDT'] removed_bridge=['ADAUSDT', 'OPUSDT'] added_local=[] added_bridge=[] kept=['AAVEUSDT']
+2026-03-22 21:07:49,329 | INFO | system | [MAIN][SYNC] initial sync_positions_with_exchange completed.
+2026-03-22 21:07:49,329 | INFO | system | [MAIN][SYNC] periodic position sync started interval_sec=30
+2026-03-22 21:07:49,329 | INFO | system | [MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=5
+2026-03-22 21:07:49,329 | INFO | system | [EXEC-EVENTS] consumer task started.
+2026-03-22 21:07:49,329 | INFO | system | [SCAN] enabled | symbols=5 interval=1m topk=3 every=10.0s conc=4 fast=True aggressive=False adaptive=True
+2026-03-22 21:07:49,574 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,575 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,575 | INFO | system | [EXEC][SYNC] start | exchange_open=1 local_open=1 bridge_open=1
+2026-03-22 21:07:49,576 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,576 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,576 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,577 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,577 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,578 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,578 | INFO | system | [EXEC][SYNC] done | exchange_open=1 local_open=1 bridge_open=1 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT']
+2026-03-22 21:07:49,579 | INFO | system | [EXEC][STATE] position_manager symbols | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,579 | INFO | system | [EXEC][STATE] local positions resolved | count=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:49,579 | INFO | system | [EXEC][LIFECYCLE] tick | positions=1 symbols=['AAVEUSDT']
+2026-03-22 21:07:50,063 | INFO | system | [EXEC][SYMBOL_INFO] resolved | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:07:50,285 | INFO | system | [EXEC][LIFECYCLE] check | symbol=AAVEUSDT side=short qty=0.8000000000 entry=105.960000 price=105.724314 interval=5m src=mark_price
+2026-03-22 21:07:50,510 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=AAVEUSDT side=short price=105.724314 entry=105.960000 pnl_pct=0.002224 best_pnl_pct=0.002224 sl=106.807680 tp=103.840800 trail_ref=105.724314 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:07:50,512 | INFO | system | [EXEC-EVENTS] consuming stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-03-22 21:09:17,095 | INFO | system | [EXEC-EVENTS] recv intent=6973e37b-a9d6-4c95-8780-c95137f6b24b side=short symbol=ATOMUSDT interval=5m price=1.1147189660371206
+2026-03-22 21:09:17,096 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=ATOMUSDT side=short interval=5m score=0.514760
+2026-03-22 21:09:17,096 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=ATOMUSDT side=short interval=5m score=0.5148 intent=6973e37b-a9d6-4c95-8780-c95137f6b24b
+2026-03-22 21:09:17,320 | INFO | system | [EXEC][LEV][INTENT] symbol=ATOMUSDT side=short recommended=None
+2026-03-22 21:09:18,281 | INFO | system | [EXEC][NOTIONAL] symbol=ATOMUSDT side=short price=1.772156 balance_source=available_balance base_balance=292.78 pct=0.3000 notional=87.84
+2026-03-22 21:09:18,532 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ATOMUSDT tick_size=0.0010000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 21:09:18,533 | INFO | system | [EXEC][INTENT][QTY] symbol=ATOMUSDT intent_price=1.114719 order_price=1.772156 raw_qty=49.5641056161 norm_qty=49.5600000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 21:09:18,533 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=ATOMUSDT side=short action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=87.84 final_notional=87.83 target_leverage=5
+2026-03-22 21:09:18,780 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ATOMUSDT tick_size=0.0010000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 21:09:18,781 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=ATOMUSDT raw_qty=49.5600000000 norm_qty=49.5600000000 price=1.772156 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 21:09:18,781 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "ATOMUSDT", "raw_qty": 49.56, "price": 1.77215581, "step_size": 0.01, "min_qty": 0.01, "min_notional": 5.0, "normalized_qty": 49.56, "normalized_notional": 87.82804194360001, "reject_reason": ""}
+2026-03-22 21:09:19,004 | INFO | system | [EXEC][LEV][SET] symbol=ATOMUSDT requested=5 response={"symbol": "ATOMUSDT", "leverage": 5, "maxNotionalValue": "4000000"}
+2026-03-22 21:09:19,005 | INFO | system | [EXEC][LEV] symbol=ATOMUSDT side=short reduce_only=False target=5 applied=5 positionSide=SHORT
+2026-03-22 21:09:19,229 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=ATOMUSDT side=SELL qty=49.5600000000 reduceOnly=False lev=5 dt_ms=224 summary={"symbol": "ATOMUSDT", "side": "SELL", "type": "MARKET", "orderId": 24239837540, "clientOrderId": "b1_open_ATOMUSDT_201b7bf330d2", "status": "NEW", "price": "0.000", "avgPrice": "0.00", "origQty": "49.56", "executedQty": "0.00", "cumQty": "0.00", "cumQuote": "0.00000", "reduceOnly": false, "positionSide": "SHORT", "timeInForce": "GTC", "updateTime": 1774213759119}
+2026-03-22 21:09:19,448 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "ATOMUSDT", "side": "SELL", "type": "MARKET", "orderId": 24239837540, "clientOrderId": "b1_open_ATOMUSDT_201b7bf330d2", "status": "FILLED", "price": "0.000", "avgPrice": "1.76900", "origQty": "49.56", "executedQty": "49.56", "cumQuote": "87.67164", "reduceOnly": false, "positionSide": "SHORT", "timeInForce": "GTC", "updateTime": 1774213759119}, "terminal_status": "FILLED", "waited_sec": 0.219}
+2026-03-22 21:09:19,671 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "ATOMUSDT", "positionAmt": -49.56, "entryPrice": 1.769, "unrealized": -0.04956, "leverage": 5.0}
+2026-03-22 21:09:19,676 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=ATOMUSDT side=short interval=5m intent_id=6973e37b-a9d6-4c95-8780-c95137f6b24b
+2026-03-22 21:09:19,677 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=ATOMUSDT side=short interval=5m intent_id=6973e37b-a9d6-4c95-8780-c95137f6b24b
+2026-03-22 21:09:19,677 | INFO | system | [EXEC][INTENT] OPEN SHORT | symbol=ATOMUSDT qty=49.5600000000 intent_price=1.114719 order_price=1.772156 notional=87.83 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 21:09:19,677 | INFO | system | [RISK] on_position_open | symbol=ATOMUSDT side=short qty=49.560000 notional=87.83 price=1.77 interval=5m open_trades=1 meta={'reason': 'INTENT_OPEN', 'price': 1.1147189660371206, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': '6973e37b-a9d6-4c95-8780-c95137f6b24b', 'score': 0.5147604612070303, 'raw': {'symbol': 'ATOMUSDT', 'interval': '5m', 'side': 'short', 'intent_id': '6973e37b-a9d6-4c95-8780-c95137f6b24b', 'score': 0.5147604612070303, 'price': 1.1147189660371206, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "6973e37b-a9d6-4c95-8780-c95137f6b24b", "ts_utc": "2026-03-22T21:09:17.090927+00:00", "symbol": "ATOMUSDT", "interval": "5m", "side": "short", "price": 1.1147189660371206, "score": 0.5147604612070303, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_ok", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "tight_spread", "vol_ok", "whale_align_short", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "63229e47-efa9-4775-846a-ee031c402fa9", "ts_utc": "2026-03-22T21:09:02.512349+00:00", "symbol": "ATOMUSDT", "interval": "5m", "side": "short", "price": 1.1147189660371206, "score_total": 0.59262035177425, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_ok", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "tight_spread", "vol_ok", "whale_align_short", "whale_confirm"], "source": "w5", "dedup_key": "ATOMUSDT|5m|short", "whale_score": 0.5823017540280814, "whale_dir": "short", "raw": {"price": 1.1147189660371206, "whale_score": 0.5823017540280814, "whale_dir": "short", "meta": {"p_used": 0.06151763516072617, "fast_model_score": 0.06151763516072617, "micro_score": 1.0, "confidence": 0.7363462451974305, "spread_pct": 0.00020241598846115516, "liq_score": 0.5526806786826669, "atr_pct": 0.011527064888283148}}, "_score_selected": 0.59262035177425, "_source_stream_id": "1774213742514-0", "_score_total_final": 0.5147604612070303, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 309.74561038, 'available_balance_usdt': 292.78439245, 'whale_action': '', 'intent_price': 1.1147189660371206, 'order_price': 1.77215581, 'whale_open_notional_before': 87.83531773499999, 'whale_open_notional_after': 87.82804194360001, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 21:12:36,067 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2026-03-22 21:12:36,067 | INFO | system | [ENV][SECRETS] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'BINANCE_API_KEY': 'SET', 'BINANCE_API_SECRET': 'SET', 'BINANCETESTNET_API_KEY': 'MISSING', 'BINANCETESTNET_API_SECRET': 'MISSING', 'BINANCE_TESTNET_API_KEY': 'SET', 'BINANCE_TESTNET_API_SECRET': 'SET', 'OKX_API_KEY': 'SET', 'OKX_API_SECRET': 'SET', 'OKX_PASSPHRASE': 'SET', 'REDIS_PASSWORD': 'MISSING', 'PG_DSN': 'SET', 'ETH_API_KEY': 'SET', 'ALCHEMY_ETH_API_KEY': 'SET', 'INFURA_API_KEY': 'SET', 'POLYGON_API_KEY': 'SET', 'ARBI_API_KEY': 'SET', 'THE_GRAPH_API_KEY': 'SET', 'GRAPH_API_KEY': 'SET', 'COINGLASS_API_KEY': 'SET', 'BSCSCAN_API_KEY': 'SET', 'ETHERSCAN_API_KEY': 'SET', 'CRYPTOQUANT_API_KEY': 'SET', 'COINMARKETCAP_API_KEY': 'SET', 'SANTIMENT_API_KEY': 'SET'}
+2026-03-22 21:12:36,068 | WARNING | system | [ENV] Missing environment variables: ['REDIS_PASSWORD']
+2026-03-22 21:12:36,068 | INFO | system | [MAIN] TRAINING_MODE=False
+2026-03-22 21:12:36,068 | INFO | system | [MAIN] HYBRID_MODE=True
+2026-03-22 21:12:36,068 | INFO | system | [MAIN] USE_MTF_ENS=True
+2026-03-22 21:12:36,068 | INFO | system | [MAIN] DRY_RUN=False
+2026-03-22 21:12:36,068 | INFO | system | [ENV][TG-COMPAT] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'TG_NOTIFY_OPEN_CLOSE': 'SET', 'TG_OPEN_CLOSE_ONLY_REAL': 'SET', 'TG_NOTIFY_TRADES': 'SET', 'TG_DUPLICATE_SIGNAL_COOLDOWN_SEC': 'SET'}
+2026-03-22 21:12:36,068 | INFO | system | [WebSocket] Connecting to: wss://fstream.binance.com/ws/btcusdt@trade
+2026-03-22 21:12:36,070 | INFO | system | [WebSocket] WebSocket thread started.
+2026-03-22 21:12:36,070 | INFO | system | [WS] ENABLE_WS=true -> websocket started. symbol=BTCUSDT
+2026-03-22 21:12:36,071 | INFO | system | [PRICECACHE] initialized | memory_cache=True redis_cache=True
+2026-03-22 21:12:36,071 | INFO | system | [MODE] DRY_RUN=0 ARMED=1 LIVE_KILL_SWITCH=0 BINANCE_TESTNET=0
+2026-03-22 21:12:36,307 | INFO | system | [BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)
+2026-03-22 21:12:36,307 | INFO | system | [BINANCE_CLIENT] patched futures read methods -> v2 endpoints
+2026-03-22 21:12:36,308 | INFO | system | [BINANCE_CLIENT] Futures Client oluşturuldu | testnet=False | dry_run=False
+2026-03-22 21:12:36,308 | INFO | system | [RISK] Init: daily_max_loss_usdt=300.00, daily_max_loss_pct=0.2500, max_consecutive_losses=5, max_open_trades=3, equity_start_of_day=10000.00
+2026-03-22 21:12:36,310 | INFO | system | [TelegramBot] risk_manager attached
+2026-03-22 21:12:36,310 | INFO | system | [MAIN] TelegramBot init OK (send-only mode).
+2026-03-22 21:12:36,310 | INFO | system | [POS][ENV] ENABLE_PG_POS_LOG=1 enable_pg_flag=True
+2026-03-22 21:12:36,310 | INFO | system | [POS][ENV] PG_DSN=postgresql://botuser:***@localhost:5432/binancebot
+2026-03-22 21:12:36,311 | INFO | system | [POS] Redis OK (redis://localhost:6379/0)
+2026-03-22 21:12:36,334 | INFO | system | [POS] Postgres OK + schema checked.
+2026-03-22 21:12:36,335 | INFO | system | [DEPTHWS] thread started url=wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:12:36,335 | INFO | system | [DEPTHWS] connecting wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 21:12:36,335 | INFO | system | [DEPTHWS] enabled | symbol=BTCUSDT tfs=['1m', '3m', '5m', '15m', '30m', '1h'] price_cache=True redis_price_cache=True
+2026-03-22 21:12:36,340 | INFO | system | [HYBRID] SGD model loaded from models/online_model_5m_best.joblib (interval=5m)
+2026-03-22 21:12:36,341 | INFO | system | [HYBRID] Meta loaded from models/model_meta_5m.json
+2026-03-22 21:12:36,349 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:37,052 | INFO | system | [WebSocket] Connection opened.
+2026-03-22 21:12:37,606 | INFO | system | [HYBRID] LSTM models and scaler loaded for 5m (use_lstm_hybrid=True)
+2026-03-22 21:12:37,607 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1m_best.joblib (interval=1m)
+2026-03-22 21:12:37,608 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1m.json
+2026-03-22 21:12:37,609 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:38,977 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1m (use_lstm_hybrid=True)
+2026-03-22 21:12:38,978 | INFO | system | [HYBRID] SGD model loaded from models/online_model_3m_best.joblib (interval=3m)
+2026-03-22 21:12:38,980 | INFO | system | [HYBRID] Meta loaded from models/model_meta_3m.json
+2026-03-22 21:12:38,981 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:40,104 | INFO | system | [HYBRID] LSTM models and scaler loaded for 3m (use_lstm_hybrid=True)
+2026-03-22 21:12:40,105 | INFO | system | [HYBRID] SGD model loaded from models/online_model_15m_best.joblib (interval=15m)
+2026-03-22 21:12:40,106 | INFO | system | [HYBRID] Meta loaded from models/model_meta_15m.json
+2026-03-22 21:12:40,108 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:41,219 | INFO | system | [HYBRID] LSTM models and scaler loaded for 15m (use_lstm_hybrid=True)
+2026-03-22 21:12:41,221 | INFO | system | [HYBRID] SGD model loaded from models/online_model_30m_best.joblib (interval=30m)
+2026-03-22 21:12:41,221 | INFO | system | [HYBRID] Meta loaded from models/model_meta_30m.json
+2026-03-22 21:12:41,222 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:42,296 | INFO | system | [HYBRID] LSTM models and scaler loaded for 30m (use_lstm_hybrid=True)
+2026-03-22 21:12:42,297 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1h_best.joblib (interval=1h)
+2026-03-22 21:12:42,297 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1h.json
+2026-03-22 21:12:42,299 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 21:12:43,398 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1h (use_lstm_hybrid=True)
+2026-03-22 21:12:43,399 | INFO | system | [MAIN] MTF ensemble aktif: intervals=['1m', '3m', '5m', '15m', '30m', '1h']
+2026-03-22 21:12:43,400 | INFO | system | [WHALE] MultiTimeframeWhaleDetector init OK.
+2026-03-22 21:12:43,400 | INFO | system | [MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=120 MAX_POSITION_NOTIONAL=500 MAX_LEVERAGE=5
+2026-03-22 21:12:43,401 | INFO | system | [MAIN][SYNC] wiring position sync hooks...
+2026-03-22 21:12:43,401 | INFO | system | [MAIN][SYNC] initial sync callable found.
+2026-03-22 21:12:43,660 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,661 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,662 | INFO | system | [EXEC][SYNC] start | exchange_open=2 local_open=2 bridge_open=2
+2026-03-22 21:12:43,662 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,663 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,664 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,664 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,665 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,665 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,666 | INFO | system | [EXEC][SYNC] done | exchange_open=2 local_open=2 bridge_open=2 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,666 | INFO | system | [MAIN][SYNC] initial sync_positions_with_exchange completed.
+2026-03-22 21:12:43,666 | INFO | system | [MAIN][SYNC] periodic position sync started interval_sec=30
+2026-03-22 21:12:43,666 | INFO | system | [MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=5
+2026-03-22 21:12:43,666 | INFO | system | [EXEC-EVENTS] consumer task started.
+2026-03-22 21:12:43,667 | INFO | system | [SCAN] enabled | symbols=5 interval=1m topk=3 every=10.0s conc=4 fast=True aggressive=False adaptive=True
+2026-03-22 21:12:43,911 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,913 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,913 | INFO | system | [EXEC][SYNC] start | exchange_open=2 local_open=2 bridge_open=2
+2026-03-22 21:12:43,914 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,914 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,915 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,916 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,916 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,917 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,917 | INFO | system | [EXEC][SYNC] done | exchange_open=2 local_open=2 bridge_open=2 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,917 | INFO | system | [EXEC][STATE] position_manager symbols | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,918 | INFO | system | [EXEC][STATE] local positions resolved | count=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:43,918 | INFO | system | [EXEC][LIFECYCLE] tick | positions=2 symbols=['AAVEUSDT', 'ATOMUSDT']
+2026-03-22 21:12:44,408 | INFO | system | [EXEC][SYMBOL_INFO] resolved | symbol=AAVEUSDT tick_size=0.0100000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:12:44,632 | INFO | system | [EXEC][LIFECYCLE] check | symbol=AAVEUSDT side=short qty=0.8000000000 entry=105.960000 price=105.530000 interval=5m src=mark_price
+2026-03-22 21:12:44,856 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=AAVEUSDT side=short price=105.530000 entry=105.960000 pnl_pct=0.004058 best_pnl_pct=0.004058 sl=106.807680 tp=103.840800 trail_ref=105.530000 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:12:45,341 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ATOMUSDT tick_size=0.0010000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 21:12:45,562 | INFO | system | [EXEC][LIFECYCLE] check | symbol=ATOMUSDT side=short qty=49.5600000000 entry=1.772156 price=1.762310 interval=5m src=mark_price
+2026-03-22 21:12:45,792 | INFO | system | [EXEC][LIFECYCLE] updated | symbol=ATOMUSDT side=short price=1.762310 entry=1.772156 pnl_pct=0.005556 best_pnl_pct=0.005556 sl=1.786333 tp=1.736713 trail_ref=1.762310 trail_stop=0.000000 trailing_armed=False tp_runner_armed=False stall_peak_armed=False
+2026-03-22 21:12:45,794 | INFO | system | [EXEC-EVENTS] consuming stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-03-22 21:15:28,757 | INFO | system | [EXEC-EVENTS] recv intent=e1e4c59e-8f32-44d1-a372-4004070e57da side=long symbol=OPUSDT interval=5m price=1.4960936530868008
+2026-03-22 21:15:28,760 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=OPUSDT side=long interval=5m score=0.673588
+2026-03-22 21:15:28,762 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=OPUSDT side=long interval=5m score=0.6736 intent=e1e4c59e-8f32-44d1-a372-4004070e57da
+2026-03-22 21:15:29,041 | INFO | system | [EXEC][LEV][INTENT] symbol=OPUSDT side=long recommended=None
+2026-03-22 21:15:29,996 | INFO | system | [EXEC][NOTIONAL] symbol=OPUSDT side=long price=0.113551 balance_source=available_balance base_balance=276.11 pct=0.3000 notional=82.83
+2026-03-22 21:15:30,244 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=OPUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:15:30,244 | INFO | system | [EXEC][INTENT][QTY] symbol=OPUSDT intent_price=1.496094 order_price=0.113551 raw_qty=729.4871197759 norm_qty=729.4000000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 21:15:30,244 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=OPUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 raw_notional=82.83 final_notional=82.82 target_leverage=5
+2026-03-22 21:15:30,489 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=OPUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-03-22 21:15:30,489 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=OPUSDT raw_qty=729.4000000000 norm_qty=729.3000000000 price=0.113551 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-03-22 21:15:30,490 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "OPUSDT", "raw_qty": 729.4, "price": 0.11355113, "step_size": 0.1, "min_qty": 0.1, "min_notional": 5.0, "normalized_qty": 729.3, "normalized_notional": 82.812839109, "reject_reason": ""}
+2026-03-22 21:15:30,718 | INFO | system | [EXEC][LEV][SET] symbol=OPUSDT requested=5 response={"symbol": "OPUSDT", "leverage": 5, "maxNotionalValue": "6000000"}
+2026-03-22 21:15:30,718 | INFO | system | [EXEC][LEV] symbol=OPUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 21:15:30,941 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=OPUSDT side=BUY qty=729.3000000000 reduceOnly=False lev=5 dt_ms=223 summary={"symbol": "OPUSDT", "side": "BUY", "type": "MARKET", "orderId": 19239128159, "clientOrderId": "b1_open_OPUSDT_7724ce8d713e", "status": "NEW", "price": "0.0000000", "avgPrice": "0.00", "origQty": "729.3", "executedQty": "0.0", "cumQty": "0.0", "cumQuote": "0.00000000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774214130834}
+2026-03-22 21:15:31,162 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "OPUSDT", "side": "BUY", "type": "MARKET", "orderId": 19239128159, "clientOrderId": "b1_open_OPUSDT_7724ce8d713e", "status": "FILLED", "price": "0.0000000", "avgPrice": "0.11360000", "origQty": "729.3", "executedQty": "729.3", "cumQuote": "82.84848000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774214130834}, "terminal_status": "FILLED", "waited_sec": 0.221}
+2026-03-22 21:15:31,388 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "OPUSDT", "positionAmt": 729.3, "entryPrice": 0.1136, "unrealized": -0.04353191, "leverage": 5.0}
+2026-03-22 21:15:31,624 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=OPUSDT side=long interval=5m intent_id=e1e4c59e-8f32-44d1-a372-4004070e57da
+2026-03-22 21:15:31,625 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=OPUSDT side=long interval=5m intent_id=e1e4c59e-8f32-44d1-a372-4004070e57da
+2026-03-22 21:15:31,625 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=OPUSDT qty=729.4000000000 intent_price=1.496094 order_price=0.113551 notional=82.82 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 21:15:31,625 | INFO | system | [RISK] on_position_open | symbol=OPUSDT side=long qty=729.400000 notional=82.82 price=0.11 interval=5m open_trades=1 meta={'reason': 'INTENT_OPEN', 'price': 1.4960936530868008, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': 'e1e4c59e-8f32-44d1-a372-4004070e57da', 'score': 0.6735879839462069, 'raw': {'symbol': 'OPUSDT', 'interval': '5m', 'side': 'long', 'intent_id': 'e1e4c59e-8f32-44d1-a372-4004070e57da', 'score': 0.6735879839462069, 'price': 1.4960936530868008, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "e1e4c59e-8f32-44d1-a372-4004070e57da", "ts_utc": "2026-03-22T21:15:28.754150+00:00", "symbol": "OPUSDT", "interval": "5m", "side": "long", "price": 1.4960936530868008, "score": 0.6735879839462069, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "cd667bdf-bbc5-4b07-9ac6-2c8b7ba7ff21", "ts_utc": "2026-03-22T21:15:26.024646+00:00", "symbol": "OPUSDT", "interval": "5m", "side": "long", "price": 1.4960936530868008, "score_total": 0.5572743284031877, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_ok", "whale_seen", "whale_strong", "vol_ok", "whale_align_long", "whale_confirm"], "source": "w5", "dedup_key": "OPUSDT|5m|long", "whale_score": 0.5831200516266339, "whale_dir": "long", "raw": {"price": 1.4960936530868008, "whale_score": 0.5831200516266339, "whale_dir": "long", "meta": {"p_used": 0.6948638118809061, "fast_model_score": 0.6948638118809061, "micro_score": 1.0, "confidence": 0.6556347972988796, "spread_pct": 0.0004366420532756472, "liq_score": 0.39399750761468494, "atr_pct": 0.011278448541725437}}, "_score_selected": 0.5572743284031877, "_source_stream_id": "1774214126026-0", "_score_total_final": 0.6735879839462069, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 309.70177457, 'available_balance_usdt': 276.11362257, 'whale_action': '', 'intent_price': 1.4960936530868008, 'order_price': 0.11355113, 'whale_open_notional_before': 82.834086771, 'whale_open_notional_after': 82.824194222, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 22:18:45,497 | INFO | system | [LOGGER] Loggers initialized (system, error, trades).
+2026-03-22 22:18:45,521 | INFO | system | [ENV][SECRETS] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'BINANCE_API_KEY': 'SET', 'BINANCE_API_SECRET': 'SET', 'BINANCETESTNET_API_KEY': 'MISSING', 'BINANCETESTNET_API_SECRET': 'MISSING', 'BINANCE_TESTNET_API_KEY': 'SET', 'BINANCE_TESTNET_API_SECRET': 'SET', 'OKX_API_KEY': 'SET', 'OKX_API_SECRET': 'SET', 'OKX_PASSPHRASE': 'SET', 'REDIS_PASSWORD': 'MISSING', 'PG_DSN': 'SET', 'ETH_API_KEY': 'SET', 'ALCHEMY_ETH_API_KEY': 'SET', 'INFURA_API_KEY': 'SET', 'POLYGON_API_KEY': 'SET', 'ARBI_API_KEY': 'SET', 'THE_GRAPH_API_KEY': 'SET', 'GRAPH_API_KEY': 'SET', 'COINGLASS_API_KEY': 'SET', 'BSCSCAN_API_KEY': 'SET', 'ETHERSCAN_API_KEY': 'SET', 'CRYPTOQUANT_API_KEY': 'SET', 'COINMARKETCAP_API_KEY': 'SET', 'SANTIMENT_API_KEY': 'SET'}
+2026-03-22 22:18:45,522 | WARNING | system | [ENV] Missing environment variables: ['REDIS_PASSWORD']
+2026-03-22 22:18:45,522 | INFO | system | [MAIN] TRAINING_MODE=False
+2026-03-22 22:18:45,522 | INFO | system | [MAIN] HYBRID_MODE=True
+2026-03-22 22:18:45,522 | INFO | system | [MAIN] USE_MTF_ENS=True
+2026-03-22 22:18:45,522 | INFO | system | [MAIN] DRY_RUN=False
+2026-03-22 22:18:45,522 | INFO | system | [ENV][TG-COMPAT] {'TELEGRAM_BOT_TOKEN': 'SET', 'TELEGRAM_CHAT_ID': 'SET', 'TELEGRAM_ALLOWED_CHAT_IDS': 'SET', 'TELEGRAM_NOTIFY_SIGNALS': 'SET', 'TELEGRAM_NOTIFY_COOLDOWN_S': 'SET', 'TELEGRAM_ALERTS': 'SET', 'TG_NOTIFY_OPEN_CLOSE': 'SET', 'TG_OPEN_CLOSE_ONLY_REAL': 'SET', 'TG_NOTIFY_TRADES': 'SET', 'TG_DUPLICATE_SIGNAL_COOLDOWN_SEC': 'SET'}
+2026-03-22 22:18:45,523 | INFO | system | [WebSocket] Connecting to: wss://fstream.binance.com/ws/btcusdt@trade
+2026-03-22 22:18:45,524 | INFO | system | [WebSocket] WebSocket thread started.
+2026-03-22 22:18:45,524 | INFO | system | [WS] ENABLE_WS=true -> websocket started. symbol=BTCUSDT
+2026-03-22 22:18:45,524 | INFO | system | [PRICECACHE] initialized | memory_cache=True redis_cache=True
+2026-03-22 22:18:45,525 | INFO | system | [MODE] DRY_RUN=0 ARMED=1 LIVE_KILL_SWITCH=0 BINANCE_TESTNET=0
+2026-03-22 22:18:45,766 | INFO | system | [BINANCE_CLIENT] session.request patch applied (drops stray 'version' kwarg)
+2026-03-22 22:18:45,766 | INFO | system | [BINANCE_CLIENT] patched futures read methods -> v2 endpoints
+2026-03-22 22:18:45,768 | INFO | system | [BINANCE_CLIENT] Futures Client oluşturuldu | testnet=False | dry_run=False
+2026-03-22 22:18:45,768 | INFO | system | [RISK] Init: daily_max_loss_usdt=300.00, daily_max_loss_pct=0.2500, max_consecutive_losses=5, max_open_trades=3, equity_start_of_day=10000.00
+2026-03-22 22:18:45,824 | INFO | system | [TelegramBot] risk_manager attached
+2026-03-22 22:18:45,824 | INFO | system | [MAIN] TelegramBot init OK (send-only mode).
+2026-03-22 22:18:45,825 | INFO | system | [POS][ENV] ENABLE_PG_POS_LOG=1 enable_pg_flag=True
+2026-03-22 22:18:45,825 | INFO | system | [POS][ENV] PG_DSN=postgresql://botuser:***@localhost:5432/binancebot
+2026-03-22 22:18:45,827 | INFO | system | [POS] Redis OK (redis://localhost:6379/0)
+2026-03-22 22:18:46,062 | INFO | system | [POS] Postgres OK + schema checked.
+2026-03-22 22:18:46,062 | INFO | system | [DEPTHWS] thread started url=wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 22:18:46,063 | INFO | system | [DEPTHWS] connecting wss://fstream.binance.com/ws/btcusdt@depth5@100ms
+2026-03-22 22:18:46,063 | INFO | system | [DEPTHWS] enabled | symbol=BTCUSDT tfs=['1m', '3m', '5m', '15m', '30m', '1h'] price_cache=True redis_price_cache=True
+2026-03-22 22:18:46,099 | INFO | system | [HYBRID] SGD model loaded from models/online_model_5m_best.joblib (interval=5m)
+2026-03-22 22:18:46,113 | INFO | system | [HYBRID] Meta loaded from models/model_meta_5m.json
+2026-03-22 22:18:46,162 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:46,474 | INFO | system | [WebSocket] Connection opened.
+2026-03-22 22:18:47,878 | INFO | system | [HYBRID] LSTM models and scaler loaded for 5m (use_lstm_hybrid=True)
+2026-03-22 22:18:47,881 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1m_best.joblib (interval=1m)
+2026-03-22 22:18:47,882 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1m.json
+2026-03-22 22:18:47,884 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:48,986 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1m (use_lstm_hybrid=True)
+2026-03-22 22:18:48,988 | INFO | system | [HYBRID] SGD model loaded from models/online_model_3m_best.joblib (interval=3m)
+2026-03-22 22:18:48,989 | INFO | system | [HYBRID] Meta loaded from models/model_meta_3m.json
+2026-03-22 22:18:48,990 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:50,337 | INFO | system | [HYBRID] LSTM models and scaler loaded for 3m (use_lstm_hybrid=True)
+2026-03-22 22:18:50,340 | INFO | system | [HYBRID] SGD model loaded from models/online_model_15m_best.joblib (interval=15m)
+2026-03-22 22:18:50,341 | INFO | system | [HYBRID] Meta loaded from models/model_meta_15m.json
+2026-03-22 22:18:50,342 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:51,484 | INFO | system | [HYBRID] LSTM models and scaler loaded for 15m (use_lstm_hybrid=True)
+2026-03-22 22:18:51,486 | INFO | system | [HYBRID] SGD model loaded from models/online_model_30m_best.joblib (interval=30m)
+2026-03-22 22:18:51,489 | INFO | system | [HYBRID] Meta loaded from models/model_meta_30m.json
+2026-03-22 22:18:51,491 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:52,624 | INFO | system | [HYBRID] LSTM models and scaler loaded for 30m (use_lstm_hybrid=True)
+2026-03-22 22:18:52,626 | INFO | system | [HYBRID] SGD model loaded from models/online_model_1h_best.joblib (interval=1h)
+2026-03-22 22:18:52,628 | INFO | system | [HYBRID] Meta loaded from models/model_meta_1h.json
+2026-03-22 22:18:52,629 | INFO | system | [HYBRID] SGD helper loaded from models/sgd_helper.joblib
+2026-03-22 22:18:53,724 | INFO | system | [HYBRID] LSTM models and scaler loaded for 1h (use_lstm_hybrid=True)
+2026-03-22 22:18:53,725 | INFO | system | [MAIN] MTF ensemble aktif: intervals=['1m', '3m', '5m', '15m', '30m', '1h']
+2026-03-22 22:18:53,725 | INFO | system | [WHALE] MultiTimeframeWhaleDetector init OK.
+2026-03-22 22:18:53,726 | INFO | system | [MAIN][EXECUTOR-CONFIG] BASE_ORDER_NOTIONAL=120 MAX_POSITION_NOTIONAL=500 MAX_LEVERAGE=5
+2026-03-22 22:18:53,726 | INFO | system | [MAIN][SYNC] wiring position sync hooks...
+2026-03-22 22:18:53,726 | INFO | system | [MAIN][SYNC] initial sync callable found.
+2026-03-22 22:18:54,250 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT']
+2026-03-22 22:18:54,251 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT']
+2026-03-22 22:18:54,252 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=3 bridge_open=3
+2026-03-22 22:18:54,253 | INFO | system | [EXEC][STATE] position_manager symbols | count=3 symbols=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT']
+2026-03-22 22:18:54,254 | INFO | system | [EXEC][STATE] local positions resolved | count=3 symbols=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT']
+2026-03-22 22:18:54,342 | INFO | system | [EXEC][STATE] local position removed | symbol=AAVEUSDT
+2026-03-22 22:18:54,342 | INFO | system | [EXEC][SYNC] removed orphan local position | symbol=AAVEUSDT
+2026-03-22 22:18:54,344 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=AAVEUSDT
+2026-03-22 22:18:54,344 | INFO | system | [EXEC][SYNC] removed orphan bridge state | symbol=AAVEUSDT
+2026-03-22 22:18:54,346 | INFO | system | [EXEC][STATE] local position removed | symbol=ATOMUSDT
+2026-03-22 22:18:54,347 | INFO | system | [EXEC][SYNC] removed orphan local position | symbol=ATOMUSDT
+2026-03-22 22:18:54,347 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=ATOMUSDT
+2026-03-22 22:18:54,348 | INFO | system | [EXEC][SYNC] removed orphan bridge state | symbol=ATOMUSDT
+2026-03-22 22:18:54,350 | INFO | system | [EXEC][STATE] local position removed | symbol=OPUSDT
+2026-03-22 22:18:54,350 | INFO | system | [EXEC][SYNC] removed orphan local position | symbol=OPUSDT
+2026-03-22 22:18:54,351 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=OPUSDT
+2026-03-22 22:18:54,351 | INFO | system | [EXEC][SYNC] removed orphan bridge state | symbol=OPUSDT
+2026-03-22 22:18:54,351 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,352 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,352 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,352 | INFO | system | [EXEC][STATE] bridge state symbol already absent | key=open_positions_state symbol=AAVEUSDT
+2026-03-22 22:18:54,352 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=AAVEUSDT
+2026-03-22 22:18:54,353 | INFO | system | [EXEC][STATE] bridge state symbol already absent | key=open_positions_state symbol=ATOMUSDT
+2026-03-22 22:18:54,353 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=ATOMUSDT
+2026-03-22 22:18:54,353 | INFO | system | [EXEC][STATE] bridge state symbol already absent | key=open_positions_state symbol=OPUSDT
+2026-03-22 22:18:54,353 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=OPUSDT
+2026-03-22 22:18:54,354 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,354 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,354 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,354 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT'] removed_bridge=['AAVEUSDT', 'ATOMUSDT', 'OPUSDT'] added_local=[] added_bridge=[] kept=[]
+2026-03-22 22:18:54,354 | INFO | system | [MAIN][SYNC] initial sync_positions_with_exchange completed.
+2026-03-22 22:18:54,355 | INFO | system | [MAIN][SYNC] periodic position sync started interval_sec=30
+2026-03-22 22:18:54,355 | INFO | system | [MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=5
+2026-03-22 22:18:54,355 | INFO | system | [EXEC-EVENTS] consumer task started.
+2026-03-22 22:18:54,355 | INFO | system | [SCAN] enabled | symbols=5 interval=1m topk=3 every=10.0s conc=4 fast=True aggressive=False adaptive=True
+2026-03-22 22:18:54,844 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,844 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,844 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,845 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-03-22 22:18:54,845 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,846 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,846 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,846 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,846 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,846 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,847 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,847 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,847 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,847 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[]
+2026-03-22 22:18:54,848 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-03-22 22:18:54,848 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-03-22 22:18:54,848 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-03-22 22:18:54,848 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-03-22 22:18:54,849 | INFO | system | [EXEC-EVENTS] consuming stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-03-22 22:24:30,512 | INFO | system | [EXEC-EVENTS] recv intent=af484214-64fc-49a0-a65a-839645e3b0c5 side=long symbol=SOLUSDT interval=5m price=0.6727659847571742
+2026-03-22 22:24:30,513 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=SOLUSDT side=long interval=5m score=0.717287
+2026-03-22 22:24:30,513 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=SOLUSDT side=long interval=5m score=0.7173 intent=af484214-64fc-49a0-a65a-839645e3b0c5
+2026-03-22 22:24:30,776 | INFO | system | [EXEC][LEV][INTENT] symbol=SOLUSDT side=long recommended=None
+2026-03-22 22:24:32,210 | INFO | system | [EXEC][NOTIONAL] symbol=SOLUSDT side=long price=86.230000 balance_source=available_balance base_balance=310.22 pct=0.3000 notional=93.07
+2026-03-22 22:24:32,504 | INFO | system | [EXEC][SYMBOL_INFO] resolved | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 22:24:32,504 | INFO | system | [EXEC][INTENT][QTY] symbol=SOLUSDT intent_price=0.672766 order_price=86.230000 raw_qty=1.0792920956 norm_qty=1.0700000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 22:24:32,504 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=SOLUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 signal_score=0.7173 raw_notional=93.07 final_notional=92.27 target_leverage=5
+2026-03-22 22:24:32,755 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=SOLUSDT tick_size=0.0100000000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.0000000000
+2026-03-22 22:24:32,755 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=SOLUSDT raw_qty=1.0700000000 norm_qty=1.0700000000 price=86.230000 step=0.0100000000 min_qty=0.0100000000 min_notional=5.000000 reject=-
+2026-03-22 22:24:32,755 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "SOLUSDT", "raw_qty": 1.07, "price": 86.23, "step_size": 0.01, "min_qty": 0.01, "min_notional": 5.0, "normalized_qty": 1.07, "normalized_notional": 92.26610000000001, "reject_reason": ""}
+2026-03-22 22:24:32,975 | INFO | system | [EXEC][LEV][SET] symbol=SOLUSDT requested=5 response={"symbol": "SOLUSDT", "leverage": 5, "maxNotionalValue": "80000000"}
+2026-03-22 22:24:32,976 | INFO | system | [EXEC][LEV] symbol=SOLUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 22:24:33,195 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=SOLUSDT side=BUY qty=1.0700000000 reduceOnly=False lev=5 dt_ms=219 summary={"symbol": "SOLUSDT", "side": "BUY", "type": "MARKET", "orderId": 204720268295, "clientOrderId": "b1_open_SOLUSDT_4012da5d1f86", "status": "NEW", "price": "0.0000", "avgPrice": "0.00", "origQty": "1.07", "executedQty": "0.00", "cumQty": "0.00", "cumQuote": "0.000000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774218273088}
+2026-03-22 22:24:33,421 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "SOLUSDT", "side": "BUY", "type": "MARKET", "orderId": 204720268295, "clientOrderId": "b1_open_SOLUSDT_4012da5d1f86", "status": "FILLED", "price": "0.0000", "avgPrice": "86.220000", "origQty": "1.07", "executedQty": "1.07", "cumQuote": "92.255400", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774218273088}, "terminal_status": "FILLED", "waited_sec": 0.226}
+2026-03-22 22:24:33,647 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "SOLUSDT", "positionAmt": 1.07, "entryPrice": 86.22, "unrealized": -0.01025541, "leverage": 5.0}
+2026-03-22 22:24:33,696 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=SOLUSDT side=long interval=5m intent_id=af484214-64fc-49a0-a65a-839645e3b0c5
+2026-03-22 22:24:33,696 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=SOLUSDT qty=1.0700000000 intent_price=0.672766 order_price=86.230000 notional=92.27 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 22:24:33,696 | INFO | system | [RISK] on_position_open | symbol=SOLUSDT side=long qty=1.070000 notional=92.27 price=86.23 interval=5m open_trades=1 meta={'reason': 'INTENT_OPEN', 'price': 0.6727659847571742, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': 'af484214-64fc-49a0-a65a-839645e3b0c5', 'score': 0.7172866674399773, 'raw': {'symbol': 'SOLUSDT', 'interval': '5m', 'side': 'long', 'intent_id': 'af484214-64fc-49a0-a65a-839645e3b0c5', 'score': 0.7172866674399773, 'price': 0.6727659847571742, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "af484214-64fc-49a0-a65a-839645e3b0c5", "ts_utc": "2026-03-22T22:24:30.506612+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.6727659847571742, "score": 0.7172866674399773, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "910e8936-95db-4c40-ad68-3e99d90c7352", "ts_utc": "2026-03-22T22:24:24.618826+00:00", "symbol": "SOLUSDT", "interval": "5m", "side": "long", "price": 0.6727659847571742, "score_total": 0.6008014414040402, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "vol_ok", "whale_align_long"], "source": "w2", "dedup_key": "SOLUSDT|5m|long", "whale_score": 0.5415291215919497, "whale_dir": "long", "raw": {"price": 0.6727659847571742, "whale_score": 0.5415291215919497, "whale_dir": "long", "meta": {"p_used": 0.9694767779392297, "fast_model_score": 0.9694767779392297, "micro_score": 1.0, "confidence": 0.8989198453598095, "spread_pct": 0.0004197404956331482, "liq_score": 0.560113677376701, "atr_pct": 0.01454127894348472}}, "_score_selected": 0.6008014414040402, "_source_stream_id": "1774218264620-0", "_score_total_final": 0.7172866674399773, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 310.22452469, 'available_balance_usdt': 310.22452469, 'whale_action': '', 'intent_price': 0.6727659847571742, 'order_price': 86.23, 'signal_score': 0.7172866674399773, 'whale_open_notional_before': 93.067357407, 'whale_open_notional_after': 92.26610000000001, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
+2026-03-22 22:25:31,574 | INFO | system | [EXEC-EVENTS] recv intent=d46cba54-c70e-4a4d-9a41-e4f3809daa87 side=short symbol=APTUSDT interval=5m price=1.4250348035135028
+2026-03-22 22:25:31,574 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=APTUSDT side=short interval=5m score=0.578229
+2026-03-22 22:25:31,574 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=APTUSDT side=short interval=5m score=0.5782 intent=d46cba54-c70e-4a4d-9a41-e4f3809daa87
+2026-03-22 22:25:31,575 | WARNING | system | [EXEC][OPEN-BLOCK][WEAK] blocked | symbol=APTUSDT side=short score=0.5782 min_score=0.6000
+2026-03-22 22:26:02,591 | INFO | system | [EXEC-EVENTS] recv intent=d5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91 side=long symbol=LTCUSDT interval=5m price=1.2113796482466732
+2026-03-22 22:26:02,592 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=LTCUSDT side=long interval=5m score=0.691267
+2026-03-22 22:26:02,592 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=LTCUSDT side=long interval=5m score=0.6913 intent=d5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91
+2026-03-22 22:26:02,814 | INFO | system | [EXEC][LEV][INTENT] symbol=LTCUSDT side=long recommended=None
+2026-03-22 22:26:03,769 | INFO | system | [EXEC][NOTIONAL] symbol=LTCUSDT side=long price=53.525324 balance_source=available_balance base_balance=291.75 pct=0.3000 notional=87.52
+2026-03-22 22:26:04,018 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 22:26:04,018 | INFO | system | [EXEC][INTENT][QTY] symbol=LTCUSDT intent_price=1.211380 order_price=53.525324 raw_qty=1.6351946871 norm_qty=1.6350000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 22:26:04,018 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=LTCUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 signal_score=0.6913 raw_notional=87.52 final_notional=87.51 target_leverage=5
+2026-03-22 22:26:04,314 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=LTCUSDT tick_size=0.0100000000 step=0.0010000000 min_qty=0.0010000000 min_notional=20.0000000000
+2026-03-22 22:26:04,314 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=LTCUSDT raw_qty=1.6350000000 norm_qty=1.6350000000 price=53.525324 step=0.0010000000 min_qty=0.0010000000 min_notional=20.000000 reject=-
+2026-03-22 22:26:04,314 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "LTCUSDT", "raw_qty": 1.635, "price": 53.52532353, "step_size": 0.001, "min_qty": 0.001, "min_notional": 20.0, "normalized_qty": 1.635, "normalized_notional": 87.51390397155001, "reject_reason": ""}
+2026-03-22 22:26:04,534 | INFO | system | [EXEC][LEV][SET] symbol=LTCUSDT requested=5 response={"symbol": "LTCUSDT", "leverage": 5, "maxNotionalValue": "16000000"}
+2026-03-22 22:26:04,536 | INFO | system | [EXEC][LEV] symbol=LTCUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-03-22 22:26:04,764 | INFO | system | [EXEC][ORDER] OPEN OK | fn=futures_create_order symbol=LTCUSDT side=BUY qty=1.6350000000 reduceOnly=False lev=5 dt_ms=228 summary={"symbol": "LTCUSDT", "side": "BUY", "type": "MARKET", "orderId": 42010612232, "clientOrderId": "b1_open_LTCUSDT_b0aa6a5aacc8", "status": "NEW", "price": "0.00", "avgPrice": "0.00", "origQty": "1.635", "executedQty": "0.000", "cumQty": "0.000", "cumQuote": "0.00000", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774218364653}
+2026-03-22 22:26:04,987 | INFO | system | [EXEC][ORDER][POLL] {"poll": "ok", "result": {"symbol": "LTCUSDT", "side": "BUY", "type": "MARKET", "orderId": 42010612232, "clientOrderId": "b1_open_LTCUSDT_b0aa6a5aacc8", "status": "FILLED", "price": "0.00", "avgPrice": "53.52000", "origQty": "1.635", "executedQty": "1.635", "cumQuote": "87.50520", "reduceOnly": false, "positionSide": "LONG", "timeInForce": "GTC", "updateTime": 1774218364653}, "terminal_status": "FILLED", "waited_sec": 0.223}
+2026-03-22 22:26:05,206 | INFO | system | [EXEC][VERIFY] {"verify": "ok", "symbol": "LTCUSDT", "positionAmt": 1.635, "entryPrice": 53.52, "unrealized": 0.0028853, "leverage": 5.0}
+2026-03-22 22:26:05,209 | INFO | system | [EXEC][STATE] bridge state upserted | key=open_positions_state symbol=LTCUSDT side=long interval=5m intent_id=d5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91
+2026-03-22 22:26:05,209 | INFO | system | [EXEC][INTENT] OPEN LONG | symbol=LTCUSDT qty=1.6350000000 intent_price=1.211380 order_price=53.525324 notional=87.51 npct=- lev=5 whale_action=- whale_bias=hold dry_run=False
+2026-03-22 22:26:05,209 | INFO | system | [RISK] on_position_open | symbol=LTCUSDT side=long qty=1.635000 notional=87.51 price=53.53 interval=5m open_trades=2 meta={'reason': 'INTENT_OPEN', 'price': 1.2113796482466732, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'intent_id': 'd5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91', 'score': 0.6912666342721866, 'raw': {'symbol': 'LTCUSDT', 'interval': '5m', 'side': 'long', 'intent_id': 'd5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91', 'score': 0.6912666342721866, 'price': 1.2113796482466732, 'trail_pct': 0.012, 'stall_ttl_sec': 7200, 'raw': '{"intent_id": "d5d1d2c0-48a6-46a8-aeb5-03c8a43c2c91", "ts_utc": "2026-03-22T22:26:02.588220+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 1.2113796482466732, "score": 0.6912666342721866, "recommended_leverage": 5, "recommended_notional_pct": 0.07260000000000001, "trail_pct": 0.012, "stall_ttl_sec": 7200, "reasons": ["edge_strong", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "tight_spread", "whale_align_long", "whale_confirm"], "risk_tags": ["whale_strong"], "raw": {"candidate_id": "b4a93dbf-baad-4ebf-a234-ae0619ca27cc", "ts_utc": "2026-03-22T22:25:51.368611+00:00", "symbol": "LTCUSDT", "interval": "5m", "side": "long", "price": 1.2113796482466732, "score_total": 0.6765489021287461, "recommended_leverage": 5, "recommended_notional_pct": 0.05, "risk_tags": ["whale_strong"], "reason_codes": ["edge_strong", "conf_strong", "liq_mid", "whale_seen", "whale_strong", "tight_spread", "whale_align_long", "whale_confirm"], "source": "w4", "dedup_key": "LTCUSDT|5m|long", "whale_score": 0.5814672165325112, "whale_dir": "long", "raw": {"price": 1.2113796482466732, "whale_score": 0.5814672165325112, "whale_dir": "long", "meta": {"p_used": 0.7695452174107194, "fast_model_score": 0.7695452174107194, "micro_score": 1.0, "confidence": 0.8752140658906163, "spread_pct": 0.000201873403540311, "liq_score": 0.578405662959004, "atr_pct": 0.0191197364882853}}, "_score_selected": 0.6765489021287461, "_source_stream_id": "1774218351370-0", "_score_total_final": 0.6912666342721866, "trail_pct": 0.012, "stall_ttl_sec": 7200, "w_min": 0.54}}'}, 'equity_usdt': 310.17839699, 'available_balance_usdt': 291.74774887, 'whale_action': '', 'intent_price': 1.2113796482466732, 'order_price': 53.52532353, 'signal_score': 0.6912666342721866, 'whale_open_notional_before': 87.524324661, 'whale_open_notional_after': 87.51390397155001, 'whale_notional_adjusted': True, 'target_leverage': 5, 'whale_bias': 'hold'}
