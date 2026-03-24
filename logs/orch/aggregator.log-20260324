@@ -1,0 +1,28 @@
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False
+[AggregatorRunner] starting... crash_retry=True retry_max_sleep=30s redis_retries=12 redis_retry_base_sleep=1.0s redis_retry_max_sleep=15.0s
+[AggregatorRunner] Redis ping ok on attempt=1
+[AggregatorRunner] redis ready. signals_stream=signals_stream candidates_stream=candidates_stream
+[Aggregator] started. reading signals_stream -> candidates_stream group=agg_group consumer=agg_0 topk_out=10 min_score=0.180 include_raw=False require_price=True debug_drops=False

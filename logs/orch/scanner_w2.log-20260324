@@ -1,0 +1,14 @@
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=5m syms=['SOLUSDT', 'XRPUSDT', 'ADAUSDT'] | gates(min_conf=0.58 max_spread=0.0006 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor

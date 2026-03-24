@@ -4524,446 +4524,196 @@ class TradeExecutor:
 
         return None
 
-    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
-        sym = str(symbol).upper().strip()
-        pos = self._get_position(sym)
-        if not isinstance(pos, dict):
-            return
+def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
+    sym = str(symbol).upper().strip()
+    pos = self._get_position(sym)
+    if not isinstance(pos, dict):
+        return
 
-        side = str(pos.get("side") or "").strip().lower()
-        qty = float(pos.get("qty") or 0.0)
-        entry_price = float(pos.get("entry_price") or 0.0)
+    side = str(pos.get("side") or "").strip().lower()
+    qty = float(pos.get("qty") or 0.0)
+    entry_price = float(pos.get("entry_price") or 0.0)
 
-        if side not in ("long", "short") or qty <= 0 or price <= 0 or entry_price <= 0:
-            return
+    if side not in ("long", "short") or qty <= 0 or price <= 0 or entry_price <= 0:
+        return
 
-        now_ts = time.time()
+    now_ts = time.time()
 
-        highest_price = float(pos.get("highest_price") or entry_price)
-        lowest_price = float(pos.get("lowest_price") or entry_price)
-        best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
-        last_best_ts = float(pos.get("last_best_ts") or now_ts)
+    highest_price = float(pos.get("highest_price") or entry_price)
+    lowest_price = float(pos.get("lowest_price") or entry_price)
+    best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
+    last_best_ts = float(pos.get("last_best_ts") or now_ts)
 
-        trailing_pct = float(
-            pos.get("trailing_pct")
-            or getattr(self, "default_trailing_pct", 0.0)
-            or getattr(self, "trailing_pct_default", 0.0)
-            or 0.0
+    trailing_pct = float(pos.get("trailing_pct") or 0.0)
+    stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
+
+    sl_price = float(pos.get("sl_price") or 0.0)
+    tp_price = float(pos.get("tp_price") or 0.0)
+
+    # === CONFIG ===
+    sl_pct = float(getattr(self, "default_sl_pct", 0.0) or 0.0)
+    tp_pct = float(getattr(self, "default_tp_pct", 0.0) or 0.0)
+    trailing_activation_pct = float(getattr(self, "trailing_activation_pct", 0.0) or 0.0)
+
+    tp_runner_enable = bool(getattr(self, "tp_runner_enable", True))
+    tp_arm_pnl_pct = float(getattr(self, "tp_arm_pnl_pct", 0.02) or 0.02)
+    tp_runner_pullback_pct = float(getattr(self, "tp_runner_pullback_pct", 0.006) or 0.006)
+
+    hard_stop_enable = bool(getattr(self, "hard_stop_enable", True))
+    hard_stop_loss_pct = float(getattr(self, "hard_stop_loss_pct", 0.04) or 0.04)
+
+    # === PROFIT PROTECT (NEW) ===
+    profit_protect_enable = True
+    profit_protect_arm_pct = 0.02
+    profit_protect_pullback_pct = 0.004
+    profit_protect_reverse_score = 0.60
+
+    tp_runner_armed = bool(pos.get("tp_runner_armed", False))
+    tp_runner_armed_ts = float(pos.get("tp_runner_armed_ts") or 0.0)
+
+    close_reason = None
+
+    if sl_price <= 0 and sl_pct > 0:
+        sl_price = entry_price * (1 - sl_pct) if side == "long" else entry_price * (1 + sl_pct)
+
+    if tp_price <= 0 and tp_pct > 0:
+        tp_price = entry_price * (1 + tp_pct) if side == "long" else entry_price * (1 - tp_pct)
+
+    # =========================
+    # ===== LONG LOGIC ========
+    # =========================
+    if side == "long":
+        highest_price = max(highest_price, price)
+        pnl_pct = (price - entry_price) / entry_price
+
+        if pnl_pct > best_pnl_pct:
+            best_pnl_pct = pnl_pct
+            last_best_ts = now_ts
+
+        if tp_runner_enable and best_pnl_pct >= tp_arm_pnl_pct:
+            tp_runner_armed = True
+            if tp_runner_armed_ts <= 0:
+                tp_runner_armed_ts = now_ts
+
+        trailing_armed = (
+            trailing_pct > 0
+            and highest_price > entry_price
+            and (trailing_activation_pct <= 0 or best_pnl_pct >= trailing_activation_pct)
         )
-        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
 
-        sl_price = float(pos.get("sl_price") or 0.0)
-        tp_price = float(pos.get("tp_price") or 0.0)
+        trail_stop_price = highest_price * (1 - trailing_pct) if trailing_armed else 0.0
 
-        try:
-            sl_pct = float(
-                getattr(self, "default_sl_pct", 0.0)
-                or getattr(self, "sl_pct_default", 0.0)
-                or getattr(self, "sl_pct", 0.0)
-                or 0.0
-            )
-        except Exception:
-            sl_pct = 0.0
+        # === PROFIT PROTECT ===
+        protect_armed = profit_protect_enable and best_pnl_pct >= profit_protect_arm_pct
 
-        try:
-            tp_pct = float(
-                getattr(self, "default_tp_pct", 0.0)
-                or getattr(self, "tp_pct_default", 0.0)
-                or getattr(self, "tp_pct", 0.0)
-                or 0.0
-            )
-        except Exception:
-            tp_pct = 0.0
+        if close_reason is None and protect_armed:
+            pullback = (highest_price - price) / highest_price if highest_price > 0 else 0
 
-        try:
-            trailing_activation_pct = float(
-                getattr(self, "trailing_activation_pct", 0.0) or 0.0
-            )
-        except Exception:
-            trailing_activation_pct = 0.0
+            reverse_meta = self._evaluate_position_signal_exit(
+                symbol=sym,
+                pos=pos,
+                price=float(price),
+            ) or {}
 
-        try:
-            stall_close_enabled = bool(getattr(self, "stall_close_enabled", True))
-        except Exception:
-            stall_close_enabled = True
-
-        try:
-            stall_close_after_profit_sec = int(
-                float(getattr(self, "stall_close_after_profit_sec", 900) or 900)
-            )
-        except Exception:
-            stall_close_after_profit_sec = 900
-
-        try:
-            stall_peak_gate_pct = float(
-                getattr(self, "stall_peak_gate_pct", 0.04) or 0.04
-            )
-        except Exception:
-            stall_peak_gate_pct = 0.04
-
-        try:
-            tp_runner_enable = bool(getattr(self, "tp_runner_enable", True))
-        except Exception:
-            tp_runner_enable = True
-
-        try:
-            tp_arm_pnl_pct = float(
-                getattr(self, "tp_arm_pnl_pct", 0.02) or 0.02
-            )
-        except Exception:
-            tp_arm_pnl_pct = 0.02
-
-        try:
-            tp_runner_pullback_pct = float(
-                getattr(self, "tp_runner_pullback_pct", 0.006) or 0.006
-            )
-        except Exception:
-            tp_runner_pullback_pct = 0.006
-
-        try:
-            hard_stop_enable = bool(getattr(self, "hard_stop_enable", True))
-        except Exception:
-            hard_stop_enable = True
-
-        try:
-            hard_stop_loss_pct = float(
-                getattr(self, "hard_stop_loss_pct", 0.04) or 0.04
-            )
-        except Exception:
-            hard_stop_loss_pct = 0.04
-
-        try:
-            manual_close_detect_enable = bool(
-                getattr(self, "manual_close_detect_enable", True)
-            )
-        except Exception:
-            manual_close_detect_enable = True
-
-        trail_ref_price = float(entry_price)
-        trail_stop_price = 0.0
-        trailing_armed = False
-        close_reason = None
-
-        tp_runner_armed = bool(pos.get("tp_runner_armed", False))
-        tp_runner_armed_ts = float(pos.get("tp_runner_armed_ts") or 0.0)
-        stall_peak_armed = bool(pos.get("stall_peak_armed", False))
-        stall_peak_armed_ts = float(pos.get("stall_peak_armed_ts") or 0.0)
-
-        if manual_close_detect_enable:
-            try:
-                client = getattr(self, "client", None)
-                fn = getattr(client, "futures_position_information", None) if client is not None else None
-                exchange_has_position = False
-
-                if callable(fn):
-                    try:
-                        rows = fn(symbol=sym) or []
-                    except TypeError:
-                        rows = fn() or []
-
-                    for row in rows:
-                        try:
-                            row_sym = str(row.get("symbol") or "").upper().strip()
-                            if row_sym != sym:
-                                continue
-
-                            amt = float(row.get("positionAmt") or 0.0)
-                            if abs(amt) <= 0.0:
-                                continue
-
-                            ps = str(row.get("positionSide") or "").upper().strip()
-                            if ps == "LONG":
-                                row_side = "long"
-                            elif ps == "SHORT":
-                                row_side = "short"
-                            else:
-                                row_side = "long" if amt > 0 else "short"
-
-                            if row_side == side:
-                                exchange_has_position = True
-                                break
-                        except Exception:
-                            continue
-
-                if callable(fn) and not exchange_has_position:
-                    try:
-                        if self.logger:
-                            self.logger.warning(
-                                "[EXEC][MANUAL-CLOSE] exchange position missing -> local cleanup | symbol=%s side=%s price=%.6f",
-                                sym,
-                                side,
-                                float(price),
-                            )
-                    except Exception:
-                        pass
-
-                    self.close_position(
-                        symbol=sym,
-                        price=float(price),
-                        reason="manual_close_detected",
-                        interval=str(interval or pos.get("interval") or ""),
-                    )
-                    return
-            except Exception:
-                try:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][MANUAL-CLOSE] detection failed | symbol=%s",
-                            sym,
-                        )
-                except Exception:
-                    pass
-
-        if sl_price <= 0 and sl_pct > 0:
-            if side == "long":
-                sl_price = entry_price * (1.0 - sl_pct)
-            else:
-                sl_price = entry_price * (1.0 + sl_pct)
-
-        if tp_price <= 0 and tp_pct > 0:
-            if side == "long":
-                tp_price = entry_price * (1.0 + tp_pct)
-            else:
-                tp_price = entry_price * (1.0 - tp_pct)
-
-        if side == "long":
-            highest_price = max(float(highest_price), float(price))
-            pnl_pct = (
-                (float(price) - float(entry_price)) / float(entry_price)
-                if float(entry_price) > 0
-                else 0.0
-            )
-            trail_ref_price = float(highest_price)
-
-            if float(pnl_pct) > float(best_pnl_pct):
-                best_pnl_pct = float(pnl_pct)
-                last_best_ts = float(now_ts)
-
-            if tp_runner_enable and float(best_pnl_pct) >= float(tp_arm_pnl_pct):
-                tp_runner_armed = True
-                if tp_runner_armed_ts <= 0:
-                    tp_runner_armed_ts = float(now_ts)
-
-            if float(best_pnl_pct) >= float(stall_peak_gate_pct):
-                stall_peak_armed = True
-                if stall_peak_armed_ts <= 0:
-                    stall_peak_armed_ts = float(now_ts)
-
-            trailing_armed = bool(
-                float(trailing_pct) > 0
-                and float(highest_price) > float(entry_price)
-                and (
-                    float(trailing_activation_pct) <= 0
-                    or float(best_pnl_pct) >= float(trailing_activation_pct)
-                )
+            reverse_hit = (
+                isinstance(reverse_meta, dict)
+                and reverse_meta.get("reason") == "reverse_signal"
+                and float(reverse_meta.get("signal_score", 0)) >= profit_protect_reverse_score
             )
 
-            if trailing_armed:
-                trail_stop_price = float(highest_price) * (1.0 - float(trailing_pct))
-
-            if hard_stop_enable and float(pnl_pct) <= -abs(float(hard_stop_loss_pct)):
-                close_reason = "hard_stop_hit"
-            elif float(sl_price) > 0 and float(price) <= float(sl_price):
-                close_reason = "sl_hit"
-            elif trailing_armed and float(price) <= float(trail_stop_price):
-                close_reason = "trailing_hit"
-            elif (
-                close_reason is None
-                and tp_runner_armed
-                and float(best_pnl_pct) >= float(tp_arm_pnl_pct)
-                and float(best_pnl_pct - pnl_pct) >= float(tp_runner_pullback_pct)
-            ):
-                close_reason = "tp_runner_exit"
-            elif (
-                close_reason is None
-                and (not tp_runner_enable)
-                and float(tp_price) > 0
-                and float(price) >= float(tp_price)
-            ):
-                close_reason = "tp_hit"
-        else:
-            lowest_price = min(float(lowest_price), float(price))
-            pnl_pct = (
-                (float(entry_price) - float(price)) / float(entry_price)
-                if float(entry_price) > 0
-                else 0.0
-            )
-            trail_ref_price = float(lowest_price)
-
-            if float(pnl_pct) > float(best_pnl_pct):
-                best_pnl_pct = float(pnl_pct)
-                last_best_ts = float(now_ts)
-
-            if tp_runner_enable and float(best_pnl_pct) >= float(tp_arm_pnl_pct):
-                tp_runner_armed = True
-                if tp_runner_armed_ts <= 0:
-                    tp_runner_armed_ts = float(now_ts)
-
-            if float(best_pnl_pct) >= float(stall_peak_gate_pct):
-                stall_peak_armed = True
-                if stall_peak_armed_ts <= 0:
-                    stall_peak_armed_ts = float(now_ts)
-
-            trailing_armed = bool(
-                float(trailing_pct) > 0
-                and float(lowest_price) < float(entry_price)
-                and (
-                    float(trailing_activation_pct) <= 0
-                    or float(best_pnl_pct) >= float(trailing_activation_pct)
-                )
-            )
-
-            if trailing_armed:
-                trail_stop_price = float(lowest_price) * (1.0 + float(trailing_pct))
-
-            if hard_stop_enable and float(pnl_pct) <= -abs(float(hard_stop_loss_pct)):
-                close_reason = "hard_stop_hit"
-            elif float(sl_price) > 0 and float(price) >= float(sl_price):
-                close_reason = "sl_hit"
-            elif trailing_armed and float(price) >= float(trail_stop_price):
-                close_reason = "trailing_hit"
-            elif (
-                close_reason is None
-                and tp_runner_armed
-                and float(best_pnl_pct) >= float(tp_arm_pnl_pct)
-                and float(best_pnl_pct - pnl_pct) >= float(tp_runner_pullback_pct)
-            ):
-                close_reason = "tp_runner_exit"
-            elif (
-                close_reason is None
-                and (not tp_runner_enable)
-                and float(tp_price) > 0
-                and float(price) <= float(tp_price)
-            ):
-                close_reason = "tp_hit"
-
-        weak_reason = None
-        try:
-            if close_reason is None and bool(getattr(self, "weak_signal_enabled", False)):
-                weak_reason = self._evaluate_position_signal_exit(
-                    symbol=sym,
-                    pos=pos,
-                    price=float(price),
-                )
-                if weak_reason:
-                    close_reason = str(
-                        weak_reason.get("reason")
-                        if isinstance(weak_reason, dict)
-                        else weak_reason
-                    )
-                    try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC][WEAK] exit trigger | symbol=%s side=%s reason=%s pnl_pct=%.6f",
-                                sym,
-                                side,
-                                str(close_reason),
-                                float(pnl_pct),
-                            )
-                    except Exception:
-                        pass
-        except Exception:
-            try:
-                if self.logger:
-                    self.logger.exception(
-                        "[EXEC][WEAK] evaluate failed | symbol=%s",
-                        sym,
-                    )
-            except Exception:
-                pass
+            if reverse_hit:
+                close_reason = "profit_protect_reverse"
+            elif pullback >= profit_protect_pullback_pct:
+                close_reason = "profit_protect_pullback"
 
         if close_reason is None:
-            stalled_for = float(now_ts) - float(last_best_ts)
+            if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
+                close_reason = "hard_stop_hit"
+            elif sl_price > 0 and price <= sl_price:
+                close_reason = "sl_hit"
+            elif trailing_armed and price <= trail_stop_price:
+                close_reason = "trailing_hit"
+            elif tp_runner_armed and (best_pnl_pct - pnl_pct) >= tp_runner_pullback_pct:
+                close_reason = "tp_runner_exit"
+            elif tp_price > 0 and price >= tp_price:
+                close_reason = "tp_hit"
+    else:
+        lowest_price = min(lowest_price, price)
+        pnl_pct = (entry_price - price) / entry_price
 
-            if (
-                bool(stall_close_enabled)
-                and bool(stall_peak_armed)
-                and float(best_pnl_pct) >= float(stall_peak_gate_pct)
-                and float(stalled_for) >= float(stall_close_after_profit_sec)
-            ):
-                close_reason = "stall_exit"
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][STALL] peak stall exit | symbol=%s side=%s best_pnl_pct=%.6f stalled_for=%.1fs threshold_sec=%s",
-                            sym,
-                            side,
-                            float(best_pnl_pct),
-                            float(stalled_for),
-                            int(stall_close_after_profit_sec),
-                        )
-                except Exception:
-                    pass
+        if pnl_pct > best_pnl_pct:
+            best_pnl_pct = pnl_pct
+            last_best_ts = now_ts
 
-            elif int(stall_ttl_sec) > 0 and float(stalled_for) >= float(stall_ttl_sec):
-                close_reason = "stall_exit"
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][STALL] ttl exit | symbol=%s side=%s stalled_for=%.1fs stall_ttl_sec=%s",
-                            sym,
-                            side,
-                            float(stalled_for),
-                            int(stall_ttl_sec),
-                        )
-                except Exception:
-                    pass
+        trailing_armed = trailing_pct > 0 and lowest_price < entry_price
+        trail_stop_price = lowest_price * (1 + trailing_pct) if trailing_armed else 0.0
 
-        pos["highest_price"] = float(highest_price)
-        pos["lowest_price"] = float(lowest_price)
-        pos["best_pnl_pct"] = float(best_pnl_pct)
-        pos["last_best_ts"] = float(last_best_ts)
-        pos["sl_price"] = float(sl_price)
-        pos["tp_price"] = float(tp_price)
-        pos["trailing_pct"] = float(trailing_pct)
-        pos["tp_runner_armed"] = bool(tp_runner_armed)
-        pos["tp_runner_armed_ts"] = float(tp_runner_armed_ts)
-        pos["stall_peak_armed"] = bool(stall_peak_armed)
-        pos["stall_peak_armed_ts"] = float(stall_peak_armed_ts)
-        pos["last_price"] = float(price)
+        # === PROFIT PROTECT ===
+        protect_armed = best_pnl_pct >= 0.02
 
-        self._set_position(sym, pos)
+        if close_reason is None and protect_armed:
+            bounce = (price - lowest_price) / lowest_price if lowest_price > 0 else 0
 
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][LIFECYCLE] updated | symbol=%s side=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f sl=%.6f tp=%.6f trail_ref=%.6f trail_stop=%.6f trailing_armed=%s tp_runner_armed=%s stall_peak_armed=%s",
-                    sym,
-                    side,
-                    float(price),
-                    float(entry_price),
-                    float(pnl_pct),
-                    float(best_pnl_pct),
-                    float(sl_price),
-                    float(tp_price),
-                    float(trail_ref_price),
-                    float(trail_stop_price),
-                    bool(trailing_armed),
-                    bool(tp_runner_armed),
-                    bool(stall_peak_armed),
-                )
-        except Exception:
-            pass
-
-        if close_reason is not None:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][CLOSE] lifecycle trigger | symbol=%s side=%s reason=%s price=%.6f",
-                        sym,
-                        side,
-                        str(close_reason),
-                        float(price),
-                    )
-            except Exception:
-                pass
-
-            self.close_position(
+            reverse_meta = self._evaluate_position_signal_exit(
                 symbol=sym,
+                pos=pos,
                 price=float(price),
-                reason=str(close_reason),
-                interval=str(interval or pos.get("interval") or ""),
+            ) or {}
+
+            reverse_hit = (
+                isinstance(reverse_meta, dict)
+                and reverse_meta.get("reason") == "reverse_signal"
+                and float(reverse_meta.get("signal_score", 0)) >= 0.60
             )
+
+            if reverse_hit:
+                close_reason = "profit_protect_reverse"
+            elif bounce >= 0.004:
+                close_reason = "profit_protect_pullback"
+
+        if close_reason is None:
+            if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
+                close_reason = "hard_stop_hit"
+            elif sl_price > 0 and price >= sl_price:
+                close_reason = "sl_hit"
+            elif trailing_armed and price >= trail_stop_price:
+                close_reason = "trailing_hit"
+
+    # === WEAK SIGNAL EXIT ===
+    if close_reason is None and getattr(self, "weak_signal_enabled", False):
+        weak = self._evaluate_position_signal_exit(sym, pos, price)
+        if weak:
+            close_reason = weak.get("reason", "weak_exit")
+
+    # === STALL EXIT ===
+    if close_reason is None:
+        stalled_for = now_ts - last_best_ts
+        if stall_ttl_sec > 0 and stalled_for >= stall_ttl_sec:
+            close_reason = "stall_exit"
+
+    # === SAVE STATE ===
+    pos.update({
+        "highest_price": highest_price,
+        "lowest_price": lowest_price,
+        "best_pnl_pct": best_pnl_pct,
+        "last_best_ts": last_best_ts,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+        "tp_runner_armed": tp_runner_armed,
+        "tp_runner_armed_ts": tp_runner_armed_ts,
+        "last_price": price,
+    })
+
+    self._set_position(sym, pos)
+
+    # === CLOSE ===
+    if close_reason:
+        self.close_position(
+            symbol=sym,
+            price=float(price),
+            reason=str(close_reason),
+            interval=str(interval or pos.get("interval") or ""),
+        )
 
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
@@ -5359,6 +5109,7 @@ class TradeExecutor:
         side0 = str(side or "long").strip().lower()
         if side0 not in ("long", "short"):
             side0 = "long"
+
         try:
             if self.logger:
                 self.logger.info(
@@ -5416,13 +5167,15 @@ class TradeExecutor:
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][LEV][INTENT] symbol=%s side=%s recommended=%s score=%.4f whale_dir=%s whale_score=%.4f",
+                    "[EXEC][LEV][INTENT] symbol=%s side=%s recommended=%s score=%.4f whale_dir=%s whale_score=%.4f require_whale=%s strict_align=%s",
                     sym_u,
                     side0,
                     str(meta0.get("recommended_leverage")),
                     float(signal_score),
                     whale_dir,
                     float(whale_score),
+                    bool(require_whale_for_open),
+                    bool(strict_whale_alignment),
                 )
         except Exception:
             pass
@@ -5715,6 +5468,7 @@ class TradeExecutor:
             price=float(order_price),
             symbol_info=symbol_info,
         )
+
         try:
             if self.logger:
                 self.logger.info(
@@ -5740,7 +5494,6 @@ class TradeExecutor:
                 "reason": "bad_qty_after_normalization",
                 "meta": qmeta,
             }
-
         final_notional = float(qty) * float(order_price)
 
         extra = dict(meta0)
