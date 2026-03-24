@@ -3048,22 +3048,31 @@ class TradeExecutor:
                             interval=interval,
                         )
 
-                    except Exception:
+                    except Exception as e:
                         try:
                             if self.logger:
                                 self.logger.exception(
-                                    "[EXEC][LIFECYCLE] symbol processing failed | symbol=%s",
-                                    sym,
+                                    "[EXEC][LIFECYCLE] CRASH(symbol) | symbol=%s err=%s",
+                                    str(sym),
+                                    str(e),
                                 )
                         except Exception:
                             pass
 
-            except Exception:
+                        # 🔥 kritik: crash olsa bile loop devam etsin
+                        continue
+            except Exception as e:
                 try:
                     if self.logger:
-                        self.logger.exception("[EXEC][LIFECYCLE] loop failed")
+                        self.logger.exception(
+                            "[EXEC][LIFECYCLE] CRASH(loop) | err=%s",
+                            str(e),
+                        )
                 except Exception:
                     pass
+
+                # 🔥 loop tamamen ölmesin
+                await asyncio.sleep(1)
 
             try:
                 await asyncio.sleep(interval_sec)
