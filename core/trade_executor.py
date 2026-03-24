@@ -115,7 +115,54 @@ class TradeExecutor:
         self.position_lifecycle_interval_sec = int(
             float(os.getenv("POSITION_LIFECYCLE_INTERVAL_SEC", "15") or 15)
         )
+        # === ULTRA FAST SCALP EXIT ENGINE ===
+        self.scalp_exit_enable = str(
+            os.getenv("SCALP_EXIT_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
 
+        self.scalp_grace_sec = int(
+            float(os.getenv("SCALP_GRACE_SEC", "20") or 20)
+        )
+
+        self.scalp_hard_stop_pct = float(
+            os.getenv("SCALP_HARD_STOP_PCT", "0.04") or 0.04
+        )
+
+        self.scalp_profit_arm_pct = float(
+            os.getenv("SCALP_PROFIT_ARM_PCT", "0.008") or 0.008
+        )
+
+        self.scalp_profit_lock_pct = float(
+            os.getenv("SCALP_PROFIT_LOCK_PCT", "0.0035") or 0.0035
+        )
+
+        self.scalp_micro_pullback_pct = float(
+            os.getenv("SCALP_MICRO_PULLBACK_PCT", "0.0025") or 0.0025
+        )
+
+        self.scalp_deep_pullback_pct = float(
+            os.getenv("SCALP_DEEP_PULLBACK_PCT", "0.0040") or 0.0040
+        )
+
+        self.scalp_reverse_min_score = float(
+            os.getenv("SCALP_REVERSE_MIN_SCORE", "0.54") or 0.54
+        )
+
+        self.scalp_fast_exit_profit_pct = float(
+            os.getenv("SCALP_FAST_EXIT_PROFIT_PCT", "0.02") or 0.02
+        )
+
+        self.scalp_fast_exit_pullback_pct = float(
+            os.getenv("SCALP_FAST_EXIT_PULLBACK_PCT", "0.0035") or 0.0035
+        )
+
+        self.scalp_stall_after_profit_sec = int(
+            float(os.getenv("SCALP_STALL_AFTER_PROFIT_SEC", "180") or 180)
+        )
+
+        self.scalp_stall_min_profit_pct = float(
+            os.getenv("SCALP_STALL_MIN_PROFIT_PCT", "0.01") or 0.01
+        )
         self.default_sl_pct = float(os.getenv("SL_PCT", "0.01") or 0.01)
         self.default_tp_pct = float(os.getenv("TP_PCT", "0.02") or 0.02)
         self.default_trailing_pct = float(os.getenv("TRAILING_PCT", "0.03") or 0.03)
@@ -1856,6 +1903,129 @@ class TradeExecutor:
             }
 
         return None
+    def _evaluate_scalp_exit(
+        self,
+        symbol: str,
+        pos: Dict[str, Any],
+        price: float,
+        side: str,
+        entry_price: float,
+        best_pnl_pct: float,
+        highest_price: float,
+        lowest_price: float,
+        now_ts: float,
+        last_best_ts: float,
+    ) -> Optional[str]:
+        scalp_exit_enable = bool(getattr(self, "scalp_exit_enable", True))
+        if not scalp_exit_enable:
+            return None
+
+        scalp_grace_sec = float(getattr(self, "scalp_grace_sec", 20) or 20)
+        scalp_hard_stop_pct = float(getattr(self, "scalp_hard_stop_pct", 0.04) or 0.04)
+        scalp_profit_arm_pct = float(getattr(self, "scalp_profit_arm_pct", 0.008) or 0.008)
+        scalp_profit_lock_pct = float(getattr(self, "scalp_profit_lock_pct", 0.0035) or 0.0035)
+        scalp_micro_pullback_pct = float(
+            getattr(self, "scalp_micro_pullback_pct", 0.0025) or 0.0025
+        )
+        scalp_deep_pullback_pct = float(
+            getattr(self, "scalp_deep_pullback_pct", 0.0040) or 0.0040
+        )
+        scalp_reverse_min_score = float(
+            getattr(self, "scalp_reverse_min_score", 0.54) or 0.54
+        )
+        scalp_fast_exit_profit_pct = float(
+            getattr(self, "scalp_fast_exit_profit_pct", 0.02) or 0.02
+        )
+        scalp_fast_exit_pullback_pct = float(
+            getattr(self, "scalp_fast_exit_pullback_pct", 0.0035) or 0.0035
+        )
+        scalp_stall_after_profit_sec = float(
+            getattr(self, "scalp_stall_after_profit_sec", 180) or 180
+        )
+        scalp_stall_min_profit_pct = float(
+            getattr(self, "scalp_stall_min_profit_pct", 0.01) or 0.01
+        )
+
+        try:
+            opened_at_raw = str(pos.get("opened_at") or "").strip()
+            opened_ts = 0.0
+            if opened_at_raw:
+                try:
+                    opened_ts = datetime.fromisoformat(
+                        opened_at_raw.replace("Z", "+00:00")
+                    ).timestamp()
+                except Exception:
+                    opened_ts = 0.0
+
+            if opened_ts > 0 and (float(now_ts) - float(opened_ts)) < float(scalp_grace_sec):
+                return None
+        except Exception:
+            pass
+
+        if side == "long":
+            pnl_pct = (float(price) - float(entry_price)) / max(float(entry_price), 1e-12)
+            pullback_from_peak = (
+                (float(highest_price) - float(price)) / max(float(highest_price), 1e-12)
+                if float(highest_price) > 0
+                else 0.0
+            )
+        else:
+            pnl_pct = (float(entry_price) - float(price)) / max(float(entry_price), 1e-12)
+            pullback_from_peak = (
+                (float(price) - float(lowest_price)) / max(float(lowest_price), 1e-12)
+                if float(lowest_price) > 0
+                else 0.0
+            )
+
+        if float(pnl_pct) <= -abs(float(scalp_hard_stop_pct)):
+            return "scalp_hard_stop"
+
+        if float(best_pnl_pct) >= float(scalp_fast_exit_profit_pct):
+            if float(pullback_from_peak) >= float(scalp_fast_exit_pullback_pct):
+                return "scalp_fast_pullback"
+
+        if float(best_pnl_pct) >= float(scalp_profit_arm_pct):
+            locked_floor = max(
+                float(scalp_profit_lock_pct),
+                float(best_pnl_pct) - float(scalp_deep_pullback_pct),
+            )
+
+            if float(pnl_pct) <= float(locked_floor):
+                return "scalp_profit_lock"
+
+            if float(pullback_from_peak) >= float(scalp_micro_pullback_pct):
+                return "scalp_micro_pullback"
+
+        try:
+            reverse_meta = self._evaluate_position_signal_exit(
+                symbol=symbol,
+                pos=pos,
+                price=float(price),
+            ) or {}
+        except Exception:
+            reverse_meta = {}
+
+        if isinstance(reverse_meta, dict):
+            try:
+                reverse_score = float(reverse_meta.get("signal_score") or 0.0)
+            except Exception:
+                reverse_score = 0.0
+
+            if (
+                str(reverse_meta.get("reason") or "") == "reverse_signal"
+                and float(reverse_score) >= float(scalp_reverse_min_score)
+                and float(best_pnl_pct) >= float(scalp_profit_arm_pct)
+            ):
+                return "scalp_reverse_kill"
+
+        stalled_for = float(now_ts) - float(last_best_ts)
+        if (
+            float(best_pnl_pct) >= float(scalp_stall_min_profit_pct)
+            and float(stalled_for) >= float(scalp_stall_after_profit_sec)
+        ):
+            return "scalp_stall_exit"
+
+        return None
 
     def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
@@ -2468,15 +2638,56 @@ class TradeExecutor:
         summary = {
             "exchange_open": 0,
             "local_open": 0,
+            "bridge_open": 0,
             "removed_local": [],
             "removed_bridge": [],
             "added_local": [],
             "added_bridge": [],
             "kept": [],
+            "skipped_fresh_local": [],
+            "skipped_fresh_bridge": [],
         }
 
         if not self.position_sync_enabled:
             return summary
+
+        now_ts = time.time()
+
+        def _state_ts(obj: Any) -> float:
+            if not isinstance(obj, dict):
+                return 0.0
+
+            for key in ("sync_grace_until", "bridge_written_ts", "created_ts", "last_best_ts"):
+                try:
+                    v = float(obj.get(key) or 0.0)
+                    if v > 0:
+                        return v
+                except Exception:
+                    pass
+
+            try:
+                opened_at = str(obj.get("opened_at") or "").strip()
+                if opened_at:
+                    return datetime.fromisoformat(opened_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
+
+            return 0.0
+
+        def _fresh(obj: Any, grace_sec: float = 45.0) -> bool:
+            ts = _state_ts(obj)
+            if ts <= 0:
+                return False
+
+            # sync_grace_until absolute timestamp gibi de kullanılabilir
+            try:
+                sg = float((obj or {}).get("sync_grace_until") or 0.0)
+                if sg > now_ts:
+                    return True
+            except Exception:
+                pass
+
+            return (now_ts - ts) < float(grace_sec)
 
         exchange_map = self._get_exchange_open_positions_map()
         summary["exchange_open"] = len(exchange_map)
@@ -2484,12 +2695,9 @@ class TradeExecutor:
         local_map = self._get_all_local_positions()
         summary["local_open"] = len(local_map)
 
-        try:
-            bridge_all = self._get_bridge_state()
-            if not isinstance(bridge_all, dict):
-                bridge_all = {}
-        except Exception:
-            bridge_all = {}
+        bridge_all = self._get_bridge_state()
+        bridge_all = bridge_all if isinstance(bridge_all, dict) else {}
+        summary["bridge_open"] = len(bridge_all)
 
         try:
             if self.logger:
@@ -2497,74 +2705,44 @@ class TradeExecutor:
                     "[EXEC][SYNC] start | exchange_open=%s local_open=%s bridge_open=%s",
                     int(summary["exchange_open"]),
                     int(summary["local_open"]),
-                    int(len(bridge_all)),
+                    int(summary["bridge_open"]),
                 )
         except Exception:
             pass
 
-        default_interval = "5m"
-        default_trailing_pct = float(
-            getattr(self, "default_trailing_pct", 0.0)
-            or getattr(self, "trailing_pct_default", 0.0)
-            or getattr(self, "trailing_pct", 0.03)
-            or 0.03
-        )
-        default_stall_ttl_sec = int(
-            float(
-                getattr(self, "default_stall_ttl_sec", 0)
-                or getattr(self, "stall_ttl_sec", 7200)
-                or 7200
-            )
-        )
-
         # 1) exchange'de var ama local'de yok -> hydrate et
         for sym, ex_pos in exchange_map.items():
             if sym in local_map:
-                if sym not in summary["kept"]:
-                    summary["kept"].append(sym)
+                summary["kept"].append(sym)
                 continue
 
             try:
-                bridge_st = bridge_all.get(sym, {})
-                if not isinstance(bridge_st, dict):
-                    bridge_st = {}
-
-                ex_side = str(ex_pos.get("side") or "").strip().lower()
-                ex_qty = abs(float(ex_pos.get("qty") or 0.0))
-                ex_entry = float(ex_pos.get("entry_price") or 0.0)
-                ex_notional = float(ex_pos.get("notional") or 0.0)
-
-                if ex_side not in ("long", "short") or ex_qty <= 0 or ex_entry <= 0:
-                    try:
-                        if self.logger:
-                            self.logger.warning(
-                                "[EXEC][SYNC] skip hydrate invalid exchange position | symbol=%s side=%s qty=%.10f entry=%.10f",
-                                sym,
-                                ex_side,
-                                float(ex_qty),
-                                float(ex_entry),
-                            )
-                    except Exception:
-                        pass
-                    continue
+                bridge_st = bridge_all.get(sym, {}) if isinstance(bridge_all, dict) else {}
 
                 hydrated = {
                     "symbol": sym,
-                    "side": ex_side,
-                    "qty": float(ex_qty),
-                    "entry_price": float(ex_entry),
-                    "notional": float(ex_notional if ex_notional > 0 else (ex_qty * ex_entry)),
-                    "interval": str(bridge_st.get("interval") or default_interval).strip() or default_interval,
+                    "side": str(ex_pos.get("side") or "").strip().lower(),
+                    "qty": float(ex_pos.get("qty") or 0.0),
+                    "entry_price": float(ex_pos.get("entry_price") or 0.0),
+                    "notional": float(ex_pos.get("notional") or 0.0),
+                    "interval": str(bridge_st.get("interval") or "5m").strip() or "5m",
                     "opened_at": datetime.now(timezone.utc).isoformat(),
+
+                    # >>> NEW
+                    "created_ts": float(now_ts),
+                    "bridge_written_ts": float(now_ts),
+                    "sync_grace_until": float(now_ts + 45.0),
+                    # <<< NEW
+
                     "sl_price": 0.0,
                     "tp_price": 0.0,
-                    "trailing_pct": float(default_trailing_pct),
-                    "stall_ttl_sec": int(default_stall_ttl_sec),
+                    "trailing_pct": float(getattr(self, "default_trailing_pct", 0.03) or 0.03),
+                    "stall_ttl_sec": int(getattr(self, "default_stall_ttl_sec", 7200) or 7200),
                     "best_pnl_pct": 0.0,
-                    "last_best_ts": float(time.time()),
+                    "last_best_ts": float(now_ts),
                     "atr_value": 0.0,
-                    "highest_price": float(ex_entry),
-                    "lowest_price": float(ex_entry),
+                    "highest_price": float(ex_pos.get("entry_price") or 0.0),
+                    "lowest_price": float(ex_pos.get("entry_price") or 0.0),
                     "meta": {
                         "probs": {},
                         "extra": {
@@ -2575,51 +2753,15 @@ class TradeExecutor:
                 }
 
                 self._set_position(sym, hydrated)
-
-                try:
-                    chk = self._get_position(sym)
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][SYNC] post-set local verify | symbol=%s exists=%s",
-                            sym,
-                            bool(isinstance(chk, dict) and chk),
-                        )
-                except Exception:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][SYNC] post-set local verify failed | symbol=%s",
-                            sym,
-                        )
-
-                try:
-                    r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
-                    if r is not None:
-                        r.set(
-                            f"bot:positions:{sym}",
-                            json.dumps(hydrated, ensure_ascii=False, default=str),
-                        )
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC][SYNC] redis fallback write ok | symbol=%s",
-                                sym,
-                            )
-                except Exception:
-                    if self.logger:
-                        self.logger.exception(
-                            "[EXEC][SYNC] redis fallback write failed | symbol=%s",
-                            sym,
-                        )
-
                 self._upsert_bridge_state_on_open(
                     symbol=sym,
                     side=str(hydrated.get("side") or ""),
-                    interval=str(hydrated.get("interval") or default_interval),
+                    interval=str(hydrated.get("interval") or "5m"),
                     intent_id=str(bridge_st.get("intent_id") or ""),
                 )
 
                 summary["added_local"].append(sym)
-                if sym not in bridge_all:
-                    summary["added_bridge"].append(sym)
+                summary["added_bridge"].append(sym)
 
                 try:
                     if self.logger:
@@ -2637,17 +2779,30 @@ class TradeExecutor:
             except Exception:
                 try:
                     if self.logger:
-                        self.logger.exception(
-                            "[EXEC][SYNC] hydrate failed | symbol=%s",
-                            sym,
-                        )
+                        self.logger.exception("[EXEC][SYNC] hydrate failed | symbol=%s", sym)
                 except Exception:
                     pass
-        # 2) local'de var ama exchange'de yok -> temizle
-        refreshed_local_map = self._get_all_local_positions()
 
+        # local map'i refresh et
+        refreshed_local_map = self._get_all_local_positions()
+        refreshed_bridge_all = self._get_bridge_state()
+        refreshed_bridge_all = refreshed_bridge_all if isinstance(refreshed_bridge_all, dict) else {}
+
+        # 2) local'de var ama exchange'de yok -> fresh ise dokunma, değilse temizle
         for sym, pos in refreshed_local_map.items():
             if sym not in exchange_map:
+                if _fresh(pos, grace_sec=45.0):
+                    summary["skipped_fresh_local"].append(sym)
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYNC] skip fresh local-only state | symbol=%s",
+                                sym,
+                            )
+                    except Exception:
+                        pass
+                    continue
+
                 try:
                     if self.position_sync_remove_orphans:
                         self._del_position(sym)
@@ -2662,17 +2817,9 @@ class TradeExecutor:
                         except Exception:
                             pass
 
-                    self._remove_from_bridge_state(sym)
-                    summary["removed_bridge"].append(sym)
-
-                    try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC][SYNC] removed orphan bridge state | symbol=%s",
-                                sym,
-                            )
-                    except Exception:
-                        pass
+                    if sym in refreshed_bridge_all and not _fresh(refreshed_bridge_all.get(sym, {}), grace_sec=45.0):
+                        self._remove_from_bridge_state(sym)
+                        summary["removed_bridge"].append(sym)
 
                 except Exception:
                     try:
@@ -2687,19 +2834,28 @@ class TradeExecutor:
                 if sym not in summary["kept"]:
                     summary["kept"].append(sym)
 
-        # 3) bridge'de var ama exchange'de ve local'de yok -> stale bridge temizliği
-        try:
-            final_local_map = self._get_all_local_positions()
-        except Exception:
-            final_local_map = {}
+        # 3) bridge'de var ama ne exchange'de ne local'de yok -> fresh ise dokunma
+        final_local_map = self._get_all_local_positions()
+        final_bridge_all = self._get_bridge_state()
+        final_bridge_all = final_bridge_all if isinstance(final_bridge_all, dict) else {}
 
-        for sym in list(bridge_all.keys()):
+        for sym, bst in final_bridge_all.items():
             if sym not in exchange_map and sym not in final_local_map:
+                if _fresh(bst, grace_sec=45.0):
+                    summary["skipped_fresh_bridge"].append(sym)
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYNC] skip fresh bridge-only state | symbol=%s",
+                                sym,
+                            )
+                    except Exception:
+                        pass
+                    continue
+
                 try:
                     self._remove_from_bridge_state(sym)
-                    if sym not in summary["removed_bridge"]:
-                        summary["removed_bridge"].append(sym)
-
+                    summary["removed_bridge"].append(sym)
                     try:
                         if self.logger:
                             self.logger.info(
@@ -2718,92 +2874,20 @@ class TradeExecutor:
                     except Exception:
                         pass
 
-        # final recount
-        try:
-            final_local_map = self._get_all_local_positions()
-        except Exception:
-            final_local_map = {}
-
-        try:
-            final_bridge_map = self._get_bridge_state()
-            if not isinstance(final_bridge_map, dict):
-                final_bridge_map = {}
-        except Exception:
-            final_bridge_map = {}
-
-        summary["local_open"] = len(final_local_map)
-
-        kept_final = sorted(set(summary["kept"]))
-        summary["kept"] = kept_final
-        summary["removed_local"] = sorted(set(summary["removed_local"]))
-        summary["removed_bridge"] = sorted(set(summary["removed_bridge"]))
-        summary["added_local"] = sorted(set(summary["added_local"]))
-        summary["added_bridge"] = sorted(set(summary["added_bridge"]))
-
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s bridge_open=%s removed_local=%s removed_bridge=%s added_local=%s added_bridge=%s kept=%s",
+                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s bridge_open=%s removed_local=%s removed_bridge=%s added_local=%s added_bridge=%s kept=%s skipped_fresh_local=%s skipped_fresh_bridge=%s",
                     int(summary["exchange_open"]),
                     int(summary["local_open"]),
-                    int(len(final_bridge_map)),
+                    int(summary["bridge_open"]),
                     summary["removed_local"],
                     summary["removed_bridge"],
                     summary["added_local"],
                     summary["added_bridge"],
                     summary["kept"],
-                )
-        except Exception:
-            pass
-
-        return summary
-
-        # 2) local'de var ama exchange'de yok -> temizle
-        refreshed_local_map = self._get_all_local_positions()
-
-        for sym, pos in refreshed_local_map.items():
-            if sym not in exchange_map:
-                try:
-                    if self.position_sync_remove_orphans:
-                        self._del_position(sym)
-                        summary["removed_local"].append(sym)
-
-                        try:
-                            if self.logger:
-                                self.logger.info(
-                                    "[EXEC][SYNC] removed orphan local position | symbol=%s",
-                                    sym,
-                                )
-                        except Exception:
-                            pass
-
-                    self._remove_from_bridge_state(sym)
-                    summary["removed_bridge"].append(sym)
-
-                except Exception:
-                    try:
-                        if self.logger:
-                            self.logger.exception(
-                                "[EXEC][SYNC] failed removing orphan state | symbol=%s",
-                                sym,
-                            )
-                    except Exception:
-                        pass
-            else:
-                if sym not in summary["kept"]:
-                    summary["kept"].append(sym)
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][SYNC] done | exchange_open=%s local_open=%s removed_local=%s removed_bridge=%s added_local=%s added_bridge=%s kept=%s",
-                    int(summary["exchange_open"]),
-                    int(summary["local_open"]),
-                    summary["removed_local"],
-                    summary["removed_bridge"],
-                    summary["added_local"],
-                    summary["added_bridge"],
-                    summary["kept"],
+                    summary["skipped_fresh_local"],
+                    summary["skipped_fresh_bridge"],
                 )
         except Exception:
             pass
@@ -2827,11 +2911,32 @@ class TradeExecutor:
                 await asyncio.sleep(300)
 
     async def _position_lifecycle_loop(self) -> None:
-        interval_sec = max(3, int(getattr(self, "position_lifecycle_interval_sec", 15)))
+        interval_sec = max(1, int(getattr(self, "position_lifecycle_interval_sec", 15)))
 
         while True:
             try:
                 positions = self._get_all_local_positions()
+
+                # local boş ama exchange/local senkron kaçmış olabilir -> hydrate dene
+                if not positions and bool(getattr(self, "position_sync_enabled", True)):
+                    try:
+                        sync_summary = self.sync_positions_with_exchange()
+                        positions = self._get_all_local_positions()
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][LIFECYCLE] post-sync refresh | positions=%s summary=%s",
+                                len(positions),
+                                sync_summary,
+                            )
+                    except Exception as e:
+                        try:
+                            if self.logger:
+                                self.logger.exception(
+                                    "[EXEC][LIFECYCLE] sync-on-empty failed | err=%s",
+                                    str(e),
+                                )
+                        except Exception:
+                            pass
 
                 try:
                     if self.logger:
@@ -2851,143 +2956,19 @@ class TradeExecutor:
                         interval = str(pos.get("interval") or "5m").strip() or "5m"
                         entry_price = float(pos.get("entry_price") or 0.0)
 
-                        if side not in ("long", "short") or qty <= 0:
+                        if side not in ("long", "short") or qty <= 0 or entry_price <= 0:
                             try:
                                 if self.logger:
                                     self.logger.info(
-                                        "[EXEC][LIFECYCLE] skip invalid position | symbol=%s side=%s qty=%.10f",
+                                        "[EXEC][LIFECYCLE] skip invalid position | symbol=%s side=%s qty=%.10f entry=%.6f",
                                         sym_u,
                                         side,
                                         qty,
+                                        entry_price,
                                     )
                             except Exception:
                                 pass
                             continue
-
-                        # -------------------------------------------------
-                        # 1) Exchange-side gerçek pozisyon kontrolü
-                        #    Manuel kapama / dışarıdan kapama burada yakalanır.
-                        # -------------------------------------------------
-                        exchange_pos = None
-                        exchange_qty = 0.0
-                        exchange_side = ""
-                        exchange_entry = 0.0
-
-                        try:
-                            exchange_pos = self._get_exchange_position(symbol=sym_u)
-                        except Exception:
-                            exchange_pos = None
-
-                        if isinstance(exchange_pos, dict):
-                            try:
-                                exchange_qty = abs(float(exchange_pos.get("qty") or 0.0))
-                            except Exception:
-                                exchange_qty = 0.0
-
-                            try:
-                                exchange_side = str(exchange_pos.get("side") or "").strip().lower()
-                            except Exception:
-                                exchange_side = ""
-
-                            try:
-                                exchange_entry = float(exchange_pos.get("entry_price") or 0.0)
-                            except Exception:
-                                exchange_entry = 0.0
-
-                        if exchange_qty <= 0.0:
-                            try:
-                                if self.logger:
-                                    self.logger.warning(
-                                        "[EXEC][LIFECYCLE] exchange position missing -> cleanup | symbol=%s local_side=%s local_qty=%.10f interval=%s",
-                                        sym_u,
-                                        side,
-                                        float(qty),
-                                        interval,
-                                    )
-                            except Exception:
-                                pass
-
-                            try:
-                                self._del_position(sym_u)
-                            except Exception:
-                                try:
-                                    if self.logger:
-                                        self.logger.exception(
-                                            "[EXEC][LIFECYCLE] local cleanup failed | symbol=%s",
-                                            sym_u,
-                                        )
-                                except Exception:
-                                    pass
-
-                            try:
-                                self._remove_from_bridge_state(sym_u)
-                            except Exception:
-                                try:
-                                    if self.logger:
-                                        self.logger.exception(
-                                            "[EXEC][LIFECYCLE] bridge cleanup failed | symbol=%s",
-                                            sym_u,
-                                        )
-                                except Exception:
-                                    pass
-
-                            try:
-                                if self.logger:
-                                    self.logger.info(
-                                        "[EXEC][LIFECYCLE] manual/external close detected | symbol=%s cleaned_local_and_bridge=1",
-                                        sym_u,
-                                    )
-                            except Exception:
-                                pass
-
-                            continue
-
-                        # Exchange tarafındaki gerçek pozisyon bilgisi local'den farklıysa
-                        # logla; büyük farklarda local state'i exchange'e yaklaştır.
-                        qty_diff = abs(float(exchange_qty) - float(qty))
-                        step_hint = 0.0
-                        try:
-                            info = self._get_symbol_info(sym_u)
-                            if isinstance(info, dict):
-                                step_hint = float(info.get("step_size") or info.get("step") or 0.0)
-                        except Exception:
-                            step_hint = 0.0
-
-                        qty_sync_threshold = max(step_hint, 1e-9)
-
-                        if qty_diff > qty_sync_threshold or (exchange_side and exchange_side != side):
-                            try:
-                                if self.logger:
-                                    self.logger.warning(
-                                        "[EXEC][LIFECYCLE] local/exchange mismatch | symbol=%s local_side=%s local_qty=%.10f exchange_side=%s exchange_qty=%.10f",
-                                        sym_u,
-                                        side,
-                                        float(qty),
-                                        exchange_side or "-",
-                                        float(exchange_qty),
-                                    )
-                            except Exception:
-                                pass
-
-                            try:
-                                pos["qty"] = float(exchange_qty)
-                                if exchange_side in ("long", "short"):
-                                    pos["side"] = exchange_side
-                                    side = exchange_side
-                                if exchange_entry > 0:
-                                    pos["entry_price"] = float(exchange_entry)
-                                    entry_price = float(exchange_entry)
-                                self._set_position(sym_u, pos)
-                                qty = float(exchange_qty)
-                            except Exception:
-                                try:
-                                    if self.logger:
-                                        self.logger.exception(
-                                            "[EXEC][LIFECYCLE] failed to refresh local position from exchange | symbol=%s",
-                                            sym_u,
-                                        )
-                                except Exception:
-                                    pass
 
                         px = None
                         price_source = ""
@@ -3058,9 +3039,8 @@ class TradeExecutor:
                                 )
                         except Exception:
                             pass
-
-                        # 🔥 kritik: crash olsa bile loop devam etsin
                         continue
+
             except Exception as e:
                 try:
                     if self.logger:
@@ -3071,13 +3051,12 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-                # 🔥 loop tamamen ölmesin
                 await asyncio.sleep(1)
 
             try:
                 await asyncio.sleep(interval_sec)
             except Exception:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
 
     def _get_exchange_residual_qty(self, symbol: str, side: str) -> float:
         sym = str(symbol).upper().strip()
@@ -4533,196 +4512,280 @@ class TradeExecutor:
 
         return None
 
-def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
-    sym = str(symbol).upper().strip()
-    pos = self._get_position(sym)
-    if not isinstance(pos, dict):
-        return
+    def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
+        sym = str(symbol).upper().strip()
+        pos = self._get_position(sym)
+        if not isinstance(pos, dict):
+            return
 
-    side = str(pos.get("side") or "").strip().lower()
-    qty = float(pos.get("qty") or 0.0)
-    entry_price = float(pos.get("entry_price") or 0.0)
+        side = str(pos.get("side") or "").strip().lower()
+        qty = float(pos.get("qty") or 0.0)
+        entry_price = float(pos.get("entry_price") or 0.0)
 
-    if side not in ("long", "short") or qty <= 0 or price <= 0 or entry_price <= 0:
-        return
+        if side not in ("long", "short") or qty <= 0 or price <= 0 or entry_price <= 0:
+            return
 
-    now_ts = time.time()
+        now_ts = time.time()
 
-    highest_price = float(pos.get("highest_price") or entry_price)
-    lowest_price = float(pos.get("lowest_price") or entry_price)
-    best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
-    last_best_ts = float(pos.get("last_best_ts") or now_ts)
+        highest_price = float(pos.get("highest_price") or entry_price)
+        lowest_price = float(pos.get("lowest_price") or entry_price)
+        best_pnl_pct = float(pos.get("best_pnl_pct") or 0.0)
+        last_best_ts = float(pos.get("last_best_ts") or now_ts)
 
-    trailing_pct = float(pos.get("trailing_pct") or 0.0)
-    stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
+        trailing_pct = float(pos.get("trailing_pct") or 0.0)
+        stall_ttl_sec = int(pos.get("stall_ttl_sec") or 0)
 
-    sl_price = float(pos.get("sl_price") or 0.0)
-    tp_price = float(pos.get("tp_price") or 0.0)
+        sl_price = float(pos.get("sl_price") or 0.0)
+        tp_price = float(pos.get("tp_price") or 0.0)
 
-    # === CONFIG ===
-    sl_pct = float(getattr(self, "default_sl_pct", 0.0) or 0.0)
-    tp_pct = float(getattr(self, "default_tp_pct", 0.0) or 0.0)
-    trailing_activation_pct = float(getattr(self, "trailing_activation_pct", 0.0) or 0.0)
-
-    tp_runner_enable = bool(getattr(self, "tp_runner_enable", True))
-    tp_arm_pnl_pct = float(getattr(self, "tp_arm_pnl_pct", 0.02) or 0.02)
-    tp_runner_pullback_pct = float(getattr(self, "tp_runner_pullback_pct", 0.006) or 0.006)
-
-    hard_stop_enable = bool(getattr(self, "hard_stop_enable", True))
-    hard_stop_loss_pct = float(getattr(self, "hard_stop_loss_pct", 0.04) or 0.04)
-
-    # === PROFIT PROTECT (NEW) ===
-    profit_protect_enable = True
-    profit_protect_arm_pct = 0.02
-    profit_protect_pullback_pct = 0.004
-    profit_protect_reverse_score = 0.60
-
-    tp_runner_armed = bool(pos.get("tp_runner_armed", False))
-    tp_runner_armed_ts = float(pos.get("tp_runner_armed_ts") or 0.0)
-
-    close_reason = None
-
-    if sl_price <= 0 and sl_pct > 0:
-        sl_price = entry_price * (1 - sl_pct) if side == "long" else entry_price * (1 + sl_pct)
-
-    if tp_price <= 0 and tp_pct > 0:
-        tp_price = entry_price * (1 + tp_pct) if side == "long" else entry_price * (1 - tp_pct)
-
-    # =========================
-    # ===== LONG LOGIC ========
-    # =========================
-    if side == "long":
-        highest_price = max(highest_price, price)
-        pnl_pct = (price - entry_price) / entry_price
-
-        if pnl_pct > best_pnl_pct:
-            best_pnl_pct = pnl_pct
-            last_best_ts = now_ts
-
-        if tp_runner_enable and best_pnl_pct >= tp_arm_pnl_pct:
-            tp_runner_armed = True
-            if tp_runner_armed_ts <= 0:
-                tp_runner_armed_ts = now_ts
-
-        trailing_armed = (
-            trailing_pct > 0
-            and highest_price > entry_price
-            and (trailing_activation_pct <= 0 or best_pnl_pct >= trailing_activation_pct)
+        sl_pct = float(getattr(self, "default_sl_pct", 0.0) or 0.0)
+        tp_pct = float(getattr(self, "default_tp_pct", 0.0) or 0.0)
+        trailing_activation_pct = float(
+            getattr(self, "trailing_activation_pct", 0.0) or 0.0
         )
 
-        trail_stop_price = highest_price * (1 - trailing_pct) if trailing_armed else 0.0
+        tp_runner_enable = bool(getattr(self, "tp_runner_enable", True))
+        tp_arm_pnl_pct = float(getattr(self, "tp_arm_pnl_pct", 0.02) or 0.02)
+        tp_runner_pullback_pct = float(
+            getattr(self, "tp_runner_pullback_pct", 0.006) or 0.006
+        )
 
-        # === PROFIT PROTECT ===
-        protect_armed = profit_protect_enable and best_pnl_pct >= profit_protect_arm_pct
+        hard_stop_enable = bool(getattr(self, "hard_stop_enable", True))
+        hard_stop_loss_pct = float(getattr(self, "hard_stop_loss_pct", 0.04) or 0.04)
 
-        if close_reason is None and protect_armed:
-            pullback = (highest_price - price) / highest_price if highest_price > 0 else 0
+        profit_protect_enable = bool(getattr(self, "profit_protect_enable", True))
+        profit_protect_arm_pct = float(
+            getattr(self, "profit_protect_arm_pct", 0.02) or 0.02
+        )
+        profit_protect_pullback_pct = float(
+            getattr(self, "profit_protect_pullback_pct", 0.004) or 0.004
+        )
+        profit_protect_reverse_score = float(
+            getattr(self, "profit_protect_reverse_score", 0.55) or 0.55
+        )
 
-            reverse_meta = self._evaluate_position_signal_exit(
+        tp_runner_armed = bool(pos.get("tp_runner_armed", False))
+        tp_runner_armed_ts = float(pos.get("tp_runner_armed_ts") or 0.0)
+
+        close_reason = None
+        trailing_armed = False
+        trail_stop_price = 0.0
+        pnl_pct = 0.0
+
+        if sl_price <= 0 and sl_pct > 0:
+            sl_price = (
+                entry_price * (1 - sl_pct)
+                if side == "long"
+                else entry_price * (1 + sl_pct)
+            )
+
+        if tp_price <= 0 and tp_pct > 0:
+            tp_price = (
+                entry_price * (1 + tp_pct)
+                if side == "long"
+                else entry_price * (1 - tp_pct)
+            )
+
+        if side == "long":
+            highest_price = max(highest_price, price)
+            pnl_pct = (price - entry_price) / max(entry_price, 1e-12)
+
+            if pnl_pct > best_pnl_pct:
+                best_pnl_pct = pnl_pct
+                last_best_ts = now_ts
+
+            if tp_runner_enable and best_pnl_pct >= tp_arm_pnl_pct:
+                tp_runner_armed = True
+                if tp_runner_armed_ts <= 0:
+                    tp_runner_armed_ts = now_ts
+
+            trailing_armed = (
+                trailing_pct > 0
+                and highest_price > entry_price
+                and (
+                    trailing_activation_pct <= 0
+                    or best_pnl_pct >= trailing_activation_pct
+                )
+            )
+            trail_stop_price = highest_price * (1 - trailing_pct) if trailing_armed else 0.0
+
+            protect_armed = (
+                profit_protect_enable and best_pnl_pct >= profit_protect_arm_pct
+            )
+
+            if close_reason is None and protect_armed:
+                pullback = (
+                    (highest_price - price) / max(highest_price, 1e-12)
+                    if highest_price > 0
+                    else 0.0
+                )
+
+                reverse_meta = self._evaluate_position_signal_exit(
+                    symbol=sym,
+                    pos=pos,
+                    price=float(price),
+                ) or {}
+
+                reverse_hit = (
+                    isinstance(reverse_meta, dict)
+                    and reverse_meta.get("reason") == "reverse_signal"
+                    and float(reverse_meta.get("signal_score", 0.0))
+                    >= profit_protect_reverse_score
+                )
+
+                if reverse_hit:
+                    close_reason = "profit_protect_reverse"
+                elif pullback >= profit_protect_pullback_pct:
+                    close_reason = "profit_protect_pullback"
+
+            if close_reason is None:
+                if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
+                    close_reason = "hard_stop_hit"
+                elif sl_price > 0 and price <= sl_price:
+                    close_reason = "sl_hit"
+                elif trailing_armed and price <= trail_stop_price:
+                    close_reason = "trailing_hit"
+                elif tp_runner_armed and (best_pnl_pct - pnl_pct) >= tp_runner_pullback_pct:
+                    close_reason = "tp_runner_exit"
+                elif tp_price > 0 and price >= tp_price:
+                    close_reason = "tp_hit"
+        else:
+            lowest_price = min(lowest_price, price)
+            pnl_pct = (entry_price - price) / max(entry_price, 1e-12)
+
+            if pnl_pct > best_pnl_pct:
+                best_pnl_pct = pnl_pct
+                last_best_ts = now_ts
+
+            trailing_armed = trailing_pct > 0 and lowest_price < entry_price
+            trail_stop_price = lowest_price * (1 + trailing_pct) if trailing_armed else 0.0
+
+            protect_armed = (
+                profit_protect_enable and best_pnl_pct >= profit_protect_arm_pct
+            )
+
+            if close_reason is None and protect_armed:
+                bounce = (
+                    (price - lowest_price) / max(lowest_price, 1e-12)
+                    if lowest_price > 0
+                    else 0.0
+                )
+
+                reverse_meta = self._evaluate_position_signal_exit(
+                    symbol=sym,
+                    pos=pos,
+                    price=float(price),
+                ) or {}
+
+                reverse_hit = (
+                    isinstance(reverse_meta, dict)
+                    and reverse_meta.get("reason") == "reverse_signal"
+                    and float(reverse_meta.get("signal_score", 0.0))
+                    >= profit_protect_reverse_score
+                )
+
+                if reverse_hit:
+                    close_reason = "profit_protect_reverse"
+                elif bounce >= profit_protect_pullback_pct:
+                    close_reason = "profit_protect_pullback"
+
+            if close_reason is None:
+                if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
+                    close_reason = "hard_stop_hit"
+                elif sl_price > 0 and price >= sl_price:
+                    close_reason = "sl_hit"
+                elif trailing_armed and price >= trail_stop_price:
+                    close_reason = "trailing_hit"
+                elif tp_price > 0 and price <= tp_price:
+                    close_reason = "tp_hit"
+
+        scalp_reason = None
+        try:
+            scalp_reason = self._evaluate_scalp_exit(
                 symbol=sym,
                 pos=pos,
                 price=float(price),
-            ) or {}
-
-            reverse_hit = (
-                isinstance(reverse_meta, dict)
-                and reverse_meta.get("reason") == "reverse_signal"
-                and float(reverse_meta.get("signal_score", 0)) >= profit_protect_reverse_score
+                side=side,
+                entry_price=float(entry_price),
+                best_pnl_pct=float(best_pnl_pct),
+                highest_price=float(highest_price),
+                lowest_price=float(lowest_price),
+                now_ts=float(now_ts),
+                last_best_ts=float(last_best_ts),
             )
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][SCALP] evaluate failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
+            except Exception:
+                pass
 
-            if reverse_hit:
-                close_reason = "profit_protect_reverse"
-            elif pullback >= profit_protect_pullback_pct:
-                close_reason = "profit_protect_pullback"
+        if close_reason is None and scalp_reason:
+            close_reason = str(scalp_reason)
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s reason=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        sym,
+                        side,
+                        str(close_reason),
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
+
+        if close_reason is None and getattr(self, "weak_signal_enabled", False):
+            weak = self._evaluate_position_signal_exit(sym, pos, price)
+            if weak:
+                close_reason = weak.get("reason", "weak_exit")
 
         if close_reason is None:
-            if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
-                close_reason = "hard_stop_hit"
-            elif sl_price > 0 and price <= sl_price:
-                close_reason = "sl_hit"
-            elif trailing_armed and price <= trail_stop_price:
-                close_reason = "trailing_hit"
-            elif tp_runner_armed and (best_pnl_pct - pnl_pct) >= tp_runner_pullback_pct:
-                close_reason = "tp_runner_exit"
-            elif tp_price > 0 and price >= tp_price:
-                close_reason = "tp_hit"
-    else:
-        lowest_price = min(lowest_price, price)
-        pnl_pct = (entry_price - price) / entry_price
+            stalled_for = now_ts - last_best_ts
+            if stall_ttl_sec > 0 and stalled_for >= stall_ttl_sec:
+                close_reason = "stall_exit"
 
-        if pnl_pct > best_pnl_pct:
-            best_pnl_pct = pnl_pct
-            last_best_ts = now_ts
+        pos.update({
+            "highest_price": highest_price,
+            "lowest_price": lowest_price,
+            "best_pnl_pct": best_pnl_pct,
+            "last_best_ts": last_best_ts,
+            "sl_price": sl_price,
+            "tp_price": tp_price,
+            "tp_runner_armed": tp_runner_armed,
+            "tp_runner_armed_ts": tp_runner_armed_ts,
+            "last_price": price,
+        })
 
-        trailing_armed = trailing_pct > 0 and lowest_price < entry_price
-        trail_stop_price = lowest_price * (1 + trailing_pct) if trailing_armed else 0.0
+        self._set_position(sym, pos)
 
-        # === PROFIT PROTECT ===
-        protect_armed = best_pnl_pct >= 0.02
+        if close_reason:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE][TRIGGER] symbol=%s reason=%s pnl=%.6f best=%.6f trailing_armed=%s trail_stop=%.6f",
+                        sym,
+                        str(close_reason),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                        bool(trailing_armed),
+                        float(trail_stop_price),
+                    )
+            except Exception:
+                pass
 
-        if close_reason is None and protect_armed:
-            bounce = (price - lowest_price) / lowest_price if lowest_price > 0 else 0
-
-            reverse_meta = self._evaluate_position_signal_exit(
+            self.close_position(
                 symbol=sym,
-                pos=pos,
                 price=float(price),
-            ) or {}
-
-            reverse_hit = (
-                isinstance(reverse_meta, dict)
-                and reverse_meta.get("reason") == "reverse_signal"
-                and float(reverse_meta.get("signal_score", 0)) >= 0.60
+                reason=str(close_reason),
+                interval=str(interval or pos.get("interval") or ""),
             )
-
-            if reverse_hit:
-                close_reason = "profit_protect_reverse"
-            elif bounce >= 0.004:
-                close_reason = "profit_protect_pullback"
-
-        if close_reason is None:
-            if hard_stop_enable and pnl_pct <= -abs(hard_stop_loss_pct):
-                close_reason = "hard_stop_hit"
-            elif sl_price > 0 and price >= sl_price:
-                close_reason = "sl_hit"
-            elif trailing_armed and price >= trail_stop_price:
-                close_reason = "trailing_hit"
-
-    # === WEAK SIGNAL EXIT ===
-    if close_reason is None and getattr(self, "weak_signal_enabled", False):
-        weak = self._evaluate_position_signal_exit(sym, pos, price)
-        if weak:
-            close_reason = weak.get("reason", "weak_exit")
-
-    # === STALL EXIT ===
-    if close_reason is None:
-        stalled_for = now_ts - last_best_ts
-        if stall_ttl_sec > 0 and stalled_for >= stall_ttl_sec:
-            close_reason = "stall_exit"
-
-    # === SAVE STATE ===
-    pos.update({
-        "highest_price": highest_price,
-        "lowest_price": lowest_price,
-        "best_pnl_pct": best_pnl_pct,
-        "last_best_ts": last_best_ts,
-        "sl_price": sl_price,
-        "tp_price": tp_price,
-        "tp_runner_armed": tp_runner_armed,
-        "tp_runner_armed_ts": tp_runner_armed_ts,
-        "last_price": price,
-    })
-
-    self._set_position(sym, pos)
-
-    # === CLOSE ===
-    if close_reason:
-        self.close_position(
-            symbol=sym,
-            price=float(price),
-            reason=str(close_reason),
-            interval=str(interval or pos.get("interval") or ""),
-        )
 
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
@@ -5575,6 +5638,10 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
 
         probs: Dict[str, float] = {}
 
+        extra_safe = dict(extra) if isinstance(extra, dict) else {}
+        now_ts = time.time()
+        sync_grace_sec = 45.0
+
         pos, _opened_at = self._create_position_dict(
             signal=side0,
             symbol=sym_u,
@@ -5583,20 +5650,75 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
             notional=float(final_notional),
             interval=str(interval or ""),
             probs=probs,
-            extra=extra,
+            extra=extra_safe,
         )
 
+        if not isinstance(pos, dict):
+            pos = {}
+
+        # --- sync/lifecycle koruma alanları ---
+        pos["created_ts"] = float(now_ts)
+        pos["bridge_written_ts"] = float(now_ts)
+        pos["sync_grace_until"] = float(now_ts + sync_grace_sec)
+
+        # create_position_dict eksik bırakmış olabilir, garantiye al
+        pos["symbol"] = sym_u
+        pos["side"] = side0
+        pos["qty"] = float(qty)
+        pos["entry_price"] = float(pos.get("entry_price") or order_price or 0.0)
+        pos["notional"] = float(pos.get("notional") or final_notional or 0.0)
+        pos["interval"] = str(pos.get("interval") or interval or "5m").strip() or "5m"
+
         self._set_position(sym_u, pos)
+
+        try:
+            chk_local = self._get_position(sym_u)
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE] local position set | symbol=%s exists=%s created_ts=%.3f grace_until=%.3f",
+                    sym_u,
+                    bool(isinstance(chk_local, dict) and chk_local),
+                    float(now_ts),
+                    float(now_ts + sync_grace_sec),
+                )
+        except Exception:
+            pass
 
         try:
             self._upsert_bridge_state_on_open(
                 symbol=sym_u,
                 side=side0,
                 interval=str(interval or ""),
-                intent_id=str(extra.get("intent_id") or ""),
+                intent_id=str(extra_safe.get("intent_id") or ""),
             )
         except Exception:
             pass
+
+        # bridge yazıldıktan sonra local state'i tekrar damgala
+        try:
+            pos_after = self._get_position(sym_u)
+            if isinstance(pos_after, dict) and pos_after:
+                now2 = time.time()
+                pos_after["bridge_written_ts"] = float(now2)
+                pos_after["sync_grace_until"] = float(now2 + sync_grace_sec)
+                self._set_position(sym_u, pos_after)
+
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][STATE] bridge/local grace refreshed | symbol=%s bridge_written_ts=%.3f grace_until=%.3f",
+                        sym_u,
+                        float(now2),
+                        float(now2 + sync_grace_sec),
+                    )
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] bridge/local grace refresh failed | symbol=%s",
+                        sym_u,
+                    )
+            except Exception:
+                pass
 
         try:
             if self.logger:
@@ -5627,7 +5749,7 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                 side0,
                 float(qty),
                 float(order_price),
-                extra,
+                extra_safe,
             )
         except Exception:
             pass
@@ -5642,7 +5764,13 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                     notional=float(final_notional),
                     price=float(order_price),
                     interval=str(interval or ""),
-                    meta={"reason": "INTENT_OPEN", **extra},
+                    meta={
+                        "reason": "INTENT_OPEN",
+                        **extra_safe,
+                        "created_ts": float(now_ts),
+                        "bridge_written_ts": float(now_ts),
+                        "sync_grace_until": float(now_ts + sync_grace_sec),
+                    },
                 )
                 self._fire_and_forget(out, label="risk_on_open_intent")
         except Exception:
@@ -5663,8 +5791,10 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
             "signal_score": float(signal_score),
             "whale_score": float(whale_score),
             "whale_dir": whale_dir,
+            "created_ts": float(pos.get("created_ts") or now_ts),
+            "bridge_written_ts": float(pos.get("bridge_written_ts") or now_ts),
+            "sync_grace_until": float(pos.get("sync_grace_until") or (now_ts + sync_grace_sec)),
         }
-
     # ---------------------------------------------------------
     # async decision executor
     # ---------------------------------------------------------
@@ -5683,11 +5813,12 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
         extra0 = self._extract_whale_context(extra if isinstance(extra, dict) else {})
         raw_signal = str(signal or "").strip().lower()
         sym_u = str(symbol).upper().strip()
+
         try:
             if self.logger:
                 self.logger.info(
                     "[EXEC][DECISION] enter | symbol=%s signal=%s interval=%s price=%s size=%s extra_keys=%s",
-                    str(symbol).upper().strip(),
+                    sym_u,
                     str(signal),
                     str(interval),
                     str(price),
@@ -5788,7 +5919,9 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                 "interval": interval,
                 "signal": signal_u,
                 "signal_norm": side_norm,
-                "signal_source": str(extra0.get("signal_source") or extra0.get("p_buy_source") or ""),
+                "signal_source": str(
+                    extra0.get("signal_source") or extra0.get("p_buy_source") or ""
+                ),
                 "p_used": p_used,
                 "p_single": probs.get("p_single") if isinstance(probs, dict) else None,
                 "p_buy_raw": extra0.get("p_buy_raw"),
@@ -5857,6 +5990,7 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                         mark_price=extra0.get("mark_price"),
                         last_price=extra0.get("last_price"),
                     )
+
                     if hold_price is not None and hold_price > 0:
                         self._check_sl_tp_trailing(
                             symbol=sym_u,
@@ -5867,11 +6001,18 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                     if self.hold_close_enabled:
                         side_cur = str(cur.get("side") or "").strip().lower()
                         entry_cur = float(cur.get("entry_price") or 0.0)
+
                         if side_cur in ("long", "short") and entry_cur > 0 and hold_price and hold_price > 0:
                             if side_cur == "long":
-                                pnl_pct_cur = (float(hold_price) - float(entry_cur)) / max(float(entry_cur), 1e-12)
+                                pnl_pct_cur = (
+                                    (float(hold_price) - float(entry_cur))
+                                    / max(float(entry_cur), 1e-12)
+                                )
                             else:
-                                pnl_pct_cur = (float(entry_cur) - float(hold_price)) / max(float(entry_cur), 1e-12)
+                                pnl_pct_cur = (
+                                    (float(entry_cur) - float(hold_price))
+                                    / max(float(entry_cur), 1e-12)
+                                )
 
                             if pnl_pct_cur >= float(self.hold_close_min_pnl_pct):
                                 self.close_position(
@@ -5884,7 +6025,10 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
             except Exception:
                 try:
                     if self.logger:
-                        self.logger.exception("[EXEC][HOLD] monitor/close check failed | symbol=%s", sym_u)
+                        self.logger.exception(
+                            "[EXEC][HOLD] monitor/close check failed | symbol=%s",
+                            sym_u,
+                        )
                 except Exception:
                     pass
             return
@@ -6023,7 +6167,6 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                     )
             except Exception:
                 pass
-
             try:
                 self.close_position(
                     symbol=sym_u,
@@ -6059,6 +6202,7 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
                 return
         except Exception:
             pass
+
         intent_price = self._resolve_price(
             symbol=sym_u,
             price=price,
@@ -6107,7 +6251,11 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
             order_price = float(intent_price)
 
         try:
-            self._check_sl_tp_trailing(symbol=sym_u, price=float(order_price), interval=interval)
+            self._check_sl_tp_trailing(
+                symbol=sym_u,
+                price=float(order_price),
+                interval=interval,
+            )
         except Exception:
             pass
 
@@ -6124,15 +6272,43 @@ def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> Non
     # compatibility wrappers
     # ---------------------------------------------------------
     async def open_position(self, *args, **kwargs):
-        pm = getattr(self, "position_manager", None)
-        if pm is not None and hasattr(pm, "open_position"):
-            res = pm.open_position(*args, **kwargs)
+        try:
+            pm = getattr(self, "position_manager", None)
+            if pm is not None and hasattr(pm, "open_position"):
+                res = pm.open_position(*args, **kwargs)
+                try:
+                    if inspect.isawaitable(res):
+                        return await res
+                except Exception:
+                    pass
+                return res
+        except Exception:
             try:
-                if inspect.isawaitable(res):
-                    return await res
+                if self.logger:
+                    self.logger.exception("[EXEC][OPEN] position_manager open failed")
             except Exception:
                 pass
-            return res
+
+        try:
+            if len(args) >= 3:
+                symbol = args[0]
+                side = args[1]
+                interval = args[2]
+                meta = kwargs.get("meta", {})
+                return await asyncio.to_thread(
+                    self.open_position_from_signal,
+                    symbol,
+                    side,
+                    interval,
+                    meta if isinstance(meta, dict) else {},
+                )
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception("[EXEC][OPEN] fallback open_position_from_signal failed")
+            except Exception:
+                pass
+
         return None
 
     async def execute_trade(self, *args, **kwargs):
