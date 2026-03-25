@@ -129,7 +129,7 @@ class TradeExecutor:
         )
 
         self.scalp_profit_arm_pct = float(
-            os.getenv("SCALP_PROFIT_ARM_PCT", "0.008") or 0.008
+            os.getenv("SCALP_PROFIT_ARM_PCT", "0.008") or 0.007
         )
 
         self.scalp_profit_lock_pct = float(
@@ -137,15 +137,15 @@ class TradeExecutor:
         )
 
         self.scalp_micro_pullback_pct = float(
-            os.getenv("SCALP_MICRO_PULLBACK_PCT", "0.0025") or 0.0025
+            os.getenv("SCALP_MICRO_PULLBACK_PCT", "0.0025") or 0.0040
         )
 
         self.scalp_deep_pullback_pct = float(
-            os.getenv("SCALP_DEEP_PULLBACK_PCT", "0.0040") or 0.0040
+            os.getenv("SCALP_DEEP_PULLBACK_PCT", "0.0040") or 0.0045
         )
 
         self.scalp_reverse_min_score = float(
-            os.getenv("SCALP_REVERSE_MIN_SCORE", "0.54") or 0.54
+            os.getenv("SCALP_REVERSE_MIN_SCORE", "0.54") or 0.52
         )
 
         self.scalp_fast_exit_profit_pct = float(
@@ -157,11 +157,11 @@ class TradeExecutor:
         )
 
         self.scalp_stall_after_profit_sec = int(
-            float(os.getenv("SCALP_STALL_AFTER_PROFIT_SEC", "180") or 180)
+            float(os.getenv("SCALP_STALL_AFTER_PROFIT_SEC", "180") or 120)
         )
 
         self.scalp_stall_min_profit_pct = float(
-            os.getenv("SCALP_STALL_MIN_PROFIT_PCT", "0.01") or 0.01
+            os.getenv("SCALP_STALL_MIN_PROFIT_PCT", "0.01") or 0.08
         )
         self.default_sl_pct = float(os.getenv("SL_PCT", "0.01") or 0.01)
         self.default_tp_pct = float(os.getenv("TP_PCT", "0.02") or 0.02)
@@ -989,13 +989,109 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # whale helpers
     # ---------------------------------------------------------
-    def _extract_whale_context(self, extra: Dict[str, Any]) -> Dict[str, Any]:
-        out = dict(extra or {})
+    def _extract_whale_context(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+
+        if isinstance(extra, dict):
+            out.update(extra)
+
+        def _merge_from_obj(obj: Any) -> None:
+            if not isinstance(obj, dict):
+                return
+
+            for k in (
+                "whale_score",
+                "whale_dir",
+                "whale_action",
+                "whale_bias",
+                "signal_score",
+                "score",
+                "score_total",
+                "_score_total_final",
+                "_score_selected",
+                "trail_pct",
+                "stall_ttl_sec",
+                "price",
+                "intent_id",
+                "recommended_leverage",
+                "recommended_notional_pct",
+                "risk_tags",
+                "reasons",
+                "reason_codes",
+                "w_min",
+            ):
+                v = obj.get(k)
+                if v is not None and (k not in out or out.get(k) in (None, "", 0, 0.0, [], {})):
+                    out[k] = v
+
+            raw2 = obj.get("raw")
+            if isinstance(raw2, dict):
+                for k in (
+                    "whale_score",
+                    "whale_dir",
+                    "whale_action",
+                    "whale_bias",
+                    "price",
+                    "trail_pct",
+                    "stall_ttl_sec",
+                ):
+                    v = raw2.get(k)
+                    if v is not None and (k not in out or out.get(k) in (None, "", 0, 0.0)):
+                        out[k] = v
+
+        _merge_from_obj(extra)
+
         raw = out.get("raw")
+
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        _merge_from_obj(raw)
+
         if isinstance(raw, dict):
-            for k in ("whale_score", "whale_dir", "recommended_leverage", "recommended_notional_pct"):
-                if k not in out and k in raw:
-                    out[k] = raw.get(k)
+            raw_nested = raw.get("raw")
+            if isinstance(raw_nested, str):
+                try:
+                    raw_nested = json.loads(raw_nested)
+                except Exception:
+                    raw_nested = None
+            _merge_from_obj(raw_nested)
+
+            if isinstance(raw_nested, dict):
+                raw_nested2 = raw_nested.get("raw")
+                if isinstance(raw_nested2, str):
+                    try:
+                        raw_nested2 = json.loads(raw_nested2)
+                    except Exception:
+                        raw_nested2 = None
+                _merge_from_obj(raw_nested2)
+
+        try:
+            ws = float(out.get("whale_score") or 0.0)
+        except Exception:
+            ws = 0.0
+        out["whale_score"] = ws
+
+        wd = str(out.get("whale_dir") or "none").strip().lower()
+        if wd in ("buy", "bull", "up"):
+            wd = "long"
+        elif wd in ("sell", "bear", "down"):
+            wd = "short"
+        elif wd not in ("long", "short"):
+            wd = "none"
+        out["whale_dir"] = wd
+
+        wb = str(out.get("whale_bias") or "").strip().lower()
+        if not wb:
+            if wd in ("long", "short") and ws > 0:
+                wb = wd
+            else:
+                wb = "hold"
+        out["whale_bias"] = wb
+
         return out
 
     @staticmethod
@@ -1903,48 +1999,21 @@ class TradeExecutor:
             }
 
         return None
-    def _evaluate_scalp_exit(
+    def _evaluate_scalp_exit_pro(
         self,
         symbol: str,
         pos: Dict[str, Any],
         price: float,
         side: str,
         entry_price: float,
-        best_pnl_pct: float,
         highest_price: float,
         lowest_price: float,
-        now_ts: float,
+        best_pnl_pct: float,
         last_best_ts: float,
+        now_ts: float,
     ) -> Optional[str]:
-        scalp_exit_enable = bool(getattr(self, "scalp_exit_enable", True))
-        if not scalp_exit_enable:
+        if not bool(getattr(self, "scalp_engine_enable", True)):
             return None
-
-        scalp_grace_sec = float(getattr(self, "scalp_grace_sec", 20) or 20)
-        scalp_hard_stop_pct = float(getattr(self, "scalp_hard_stop_pct", 0.04) or 0.04)
-        scalp_profit_arm_pct = float(getattr(self, "scalp_profit_arm_pct", 0.008) or 0.008)
-        scalp_profit_lock_pct = float(getattr(self, "scalp_profit_lock_pct", 0.0035) or 0.0035)
-        scalp_micro_pullback_pct = float(
-            getattr(self, "scalp_micro_pullback_pct", 0.0025) or 0.0025
-        )
-        scalp_deep_pullback_pct = float(
-            getattr(self, "scalp_deep_pullback_pct", 0.0040) or 0.0040
-        )
-        scalp_reverse_min_score = float(
-            getattr(self, "scalp_reverse_min_score", 0.54) or 0.54
-        )
-        scalp_fast_exit_profit_pct = float(
-            getattr(self, "scalp_fast_exit_profit_pct", 0.02) or 0.02
-        )
-        scalp_fast_exit_pullback_pct = float(
-            getattr(self, "scalp_fast_exit_pullback_pct", 0.0035) or 0.0035
-        )
-        scalp_stall_after_profit_sec = float(
-            getattr(self, "scalp_stall_after_profit_sec", 180) or 180
-        )
-        scalp_stall_min_profit_pct = float(
-            getattr(self, "scalp_stall_min_profit_pct", 0.01) or 0.01
-        )
 
         try:
             opened_at_raw = str(pos.get("opened_at") or "").strip()
@@ -1957,45 +2026,36 @@ class TradeExecutor:
                 except Exception:
                     opened_ts = 0.0
 
-            if opened_ts > 0 and (float(now_ts) - float(opened_ts)) < float(scalp_grace_sec):
+            if opened_ts > 0 and (float(now_ts) - float(opened_ts)) < float(self.scalp_grace_sec):
                 return None
         except Exception:
             pass
 
         if side == "long":
             pnl_pct = (float(price) - float(entry_price)) / max(float(entry_price), 1e-12)
-            pullback_from_peak = (
+            retrace_pct = (
                 (float(highest_price) - float(price)) / max(float(highest_price), 1e-12)
                 if float(highest_price) > 0
                 else 0.0
             )
         else:
             pnl_pct = (float(entry_price) - float(price)) / max(float(entry_price), 1e-12)
-            pullback_from_peak = (
+            retrace_pct = (
                 (float(price) - float(lowest_price)) / max(float(lowest_price), 1e-12)
                 if float(lowest_price) > 0
                 else 0.0
             )
 
-        if float(pnl_pct) <= -abs(float(scalp_hard_stop_pct)):
+        # 1) hard stop
+        if float(pnl_pct) <= -abs(float(self.scalp_hard_stop_pct)):
             return "scalp_hard_stop"
 
-        if float(best_pnl_pct) >= float(scalp_fast_exit_profit_pct):
-            if float(pullback_from_peak) >= float(scalp_fast_exit_pullback_pct):
-                return "scalp_fast_pullback"
+        # 2) profit arm + retrace
+        if float(best_pnl_pct) >= float(self.scalp_profit_arm_pct):
+            if float(retrace_pct) >= float(self.scalp_retrace_pct):
+                return "scalp_profit_retrace"
 
-        if float(best_pnl_pct) >= float(scalp_profit_arm_pct):
-            locked_floor = max(
-                float(scalp_profit_lock_pct),
-                float(best_pnl_pct) - float(scalp_deep_pullback_pct),
-            )
-
-            if float(pnl_pct) <= float(locked_floor):
-                return "scalp_profit_lock"
-
-            if float(pullback_from_peak) >= float(scalp_micro_pullback_pct):
-                return "scalp_micro_pullback"
-
+        # 3) reverse signal kill
         try:
             reverse_meta = self._evaluate_position_signal_exit(
                 symbol=symbol,
@@ -2013,20 +2073,46 @@ class TradeExecutor:
 
             if (
                 str(reverse_meta.get("reason") or "") == "reverse_signal"
-                and float(reverse_score) >= float(scalp_reverse_min_score)
-                and float(best_pnl_pct) >= float(scalp_profit_arm_pct)
+                and float(reverse_score) >= float(self.scalp_reverse_min_score)
+                and float(best_pnl_pct) >= float(self.scalp_profit_arm_pct)
             ):
                 return "scalp_reverse_kill"
 
+        # 4) stall after profit
         stalled_for = float(now_ts) - float(last_best_ts)
         if (
-            float(best_pnl_pct) >= float(scalp_stall_min_profit_pct)
-            and float(stalled_for) >= float(scalp_stall_after_profit_sec)
+            float(best_pnl_pct) >= float(self.scalp_stall_min_profit_pct)
+            and float(stalled_for) >= float(self.scalp_stall_sec)
         ):
             return "scalp_stall_exit"
 
         return None
 
+    def _evaluate_scalp_exit(
+        self,
+        symbol: str,
+        pos: Dict[str, Any],
+        price: float,
+        side: str,
+        entry_price: float,
+        best_pnl_pct: float,
+        highest_price: float,
+        lowest_price: float,
+        now_ts: float,
+        last_best_ts: float,
+    ) -> Optional[str]:
+        return self._evaluate_scalp_exit_pro(
+            symbol=symbol,
+            pos=pos,
+            price=price,
+            side=side,
+            entry_price=entry_price,
+            best_pnl_pct=best_pnl_pct,
+            highest_price=highest_price,
+            lowest_price=lowest_price,
+            now_ts=now_ts,
+            last_best_ts=last_best_ts,
+        )
     def _get_latest_signal(self, symbol: str) -> Dict[str, Any]:
         sym = str(symbol).upper().strip()
         if not sym:
@@ -2657,13 +2743,20 @@ class TradeExecutor:
             if not isinstance(obj, dict):
                 return 0.0
 
-            for key in ("sync_grace_until", "bridge_written_ts", "created_ts", "last_best_ts"):
+            for key in ("sync_grace_until", "bridge_written_ts", "created_ts", "last_best_ts", "expires_at"):
                 try:
                     v = float(obj.get(key) or 0.0)
                     if v > 0:
                         return v
                 except Exception:
                     pass
+
+            try:
+                ts_utc = str(obj.get("ts_utc") or "").strip()
+                if ts_utc:
+                    return datetime.fromisoformat(ts_utc.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
 
             try:
                 opened_at = str(obj.get("opened_at") or "").strip()
@@ -2673,7 +2766,6 @@ class TradeExecutor:
                 pass
 
             return 0.0
-
         def _fresh(obj: Any, grace_sec: float = 45.0) -> bool:
             ts = _state_ts(obj)
             if ts <= 0:
@@ -2791,7 +2883,7 @@ class TradeExecutor:
         # 2) local'de var ama exchange'de yok -> fresh ise dokunma, değilse temizle
         for sym, pos in refreshed_local_map.items():
             if sym not in exchange_map:
-                if _fresh(pos, grace_sec=45.0):
+                if _fresh(pos, grace_sec=90.0):
                     summary["skipped_fresh_local"].append(sym)
                     try:
                         if self.logger:
@@ -2841,7 +2933,7 @@ class TradeExecutor:
 
         for sym, bst in final_bridge_all.items():
             if sym not in exchange_map and sym not in final_local_map:
-                if _fresh(bst, grace_sec=45.0):
+                if _fresh(bst, grace_sec=90.0):
                     summary["skipped_fresh_bridge"].append(sym)
                     try:
                         if self.logger:
@@ -4740,7 +4832,48 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+        # ===== PRO SCALP EXIT ENGINE =====
+        scalp_reason = None
+        try:
+            scalp_reason = self._evaluate_scalp_exit_pro(
+                symbol=sym,
+                pos=pos,
+                price=float(price),
+                side=side,
+                entry_price=float(entry_price),
+                highest_price=float(highest_price),
+                lowest_price=float(lowest_price),
+                best_pnl_pct=float(best_pnl_pct),
+                last_best_ts=float(last_best_ts),
+                now_ts=float(now_ts),
+            )
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][SCALP] evaluate failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
+            except Exception:
+                pass
 
+        if close_reason is None and scalp_reason:
+            close_reason = str(scalp_reason)
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s reason=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        sym,
+                        side,
+                        str(close_reason),
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
         if close_reason is None and getattr(self, "weak_signal_enabled", False):
             weak = self._evaluate_position_signal_exit(sym, pos, price)
             if weak:
@@ -5175,21 +5308,49 @@ class TradeExecutor:
         interval: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        meta0 = self._extract_whale_context(meta if isinstance(meta, dict) else {})
         sym_u = str(symbol).upper().strip()
 
         side0 = str(side or "long").strip().lower()
         if side0 not in ("long", "short"):
             side0 = "long"
 
+        def _maybe_json(x: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(x, dict):
+                return x
+            if isinstance(x, str):
+                try:
+                    obj = json.loads(x)
+                    return obj if isinstance(obj, dict) else None
+                except Exception:
+                    return None
+            return None
+
+        def _merge_pref(dst: Dict[str, Any], src: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(src, dict):
+                return
+            for k, v in src.items():
+                if k not in dst or dst.get(k) in (None, "", 0, 0.0, [], {}):
+                    dst[k] = v
+
+        meta_in = meta if isinstance(meta, dict) else {}
+        raw1 = _maybe_json(meta_in.get("raw"))
+        raw2 = _maybe_json(raw1.get("raw")) if isinstance(raw1, dict) else None
+        raw3 = _maybe_json(raw2.get("raw")) if isinstance(raw2, dict) else None
+
+        meta0: Dict[str, Any] = {}
+        _merge_pref(meta0, meta_in)
+        _merge_pref(meta0, raw1)
+        _merge_pref(meta0, raw2)
+        _merge_pref(meta0, raw3)
+
         try:
             if self.logger:
                 self.logger.info(
                     "[EXEC][OPEN] enter | symbol=%s side=%s interval=%s meta_keys=%s",
-                    str(symbol).upper().strip(),
-                    str(side),
+                    sym_u,
+                    side0,
                     str(interval),
-                    sorted(list((meta or {}).keys())) if isinstance(meta, dict) else [],
+                    sorted(list(meta_in.keys())) if isinstance(meta_in, dict) else [],
                 )
         except Exception:
             pass
@@ -5217,7 +5378,13 @@ class TradeExecutor:
         ).strip().lower() in ("1", "true", "yes", "on")
 
         signal_score = 0.0
-        for k in ("score", "score_total", "_score_total_final", "_score_selected"):
+        for k in (
+            "signal_score",
+            "score",
+            "score_total",
+            "_score_total_final",
+            "_score_selected",
+        ):
             try:
                 v = float(meta0.get(k) or 0.0)
             except Exception:
@@ -5225,16 +5392,50 @@ class TradeExecutor:
             if v > signal_score:
                 signal_score = v
 
-        whale_action = str(self._whale_action(meta0) or "").strip().lower()
-        whale_score = float(meta0.get("whale_score", 0.0) or 0.0)
-        whale_dir = str(meta0.get("whale_dir", "none") or "none").strip().lower()
+        try:
+            whale_score = float(meta0.get("whale_score") or 0.0)
+        except Exception:
+            whale_score = 0.0
 
+        whale_dir = str(meta0.get("whale_dir", "none") or "none").strip().lower()
         if whale_dir in ("buy", "bull", "up"):
             whale_dir = "long"
         elif whale_dir in ("sell", "bear", "down"):
             whale_dir = "short"
         elif whale_dir not in ("long", "short"):
             whale_dir = "none"
+
+        whale_action = str(meta0.get("whale_action") or "").strip().lower()
+        if not whale_action:
+            try:
+                whale_action = str(self._whale_action(meta0) or "").strip().lower()
+            except Exception:
+                whale_action = ""
+
+        whale_bias_now = str(meta0.get("whale_bias") or "").strip().lower()
+        if not whale_bias_now:
+            whale_bias_now = whale_dir if whale_dir in ("long", "short") else "hold"
+
+        meta0["signal_score"] = float(signal_score)
+        meta0["whale_score"] = float(whale_score)
+        meta0["whale_dir"] = whale_dir
+        meta0["whale_action"] = whale_action
+        meta0["whale_bias"] = whale_bias_now
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WHALE][CTX] symbol=%s side=%s whale_dir=%s whale_score=%.4f signal_score=%.4f require_whale=%s strict_align=%s",
+                    sym_u,
+                    side0,
+                    whale_dir,
+                    float(whale_score),
+                    float(signal_score),
+                    bool(require_whale_for_open),
+                    bool(strict_whale_alignment),
+                )
+        except Exception:
+            pass
 
         try:
             if self.logger:
@@ -5347,7 +5548,6 @@ class TradeExecutor:
                 "symbol": sym_u,
                 "side": side0,
             }
-
         intent_price = self._resolve_price(
             symbol=sym_u,
             price=meta0.get("price"),
@@ -5512,7 +5712,6 @@ class TradeExecutor:
                 meta0["available_balance_usdt"] = float(avail_live)
         except Exception:
             pass
-
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
@@ -5566,29 +5765,30 @@ class TradeExecutor:
                 "reason": "bad_qty_after_normalization",
                 "meta": qmeta,
             }
+
         final_notional = float(qty) * float(order_price)
 
-        extra = dict(meta0)
-        extra.setdefault("trail_pct", meta0.get("trail_pct", None))
-        extra.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
-        extra["signal_score"] = float(signal_score)
-        extra["whale_action"] = whale_action
-        extra["whale_score"] = float(whale_score)
-        extra["whale_dir"] = whale_dir
-        extra["intent_price"] = float(intent_price)
-        extra["order_price"] = float(order_price)
-        extra["whale_open_notional_before"] = float(raw_notional)
-        extra["whale_open_notional_after"] = float(final_notional)
-        extra["whale_notional_adjusted"] = bool(
+        extra_safe = dict(meta0)
+        extra_safe.setdefault("trail_pct", meta0.get("trail_pct", None))
+        extra_safe.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
+        extra_safe["signal_score"] = float(signal_score)
+        extra_safe["whale_action"] = whale_action
+        extra_safe["whale_score"] = float(whale_score)
+        extra_safe["whale_dir"] = whale_dir
+        extra_safe["intent_price"] = float(intent_price)
+        extra_safe["order_price"] = float(order_price)
+        extra_safe["whale_open_notional_before"] = float(raw_notional)
+        extra_safe["whale_open_notional_after"] = float(final_notional)
+        extra_safe["whale_notional_adjusted"] = bool(
             abs(float(final_notional) - float(raw_notional)) > 1e-12
         )
 
-        target_leverage = self._resolve_target_leverage(extra)
+        target_leverage = self._resolve_target_leverage(extra_safe)
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
-        extra["target_leverage"] = int(target_leverage)
+        extra_safe["target_leverage"] = int(target_leverage)
 
-        whale_bias_now = self._whale_bias(side=side0, extra=extra)
-        extra["whale_bias"] = whale_bias_now
+        whale_bias_now = self._whale_bias(side=side0, extra=extra_safe)
+        extra_safe["whale_bias"] = whale_bias_now
 
         try:
             if self.logger:
@@ -5618,7 +5818,7 @@ class TradeExecutor:
                     qty=float(qty),
                     price=float(order_price),
                     reduce_only=False,
-                    extra=extra,
+                    extra=extra_safe,
                 )
             except Exception as e:
                 try:
@@ -5637,8 +5837,6 @@ class TradeExecutor:
                 return {"status": "skip", "reason": "exchange_open_failed"}
 
         probs: Dict[str, float] = {}
-
-        extra_safe = dict(extra) if isinstance(extra, dict) else {}
         now_ts = time.time()
         sync_grace_sec = 45.0
 
@@ -5656,19 +5854,16 @@ class TradeExecutor:
         if not isinstance(pos, dict):
             pos = {}
 
-        # --- sync/lifecycle koruma alanları ---
         pos["created_ts"] = float(now_ts)
-        pos["bridge_written_ts"] = float(now_ts)
+        pos["bridge_written_ts"] = 0.0
         pos["sync_grace_until"] = float(now_ts + sync_grace_sec)
 
-        # create_position_dict eksik bırakmış olabilir, garantiye al
         pos["symbol"] = sym_u
         pos["side"] = side0
         pos["qty"] = float(qty)
         pos["entry_price"] = float(pos.get("entry_price") or order_price or 0.0)
         pos["notional"] = float(pos.get("notional") or final_notional or 0.0)
         pos["interval"] = str(pos.get("interval") or interval or "5m").strip() or "5m"
-
         self._set_position(sym_u, pos)
 
         try:
@@ -5694,7 +5889,6 @@ class TradeExecutor:
         except Exception:
             pass
 
-        # bridge yazıldıktan sonra local state'i tekrar damgala
         try:
             pos_after = self._get_position(sym_u)
             if isinstance(pos_after, dict) and pos_after:
@@ -5793,8 +5987,11 @@ class TradeExecutor:
             "whale_dir": whale_dir,
             "created_ts": float(pos.get("created_ts") or now_ts),
             "bridge_written_ts": float(pos.get("bridge_written_ts") or now_ts),
-            "sync_grace_until": float(pos.get("sync_grace_until") or (now_ts + sync_grace_sec)),
+            "sync_grace_until": float(
+                pos.get("sync_grace_until") or (now_ts + sync_grace_sec)
+            ),
         }
+
     # ---------------------------------------------------------
     # async decision executor
     # ---------------------------------------------------------
@@ -5824,6 +6021,18 @@ class TradeExecutor:
                     str(price),
                     str(size),
                     sorted(list((extra or {}).keys())) if isinstance(extra, dict) else [],
+                )
+        except Exception:
+            pass
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][WHALE][CTX] symbol=%s side=%s whale_dir=%s whale_score=%.4f keys=%s",
+                    sym_u,
+                    raw_signal,
+                    str(extra0.get("whale_dir") or "none"),
+                    float(extra0.get("whale_score") or 0.0),
+                    sorted(list(extra0.keys())),
                 )
         except Exception:
             pass

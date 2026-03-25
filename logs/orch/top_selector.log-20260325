@@ -1,0 +1,766 @@
+[TopSelector] idle... buf=11 window_age=19.4s
+[TopSelector] published 1 -> top5_stream id=1774325123926-0 | DOGEUSDT:long(0.631)
+[TopSelector] idle... buf=3 window_age=10.0s
+[TopSelector] published 1 -> top5_stream id=1774325465123-0 | AAVEUSDT:short(0.561)
+[TopSelector] published 1 -> top5_stream id=1774325495150-0 | ETHUSDT:long(0.644)
+[TopSelector] published 1 -> top5_stream id=1774325646547-0 | LINKUSDT:long(0.616)
+[TopSelector] idle... buf=2 window_age=6.6s
+[TopSelector] published 1 -> top5_stream id=1774325770636-0 | ATOMUSDT:long(0.564)
+[TopSelector] published 1 -> top5_stream id=1774325892189-0 | XRPUSDT:long(0.579)
+[TopSelector] idle... buf=4 window_age=6.4s
+[TopSelector] published 1 -> top5_stream id=1774326075237-0 | INJUSDT:long(0.641)
+[TopSelector] idle... buf=14 window_age=31.8s
+[TopSelector] published 1 -> top5_stream id=1774326445241-0 | DOGEUSDT:long(0.681)
+[TopSelector] published 1 -> top5_stream id=1774326475377-0 | XRPUSDT:short(0.558)
+[TopSelector] published 1 -> top5_stream id=1774326506844-0 | ETHUSDT:long(0.587)
+[TopSelector] idle... buf=17 window_age=28.0s
+[TopSelector] published 1 -> top5_stream id=1774326814204-0 | LINKUSDT:long(0.551)
+[TopSelector] idle... buf=7 window_age=23.6s
+[TopSelector] published 1 -> top5_stream id=1774327030205-0 | XRPUSDT:long(0.693)
+[TopSelector] idle... buf=7 window_age=15.5s
+[TopSelector] published 1 -> top5_stream id=1774327279544-0 | SUIUSDT:long(0.680)
+[TopSelector] published 1 -> top5_stream id=1774327403915-0 | NEARUSDT:long(0.659)
+[TopSelector] idle... buf=2 window_age=6.5s
+[TopSelector] idle... buf=11 window_age=30.8s
+[TopSelector] published 1 -> top5_stream id=1774327896491-0 | ATOMUSDT:long(0.568)
+[TopSelector] idle... buf=9 window_age=24.1s
+[TopSelector] idle... buf=5 window_age=15.8s
+[TopSelector] published 1 -> top5_stream id=1774328606033-0 | XRPUSDT:long(0.618)
+[TopSelector] idle... buf=3 window_age=9.6s
+[TopSelector] published 1 -> top5_stream id=1774328943331-0 | ADAUSDT:short(0.564)
+[TopSelector] idle... buf=0 window_age=4.2s
+[TopSelector] published 1 -> top5_stream id=1774329098095-0 | INJUSDT:short(0.670)
+[TopSelector] published 1 -> top5_stream id=1774329221397-0 | ETCUSDT:long(0.647)
+[TopSelector] idle... buf=15 window_age=27.9s
+[TopSelector] published 1 -> top5_stream id=1774329408464-0 | LTCUSDT:long(0.589)
+[TopSelector] published 1 -> top5_stream id=1774329531482-0 | LINKUSDT:long(0.672)
+[TopSelector] published 1 -> top5_stream id=1774329562390-0 | ADAUSDT:long(0.562)
+[TopSelector] idle... buf=8 window_age=18.1s
+[TopSelector] published 1 -> top5_stream id=1774329656844-0 | TRXUSDT:long(0.591)
+[TopSelector] published 2 -> top5_stream id=1774329810780-0 | INJUSDT:long(0.658), OPUSDT:long(0.607)
+[TopSelector] published 1 -> top5_stream id=1774329871487-0 | ARBUSDT:long(0.586)
+[TopSelector] idle... buf=6 window_age=12.4s
+[TopSelector] published 1 -> top5_stream id=1774330086265-0 | FILUSDT:long(0.560)
+[TopSelector] published 1 -> top5_stream id=1774330178673-0 | DOGEUSDT:long(0.669)
+[TopSelector] idle... buf=2 window_age=5.4s
+[TopSelector] published 1 -> top5_stream id=1774330240274-0 | BNBUSDT:long(0.585)
+[TopSelector] published 1 -> top5_stream id=1774330363748-0 | AVAXUSDT:long(0.619)
+[TopSelector] published 1 -> top5_stream id=1774330456741-0 | SUIUSDT:short(0.582)
+[TopSelector] idle... buf=11 window_age=27.9s
+[TopSelector] published 1 -> top5_stream id=1774330580044-0 | SUIUSDT:long(0.754)
+[TopSelector] idle... buf=10 window_age=20.6s
+[TopSelector] published 1 -> top5_stream id=1774330825658-0 | BTCUSDT:short(0.558)
+[TopSelector] published 1 -> top5_stream id=1774330950837-0 | UNIUSDT:long(0.662)
+[TopSelector] idle... buf=8 window_age=12.9s
+[TopSelector] published 1 -> top5_stream id=1774331229386-0 | BNBUSDT:short(0.611)
+[TopSelector] published 1 -> top5_stream id=1774331259707-0 | LINKUSDT:long(0.599)
+[TopSelector] idle... buf=1 window_age=6.4s
+[TopSelector] published 1 -> top5_stream id=1774331691065-0 | XRPUSDT:long(0.710)
+[TopSelector] published 1 -> top5_stream id=1774331722164-0 | LTCUSDT:long(0.627)
+[TopSelector] idle... buf=1 window_age=2.8s
+[TopSelector] published 1 -> top5_stream id=1774331752274-0 | DOTUSDT:short(0.603)
+[TopSelector] published 1 -> top5_stream id=1774331845610-0 | ATOMUSDT:long(0.559)
+[TopSelector] published 1 -> top5_stream id=1774331908500-0 | ATOMUSDT:short(0.590)
+[TopSelector] published 1 -> top5_stream id=1774331969359-0 | XRPUSDT:short(0.552)
+[TopSelector] idle... buf=12 window_age=27.9s
+[TopSelector] published 1 -> top5_stream id=1774332216052-0 | DOGEUSDT:long(0.796)
+[TopSelector] idle... buf=13 window_age=23.4s
+[TopSelector] idle... buf=10 window_age=19.5s
+[TopSelector] published 1 -> top5_stream id=1774332644817-0 | ATOMUSDT:short(0.569)
+[TopSelector] idle... buf=11 window_age=12.5s
+[TopSelector] idle... buf=2 window_age=7.0s
+[TopSelector] published 1 -> top5_stream id=1774333354292-0 | FILUSDT:long(0.636)
+[TopSelector] published 1 -> top5_stream id=1774333444841-0 | TRXUSDT:short(0.633)
+[TopSelector] published 1 -> top5_stream id=1774333508583-0 | UNIUSDT:long(0.645)
+[TopSelector] idle... buf=19 window_age=31.6s
+[TopSelector] idle... buf=7 window_age=22.3s
+[TopSelector] published 1 -> top5_stream id=1774334038647-0 | SUIUSDT:short(0.644)
+[TopSelector] published 1 -> top5_stream id=1774334099498-0 | SOLUSDT:long(0.734)
+[TopSelector] idle... buf=14 window_age=18.5s
+[TopSelector] published 1 -> top5_stream id=1774334223580-0 | DOGEUSDT:long(0.694)
+[TopSelector] published 1 -> top5_stream id=1774334316334-0 | FILUSDT:short(0.553)
+[TopSelector] published 1 -> top5_stream id=1774334377434-0 | ATOMUSDT:short(0.566)
+[TopSelector] idle... buf=2 window_age=8.7s
+[TopSelector] idle... buf=2 window_age=4.5s
+[TopSelector] published 1 -> top5_stream id=1774334781363-0 | UNIUSDT:long(0.695)
+[TopSelector] published 1 -> top5_stream id=1774334842309-0 | DOGEUSDT:short(0.592)
+[TopSelector] published 1 -> top5_stream id=1774335025920-0 | DOTUSDT:long(0.628)
+[TopSelector] idle... buf=2 window_age=3.4s
+[TopSelector] published 1 -> top5_stream id=1774335302282-0 | FILUSDT:long(0.599)
+[TopSelector] idle... buf=10 window_age=27.5s
+[TopSelector] published 1 -> top5_stream id=1774335425289-0 | INJUSDT:long(0.635)
+[TopSelector] published 1 -> top5_stream id=1774335518667-0 | NEARUSDT:long(0.685)
+[TopSelector] idle... buf=7 window_age=18.8s
+[TopSelector] published 1 -> top5_stream id=1774335735700-0 | AVAXUSDT:long(0.638)
+[TopSelector] published 2 -> top5_stream id=1774335952612-0 | ETHUSDT:long(0.690), UNIUSDT:long(0.663)
+[TopSelector] idle... buf=5 window_age=10.5s
+[TopSelector] idle... buf=1 window_age=3.7s
+[TopSelector] idle... buf=12 window_age=27.4s
+[TopSelector] published 1 -> top5_stream id=1774336600778-0 | SOLUSDT:short(0.613)
+[TopSelector] published 1 -> top5_stream id=1774336662690-0 | MATICUSDT:short(0.558)
+[TopSelector] published 1 -> top5_stream id=1774336815574-0 | APTUSDT:long(0.564)
+[TopSelector] idle... buf=9 window_age=21.8s
+[TopSelector] published 1 -> top5_stream id=1774336876050-0 | ETCUSDT:short(0.571)
+[TopSelector] published 1 -> top5_stream id=1774336998508-0 | FILUSDT:short(0.653)
+[TopSelector] published 1 -> top5_stream id=1774337121742-0 | ATOMUSDT:long(0.570)
+[TopSelector] published 1 -> top5_stream id=1774337153506-0 | ADAUSDT:short(0.573)
+[TopSelector] idle... buf=5 window_age=15.8s
+[TopSelector] published 1 -> top5_stream id=1774337336179-0 | ARBUSDT:short(0.616)
+[TopSelector] published 1 -> top5_stream id=1774337366852-0 | INJUSDT:long(0.574)
+[TopSelector] published 2 -> top5_stream id=1774337429337-0 | SOLUSDT:long(0.621), LINKUSDT:long(0.553)
+[TopSelector] idle... buf=7 window_age=11.5s
+[TopSelector] published 1 -> top5_stream id=1774337614932-0 | DOGEUSDT:long(0.556)
+[TopSelector] published 1 -> top5_stream id=1774337645952-0 | UNIUSDT:long(0.591)
+[TopSelector] published 1 -> top5_stream id=1774337738204-0 | ARBUSDT:long(0.736)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 2 -> top5_stream id=1774337831218-0 | LTCUSDT:long(0.656), SOLUSDT:short(0.625)
+[TopSelector] published 1 -> top5_stream id=1774337985048-0 | ADAUSDT:long(0.661)
+[TopSelector] idle... buf=12 window_age=26.9s
+[TopSelector] idle... buf=12 window_age=19.2s
+[TopSelector] published 1 -> top5_stream id=1774338478804-0 | FILUSDT:long(0.758)
+[TopSelector] published 1 -> top5_stream id=1774338541032-0 | DOTUSDT:long(0.694)
+[TopSelector] published 1 -> top5_stream id=1774338633658-0 | LTCUSDT:long(0.628)
+[TopSelector] idle... buf=12 window_age=14.8s
+[TopSelector] published 1 -> top5_stream id=1774338914092-0 | ETCUSDT:short(0.564)
+[TopSelector] idle... buf=8 window_age=9.6s
+[TopSelector] published 2 -> top5_stream id=1774339253562-0 | SUIUSDT:long(0.700), LTCUSDT:long(0.605)
+[TopSelector] idle... buf=1 window_age=4.0s
+[TopSelector] published 1 -> top5_stream id=1774339316282-0 | TRXUSDT:short(0.596)
+[TopSelector] idle... buf=11 window_age=27.9s
+[TopSelector] published 1 -> top5_stream id=1774339811482-0 | INJUSDT:short(0.553)
+[TopSelector] idle... buf=11 window_age=22.1s
+[TopSelector] published 1 -> top5_stream id=1774340181000-0 | LTCUSDT:short(0.567)
+[TopSelector] idle... buf=4 window_age=13.9s
+[TopSelector] published 1 -> top5_stream id=1774340243066-0 | DOGEUSDT:short(0.557)
+[TopSelector] published 1 -> top5_stream id=1774340459818-0 | BTCUSDT:long(0.552)
+[TopSelector] idle... buf=2 window_age=7.1s
+[TopSelector] published 1 -> top5_stream id=1774340707836-0 | AAVEUSDT:long(0.616)
+[TopSelector] idle... buf=11 window_age=31.6s
+[TopSelector] published 1 -> top5_stream id=1774340831059-0 | NEARUSDT:short(0.581)
+[TopSelector] published 1 -> top5_stream id=1774341045013-0 | ATOMUSDT:long(0.697)
+[TopSelector] published 1 -> top5_stream id=1774341075512-0 | ETCUSDT:short(0.601)
+[TopSelector] idle... buf=15 window_age=26.9s
+[TopSelector] idle... buf=11 window_age=19.1s
+[TopSelector] published 1 -> top5_stream id=1774341477388-0 | LINKUSDT:long(0.630)
+[TopSelector] published 1 -> top5_stream id=1774341538595-0 | OPUSDT:long(0.593)
+[TopSelector] published 1 -> top5_stream id=1774341569147-0 | UNIUSDT:short(0.633)
+[TopSelector] published 1 -> top5_stream id=1774341692448-0 | ATOMUSDT:short(0.613)
+[TopSelector] idle... buf=8 window_age=14.1s
+[TopSelector] published 1 -> top5_stream id=1774341907350-0 | DOTUSDT:long(0.631)
+[TopSelector] idle... buf=13 window_age=16.3s
+[TopSelector] published 2 -> top5_stream id=1774342124193-0 | DOGEUSDT:long(0.669), FILUSDT:long(0.633)
+[TopSelector] published 1 -> top5_stream id=1774342277681-0 | BTCUSDT:short(0.573)
+[TopSelector] idle... buf=3 window_age=11.0s
+[TopSelector] published 1 -> top5_stream id=1774342464906-0 | INJUSDT:long(0.579)
+[TopSelector] published 1 -> top5_stream id=1774342527787-0 | ADAUSDT:long(0.700)
+[TopSelector] published 1 -> top5_stream id=1774342559080-0 | ETHUSDT:long(0.742)
+[TopSelector] idle... buf=14 window_age=29.5s
+[TopSelector] idle... buf=13 window_age=25.9s
+[TopSelector] published 1 -> top5_stream id=1774342956582-0 | BTCUSDT:short(0.627)
+[TopSelector] idle... buf=9 window_age=21.2s
+[TopSelector] published 1 -> top5_stream id=1774343268837-0 | TRXUSDT:short(0.649)
+[TopSelector] published 1 -> top5_stream id=1774343298855-0 | NEARUSDT:long(0.595)
+[TopSelector] published 1 -> top5_stream id=1774343390393-0 | ATOMUSDT:long(0.598)
+[TopSelector] idle... buf=7 window_age=14.9s
+[TopSelector] published 1 -> top5_stream id=1774343608362-0 | SOLUSDT:long(0.696)
+[TopSelector] published 1 -> top5_stream id=1774343731281-0 | ADAUSDT:short(0.552)
+[TopSelector] idle... buf=1 window_age=6.0s
+[TopSelector] published 1 -> top5_stream id=1774344098454-0 | OPUSDT:long(0.599)
+[TopSelector] published 1 -> top5_stream id=1774344128538-0 | LINKUSDT:long(0.694)
+[TopSelector] idle... buf=1 window_age=4.0s
+[TopSelector] published 1 -> top5_stream id=1774344159746-0 | APTUSDT:long(0.619)
+[TopSelector] published 2 -> top5_stream id=1774344283949-0 | ADAUSDT:long(0.695), TRXUSDT:long(0.619)
+[TopSelector] idle... buf=14 window_age=25.9s
+[TopSelector] published 1 -> top5_stream id=1774344623727-0 | MATICUSDT:long(0.667)
+[TopSelector] idle... buf=8 window_age=20.0s
+[TopSelector] published 1 -> top5_stream id=1774344839240-0 | FILUSDT:short(0.551)
+[TopSelector] published 1 -> top5_stream id=1774344869922-0 | FILUSDT:long(0.684)
+[TopSelector] published 1 -> top5_stream id=1774344899971-0 | OPUSDT:long(0.801)
+[TopSelector] idle... buf=10 window_age=15.6s
+[TopSelector] published 2 -> top5_stream id=1774345113634-0 | BTCUSDT:short(0.583), ETHUSDT:long(0.556)
+[TopSelector] published 2 -> top5_stream id=1774345174068-0 | UNIUSDT:short(0.653), INJUSDT:short(0.603)
+[TopSelector] published 1 -> top5_stream id=1774345236013-0 | UNIUSDT:long(0.561)
+[TopSelector] published 1 -> top5_stream id=1774345329239-0 | INJUSDT:long(0.634)
+[TopSelector] idle... buf=4 window_age=9.4s
+[TopSelector] published 1 -> top5_stream id=1774345390643-0 | BNBUSDT:long(0.699)
+[TopSelector] published 1 -> top5_stream id=1774345483746-0 | ARBUSDT:long(0.642)
+[TopSelector] idle... buf=2 window_age=7.5s
+[TopSelector] published 1 -> top5_stream id=1774345666931-0 | DOGEUSDT:short(0.619)
+[TopSelector] published 1 -> top5_stream id=1774345790282-0 | LINKUSDT:long(0.661)
+[TopSelector] published 1 -> top5_stream id=1774345852470-0 | BTCUSDT:short(0.571)
+[TopSelector] published 1 -> top5_stream id=1774345882551-0 | BNBUSDT:short(0.567)
+[TopSelector] idle... buf=22 window_age=32.0s
+[TopSelector] published 1 -> top5_stream id=1774346038521-0 | NEARUSDT:short(0.615)
+[TopSelector] idle... buf=11 window_age=22.0s
+[TopSelector] published 1 -> top5_stream id=1774346254787-0 | MATICUSDT:long(0.598)
+[TopSelector] idle... buf=9 window_age=14.8s
+[TopSelector] published 1 -> top5_stream id=1774346653975-0 | APTUSDT:long(0.556)
+[TopSelector] idle... buf=3 window_age=8.7s
+[TopSelector] idle... buf=6 window_age=8.9s
+[TopSelector] published 1 -> top5_stream id=1774347208957-0 | ATOMUSDT:long(0.616)
+[TopSelector] published 1 -> top5_stream id=1774347393848-0 | ETHUSDT:short(0.552)
+[TopSelector] idle... buf=5 window_age=8.9s
+[TopSelector] published 1 -> top5_stream id=1774347485213-0 | TRXUSDT:short(0.623)
+[TopSelector] published 1 -> top5_stream id=1774347639345-0 | AAVEUSDT:long(0.661)
+[TopSelector] published 1 -> top5_stream id=1774347731787-0 | LTCUSDT:long(0.552)
+[TopSelector] idle... buf=11 window_age=32.0s
+[TopSelector] published 1 -> top5_stream id=1774347763772-0 | LINKUSDT:short(0.575)
+[TopSelector] published 1 -> top5_stream id=1774347824650-0 | ATOMUSDT:long(0.664)
+[TopSelector] idle... buf=6 window_age=25.2s
+[TopSelector] published 1 -> top5_stream id=1774348070524-0 | DOTUSDT:short(0.583)
+[TopSelector] published 1 -> top5_stream id=1774348133699-0 | SUIUSDT:long(0.600)
+[TopSelector] published 1 -> top5_stream id=1774348196211-0 | AVAXUSDT:short(0.590)
+[TopSelector] published 1 -> top5_stream id=1774348350826-0 | MATICUSDT:long(0.625)
+[TopSelector] idle... buf=8 window_age=15.4s
+[TopSelector] published 1 -> top5_stream id=1774348537463-0 | DOGEUSDT:long(0.718)
+[TopSelector] idle... buf=3 window_age=5.8s
+[TopSelector] published 1 -> top5_stream id=1774348752336-0 | ADAUSDT:long(0.670)
+[TopSelector] published 1 -> top5_stream id=1774348783281-0 | NEARUSDT:long(0.647)
+[TopSelector] idle... buf=17 window_age=29.8s
+[TopSelector] published 1 -> top5_stream id=1774349001588-0 | TRXUSDT:short(0.580)
+[TopSelector] idle... buf=11 window_age=19.3s
+[TopSelector] published 1 -> top5_stream id=1774349314230-0 | ETHUSDT:short(0.601)
+[TopSelector] published 1 -> top5_stream id=1774349439514-0 | ETHUSDT:long(0.669)
+[TopSelector] idle... buf=11 window_age=17.1s
+[TopSelector] published 1 -> top5_stream id=1774349747989-0 | SOLUSDT:short(0.620)
+[TopSelector] published 1 -> top5_stream id=1774349870613-0 | ATOMUSDT:long(0.624)
+[TopSelector] idle... buf=5 window_age=10.5s
+[TopSelector] published 1 -> top5_stream id=1774350117483-0 | DOGEUSDT:long(0.756)
+[TopSelector] published 1 -> top5_stream id=1774350177957-0 | XRPUSDT:long(0.567)
+[TopSelector] idle... buf=3 window_age=6.1s
+[TopSelector] published 1 -> top5_stream id=1774350241050-0 | LINKUSDT:long(0.559)
+[TopSelector] published 2 -> top5_stream id=1774350301968-0 | LTCUSDT:short(0.666), ARBUSDT:long(0.598)
+[TopSelector] idle... buf=17 window_age=28.0s
+[TopSelector] published 1 -> top5_stream id=1774350488355-0 | TRXUSDT:long(0.676)
+[TopSelector] published 1 -> top5_stream id=1774350579473-0 | NEARUSDT:long(0.647)
+[TopSelector] idle... buf=16 window_age=25.4s
+[TopSelector] published 1 -> top5_stream id=1774350856067-0 | BTCUSDT:long(0.603)
+[TopSelector] published 1 -> top5_stream id=1774351011896-0 | SOLUSDT:short(0.597)
+[TopSelector] idle... buf=6 window_age=19.3s
+[TopSelector] published 1 -> top5_stream id=1774351319415-0 | ARBUSDT:long(0.585)
+[TopSelector] published 1 -> top5_stream id=1774351350738-0 | FILUSDT:long(0.585)
+[TopSelector] published 1 -> top5_stream id=1774351382378-0 | AAVEUSDT:long(0.628)
+[TopSelector] idle... buf=6 window_age=11.1s
+[TopSelector] idle... buf=0 window_age=4.2s
+[TopSelector] published 1 -> top5_stream id=1774351814229-0 | BNBUSDT:long(0.639)
+[TopSelector] published 1 -> top5_stream id=1774351875415-0 | TRXUSDT:long(0.585)
+[TopSelector] published 1 -> top5_stream id=1774351907330-0 | TRXUSDT:short(0.566)
+[TopSelector] idle... buf=11 window_age=25.1s
+[TopSelector] idle... buf=8 window_age=16.4s
+[TopSelector] published 1 -> top5_stream id=1774352342448-0 | FILUSDT:short(0.559)
+[TopSelector] idle... buf=15 window_age=17.7s
+[TopSelector] published 2 -> top5_stream id=1774352834903-0 | BNBUSDT:long(0.781), UNIUSDT:short(0.569)
+[TopSelector] idle... buf=7 window_age=12.1s
+[TopSelector] published 1 -> top5_stream id=1774352926081-0 | SUIUSDT:long(0.625)
+[TopSelector] published 2 -> top5_stream id=1774353111205-0 | XRPUSDT:short(0.612), NEARUSDT:short(0.586)
+[TopSelector] idle... buf=0 window_age=6.2s
+[TopSelector] published 1 -> top5_stream id=1774353482162-0 | BTCUSDT:long(0.649)
+[TopSelector] idle... buf=18 window_age=30.8s
+[TopSelector] published 1 -> top5_stream id=1774353512979-0 | TRXUSDT:long(0.599)
+[TopSelector] idle... buf=11 window_age=21.1s
+[TopSelector] published 1 -> top5_stream id=1774354040125-0 | LTCUSDT:long(0.656)
+[TopSelector] published 1 -> top5_stream id=1774354070968-0 | ETHUSDT:long(0.664)
+[TopSelector] idle... buf=8 window_age=14.7s
+[TopSelector] published 1 -> top5_stream id=1774354164146-0 | DOTUSDT:short(0.616)
+[TopSelector] published 1 -> top5_stream id=1774354378793-0 | TRXUSDT:long(0.575)
+[TopSelector] idle... buf=4 window_age=8.2s
+[TopSelector] idle... buf=20 window_age=28.5s
+[TopSelector] idle... buf=10 window_age=21.9s
+[TopSelector] published 1 -> top5_stream id=1774355088906-0 | LTCUSDT:long(0.650)
+[TopSelector] idle... buf=7 window_age=18.5s
+[TopSelector] published 1 -> top5_stream id=1774355518711-0 | AVAXUSDT:long(0.686)
+[TopSelector] idle... buf=9 window_age=13.5s
+[TopSelector] published 1 -> top5_stream id=1774355673163-0 | OPUSDT:short(0.584)
+[TopSelector] published 2 -> top5_stream id=1774355796228-0 | NEARUSDT:long(0.678), INJUSDT:short(0.652)
+[TopSelector] idle... buf=4 window_age=9.6s
+[TopSelector] published 1 -> top5_stream id=1774356073431-0 | LINKUSDT:short(0.631)
+[TopSelector] published 1 -> top5_stream id=1774356197329-0 | FILUSDT:long(0.644)
+[TopSelector] idle... buf=3 window_age=4.6s
+[TopSelector] published 1 -> top5_stream id=1774356290844-0 | SUIUSDT:short(0.609)
+[TopSelector] published 1 -> top5_stream id=1774356504599-0 | SOLUSDT:long(0.669)
+[TopSelector] idle... buf=21 window_age=31.5s
+[TopSelector] published 1 -> top5_stream id=1774356597000-0 | BTCUSDT:short(0.592)
+[TopSelector] published 1 -> top5_stream id=1774356628267-0 | DOGEUSDT:long(0.633)
+[TopSelector] published 1 -> top5_stream id=1774356659739-0 | NEARUSDT:short(0.590)
+[TopSelector] published 2 -> top5_stream id=1774356753037-0 | ARBUSDT:long(0.596), ETCUSDT:short(0.596)
+[TopSelector] idle... buf=13 window_age=22.1s
+[TopSelector] published 1 -> top5_stream id=1774356907247-0 | LINKUSDT:long(0.702)
+[TopSelector] published 1 -> top5_stream id=1774356971040-0 | NEARUSDT:long(0.708)
+[TopSelector] published 1 -> top5_stream id=1774357063898-0 | ETHUSDT:long(0.552)
+[TopSelector] idle... buf=9 window_age=13.7s
+[TopSelector] published 1 -> top5_stream id=1774357249930-0 | LTCUSDT:long(0.560)
+[TopSelector] init ok. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 topk=5 window=30s cooldown=600s min_score=0.55 w_min=0.55 ack_immediate=False
+[TopSelector] started. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=5 cooldown=600s min_score=0.55 w_min=0.55 redis=localhost:6379/0
+[TopSelector] idle... buf=3 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774357341174-0 | SUIUSDT:short(0.637)
+[TopSelector] published 1 -> top5_stream id=1774357556130-0 | DOTUSDT:long(0.587)
+[TopSelector] idle... buf=13 window_age=24.3s
+[TopSelector] published 3 -> top5_stream id=1774357649081-0 | AVAXUSDT:long(0.740), TRXUSDT:short(0.627), DOGEUSDT:long(0.567)
+[TopSelector] published 1 -> top5_stream id=1774357711703-0 | BTCUSDT:long(0.558)
+[TopSelector] published 1 -> top5_stream id=1774357836810-0 | UNIUSDT:long(0.697)
+[TopSelector] published 2 -> top5_stream id=1774357867366-0 | LINKUSDT:long(0.726), ETHUSDT:short(0.602)
+[TopSelector] published 1 -> top5_stream id=1774357898702-0 | INJUSDT:long(0.638)
+[TopSelector] idle... buf=11 window_age=19.0s
+[TopSelector] published 1 -> top5_stream id=1774357929871-0 | ATOMUSDT:short(0.554)
+[TopSelector] published 1 -> top5_stream id=1774358115692-0 | ADAUSDT:short(0.619)
+[TopSelector] idle... buf=7 window_age=11.7s
+[TopSelector] published 1 -> top5_stream id=1774358516910-0 | AVAXUSDT:long(0.610)
+[TopSelector] idle... buf=4 window_age=6.3s
+[TopSelector] published 1 -> top5_stream id=1774358671827-0 | DOGEUSDT:long(0.589)
+[TopSelector] published 1 -> top5_stream id=1774358794373-0 | INJUSDT:long(0.693)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774358885715-0 | BNBUSDT:short(0.662)
+[TopSelector] published 1 -> top5_stream id=1774358978717-0 | DOTUSDT:long(0.593)
+[TopSelector] idle... buf=16 window_age=24.4s
+[TopSelector] published 1 -> top5_stream id=1774359164847-0 | OPUSDT:long(0.655)
+[TopSelector] published 1 -> top5_stream id=1774359316842-0 | NEARUSDT:long(0.684)
+[TopSelector] idle... buf=13 window_age=24.1s
+[TopSelector] published 1 -> top5_stream id=1774359685353-0 | MATICUSDT:short(0.603)
+[TopSelector] idle... buf=7 window_age=16.0s
+[TopSelector] published 1 -> top5_stream id=1774359748160-0 | OPUSDT:short(0.647)
+[TopSelector] published 1 -> top5_stream id=1774359779036-0 | SOLUSDT:long(0.624)
+[TopSelector] idle... buf=5 window_age=12.0s
+[TopSelector] published 2 -> top5_stream id=1774360055972-0 | UNIUSDT:long(0.768), AVAXUSDT:long(0.559)
+[TopSelector] published 1 -> top5_stream id=1774360241631-0 | AAVEUSDT:short(0.557)
+[TopSelector] idle... buf=5 window_age=9.0s
+[TopSelector] idle... buf=17 window_age=31.3s
+[TopSelector] published 1 -> top5_stream id=1774360706740-0 | LTCUSDT:long(0.665)
+[TopSelector] published 1 -> top5_stream id=1774360768901-0 | UNIUSDT:long(0.628)
+[TopSelector] published 1 -> top5_stream id=1774360921794-0 | FILUSDT:short(0.552)
+[TopSelector] idle... buf=14 window_age=28.1s
+[TopSelector] published 1 -> top5_stream id=1774361107359-0 | ARBUSDT:long(0.670)
+[TopSelector] published 1 -> top5_stream id=1774361137532-0 | DOGEUSDT:short(0.563)
+[TopSelector] idle... buf=9 window_age=20.6s
+[TopSelector] published 1 -> top5_stream id=1774361478472-0 | DOGEUSDT:long(0.609)
+[TopSelector] idle... buf=3 window_age=15.0s
+[TopSelector] published 1 -> top5_stream id=1774361569434-0 | SUIUSDT:short(0.641)
+[TopSelector] idle... buf=2 window_age=8.3s
+[TopSelector] published 1 -> top5_stream id=1774361939780-0 | NEARUSDT:short(0.592)
+[TopSelector] published 1 -> top5_stream id=1774362000093-0 | XRPUSDT:short(0.612)
+[TopSelector] published 1 -> top5_stream id=1774362091562-0 | AVAXUSDT:long(0.561)
+[TopSelector] idle... buf=4 window_age=7.5s
+[TopSelector] published 1 -> top5_stream id=1774362277091-0 | AAVEUSDT:long(0.570)
+[TopSelector] idle... buf=8 window_age=30.1s
+[TopSelector] published 1 -> top5_stream id=1774362492722-0 | FILUSDT:short(0.567)
+[TopSelector] published 1 -> top5_stream id=1774362554175-0 | FILUSDT:long(0.582)
+[TopSelector] published 1 -> top5_stream id=1774362615153-0 | SUIUSDT:long(0.690)
+[TopSelector] published 1 -> top5_stream id=1774362705790-0 | ATOMUSDT:short(0.607)
+[TopSelector] idle... buf=12 window_age=27.4s
+[TopSelector] idle... buf=16 window_age=27.0s
+[TopSelector] idle... buf=7 window_age=15.5s
+[TopSelector] published 1 -> top5_stream id=1774363480138-0 | UNIUSDT:long(0.692)
+[TopSelector] published 1 -> top5_stream id=1774363665490-0 | TRXUSDT:long(0.716)
+[TopSelector] idle... buf=1 window_age=8.1s
+[TopSelector] idle... buf=13 window_age=28.5s
+[TopSelector] published 1 -> top5_stream id=1774364036081-0 | FILUSDT:short(0.641)
+[TopSelector] idle... buf=8 window_age=24.3s
+[TopSelector] published 1 -> top5_stream id=1774364465209-0 | AVAXUSDT:long(0.604)
+[TopSelector] idle... buf=9 window_age=20.0s
+[TopSelector] published 1 -> top5_stream id=1774364709686-0 | AVAXUSDT:short(0.568)
+[TopSelector] idle... buf=5 window_age=15.9s
+[TopSelector] published 1 -> top5_stream id=1774364985487-0 | INJUSDT:long(0.565)
+[TopSelector] published 1 -> top5_stream id=1774365107735-0 | NEARUSDT:long(0.578)
+[TopSelector] published 1 -> top5_stream id=1774365139010-0 | DOTUSDT:long(0.686)
+[TopSelector] idle... buf=9 window_age=16.3s
+[TopSelector] idle... buf=2 window_age=5.1s
+[TopSelector] published 1 -> top5_stream id=1774365635936-0 | ETCUSDT:long(0.637)
+[TopSelector] published 2 -> top5_stream id=1774365697823-0 | BTCUSDT:long(0.735), TRXUSDT:long(0.634)
+[TopSelector] idle... buf=14 window_age=28.6s
+[TopSelector] published 1 -> top5_stream id=1774365851292-0 | LTCUSDT:short(0.588)
+[TopSelector] published 1 -> top5_stream id=1774366034576-0 | DOTUSDT:long(0.566)
+[TopSelector] idle... buf=10 window_age=23.9s
+[TopSelector] published 1 -> top5_stream id=1774366217515-0 | SUIUSDT:short(0.630)
+[TopSelector] published 1 -> top5_stream id=1774366248296-0 | XRPUSDT:short(0.574)
+[TopSelector] idle... buf=13 window_age=23.2s
+[TopSelector] published 1 -> top5_stream id=1774366648931-0 | APTUSDT:long(0.551)
+[TopSelector] idle... buf=8 window_age=14.9s
+[TopSelector] published 1 -> top5_stream id=1774366772978-0 | ADAUSDT:short(0.570)
+[TopSelector] idle... buf=11 window_age=15.8s
+[TopSelector] published 1 -> top5_stream id=1774367018832-0 | LTCUSDT:long(0.652)
+[TopSelector] published 1 -> top5_stream id=1774367110569-0 | DOGEUSDT:long(0.725)
+[TopSelector] published 1 -> top5_stream id=1774367295750-0 | ARBUSDT:short(0.586)
+[TopSelector] idle... buf=13 window_age=13.9s
+[TopSelector] published 1 -> top5_stream id=1774367358872-0 | FILUSDT:long(0.602)
+[TopSelector] published 1 -> top5_stream id=1774367483207-0 | NEARUSDT:long(0.679)
+[TopSelector] published 1 -> top5_stream id=1774367513636-0 | ADAUSDT:short(0.578)
+[TopSelector] published 1 -> top5_stream id=1774367544074-0 | ATOMUSDT:long(0.749)
+[TopSelector] idle... buf=7 window_age=10.9s
+[TopSelector] published 1 -> top5_stream id=1774367636549-0 | DOGEUSDT:short(0.595)
+[TopSelector] published 1 -> top5_stream id=1774367697330-0 | DOTUSDT:short(0.627)
+[TopSelector] published 1 -> top5_stream id=1774367850673-0 | BTCUSDT:long(0.639)
+[TopSelector] published 1 -> top5_stream id=1774367911600-0 | INJUSDT:short(0.638)
+[TopSelector] idle... buf=5 window_age=7.2s
+[TopSelector] published 1 -> top5_stream id=1774368066980-0 | LTCUSDT:long(0.559)
+[TopSelector] idle... buf=13 window_age=30.1s
+[TopSelector] published 1 -> top5_stream id=1774368313763-0 | ETCUSDT:long(0.605)
+[TopSelector] published 1 -> top5_stream id=1774368345571-0 | FILUSDT:short(0.575)
+[TopSelector] published 1 -> top5_stream id=1774368439405-0 | FILUSDT:long(0.598)
+[TopSelector] idle... buf=10 window_age=22.6s
+[TopSelector] published 1 -> top5_stream id=1774368532504-0 | SOLUSDT:short(0.619)
+[TopSelector] published 1 -> top5_stream id=1774368593671-0 | ARBUSDT:long(0.585)
+[TopSelector] published 1 -> top5_stream id=1774368623832-0 | UNIUSDT:long(0.618)
+[TopSelector] published 1 -> top5_stream id=1774368686516-0 | XRPUSDT:long(0.647)
+[TopSelector] published 1 -> top5_stream id=1774368779184-0 | AAVEUSDT:long(0.586)
+[TopSelector] idle... buf=7 window_age=18.1s
+[TopSelector] published 2 -> top5_stream id=1774368962109-0 | ADAUSDT:long(0.671), XRPUSDT:short(0.670)
+[TopSelector] idle... buf=6 window_age=11.9s
+[TopSelector] published 1 -> top5_stream id=1774369178859-0 | BNBUSDT:long(0.564)
+[TopSelector] published 1 -> top5_stream id=1774369271347-0 | ATOMUSDT:long(0.593)
+[TopSelector] idle... buf=3 window_age=7.2s
+[TopSelector] published 1 -> top5_stream id=1774369456067-0 | ARBUSDT:short(0.599)
+[TopSelector] published 1 -> top5_stream id=1774369671320-0 | SUIUSDT:short(0.613)
+[TopSelector] idle... buf=16 window_age=30.7s
+[TopSelector] published 1 -> top5_stream id=1774369854774-0 | ARBUSDT:long(0.576)
+[TopSelector] idle... buf=17 window_age=26.1s
+[TopSelector] published 1 -> top5_stream id=1774370041011-0 | DOTUSDT:long(0.694)
+[TopSelector] published 1 -> top5_stream id=1774370072119-0 | OPUSDT:short(0.583)
+[TopSelector] idle... buf=10 window_age=18.7s
+[TopSelector] published 2 -> top5_stream id=1774370537254-0 | DOGEUSDT:long(0.612), MATICUSDT:short(0.559)
+[TopSelector] idle... buf=5 window_age=7.1s
+[TopSelector] published 1 -> top5_stream id=1774370784101-0 | LINKUSDT:long(0.717)
+[TopSelector] published 1 -> top5_stream id=1774370815751-0 | NEARUSDT:short(0.613)
+[TopSelector] published 1 -> top5_stream id=1774370846061-0 | AAVEUSDT:long(0.553)
+[TopSelector] idle... buf=1 window_age=2.1s
+[TopSelector] idle... buf=11 window_age=26.3s
+[TopSelector] published 1 -> top5_stream id=1774371245146-0 | OPUSDT:long(0.655)
+[TopSelector] published 3 -> top5_stream id=1774371306920-0 | UNIUSDT:long(0.599), DOTUSDT:short(0.560), BNBUSDT:long(0.551)
+[TopSelector] published 1 -> top5_stream id=1774371337114-0 | SUIUSDT:short(0.585)
+[TopSelector] published 1 -> top5_stream id=1774371368359-0 | XRPUSDT:long(0.661)
+[TopSelector] published 1 -> top5_stream id=1774371400074-0 | ETHUSDT:long(0.795)
+[TopSelector] published 1 -> top5_stream id=1774371492824-0 | BTCUSDT:long(0.718)
+[TopSelector] idle... buf=15 window_age=22.6s
+[TopSelector] published 1 -> top5_stream id=1774371555597-0 | AVAXUSDT:long(0.582)
+[TopSelector] published 1 -> top5_stream id=1774371586697-0 | SOLUSDT:long(0.649)
+[TopSelector] idle... buf=16 window_age=25.6s
+[TopSelector] published 1 -> top5_stream id=1774371922683-0 | AVAXUSDT:short(0.613)
+[TopSelector] published 2 -> top5_stream id=1774372137482-0 | INJUSDT:long(0.619), MATICUSDT:long(0.558)
+[TopSelector] idle... buf=7 window_age=21.0s
+[TopSelector] idle... buf=8 window_age=10.3s
+[TopSelector] published 2 -> top5_stream id=1774372541569-0 | BNBUSDT:long(0.670), AAVEUSDT:short(0.597)
+[TopSelector] published 1 -> top5_stream id=1774372725798-0 | UNIUSDT:long(0.572)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774372787391-0 | ADAUSDT:short(0.578)
+[TopSelector] idle... buf=18 window_age=28.3s
+[TopSelector] published 1 -> top5_stream id=1774373062959-0 | MATICUSDT:long(0.589)
+[TopSelector] idle... buf=12 window_age=26.3s
+[TopSelector] published 1 -> top5_stream id=1774373519567-0 | SOLUSDT:short(0.558)
+[TopSelector] idle... buf=13 window_age=21.1s
+[TopSelector] published 1 -> top5_stream id=1774373706188-0 | BNBUSDT:short(0.634)
+[TopSelector] published 1 -> top5_stream id=1774373736438-0 | AVAXUSDT:short(0.584)
+[TopSelector] published 2 -> top5_stream id=1774373892314-0 | ARBUSDT:long(0.696), TRXUSDT:long(0.694)
+[TopSelector] published 1 -> top5_stream id=1774373954097-0 | ETCUSDT:long(0.635)
+[TopSelector] idle... buf=4 window_age=12.1s
+[TopSelector] idle... buf=1 window_age=5.3s
+[TopSelector] published 2 -> top5_stream id=1774374322768-0 | XRPUSDT:long(0.697), AAVEUSDT:long(0.647)
+[TopSelector] published 2 -> top5_stream id=1774374538214-0 | LINKUSDT:long(0.683), ARBUSDT:short(0.651)
+[TopSelector] idle... buf=13 window_age=30.4s
+[TopSelector] published 1 -> top5_stream id=1774374568645-0 | LTCUSDT:short(0.603)
+[TopSelector] published 1 -> top5_stream id=1774374599017-0 | DOTUSDT:short(0.613)
+[TopSelector] published 1 -> top5_stream id=1774374660988-0 | ARBUSDT:long(0.555)
+[TopSelector] published 1 -> top5_stream id=1774374722076-0 | BNBUSDT:long(0.638)
+[TopSelector] idle... buf=7 window_age=27.6s
+[TopSelector] idle... buf=7 window_age=18.6s
+[TopSelector] published 1 -> top5_stream id=1774375337065-0 | INJUSDT:long(0.626)
+[TopSelector] published 1 -> top5_stream id=1774375458919-0 | ATOMUSDT:long(0.590)
+[TopSelector] idle... buf=7 window_age=16.1s
+[TopSelector] published 1 -> top5_stream id=1774375519999-0 | ETCUSDT:short(0.556)
+[TopSelector] published 1 -> top5_stream id=1774375582686-0 | AAVEUSDT:short(0.557)
+[TopSelector] published 1 -> top5_stream id=1774375645272-0 | XRPUSDT:short(0.614)
+[TopSelector] published 1 -> top5_stream id=1774375707624-0 | ETHUSDT:short(0.566)
+[TopSelector] idle... buf=3 window_age=8.0s
+[TopSelector] published 1 -> top5_stream id=1774375984768-0 | ETHUSDT:long(0.552)
+[TopSelector] published 1 -> top5_stream id=1774376047254-0 | BNBUSDT:long(0.652)
+[TopSelector] published 1 -> top5_stream id=1774376077345-0 | LTCUSDT:long(0.694)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774376138983-0 | MATICUSDT:long(0.597)
+[TopSelector] published 1 -> top5_stream id=1774376352238-0 | DOGEUSDT:short(0.565)
+[TopSelector] idle... buf=10 window_age=28.1s
+[TopSelector] published 1 -> top5_stream id=1774376382532-0 | ATOMUSDT:long(0.607)
+[TopSelector] idle... buf=11 window_age=20.8s
+[TopSelector] published 1 -> top5_stream id=1774376939917-0 | LTCUSDT:long(0.613)
+[TopSelector] idle... buf=3 window_age=11.2s
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] idle... buf=13 window_age=28.6s
+[TopSelector] idle... buf=10 window_age=21.5s
+[TopSelector] idle... buf=6 window_age=15.9s
+[TopSelector] published 1 -> top5_stream id=1774378237278-0 | APTUSDT:long(0.636)
+[TopSelector] published 1 -> top5_stream id=1774378481858-0 | ARBUSDT:long(0.567)
+[TopSelector] idle... buf=4 window_age=9.8s
+[TopSelector] idle... buf=1 window_age=4.0s
+[TopSelector] published 1 -> top5_stream id=1774378946219-0 | MATICUSDT:long(0.640)
+[TopSelector] published 2 -> top5_stream id=1774379038496-0 | XRPUSDT:long(0.733), BTCUSDT:long(0.646)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774379255620-0 | SUIUSDT:long(0.550)
+[TopSelector] idle... buf=12 window_age=28.9s
+[TopSelector] published 1 -> top5_stream id=1774379441003-0 | BNBUSDT:long(0.590)
+[TopSelector] published 1 -> top5_stream id=1774379532762-0 | XRPUSDT:short(0.745)
+[TopSelector] published 1 -> top5_stream id=1774379655793-0 | MATICUSDT:long(0.647)
+[TopSelector] idle... buf=13 window_age=21.5s
+[TopSelector] published 1 -> top5_stream id=1774379997207-0 | DOGEUSDT:long(0.663)
+[TopSelector] idle... buf=6 window_age=13.3s
+[TopSelector] published 1 -> top5_stream id=1774380089922-0 | TRXUSDT:long(0.560)
+[TopSelector] published 1 -> top5_stream id=1774380119998-0 | AAVEUSDT:short(0.576)
+[TopSelector] idle... buf=1 window_age=4.4s
+[TopSelector] idle... buf=11 window_age=28.8s
+[TopSelector] published 1 -> top5_stream id=1774380705886-0 | ETCUSDT:long(0.755)
+[TopSelector] idle... buf=7 window_age=20.7s
+[TopSelector] published 1 -> top5_stream id=1774381078368-0 | ATOMUSDT:long(0.582)
+[TopSelector] published 1 -> top5_stream id=1774381141878-0 | DOTUSDT:long(0.644)
+[TopSelector] published 1 -> top5_stream id=1774381172829-0 | FILUSDT:long(0.571)
+[TopSelector] idle... buf=6 window_age=11.3s
+[TopSelector] published 1 -> top5_stream id=1774381420217-0 | LTCUSDT:long(0.685)
+[TopSelector] published 1 -> top5_stream id=1774381512394-0 | ADAUSDT:long(0.612)
+[TopSelector] idle... buf=5 window_age=8.3s
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774381916318-0 | LINKUSDT:long(0.653)
+[TopSelector] published 1 -> top5_stream id=1774381946402-0 | APTUSDT:short(0.631)
+[TopSelector] published 1 -> top5_stream id=1774382071222-0 | BTCUSDT:short(0.720)
+[TopSelector] idle... buf=15 window_age=24.5s
+[TopSelector] init ok. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 topk=5 window=30s cooldown=600s min_score=0.55 w_min=0.55 ack_immediate=False
+[TopSelector] started. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=5 cooldown=600s min_score=0.55 w_min=0.55 redis=localhost:6379/0
+[TopSelector] idle... buf=2 window_age=4.1s
+[TopSelector] published 1 -> top5_stream id=1774382278889-0 | OPUSDT:short(0.589)
+[TopSelector] idle... buf=19 window_age=30.3s
+[TopSelector] published 1 -> top5_stream id=1774382524129-0 | SUIUSDT:long(0.658)
+[TopSelector] published 1 -> top5_stream id=1774382555221-0 | LTCUSDT:long(0.681)
+[TopSelector] published 1 -> top5_stream id=1774382585451-0 | FILUSDT:short(0.586)
+[TopSelector] idle... buf=19 window_age=23.4s
+[TopSelector] published 1 -> top5_stream id=1774382895373-0 | SOLUSDT:long(0.763)
+[TopSelector] published 1 -> top5_stream id=1774383051160-0 | UNIUSDT:long(0.810)
+[TopSelector] idle... buf=11 window_age=17.7s
+[TopSelector] published 1 -> top5_stream id=1774383236940-0 | NEARUSDT:long(0.659)
+[TopSelector] published 1 -> top5_stream id=1774383361911-0 | MATICUSDT:long(0.576)
+[TopSelector] published 1 -> top5_stream id=1774383423804-0 | BTCUSDT:short(0.607)
+[TopSelector] idle... buf=6 window_age=12.7s
+[TopSelector] idle... buf=4 window_age=8.3s
+[TopSelector] published 1 -> top5_stream id=1774383819676-0 | ATOMUSDT:short(0.618)
+[TopSelector] published 1 -> top5_stream id=1774383883400-0 | NEARUSDT:long(0.562)
+[TopSelector] published 1 -> top5_stream id=1774383944109-0 | LTCUSDT:long(0.592)
+[TopSelector] idle... buf=13 window_age=30.8s
+[TopSelector] published 1 -> top5_stream id=1774384037761-0 | XRPUSDT:long(0.660)
+[TopSelector] published 1 -> top5_stream id=1774384068096-0 | INJUSDT:long(0.553)
+[TopSelector] published 1 -> top5_stream id=1774384313622-0 | OPUSDT:long(0.565)
+[TopSelector] idle... buf=9 window_age=26.1s
+[TopSelector] published 1 -> top5_stream id=1774384344699-0 | SOLUSDT:short(0.569)
+[TopSelector] published 1 -> top5_stream id=1774384408080-0 | ETCUSDT:short(0.596)
+[TopSelector] published 1 -> top5_stream id=1774384500287-0 | LINKUSDT:long(0.607)
+[TopSelector] idle... buf=9 window_age=16.5s
+[TopSelector] published 3 -> top5_stream id=1774384905007-0 | ARBUSDT:long(0.715), OPUSDT:short(0.608), XRPUSDT:short(0.579)
+[TopSelector] idle... buf=5 window_age=7.8s
+[TopSelector] published 1 -> top5_stream id=1774385057653-0 | AAVEUSDT:long(0.606)
+[TopSelector] idle... buf=1 window_age=3.5s
+[TopSelector] init ok. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 topk=5 window=30s cooldown=600s min_score=0.55 w_min=0.55 ack_immediate=False
+[TopSelector] started. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=5 cooldown=600s min_score=0.55 w_min=0.55 redis=localhost:6379/0
+[TopSelector] idle... buf=2 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774385415078-0 | LTCUSDT:long(0.568)
+[TopSelector] idle... buf=8 window_age=21.7s
+[TopSelector] published 1 -> top5_stream id=1774385696330-0 | DOTUSDT:long(0.676)
+[TopSelector] published 1 -> top5_stream id=1774385757871-0 | NEARUSDT:long(0.585)
+[TopSelector] idle... buf=4 window_age=15.6s
+[TopSelector] published 2 -> top5_stream id=1774386004638-0 | DOTUSDT:short(0.714), ETHUSDT:long(0.660)
+[TopSelector] published 2 -> top5_stream id=1774386191569-0 | LINKUSDT:long(0.627), AVAXUSDT:short(0.590)
+[TopSelector] published 1 -> top5_stream id=1774386253969-0 | MATICUSDT:short(0.567)
+[TopSelector] published 1 -> top5_stream id=1774386284054-0 | APTUSDT:short(0.600)
+[TopSelector] idle... buf=5 window_age=10.5s
+[TopSelector] published 1 -> top5_stream id=1774386498411-0 | ATOMUSDT:long(0.606)
+[TopSelector] published 1 -> top5_stream id=1774386528500-0 | ARBUSDT:long(0.639)
+[TopSelector] idle... buf=3 window_age=5.9s
+[TopSelector] published 2 -> top5_stream id=1774386775723-0 | SOLUSDT:short(0.589), DOTUSDT:short(0.561)
+[TopSelector] idle... buf=2 window_age=2.9s
+[TopSelector] init ok. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 topk=5 window=30s cooldown=600s min_score=0.55 w_min=0.55 ack_immediate=False
+[TopSelector] started. in=candidates_stream out=top5_stream group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=5 cooldown=600s min_score=0.55 w_min=0.55 redis=localhost:6379/0
+[TopSelector] idle... buf=4 window_age=4.4s
+[TopSelector] published 1 -> top5_stream id=1774387238926-0 | FILUSDT:long(0.672)
+[TopSelector] idle... buf=3 window_age=6.2s
+[TopSelector] published 1 -> top5_stream id=1774387576251-0 | BTCUSDT:long(0.630)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] idle... buf=16 window_age=23.4s
+[TopSelector] published 1 -> top5_stream id=1774387981990-0 | ETHUSDT:long(0.631)
+[TopSelector] published 1 -> top5_stream id=1774388013496-0 | DOGEUSDT:long(0.622)
+[TopSelector] idle... buf=10 window_age=15.6s
+[TopSelector] idle... buf=8 window_age=13.3s
+[TopSelector] published 2 -> top5_stream id=1774388786069-0 | OPUSDT:long(0.693), INJUSDT:long(0.663)
+[TopSelector] idle... buf=2 window_age=9.5s
+[TopSelector] published 1 -> top5_stream id=1774388939348-0 | XRPUSDT:long(0.665)
+[TopSelector] idle... buf=4 window_age=5.4s
+[TopSelector] published 1 -> top5_stream id=1774389186522-0 | BTCUSDT:long(0.556)
+[TopSelector] published 1 -> top5_stream id=1774389217492-0 | DOTUSDT:long(0.576)
+[TopSelector] published 1 -> top5_stream id=1774389339467-0 | MATICUSDT:long(0.668)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774389462255-0 | SOLUSDT:short(0.638)
+[TopSelector] published 1 -> top5_stream id=1774389584008-0 | LINKUSDT:long(0.594)
+[TopSelector] published 1 -> top5_stream id=1774389676372-0 | AVAXUSDT:long(0.694)
+[TopSelector] idle... buf=12 window_age=26.3s
+[TopSelector] idle... buf=6 window_age=18.6s
+[TopSelector] published 1 -> top5_stream id=1774390231855-0 | DOGEUSDT:short(0.553)
+[TopSelector] published 1 -> top5_stream id=1774390262425-0 | INJUSDT:long(0.807)
+[TopSelector] published 1 -> top5_stream id=1774390324477-0 | XRPUSDT:short(0.635)
+[TopSelector] idle... buf=2 window_age=12.4s
+[TopSelector] published 1 -> top5_stream id=1774390415548-0 | LTCUSDT:long(0.580)
+[TopSelector] published 1 -> top5_stream id=1774390538511-0 | SUIUSDT:long(0.608)
+[TopSelector] idle... buf=0 window_age=6.2s
+[TopSelector] published 1 -> top5_stream id=1774390784832-0 | BTCUSDT:short(0.588)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 2 -> top5_stream id=1774391124652-0 | FILUSDT:long(0.719), BTCUSDT:long(0.660)
+[TopSelector] idle... buf=13 window_age=28.2s
+[TopSelector] idle... buf=12 window_age=26.1s
+[TopSelector] idle... buf=7 window_age=21.4s
+[TopSelector] published 1 -> top5_stream id=1774391952436-0 | MATICUSDT:long(0.609)
+[TopSelector] published 1 -> top5_stream id=1774392045144-0 | DOTUSDT:long(0.576)
+[TopSelector] published 1 -> top5_stream id=1774392106480-0 | ADAUSDT:long(0.555)
+[TopSelector] idle... buf=9 window_age=15.6s
+[TopSelector] idle... buf=5 window_age=9.8s
+[TopSelector] published 1 -> top5_stream id=1774392569215-0 | BTCUSDT:long(0.583)
+[TopSelector] published 1 -> top5_stream id=1774392694032-0 | LTCUSDT:long(0.691)
+[TopSelector] published 1 -> top5_stream id=1774392725486-0 | ETHUSDT:short(0.597)
+[TopSelector] idle... buf=1 window_age=2.8s
+[TopSelector] published 1 -> top5_stream id=1774393003950-0 | AVAXUSDT:long(0.601)
+[TopSelector] idle... buf=16 window_age=30.9s
+[TopSelector] published 1 -> top5_stream id=1774393096136-0 | ETHUSDT:long(0.643)
+[TopSelector] published 1 -> top5_stream id=1774393188343-0 | XRPUSDT:long(0.589)
+[TopSelector] published 1 -> top5_stream id=1774393342348-0 | ARBUSDT:long(0.625)
+[TopSelector] idle... buf=14 window_age=24.2s
+[TopSelector] published 1 -> top5_stream id=1774393372742-0 | OPUSDT:short(0.554)
+[TopSelector] published 1 -> top5_stream id=1774393498072-0 | MATICUSDT:long(0.552)
+[TopSelector] idle... buf=11 window_age=18.8s
+[TopSelector] idle... buf=6 window_age=12.3s
+[TopSelector] published 1 -> top5_stream id=1774394023883-0 | SUIUSDT:long(0.575)
+[TopSelector] published 1 -> top5_stream id=1774394209502-0 | BTCUSDT:long(0.553)
+[TopSelector] idle... buf=12 window_age=32.0s
+[TopSelector] idle... buf=5 window_age=23.6s
+[TopSelector] published 1 -> top5_stream id=1774394582695-0 | AVAXUSDT:short(0.553)
+[TopSelector] published 1 -> top5_stream id=1774394802026-0 | OPUSDT:long(0.639)
+[TopSelector] idle... buf=7 window_age=13.2s
+[TopSelector] published 1 -> top5_stream id=1774394989838-0 | FILUSDT:long(0.557)
+[TopSelector] idle... buf=2 window_age=5.9s
+[TopSelector] published 2 -> top5_stream id=1774395299131-0 | BTCUSDT:long(0.625), UNIUSDT:long(0.621)
+[TopSelector] published 1 -> top5_stream id=1774395329726-0 | SUIUSDT:long(0.554)
+[TopSelector] published 1 -> top5_stream id=1774395421360-0 | FILUSDT:short(0.605)
+[TopSelector] idle... buf=13 window_age=30.7s
+[TopSelector] published 1 -> top5_stream id=1774395573990-0 | XRPUSDT:short(0.571)
+[TopSelector] idle... buf=16 window_age=27.4s
+[TopSelector] idle... buf=10 window_age=17.3s
+[TopSelector] published 1 -> top5_stream id=1774396097315-0 | BTCUSDT:long(0.687)
+[TopSelector] published 1 -> top5_stream id=1774396251700-0 | BTCUSDT:short(0.687)
+[TopSelector] published 1 -> top5_stream id=1774396346201-0 | DOGEUSDT:long(0.665)
+[TopSelector] idle... buf=2 window_age=7.7s
+[TopSelector] published 1 -> top5_stream id=1774396440242-0 | FILUSDT:long(0.673)
+[TopSelector] idle... buf=13 window_age=26.9s
+[TopSelector] published 1 -> top5_stream id=1774396783408-0 | INJUSDT:long(0.744)
+[TopSelector] published 1 -> top5_stream id=1774396874616-0 | LTCUSDT:long(0.560)
+[TopSelector] idle... buf=14 window_age=21.6s
+[TopSelector] published 1 -> top5_stream id=1774397057557-0 | UNIUSDT:long(0.610)
+[TopSelector] idle... buf=6 window_age=13.9s
+[TopSelector] published 1 -> top5_stream id=1774397368263-0 | TRXUSDT:short(0.686)
+[TopSelector] published 1 -> top5_stream id=1774397525270-0 | TRXUSDT:long(0.775)
+[TopSelector] published 1 -> top5_stream id=1774397555655-0 | XRPUSDT:long(0.765)
+[TopSelector] idle... buf=11 window_age=31.9s
+[TopSelector] published 1 -> top5_stream id=1774397680479-0 | ATOMUSDT:long(0.663)
+[TopSelector] published 1 -> top5_stream id=1774397773125-0 | ETCUSDT:long(0.658)
+[TopSelector] published 1 -> top5_stream id=1774397835158-0 | NEARUSDT:long(0.728)
+[TopSelector] idle... buf=10 window_age=24.6s
+[TopSelector] published 1 -> top5_stream id=1774397988087-0 | SUIUSDT:long(0.676)
+[TopSelector] published 1 -> top5_stream id=1774398018702-0 | MATICUSDT:long(0.728)
+[TopSelector] idle... buf=8 window_age=18.3s
+[TopSelector] published 1 -> top5_stream id=1774398266522-0 | OPUSDT:long(0.618)
+[TopSelector] idle... buf=7 window_age=10.4s
+[TopSelector] published 1 -> top5_stream id=1774398635870-0 | DOGEUSDT:short(0.551)
+[TopSelector] idle... buf=3 window_age=9.5s
+[TopSelector] idle... buf=1 window_age=3.0s
+[TopSelector] published 1 -> top5_stream id=1774399156790-0 | SOLUSDT:short(0.577)
+[TopSelector] published 2 -> top5_stream id=1774399219878-0 | FILUSDT:long(0.595), UNIUSDT:long(0.559)
+[TopSelector] published 1 -> top5_stream id=1774399343200-0 | SUIUSDT:long(0.634)
+[TopSelector] idle... buf=10 window_age=26.3s
+[TopSelector] published 1 -> top5_stream id=1774399434402-0 | ADAUSDT:short(0.558)
+[TopSelector] published 1 -> top5_stream id=1774399495455-0 | NEARUSDT:long(0.621)
+[TopSelector] published 1 -> top5_stream id=1774399679227-0 | XRPUSDT:long(0.578)
+[TopSelector] idle... buf=11 window_age=23.2s
+[TopSelector] published 1 -> top5_stream id=1774399800495-0 | SUIUSDT:short(0.591)
+[TopSelector] published 1 -> top5_stream id=1774399985330-0 | BNBUSDT:long(0.672)
+[TopSelector] idle... buf=6 window_age=20.0s
+[TopSelector] idle... buf=6 window_age=12.1s
+[TopSelector] published 1 -> top5_stream id=1774400324959-0 | LTCUSDT:long(0.693)
+[TopSelector] published 1 -> top5_stream id=1774400479597-0 | UNIUSDT:long(0.576)
+[TopSelector] idle... buf=5 window_age=8.1s
+[TopSelector] published 1 -> top5_stream id=1774400725496-0 | NEARUSDT:short(0.618)
+[TopSelector] idle... buf=16 window_age=31.7s
+[TopSelector] published 1 -> top5_stream id=1774401066754-0 | XRPUSDT:long(0.721)
+[TopSelector] published 1 -> top5_stream id=1774401097722-0 | SOLUSDT:short(0.602)
+[TopSelector] idle... buf=10 window_age=22.7s
+[TopSelector] published 1 -> top5_stream id=1774401374575-0 | NEARUSDT:long(0.651)
+[TopSelector] idle... buf=11 window_age=16.5s
+[TopSelector] published 1 -> top5_stream id=1774401527823-0 | LINKUSDT:long(0.633)
+[TopSelector] published 1 -> top5_stream id=1774401711766-0 | APTUSDT:long(0.666)
+[TopSelector] idle... buf=7 window_age=11.5s
+[TopSelector] idle... buf=2 window_age=7.0s
+[TopSelector] published 1 -> top5_stream id=1774402142233-0 | ARBUSDT:long(0.616)
+[TopSelector] published 1 -> top5_stream id=1774402204083-0 | SUIUSDT:long(0.763)
+[TopSelector] published 1 -> top5_stream id=1774402265728-0 | OPUSDT:long(0.676)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] idle... buf=14 window_age=27.8s
+[TopSelector] published 1 -> top5_stream id=1774402725328-0 | XRPUSDT:long(0.714)
+[TopSelector] published 1 -> top5_stream id=1774402877584-0 | MATICUSDT:short(0.551)
+[TopSelector] idle... buf=11 window_age=22.6s
+[TopSelector] published 1 -> top5_stream id=1774403156160-0 | ARBUSDT:short(0.661)
+[TopSelector] published 1 -> top5_stream id=1774403279863-0 | NEARUSDT:short(0.552)
+[TopSelector] idle... buf=6 window_age=14.8s
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774403808780-0 | AAVEUSDT:long(0.559)
+[TopSelector] idle... buf=12 window_age=26.6s
+[TopSelector] idle... buf=7 window_age=20.0s
+[TopSelector] published 1 -> top5_stream id=1774404429923-0 | ARBUSDT:long(0.761)
+[TopSelector] idle... buf=6 window_age=11.6s
+[TopSelector] published 1 -> top5_stream id=1774404803198-0 | DOTUSDT:long(0.564)
+[TopSelector] idle... buf=7 window_age=9.1s
+[TopSelector] published 1 -> top5_stream id=1774404865281-0 | APTUSDT:long(0.692)
+[TopSelector] published 1 -> top5_stream id=1774405084145-0 | DOGEUSDT:short(0.669)
+[TopSelector] idle... buf=10 window_age=28.8s
+[TopSelector] published 1 -> top5_stream id=1774405208475-0 | ATOMUSDT:long(0.693)
+[TopSelector] published 1 -> top5_stream id=1774405394196-0 | SUIUSDT:short(0.592)
+[TopSelector] idle... buf=10 window_age=22.1s
+[TopSelector] published 1 -> top5_stream id=1774405518244-0 | BTCUSDT:long(0.719)
+[TopSelector] idle... buf=8 window_age=15.9s
+[TopSelector] published 1 -> top5_stream id=1774405853797-0 | ETCUSDT:long(0.619)
+[TopSelector] published 1 -> top5_stream id=1774405914772-0 | AVAXUSDT:long(0.625)
+[TopSelector] published 1 -> top5_stream id=1774406006638-0 | INJUSDT:short(0.551)
+[TopSelector] idle... buf=4 window_age=10.7s
+[TopSelector] published 1 -> top5_stream id=1774406224151-0 | DOGEUSDT:long(0.757)
+[TopSelector] idle... buf=1 window_age=3.4s
+[TopSelector] published 1 -> top5_stream id=1774406470447-0 | BNBUSDT:short(0.628)
+[TopSelector] idle... buf=12 window_age=28.6s
+[TopSelector] published 1 -> top5_stream id=1774406904810-0 | ARBUSDT:long(0.602)
+[TopSelector] idle... buf=6 window_age=21.0s
+[TopSelector] published 1 -> top5_stream id=1774407182955-0 | SOLUSDT:long(0.666)
+[TopSelector] idle... buf=2 window_age=12.1s
+[TopSelector] published 1 -> top5_stream id=1774407432385-0 | UNIUSDT:long(0.669)
+[TopSelector] idle... buf=1 window_age=3.6s
+[TopSelector] idle... buf=9 window_age=26.3s
+[TopSelector] idle... buf=8 window_age=26.3s
+[TopSelector] published 1 -> top5_stream id=1774408358017-0 | ETHUSDT:long(0.598)
+[TopSelector] published 2 -> top5_stream id=1774408388191-0 | AVAXUSDT:long(0.733), ATOMUSDT:long(0.706)
+[TopSelector] idle... buf=8 window_age=16.6s
+[TopSelector] published 2 -> top5_stream id=1774408543525-0 | TRXUSDT:long(0.714), ETHUSDT:short(0.617)
+[TopSelector] published 1 -> top5_stream id=1774408699456-0 | OPUSDT:short(0.574)
+[TopSelector] published 1 -> top5_stream id=1774408730423-0 | APTUSDT:long(0.693)
+[TopSelector] idle... buf=4 window_age=10.0s
+[TopSelector] published 2 -> top5_stream id=1774408885943-0 | UNIUSDT:long(0.632), ETCUSDT:short(0.560)
+[TopSelector] published 1 -> top5_stream id=1774409009677-0 | MATICUSDT:long(0.639)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector] published 1 -> top5_stream id=1774409351385-0 | NEARUSDT:long(0.628)
+[TopSelector] idle... buf=18 window_age=31.0s
+[TopSelector] published 1 -> top5_stream id=1774409504853-0 | BNBUSDT:short(0.587)
+[TopSelector] idle... buf=7 window_age=23.6s
+[TopSelector] published 1 -> top5_stream id=1774409968061-0 | DOTUSDT:short(0.597)
+[TopSelector] idle... buf=8 window_age=17.9s
+[TopSelector] published 1 -> top5_stream id=1774410093889-0 | XRPUSDT:long(0.561)
+[TopSelector] published 1 -> top5_stream id=1774410185328-0 | ETCUSDT:long(0.624)
+[TopSelector] idle... buf=5 window_age=9.3s
+[TopSelector] published 1 -> top5_stream id=1774410371474-0 | INJUSDT:long(0.597)
+[TopSelector] published 1 -> top5_stream id=1774410433528-0 | ETHUSDT:long(0.598)
+[TopSelector] idle... buf=12 window_age=31.7s
+[TopSelector] published 1 -> top5_stream id=1774410711170-0 | SOLUSDT:long(0.652)
+[TopSelector] published 1 -> top5_stream id=1774410772603-0 | LTCUSDT:short(0.553)
+[TopSelector] published 1 -> top5_stream id=1774410802613-0 | UNIUSDT:long(0.681)
+[TopSelector] idle... buf=14 window_age=24.2s
+[TopSelector] published 1 -> top5_stream id=1774410924469-0 | BTCUSDT:long(0.733)
+[TopSelector] idle... buf=9 window_age=15.9s
