@@ -2387,6 +2387,7 @@ class TradeExecutor:
         if str(side).lower().strip() == "long":
             return (px - entry) * q
         return (entry - px) * q
+
     def _evaluate_scalp_exit_pro(
         self,
         symbol: str,
@@ -2476,31 +2477,114 @@ class TradeExecutor:
             getattr(self, "scalp_stall_after_profit_sec", 45) or 45
         )
 
+        profile_cfg = self._apply_exit_profile(
+            symbol=symbol,
+            scalp_fast_exit_pullback_roi_pct=scalp_fast_exit_pullback_roi_pct,
+            scalp_retrace_roi_pct=scalp_retrace_roi_pct,
+            scalp_micro_pullback_roi_pct=scalp_micro_pullback_roi_pct,
+            scalp_deep_pullback_roi_pct=scalp_deep_pullback_roi_pct,
+            scalp_stall_after_profit_sec=scalp_stall_after_profit_sec,
+            profit_lock_retrace_roi_pct=scalp_retrace_roi_pct,
+        )
+
+        profile = profile_cfg["profile"]
+        scalp_fast_exit_pullback_roi_pct = profile_cfg["scalp_fast_exit_pullback_roi_pct"]
+        scalp_retrace_roi_pct = profile_cfg["scalp_retrace_roi_pct"]
+        scalp_micro_pullback_roi_pct = profile_cfg["scalp_micro_pullback_roi_pct"]
+        scalp_deep_pullback_roi_pct = profile_cfg["scalp_deep_pullback_roi_pct"]
+        scalp_stall_after_profit_sec = profile_cfg["scalp_stall_after_profit_sec"]
+
+        self.system_logger.info(
+            "[EXEC][EXIT-PROFILE] symbol=%s profile=%s fast_pb=%.6f retrace=%.6f micro_pb=%.6f deep_pb=%.6f stall_after_profit=%.2f",
+            symbol,
+            profile,
+            scalp_fast_exit_pullback_roi_pct,
+            scalp_retrace_roi_pct,
+            scalp_micro_pullback_roi_pct,
+            scalp_deep_pullback_roi_pct,
+            scalp_stall_after_profit_sec,
+        )
+
         if float(roi_pct) <= -roi_hard_stop_pct:
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_hard_stop_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_hard_stop_roi"
 
         if (
             float(best_roi_pct) >= scalp_fast_exit_profit_roi_pct
             and float(retrace_roi_pct) >= scalp_fast_exit_pullback_roi_pct
         ):
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_fast_exit_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_fast_exit_roi"
 
         if (
             float(best_roi_pct) >= scalp_profit_arm_roi_pct
             and float(retrace_roi_pct) >= scalp_retrace_roi_pct
         ):
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_profit_retrace_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_profit_retrace_roi"
 
         if (
             float(best_roi_pct) >= scalp_profit_arm_roi_pct
             and float(retrace_roi_pct) >= scalp_micro_pullback_roi_pct
         ):
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_micro_pullback_exit_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_micro_pullback_exit_roi"
 
         if (
             float(best_roi_pct) >= max(scalp_profit_arm_roi_pct, scalp_micro_pullback_roi_pct)
             and float(retrace_roi_pct) >= scalp_deep_pullback_roi_pct
         ):
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_deep_pullback_exit_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_deep_pullback_exit_roi"
 
         try:
@@ -2523,6 +2607,17 @@ class TradeExecutor:
                 and float(reverse_score) >= scalp_reverse_min_score
                 and float(best_roi_pct) >= scalp_profit_arm_roi_pct
             ):
+                self.system_logger.info(
+                    "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                    symbol,
+                    side,
+                    profile,
+                    "scalp_reverse_kill_roi",
+                    float(price),
+                    float(entry_price),
+                    float(pnl_pct),
+                    float(best_pnl_pct),
+                )
                 return "scalp_reverse_kill_roi"
 
         stalled_for = float(now_ts) - float(last_best_ts or now_ts)
@@ -2530,9 +2625,53 @@ class TradeExecutor:
             float(best_roi_pct) >= scalp_stall_min_profit_roi_pct
             and float(stalled_for) >= scalp_stall_after_profit_sec
         ):
+            self.system_logger.info(
+                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                symbol,
+                side,
+                profile,
+                "scalp_stall_exit_roi",
+                float(price),
+                float(entry_price),
+                float(pnl_pct),
+                float(best_pnl_pct),
+            )
             return "scalp_stall_exit_roi"
 
         return None
+
+    def _is_reduceonly_retryable_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        needles = [
+            "reduceonly",
+            "parameter 'reduceonly' sent when not required",
+            "parameter reduceonly sent when not required",
+            "-1106",
+        ]
+        return any(n in text for n in needles)
+
+    def _build_close_order_kwargs(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        position_side: Optional[str] = None,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "type": "MARKET",
+            "quantity": qty,
+        }
+
+        if position_side:
+            kwargs["positionSide"] = position_side
+
+        if reduce_only:
+            kwargs["reduceOnly"] = True
+
+        return kwargs
 
     def _evaluate_scalp_exit(
         self,
