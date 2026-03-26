@@ -2494,97 +2494,121 @@ class TradeExecutor:
         scalp_deep_pullback_roi_pct = profile_cfg["scalp_deep_pullback_roi_pct"]
         scalp_stall_after_profit_sec = profile_cfg["scalp_stall_after_profit_sec"]
 
-        self.system_logger.info(
-            "[EXEC][EXIT-PROFILE] symbol=%s profile=%s fast_pb=%.6f retrace=%.6f micro_pb=%.6f deep_pb=%.6f stall_after_profit=%.2f",
-            symbol,
-            profile,
-            scalp_fast_exit_pullback_roi_pct,
-            scalp_retrace_roi_pct,
-            scalp_micro_pullback_roi_pct,
-            scalp_deep_pullback_roi_pct,
-            scalp_stall_after_profit_sec,
-        )
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][EXIT-PROFILE] symbol=%s profile=%s fast_pb=%.6f retrace=%.6f micro_pb=%.6f deep_pb=%.6f stall_after_profit=%.2f",
+                    symbol,
+                    profile,
+                    scalp_fast_exit_pullback_roi_pct,
+                    scalp_retrace_roi_pct,
+                    scalp_micro_pullback_roi_pct,
+                    scalp_deep_pullback_roi_pct,
+                    scalp_stall_after_profit_sec,
+                )
+        except Exception:
+            pass
 
         if float(roi_pct) <= -roi_hard_stop_pct:
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_hard_stop_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_hard_stop_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_hard_stop_roi"
 
         if (
             float(best_roi_pct) >= scalp_fast_exit_profit_roi_pct
             and float(retrace_roi_pct) >= scalp_fast_exit_pullback_roi_pct
         ):
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_fast_exit_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_fast_exit_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_fast_exit_roi"
 
         if (
             float(best_roi_pct) >= scalp_profit_arm_roi_pct
             and float(retrace_roi_pct) >= scalp_retrace_roi_pct
         ):
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_profit_retrace_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_profit_retrace_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_profit_retrace_roi"
 
         if (
             float(best_roi_pct) >= scalp_profit_arm_roi_pct
             and float(retrace_roi_pct) >= scalp_micro_pullback_roi_pct
         ):
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_micro_pullback_exit_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_micro_pullback_exit_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_micro_pullback_exit_roi"
 
         if (
             float(best_roi_pct) >= max(scalp_profit_arm_roi_pct, scalp_micro_pullback_roi_pct)
             and float(retrace_roi_pct) >= scalp_deep_pullback_roi_pct
         ):
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_deep_pullback_exit_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_deep_pullback_exit_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_deep_pullback_exit_roi"
 
         try:
@@ -2607,17 +2631,21 @@ class TradeExecutor:
                 and float(reverse_score) >= scalp_reverse_min_score
                 and float(best_roi_pct) >= scalp_profit_arm_roi_pct
             ):
-                self.system_logger.info(
-                    "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                    symbol,
-                    side,
-                    profile,
-                    "scalp_reverse_kill_roi",
-                    float(price),
-                    float(entry_price),
-                    float(pnl_pct),
-                    float(best_pnl_pct),
-                )
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                            symbol,
+                            side,
+                            profile,
+                            "scalp_reverse_kill_roi",
+                            float(price),
+                            float(entry_price),
+                            float(pnl_pct),
+                            float(best_pnl_pct),
+                        )
+                except Exception:
+                    pass
                 return "scalp_reverse_kill_roi"
 
         stalled_for = float(now_ts) - float(last_best_ts or now_ts)
@@ -2625,53 +2653,24 @@ class TradeExecutor:
             float(best_roi_pct) >= scalp_stall_min_profit_roi_pct
             and float(stalled_for) >= scalp_stall_after_profit_sec
         ):
-            self.system_logger.info(
-                "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
-                symbol,
-                side,
-                profile,
-                "scalp_stall_exit_roi",
-                float(price),
-                float(entry_price),
-                float(pnl_pct),
-                float(best_pnl_pct),
-            )
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s profile=%s reason=%s price=%.8f entry=%.8f pnl_pct=%.6f best_pnl_pct=%.6f",
+                        symbol,
+                        side,
+                        profile,
+                        "scalp_stall_exit_roi",
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                        float(best_pnl_pct),
+                    )
+            except Exception:
+                pass
             return "scalp_stall_exit_roi"
 
         return None
-
-    def _is_reduceonly_retryable_error(self, exc: Exception) -> bool:
-        text = str(exc).lower()
-        needles = [
-            "reduceonly",
-            "parameter 'reduceonly' sent when not required",
-            "parameter reduceonly sent when not required",
-            "-1106",
-        ]
-        return any(n in text for n in needles)
-
-    def _build_close_order_kwargs(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        position_side: Optional[str] = None,
-        reduce_only: bool = True,
-    ) -> Dict[str, Any]:
-        kwargs: Dict[str, Any] = {
-            "symbol": symbol,
-            "side": side,
-            "type": "MARKET",
-            "quantity": qty,
-        }
-
-        if position_side:
-            kwargs["positionSide"] = position_side
-
-        if reduce_only:
-            kwargs["reduceOnly"] = True
-
-        return kwargs
 
     def _evaluate_scalp_exit(
         self,
@@ -3518,18 +3517,33 @@ class TradeExecutor:
 
         for sym, bst in final_bridge_all.items():
             if sym not in exchange_map and sym not in final_local_map:
-                if _fresh(bst, grace_sec=90.0):
+                try:
+                    created_ts = float(bst.get("created_ts") or 0.0)
+                except Exception:
+                    created_ts = 0.0
+
+                if created_ts > 0 and (time.time() - created_ts) < 5.0:
                     summary["skipped_fresh_bridge"].append(sym)
                     try:
                         if self.logger:
                             self.logger.info(
-                                "[EXEC][SYNC] skip fresh bridge-only state | symbol=%s",
+                                "[EXEC][SYNC] skip very-fresh bridge-only state | symbol=%s",
                                 sym,
                             )
                     except Exception:
                         pass
                     continue
 
+                final_local_map[sym] = bst
+                summary["added_local"].append(sym)
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SYNC] promote bridge-only state to local | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
                 try:
                     self._remove_from_bridge_state(sym)
                     summary["removed_bridge"].append(sym)
@@ -4851,44 +4865,57 @@ class TradeExecutor:
         started_ms = int(time.time() * 1000)
         order_resp: Dict[str, Any] = {}
 
-        base_order_kwargs = {
-            "symbol": sym,
-            "side": order_side,
-            "type": "MARKET",
-            "quantity": self._fmt_qty(sym, norm_qty),
-            "positionSide": position_side,
-            "newClientOrderId": f"b1_close_{sym}_{uuid.uuid4().hex[:12]}",
-        }
+        close_kwargs = self._build_close_order_kwargs(
+            symbol=sym,
+            side=order_side,
+            qty=float(self._fmt_qty(sym, norm_qty)),
+            position_side=position_side,
+            reduce_only=bool(int(os.getenv("CLOSE_REDUCEONLY_DEFAULT", "1"))),
+        )
+        close_kwargs["newClientOrderId"] = f"b1_close_{sym}_{uuid.uuid4().hex[:12]}"
+
         try:
-            try:
-                order_resp = fn(**{**base_order_kwargs, "reduceOnly": True}) or {}
-            except Exception as e:
-                msg = str(e).lower()
-                if "reduceonly" in msg or "reduce only" in msg or "1106" in msg:
+            order_resp = fn(**close_kwargs) or {}
+        except Exception as e:
+            if bool(int(os.getenv("CLOSE_REDUCEONLY_RETRY_ENABLE", "1"))) and self._is_reduceonly_retryable_error(e):
+                try:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][CLOSE] retry without reduceOnly | symbol=%s",
+                            sym,
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    close_kwargs.pop("reduceOnly", None)
+                    order_resp = fn(**close_kwargs) or {}
+                except Exception as retry_exc:
                     try:
                         if self.logger:
-                            self.logger.warning(
-                                "[EXEC][CLOSE] retry without reduceOnly | symbol=%s",
+                            self.logger.exception(
+                                "[EXEC][CLOSE-BLOCK] close order failed after retry | symbol=%s side=%s qty=%.10f err=%s",
                                 sym,
+                                side,
+                                float(norm_qty),
+                                str(retry_exc),
                             )
                     except Exception:
                         pass
-                    order_resp = fn(**base_order_kwargs) or {}
-                else:
-                    raise
-        except Exception as e:
-            try:
-                if self.logger:
-                    self.logger.exception(
-                        "[EXEC][CLOSE-BLOCK] close order failed | symbol=%s side=%s qty=%.10f err=%s",
-                        sym,
-                        side,
-                        float(norm_qty),
-                        str(e),
-                    )
-            except Exception:
-                pass
-            return None
+                    return None
+            else:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][CLOSE-BLOCK] close order failed | symbol=%s side=%s qty=%.10f err=%s",
+                            sym,
+                            side,
+                            float(norm_qty),
+                            str(e),
+                        )
+                except Exception:
+                    pass
+                return None
 
         dt_ms = int(time.time() * 1000) - started_ms
         try:
@@ -5417,48 +5444,7 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
-        # ===== PRO SCALP EXIT ENGINE =====
-        scalp_reason = None
-        try:
-            scalp_reason = self._evaluate_scalp_exit_pro(
-                symbol=sym,
-                pos=pos,
-                price=float(price),
-                side=side,
-                entry_price=float(entry_price),
-                highest_price=float(highest_price),
-                lowest_price=float(lowest_price),
-                best_pnl_pct=float(best_pnl_pct),
-                last_best_ts=float(last_best_ts),
-                now_ts=float(now_ts),
-            )
-        except Exception as e:
-            try:
-                if self.logger:
-                    self.logger.exception(
-                        "[EXEC][SCALP] evaluate failed | symbol=%s err=%s",
-                        sym,
-                        str(e),
-                    )
-            except Exception:
-                pass
 
-        if close_reason is None and scalp_reason:
-            close_reason = str(scalp_reason)
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][SCALP] exit trigger | symbol=%s side=%s reason=%s price=%.6f entry=%.6f pnl_pct=%.6f best_pnl_pct=%.6f",
-                        sym,
-                        side,
-                        str(close_reason),
-                        float(price),
-                        float(entry_price),
-                        float(pnl_pct),
-                        float(best_pnl_pct),
-                    )
-            except Exception:
-                pass
         if close_reason is None and getattr(self, "weak_signal_enabled", False):
             weak = self._evaluate_position_signal_exit(sym, pos, price)
             if weak:
