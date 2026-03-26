@@ -9,7 +9,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 import redis
 
@@ -163,6 +163,137 @@ class TradeExecutor:
         self.scalp_stall_min_profit_pct = float(
             os.getenv("SCALP_STALL_MIN_PROFIT_PCT", "0.01") or 0.08
         )
+
+        # === ROI / USDT BASED EXIT CONTROL ===
+        self.usdt_loss_kill_enable = str(
+            os.getenv("USDT_LOSS_KILL_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.max_loss_usdt_per_trade = float(
+            os.getenv("MAX_LOSS_USDT_PER_TRADE", "4.0") or 4.0
+        )
+
+        self.roi_hard_stop_pct = float(
+            os.getenv("ROI_HARD_STOP_PCT", "0.08") or 0.08
+        )  # %8 ROI zarar
+
+        self.profit_lock_arm_roi_pct = float(
+            os.getenv("PROFIT_LOCK_ARM_ROI_PCT", "0.0175") or 0.0175
+        )  # %1.75 ROI kâr görünce arm
+
+        self.profit_lock_retrace_roi_pct = float(
+            os.getenv("PROFIT_LOCK_RETRACE_ROI_PCT", "0.0045") or 0.0045
+        )  # %0.45 ROI geri dönüşte kilitle
+
+        self.profit_floor_roi_pct = float(
+            os.getenv("PROFIT_FLOOR_ROI_PCT", "0.0040") or 0.0040
+        )  # kâr gördükten sonra min korunacak ROI
+
+        self.scalp_profit_arm_roi_pct = float(
+            os.getenv("SCALP_PROFIT_ARM_ROI_PCT", "0.0175") or 0.0175
+        )
+
+        self.scalp_fast_exit_profit_roi_pct = float(
+            os.getenv("SCALP_FAST_EXIT_PROFIT_ROI_PCT", "0.0200") or 0.0200
+        )
+
+        self.scalp_fast_exit_pullback_roi_pct = float(
+            os.getenv("SCALP_FAST_EXIT_PULLBACK_ROI_PCT", "0.0040") or 0.0040
+        )
+
+        self.scalp_retrace_roi_pct = float(
+            os.getenv("SCALP_RETRACE_ROI_PCT", "0.0045") or 0.0045
+        )
+
+        self.scalp_micro_pullback_roi_pct = float(
+            os.getenv("SCALP_MICRO_PULLBACK_ROI_PCT", "0.0035") or 0.0035
+        )
+
+        self.scalp_deep_pullback_roi_pct = float(
+            os.getenv("SCALP_DEEP_PULLBACK_ROI_PCT", "0.0060") or 0.0060
+        )
+
+        # === STRONG PROFIT LOCK ===
+        self.profit_lock_enable = str(
+            os.getenv("PROFIT_LOCK_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.profit_lock_min_hold_sec = int(
+            float(os.getenv("PROFIT_LOCK_MIN_HOLD_SEC", "10") or 10)
+        )
+
+        # erken kâr koruma
+        self.profit_guard_arm_pct = float(
+            os.getenv("PROFIT_GUARD_ARM_PCT", "0.008") or 0.008
+        )
+        self.profit_guard_retrace_pct = float(
+            os.getenv("PROFIT_GUARD_RETRACE_PCT", "0.0035") or 0.0035
+        )
+
+        # sert kâr kilidi
+        self.profit_lock_arm_pct = float(
+            os.getenv("PROFIT_LOCK_ARM_PCT", "0.02") or 0.02
+        )
+        self.profit_lock_retrace_pct = float(
+            os.getenv("PROFIT_LOCK_RETRACE_PCT", "0.0018") or 0.0018
+        )
+
+        # ters sinyal kâr koruma
+        self.profit_reverse_arm_pct = float(
+            os.getenv("PROFIT_REVERSE_ARM_PCT", "0.012") or 0.012
+        )
+        self.profit_reverse_min_score = float(
+            os.getenv("PROFIT_REVERSE_MIN_SCORE", "0.50") or 0.50
+        )
+
+        # minimum korunacak kâr tabanı
+        self.profit_floor_pct = float(
+            os.getenv("PROFIT_FLOOR_PCT", "0.004") or 0.004
+        )
+        # === ENTRY CONFIRMATION (2-BAR) ===
+        self.entry_confirm_enable = str(
+            os.getenv("ENTRY_CONFIRM_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.entry_confirm_bars = int(
+            float(os.getenv("ENTRY_CONFIRM_BARS", "2") or 2)
+        )
+
+        self.entry_confirm_max_age_sec = int(
+            float(os.getenv("ENTRY_CONFIRM_MAX_AGE_SEC", "120") or 120)
+        )
+        # === DEAD TRADE EXIT ===
+        self.dead_trade_exit_enable = str(
+            os.getenv("DEAD_TRADE_EXIT_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.dead_trade_max_sec = int(
+            float(os.getenv("DEAD_TRADE_MAX_SEC", "90") or 90)
+        )
+
+        self.dead_trade_min_best_pnl_pct = float(
+            os.getenv("DEAD_TRADE_MIN_BEST_PNL_PCT", "0.002") or 0.002
+        )
+        # === NO-TRADE ZONE ===
+        self.no_trade_zone_enable = str(
+            os.getenv("NO_TRADE_ZONE_ENABLE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        self.no_trade_min_score = float(
+            os.getenv("NO_TRADE_MIN_SCORE", "0.63") or 0.63
+        )
+
+        self.no_trade_min_whale_score = float(
+            os.getenv("NO_TRADE_MIN_WHALE_SCORE", "0.45") or 0.45
+        )
+
+        self.no_trade_min_price_move_pct = float(
+            os.getenv("NO_TRADE_MIN_PRICE_MOVE_PCT", "0.0010") or 0.0010
+        )
+
+        self.no_trade_require_whale_align = str(
+            os.getenv("NO_TRADE_REQUIRE_WHALE_ALIGN", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
         self.default_sl_pct = float(os.getenv("SL_PCT", "0.01") or 0.01)
         self.default_tp_pct = float(os.getenv("TP_PCT", "0.02") or 0.02)
         self.default_trailing_pct = float(os.getenv("TRAILING_PCT", "0.03") or 0.03)
@@ -271,7 +402,10 @@ class TradeExecutor:
         self.hard_stop_loss_pct = float(
             os.getenv("HARD_STOP_LOSS_PCT", "0.040") or 0.040
         )
-
+        # fallback / compatibility
+        self.scalp_retrace_pct = float(
+            os.getenv("SCALP_RETRACE_PCT", "0.0010") or 0.0010
+        )
         self.manual_close_reconcile_on_lifecycle = str(
             os.getenv("MANUAL_CLOSE_RECONCILE_ON_LIFECYCLE", "1")
         ).strip().lower() in ("1", "true", "yes", "on")
@@ -308,6 +442,96 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # basic helpers
     # ---------------------------------------------------------
+    def _env_csv_set(self, key: str) -> Set[str]:
+        raw = str(os.getenv(key, "") or "")
+        return {
+            item.strip().upper()
+            for item in raw.split(",")
+            if item and item.strip()
+        }
+
+    def _get_symbol_exit_profile(self, symbol: str) -> str:
+        sym = str(symbol or "").upper().strip()
+        aggressive = self._env_csv_set("COIN_EXIT_MODE_AGGRESSIVE")
+        soft = self._env_csv_set("COIN_EXIT_MODE_SOFT")
+
+        if sym in aggressive:
+            return "aggressive"
+        if sym in soft:
+            return "soft"
+        return "normal"
+
+    def _apply_exit_profile(
+        self,
+        symbol: str,
+        scalp_fast_exit_pullback_roi_pct: float,
+        scalp_retrace_roi_pct: float,
+        scalp_micro_pullback_roi_pct: float,
+        scalp_deep_pullback_roi_pct: float,
+        scalp_stall_after_profit_sec: float,
+        profit_lock_retrace_roi_pct: float,
+    ) -> Dict[str, float]:
+        profile = self._get_symbol_exit_profile(symbol)
+
+        if profile == "aggressive":
+            scalp_fast_exit_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_AGGR_FAST_EXIT_PULLBACK_MULT", "0.80"))
+            scalp_retrace_roi_pct *= float(os.getenv("EXIT_PROFILE_AGGR_RETRACE_MULT", "0.80"))
+            scalp_micro_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_AGGR_MICRO_PULLBACK_MULT", "0.80"))
+            scalp_deep_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_AGGR_DEEP_PULLBACK_MULT", "0.85"))
+            scalp_stall_after_profit_sec *= float(os.getenv("EXIT_PROFILE_AGGR_STALL_AFTER_PROFIT_MULT", "0.75"))
+            profit_lock_retrace_roi_pct *= float(os.getenv("EXIT_PROFILE_AGGR_PROFIT_LOCK_RETRACE_MULT", "0.85"))
+
+        elif profile == "soft":
+            scalp_fast_exit_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_SOFT_FAST_EXIT_PULLBACK_MULT", "1.20"))
+            scalp_retrace_roi_pct *= float(os.getenv("EXIT_PROFILE_SOFT_RETRACE_MULT", "1.20"))
+            scalp_micro_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_SOFT_MICRO_PULLBACK_MULT", "1.20"))
+            scalp_deep_pullback_roi_pct *= float(os.getenv("EXIT_PROFILE_SOFT_DEEP_PULLBACK_MULT", "1.15"))
+            scalp_stall_after_profit_sec *= float(os.getenv("EXIT_PROFILE_SOFT_STALL_AFTER_PROFIT_MULT", "1.25"))
+            profit_lock_retrace_roi_pct *= float(os.getenv("EXIT_PROFILE_SOFT_PROFIT_LOCK_RETRACE_MULT", "1.15"))
+
+        return {
+            "profile": profile,
+            "scalp_fast_exit_pullback_roi_pct": scalp_fast_exit_pullback_roi_pct,
+            "scalp_retrace_roi_pct": scalp_retrace_roi_pct,
+            "scalp_micro_pullback_roi_pct": scalp_micro_pullback_roi_pct,
+            "scalp_deep_pullback_roi_pct": scalp_deep_pullback_roi_pct,
+            "scalp_stall_after_profit_sec": scalp_stall_after_profit_sec,
+            "profit_lock_retrace_roi_pct": profit_lock_retrace_roi_pct,
+        }
+
+    def _is_reduceonly_retryable_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        needles = [
+            "reduceonly",
+            "parameter 'reduceonly' sent when not required",
+            "parameter reduceonly sent when not required",
+            "-1106",
+        ]
+        return any(n in text for n in needles)
+
+    def _build_close_order_kwargs(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        position_side: Optional[str] = None,
+        reduce_only: bool = True,
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "type": "MARKET",
+            "quantity": qty,
+        }
+
+        if position_side:
+            kwargs["positionSide"] = position_side
+
+        if reduce_only:
+            kwargs["reduceOnly"] = True
+
+        return kwargs
+
     @staticmethod
     def _now_ms() -> int:
         return int(time.time() * 1000)
@@ -1846,7 +2070,127 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+    def _confirm_entry_signal(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        score: float,
+    ) -> bool:
+        if not bool(getattr(self, "entry_confirm_enable", True)):
+            return True
 
+        sym = str(symbol).upper().strip()
+        side0 = str(side).lower().strip()
+        interval0 = str(interval or "5m").strip() or "5m"
+
+        if side0 not in ("long", "short"):
+            return False
+
+        need = max(1, int(getattr(self, "entry_confirm_bars", 2) or 2))
+        max_age = max(30, int(getattr(self, "entry_confirm_max_age_sec", 120) or 120))
+
+        r = getattr(self, "redis", None) or getattr(self, "redis_client", None)
+        if r is None:
+            return True
+
+        key = f"bot:entry_confirm:{sym}:{interval0}:{side0}"
+
+        try:
+            raw = r.get(key)
+            state = json.loads(raw) if raw else {}
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+
+        now_ts = time.time()
+        last_side = str(state.get("side") or "").lower()
+        last_ts = float(state.get("ts") or 0.0)
+        count = int(state.get("count") or 0)
+
+        if last_side == side0 and (now_ts - last_ts) <= max_age:
+            count += 1
+        else:
+            count = 1
+
+        new_state = {
+            "side": side0,
+            "count": count,
+            "ts": now_ts,
+        }
+
+        try:
+            r.set(key, json.dumps(new_state))
+            r.expire(key, max_age)
+        except Exception:
+            pass
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][ENTRY-CONFIRM] symbol=%s side=%s count=%s/%s score=%.4f",
+                    sym,
+                    side0,
+                    count,
+                    need,
+                    float(score),
+                )
+        except Exception:
+            pass
+
+        return count >= need
+
+    def _in_no_trade_zone(
+        self,
+        symbol: str,
+        side: str,
+        signal_score: float,
+        whale_score: float,
+        whale_dir: str,
+        order_price: float,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+
+        if not bool(getattr(self, "no_trade_zone_enable", True)):
+            return None
+
+        sym = str(symbol).upper().strip()
+        side0 = str(side).lower().strip()
+        whale_dir0 = str(whale_dir or "none").lower().strip()
+        meta0 = meta if isinstance(meta, dict) else {}
+
+        min_score = float(getattr(self, "no_trade_min_score", 0.63) or 0.63)
+        min_whale = float(getattr(self, "no_trade_min_whale_score", 0.45) or 0.45)
+        min_move = float(getattr(self, "no_trade_min_price_move_pct", 0.0010) or 0.0010)
+        require_align = bool(getattr(self, "no_trade_require_whale_align", True))
+
+        # 1) borderline score
+        if float(signal_score) < float(min_score):
+            return "no_trade_low_score"
+
+        # 2) whale zayıf
+        if float(whale_score) < float(min_whale):
+            return "no_trade_weak_whale"
+
+        # 3) whale yön uyumsuz
+        if require_align and whale_dir0 in ("long", "short") and whale_dir0 != side0:
+            return "no_trade_whale_misaligned"
+
+        # 4) hareket yok (cansız piyasa)
+        ref_price = float(meta0.get("price") or order_price or 0.0)
+
+        try:
+            live_price = self._resolve_price(symbol=sym, price=float(order_price or 0.0))
+        except Exception:
+            live_price = None
+
+        if live_price and ref_price > 0:
+            move_pct = abs(float(live_price) - float(ref_price)) / ref_price
+            if float(move_pct) < float(min_move):
+                return "no_trade_low_volatility"
+
+        return None
     def _evaluate_position_signal_exit(
         self,
         symbol: str,
@@ -1999,6 +2343,50 @@ class TradeExecutor:
             }
 
         return None
+    def _resolve_position_leverage(self, pos: Dict[str, Any]) -> float:
+        extra = pos.get("extra") if isinstance(pos, dict) else None
+        extra = extra if isinstance(extra, dict) else {}
+
+        candidates = [
+            pos.get("leverage") if isinstance(pos, dict) else None,
+            pos.get("target_leverage") if isinstance(pos, dict) else None,
+            extra.get("target_leverage"),
+            extra.get("recommended_leverage"),
+            getattr(self, "default_order_leverage", None),
+            getattr(self, "default_leverage", None),
+            1,
+        ]
+
+        for v in candidates:
+            try:
+                f = float(v)
+                if f > 0:
+                    return f
+            except Exception:
+                pass
+
+        return 1.0
+
+    def _calc_unrealized_pnl_usdt(
+        self,
+        side: str,
+        entry_price: float,
+        price: float,
+        qty: float,
+    ) -> float:
+        try:
+            entry = float(entry_price)
+            px = float(price)
+            q = float(qty)
+        except Exception:
+            return 0.0
+
+        if entry <= 0 or px <= 0 or q <= 0:
+            return 0.0
+
+        if str(side).lower().strip() == "long":
+            return (px - entry) * q
+        return (entry - px) * q
     def _evaluate_scalp_exit_pro(
         self,
         symbol: str,
@@ -2012,7 +2400,14 @@ class TradeExecutor:
         last_best_ts: float,
         now_ts: float,
     ) -> Optional[str]:
-        if not bool(getattr(self, "scalp_engine_enable", True)):
+        scalp_enabled = bool(
+            getattr(
+                self,
+                "scalp_exit_enable",
+                getattr(self, "scalp_engine_enable", True),
+            )
+        )
+        if not scalp_enabled:
             return None
 
         try:
@@ -2026,7 +2421,8 @@ class TradeExecutor:
                 except Exception:
                     opened_ts = 0.0
 
-            if opened_ts > 0 and (float(now_ts) - float(opened_ts)) < float(self.scalp_grace_sec):
+            grace_sec = float(getattr(self, "scalp_grace_sec", 15) or 15)
+            if opened_ts > 0 and (float(now_ts) - float(opened_ts)) < grace_sec:
                 return None
         except Exception:
             pass
@@ -2046,16 +2442,67 @@ class TradeExecutor:
                 else 0.0
             )
 
-        # 1) hard stop
-        if float(pnl_pct) <= -abs(float(self.scalp_hard_stop_pct)):
-            return "scalp_hard_stop"
+        lev = float(self._resolve_position_leverage(pos))
+        roi_pct = float(pnl_pct) * lev
+        best_roi_pct = float(best_pnl_pct) * lev
+        retrace_roi_pct = float(retrace_pct) * lev
 
-        # 2) profit arm + retrace
-        if float(best_pnl_pct) >= float(self.scalp_profit_arm_pct):
-            if float(retrace_pct) >= float(self.scalp_retrace_pct):
-                return "scalp_profit_retrace"
+        roi_hard_stop_pct = abs(float(getattr(self, "roi_hard_stop_pct", 0.08) or 0.08))
+        scalp_profit_arm_roi_pct = float(
+            getattr(self, "scalp_profit_arm_roi_pct", 0.0175) or 0.0175
+        )
+        scalp_fast_exit_profit_roi_pct = float(
+            getattr(self, "scalp_fast_exit_profit_roi_pct", 0.0200) or 0.0200
+        )
+        scalp_fast_exit_pullback_roi_pct = float(
+            getattr(self, "scalp_fast_exit_pullback_roi_pct", 0.0040) or 0.0040
+        )
+        scalp_retrace_roi_pct = float(
+            getattr(self, "scalp_retrace_roi_pct", 0.0045) or 0.0045
+        )
+        scalp_micro_pullback_roi_pct = float(
+            getattr(self, "scalp_micro_pullback_roi_pct", 0.0035) or 0.0035
+        )
+        scalp_deep_pullback_roi_pct = float(
+            getattr(self, "scalp_deep_pullback_roi_pct", 0.0060) or 0.0060
+        )
+        scalp_reverse_min_score = float(
+            getattr(self, "scalp_reverse_min_score", 0.50) or 0.50
+        )
+        scalp_stall_min_profit_roi_pct = float(
+            getattr(self, "scalp_stall_min_profit_roi_pct", 0.0100) or 0.0100
+        )
+        scalp_stall_after_profit_sec = float(
+            getattr(self, "scalp_stall_after_profit_sec", 45) or 45
+        )
 
-        # 3) reverse signal kill
+        if float(roi_pct) <= -roi_hard_stop_pct:
+            return "scalp_hard_stop_roi"
+
+        if (
+            float(best_roi_pct) >= scalp_fast_exit_profit_roi_pct
+            and float(retrace_roi_pct) >= scalp_fast_exit_pullback_roi_pct
+        ):
+            return "scalp_fast_exit_roi"
+
+        if (
+            float(best_roi_pct) >= scalp_profit_arm_roi_pct
+            and float(retrace_roi_pct) >= scalp_retrace_roi_pct
+        ):
+            return "scalp_profit_retrace_roi"
+
+        if (
+            float(best_roi_pct) >= scalp_profit_arm_roi_pct
+            and float(retrace_roi_pct) >= scalp_micro_pullback_roi_pct
+        ):
+            return "scalp_micro_pullback_exit_roi"
+
+        if (
+            float(best_roi_pct) >= max(scalp_profit_arm_roi_pct, scalp_micro_pullback_roi_pct)
+            and float(retrace_roi_pct) >= scalp_deep_pullback_roi_pct
+        ):
+            return "scalp_deep_pullback_exit_roi"
+
         try:
             reverse_meta = self._evaluate_position_signal_exit(
                 symbol=symbol,
@@ -2073,18 +2520,17 @@ class TradeExecutor:
 
             if (
                 str(reverse_meta.get("reason") or "") == "reverse_signal"
-                and float(reverse_score) >= float(self.scalp_reverse_min_score)
-                and float(best_pnl_pct) >= float(self.scalp_profit_arm_pct)
+                and float(reverse_score) >= scalp_reverse_min_score
+                and float(best_roi_pct) >= scalp_profit_arm_roi_pct
             ):
-                return "scalp_reverse_kill"
+                return "scalp_reverse_kill_roi"
 
-        # 4) stall after profit
-        stalled_for = float(now_ts) - float(last_best_ts)
+        stalled_for = float(now_ts) - float(last_best_ts or now_ts)
         if (
-            float(best_pnl_pct) >= float(self.scalp_stall_min_profit_pct)
-            and float(stalled_for) >= float(self.scalp_stall_sec)
+            float(best_roi_pct) >= scalp_stall_min_profit_roi_pct
+            and float(stalled_for) >= scalp_stall_after_profit_sec
         ):
-            return "scalp_stall_exit"
+            return "scalp_stall_exit_roi"
 
         return None
 
@@ -4920,6 +5366,164 @@ class TradeExecutor:
                 interval=str(interval or pos.get("interval") or ""),
             )
 
+        # ===== ROI PROFIT LOCK =====
+        profit_lock_reason = None
+        try:
+            lev = float(self._resolve_position_leverage(pos))
+            roi_pct = float(pnl_pct) * lev
+            best_roi_pct = float(best_pnl_pct) * lev
+
+            if side == "long":
+                retrace_pct = (
+                    (float(highest_price) - float(price)) / max(float(highest_price), 1e-12)
+                    if float(highest_price) > 0
+                    else 0.0
+                )
+            else:
+                retrace_pct = (
+                    (float(price) - float(lowest_price)) / max(float(lowest_price), 1e-12)
+                    if float(lowest_price) > 0
+                    else 0.0
+                )
+
+            retrace_roi_pct = float(retrace_pct) * lev
+
+            profit_lock_arm_roi_pct = float(
+                getattr(self, "profit_lock_arm_roi_pct", 0.0175) or 0.0175
+            )
+            profit_lock_retrace_roi_pct = float(
+                getattr(self, "profit_lock_retrace_roi_pct", 0.0045) or 0.0045
+            )
+            profit_floor_roi_pct = float(
+                getattr(self, "profit_floor_roi_pct", 0.0040) or 0.0040
+            )
+
+            if (
+                float(best_roi_pct) >= float(profit_lock_arm_roi_pct)
+                and float(retrace_roi_pct) >= float(profit_lock_retrace_roi_pct)
+            ):
+                profit_lock_reason = "profit_lock_roi"
+
+            if (
+                profit_lock_reason is None
+                and float(best_roi_pct) >= float(profit_lock_arm_roi_pct)
+                and float(roi_pct) <= float(profit_floor_roi_pct)
+            ):
+                profit_lock_reason = "profit_floor_roi_exit"
+
+            if profit_lock_reason is not None:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][PROFIT-LOCK] trigger | symbol=%s side=%s reason=%s roi_pct=%.6f best_roi_pct=%.6f retrace_roi_pct=%.6f lev=%.2f",
+                            sym,
+                            side,
+                            str(profit_lock_reason),
+                            float(roi_pct),
+                            float(best_roi_pct),
+                            float(retrace_roi_pct),
+                            float(lev),
+                        )
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][PROFIT-LOCK] evaluate failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
+            except Exception:
+                pass
+
+        if close_reason is None and profit_lock_reason is not None:
+            close_reason = str(profit_lock_reason)
+
+        # ===== USDT LOSS KILL =====
+        try:
+            qty_now = float(pos.get("qty") or 0.0)
+        except Exception:
+            qty_now = 0.0
+
+        unrealized_pnl_usdt = self._calc_unrealized_pnl_usdt(
+            side=side,
+            entry_price=float(entry_price),
+            price=float(price),
+            qty=float(qty_now),
+        )
+
+        if (
+            close_reason is None
+            and bool(getattr(self, "usdt_loss_kill_enable", True))
+            and float(unrealized_pnl_usdt) <= -abs(float(getattr(self, "max_loss_usdt_per_trade", 4.0) or 4.0))
+        ):
+            close_reason = "usdt_loss_kill"
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][LOSS-KILL] trigger | symbol=%s side=%s pnl_usdt=%.4f threshold=%.4f",
+                        sym,
+                        side,
+                        float(unrealized_pnl_usdt),
+                        float(getattr(self, "max_loss_usdt_per_trade", 4.0) or 4.0),
+                    )
+            except Exception:
+                pass
+
+        # ===== DEAD TRADE EXIT =====
+        dead_trade_reason = None
+        try:
+            if bool(getattr(self, "dead_trade_exit_enable", True)):
+                opened_ts = 0.0
+                try:
+                    opened_at_raw = str(pos.get("opened_at") or "").strip()
+                    if opened_at_raw:
+                        opened_ts = datetime.fromisoformat(
+                            opened_at_raw.replace("Z", "+00:00")
+                        ).timestamp()
+                except Exception:
+                    opened_ts = 0.0
+
+                if opened_ts > 0:
+                    alive_sec = float(now_ts) - float(opened_ts)
+                    max_sec = float(getattr(self, "dead_trade_max_sec", 90) or 90)
+                    min_best = float(
+                        getattr(self, "dead_trade_min_best_pnl_pct", 0.002) or 0.002
+                    )
+
+                    if (
+                        float(alive_sec) >= float(max_sec)
+                        and float(best_pnl_pct) < float(min_best)
+                    ):
+                        dead_trade_reason = "dead_trade_exit"
+
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][DEAD-TRADE] trigger | symbol=%s side=%s alive_sec=%.1f best_pnl_pct=%.6f min_best=%.6f",
+                                    sym,
+                                    side,
+                                    float(alive_sec),
+                                    float(best_pnl_pct),
+                                    float(min_best),
+                                )
+                        except Exception:
+                            pass
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][DEAD-TRADE] evaluate failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
+            except Exception:
+                pass
+
+        if close_reason is None and dead_trade_reason is not None:
+            close_reason = str(dead_trade_reason)
+
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
         pos = self._get_position(sym)
@@ -5698,7 +6302,38 @@ class TradeExecutor:
                 }
         except Exception:
             pass
+        # ===== NO-TRADE ZONE =====
+        no_trade_reason = self._in_no_trade_zone(
+            symbol=sym_u,
+            side=side0,
+            signal_score=float(signal_score),
+            whale_score=float(whale_score),
+            whale_dir=str(whale_dir),
+            order_price=float(order_price),
+            meta=meta0,
+        )
 
+        if no_trade_reason is not None:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] no-trade zone | symbol=%s side=%s reason=%s score=%.4f whale=%.4f dir=%s",
+                        sym_u,
+                        side0,
+                        str(no_trade_reason),
+                        float(signal_score),
+                        float(whale_score),
+                        str(whale_dir),
+                    )
+            except Exception:
+                pass
+
+            return {
+                "status": "skip",
+                "reason": str(no_trade_reason),
+                "symbol": sym_u,
+                "side": side0,
+            }
         try:
             eq_live = self._get_futures_equity_usdt_sync()
             if eq_live > 0:
@@ -5739,7 +6374,31 @@ class TradeExecutor:
             price=float(order_price),
             symbol_info=symbol_info,
         )
+        confirmed = self._confirm_entry_signal(
+            symbol=sym_u,
+            side=side0,
+            interval=str(interval or "5m"),
+            score=float(signal_score),
+        )
 
+        if not confirmed:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] waiting confirmation | symbol=%s side=%s score=%.4f",
+                        sym_u,
+                        side0,
+                        float(signal_score),
+                    )
+            except Exception:
+                pass
+
+            return {
+                "status": "skip",
+                "reason": "waiting_entry_confirmation",
+                "symbol": sym_u,
+                "side": side0,
+            }
         try:
             if self.logger:
                 self.logger.info(

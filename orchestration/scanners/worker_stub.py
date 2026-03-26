@@ -103,7 +103,7 @@ def main() -> None:
     source = os.getenv("WORKER_ID", "w0").strip() or "w0"
     symbols: List[str] = [
         s.strip().upper()
-        for s in os.getenv("WORKER_SYMBOLS", "BTCUSDT,ETHUSDT,XRPUSDT").split(",")
+        for s in os.getenv("WORKER_SYMBOLS", "BTCUSDT,ETHUSDT,AVAXUSDT").split(",")
         if s.strip()
     ]
     interval = os.getenv("WORKER_INTERVAL", "5m").strip() or "5m"
