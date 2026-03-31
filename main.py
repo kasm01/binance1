@@ -50,7 +50,8 @@ def _log_secret_env_presence(logger):
 import asyncio
 import logging
 import os
-
+import sys
+sys.stdout.reconfigure(line_buffering=True)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
@@ -80,8 +81,7 @@ from core.market_meta_builder import MarketMetaBuilder
 from core.price_cache import PriceCache
 from core.redis_price_cache import RedisPriceCache
 from data.anomaly_detection import AnomalyDetector
-from data.whale_detector import MultiTimeframeWhaleDetector
-
+from core.whale_detector import MultiTimeframeWhaleDetector
 from models.hybrid_inference import HybridMultiTFModel
 from models.model_registry import ModelRegistry
 

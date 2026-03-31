@@ -726,38 +726,61 @@ class MultiTimeframeWhaleDetector(WhaleDetector):
             "WHALE_MTF_MIN_AGREEMENT_SCORE",
             0.55,
         )
+
     def analyze_multiple_timeframes(
         self,
         dfs: Dict[str, pd.DataFrame],
+        okx_dfs: Optional[Dict[str, pd.DataFrame]] = None,
+        **kwargs,
     ) -> Dict[str, WhaleSignal]:
         signals: Dict[str, WhaleSignal] = {}
 
+        if not isinstance(dfs, dict):
+            return signals
+
         for tf, df in dfs.items():
-            if df is None or len(df) < max(60, self.window + 10):
+            try:
+                if df is None or not isinstance(df, pd.DataFrame):
+                    signals[tf] = WhaleSignal(
+                        "none",
+                        0.0,
+                        f"invalid_df_{tf}",
+                        {},
+                    )
+                    continue
+
+                if len(df) < max(60, self.window + 10):
+                    signals[tf] = WhaleSignal(
+                        "none",
+                        0.0,
+                        f"insufficient_data_{tf}",
+                        {},
+                    )
+                    continue
+
+                df_features = self.calculate_features(df)
+
+                tf_multiplier = {
+                    "1m": 0.90,
+                    "3m": 0.95,
+                    "5m": 1.00,
+                    "15m": 1.10,
+                    "30m": 1.18,
+                    "1h": 1.28,
+                    "4h": 1.45,
+                }.get(str(tf), 1.0)
+
+                signals[tf] = self._generate_signal(
+                    df_features,
+                    multiplier=tf_multiplier,
+                )
+            except Exception as e:
                 signals[tf] = WhaleSignal(
                     "none",
                     0.0,
-                    f"insufficient_data_{tf}",
-                    {},
+                    f"mtf_error_{tf}",
+                    {"error": str(e)},
                 )
-                continue
-
-            df_features = self.calculate_features(df)
-
-            tf_multiplier = {
-                "1m": 0.90,
-                "3m": 0.95,
-                "5m": 1.00,
-                "15m": 1.10,
-                "30m": 1.18,
-                "1h": 1.28,
-                "4h": 1.45,
-            }.get(tf, 1.0)
-
-            signals[tf] = self._generate_signal(
-                df_features,
-                multiplier=tf_multiplier,
-            )
 
         return signals
 

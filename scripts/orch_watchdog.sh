@@ -307,12 +307,24 @@ fi
 # -----------------------------
 # Process check
 # -----------------------------
-must_names=(
-  scanner_w1 scanner_w2 scanner_w3 scanner_w4
-  scanner_w5 scanner_w6 scanner_w7 scanner_w8
-  aggregator top_selector master_executor intent_bridge
-)
+must_names=()
 
+for n in 1 2 3 4 5 6 7 8; do
+  var="W${n}_SYMBOLS"
+  syms="$(eval echo \${$var})"
+  syms="$(echo "$syms" | xargs 2>/dev/null || true)"
+
+  if [[ -n "${syms:-}" ]]; then
+    must_names+=("scanner_w${n}")
+  fi
+done
+
+must_names+=(
+  aggregator
+  top_selector
+  master_executor
+  intent_bridge
+)
 missing_proc=()
 for name in "${must_names[@]}"; do
   if ! check_proc_with_pidfile "$name"; then

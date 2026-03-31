@@ -1859,6 +1859,334 @@ class TradeExecutor:
         if reject_reason:
             return 0.0, meta
         return float(q), meta
+
+    def _apply_whale_weighted_leverage_boost(
+        self,
+        symbol,
+        side,
+        target_leverage,
+        signal_score,
+        whale_score,
+        whale_dir,
+    ):
+        try:
+            enabled = bool(int(os.getenv("WHALE_LEV_BOOST_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return float(target_leverage)
+
+        min_score = float(os.getenv("WHALE_LEV_BOOST_MIN_SCORE", "0.58") or 0.58)
+        min_whale = float(os.getenv("WHALE_LEV_BOOST_MIN_WHALE", "0.56") or 0.56)
+        mult = float(os.getenv("WHALE_LEV_BOOST_MULT", "1.15") or 1.15)
+        cap = float(os.getenv("WHALE_LEV_BOOST_CAP", "10") or 10)
+
+        aligned = str(whale_dir).lower() == str(side).lower()
+
+        lev = float(target_leverage)
+
+        if signal_score >= min_score and whale_score >= min_whale and aligned:
+            boosted = min(cap, lev * mult)
+
+            try:
+                self.logger.info(
+                    "[EXEC][LEV][BOOST] symbol=%s base=%.2f boosted=%.2f",
+                    symbol,
+                    lev,
+                    boosted,
+                )
+            except:
+                pass
+
+            return boosted
+
+        return lev
+
+    def _adapt_dead_trade_thresholds(
+        self,
+        symbol: str,
+        side: str,
+        base_max_sec: float,
+        base_min_best: float,
+        signal_score: float,
+        whale_score: float,
+        whale_dir: str,
+    ) -> tuple[float, float]:
+        try:
+            enabled = bool(int(os.getenv("DEAD_TRADE_ADAPTIVE_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return float(base_max_sec), float(base_min_best)
+
+        try:
+            score_thr = float(os.getenv("DEAD_TRADE_ADAPTIVE_SCORE_THR", "0.68") or 0.68)
+            whale_thr = float(os.getenv("DEAD_TRADE_ADAPTIVE_WHALE_THR", "0.58") or 0.58)
+            time_mult = float(os.getenv("DEAD_TRADE_ADAPTIVE_TIME_MULT", "1.50") or 1.50)
+            minbest_mult = float(os.getenv("DEAD_TRADE_ADAPTIVE_MINBEST_MULT", "0.85") or 0.85)
+        except Exception:
+            score_thr = 0.68
+            whale_thr = 0.58
+            time_mult = 1.50
+            minbest_mult = 0.85
+
+        aligned = str(whale_dir or "").lower() == str(side or "").lower()
+
+        max_sec = float(base_max_sec)
+        min_best = float(base_min_best)
+
+        if float(signal_score) >= score_thr and float(whale_score) >= whale_thr and aligned:
+            max_sec *= float(time_mult)
+            min_best *= float(minbest_mult)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][DEAD-TRADE][ADAPT] symbol=%s side=%s max_sec=%.1f min_best=%.6f signal_score=%.4f whale_score=%.4f whale_dir=%s",
+                        symbol,
+                        side,
+                        float(max_sec),
+                        float(min_best),
+                        float(signal_score),
+                        float(whale_score),
+                        str(whale_dir),
+                    )
+            except Exception:
+                pass
+
+        return float(max_sec), float(min_best)
+
+    def _ultra_entry_filter(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        extra: Optional[Dict[str, Any]],
+        probs: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        extra0 = extra if isinstance(extra, dict) else {}
+        probs0 = probs if isinstance(probs, dict) else {}
+
+        try:
+            enabled = bool(int(os.getenv("ULTRA_ENTRY_FILTER_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return True, "disabled"
+
+        def _f(x, default=0.0):
+            try:
+                return float(x)
+            except Exception:
+                return float(default)
+
+        signal_score = max(
+            _f(extra0.get("signal_score"), 0.0),
+            _f(extra0.get("score"), 0.0),
+            _f(extra0.get("score_total"), 0.0),
+            _f(extra0.get("_score_total_final"), 0.0),
+            _f(extra0.get("_score_selected"), 0.0),
+        )
+
+        whale_score = _f(extra0.get("whale_score"), 0.0)
+        whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
+        liq_score = _f(extra0.get("liq_score"), _f((extra0.get("raw") or {}).get("liq_score"), 0.0))
+        atr_pct = _f(extra0.get("atr_pct"), _f((extra0.get("raw") or {}).get("atr_pct"), 0.0))
+        spread_pct = _f(extra0.get("spread_pct"), _f((extra0.get("raw") or {}).get("spread_pct"), 0.0))
+        micro_score = _f(extra0.get("micro_score"), _f((extra0.get("raw") or {}).get("micro_score"), 0.0))
+        model_confidence_factor = _f(extra0.get("model_confidence_factor"), 0.0)
+
+        p_buy_ema = extra0.get("p_buy_ema")
+        p_buy_raw = extra0.get("p_buy_raw")
+        try:
+            p_gap = abs(float(p_buy_ema) - float(p_buy_raw))
+        except Exception:
+            p_gap = 0.0
+
+        try:
+            min_signal = float(os.getenv("UEF_MIN_SIGNAL_SCORE", "0.68") or 0.68)
+            min_whale = float(os.getenv("UEF_MIN_WHALE_SCORE", "0.56") or 0.56)
+            require_align = bool(int(os.getenv("UEF_REQUIRE_WHALE_ALIGN", "1") or 1))
+            max_spread = float(os.getenv("UEF_MAX_SPREAD_PCT", "0.0009") or 0.0009)
+            min_liq = float(os.getenv("UEF_MIN_LIQ_SCORE", "0.22") or 0.22)
+            max_atr = float(os.getenv("UEF_MAX_ATR_PCT", "0.022") or 0.022)
+            min_mcf = float(os.getenv("UEF_MIN_MCF", "0.55") or 0.55)
+            min_gap = float(os.getenv("UEF_MIN_P_BUY_GAP", "0.035") or 0.035)
+            min_micro = float(os.getenv("UEF_MIN_MICRO_SCORE", "0.55") or 0.55)
+        except Exception:
+            min_signal, min_whale, require_align = 0.68, 0.56, True
+            max_spread, min_liq, max_atr = 0.0009, 0.22, 0.022
+            min_mcf, min_gap, min_micro = 0.55, 0.035, 0.55
+
+        if signal_score < min_signal:
+            return False, f"signal_score<{min_signal:.3f}"
+        if whale_score < min_whale:
+            return False, f"whale_score<{min_whale:.3f}"
+        if require_align and whale_dir in ("long", "short") and whale_dir != str(side).lower():
+            return False, "whale_misaligned"
+        if spread_pct > max_spread:
+            return False, f"spread_pct>{max_spread:.4f}"
+        if liq_score > 0 and liq_score < min_liq:
+            return False, f"liq_score<{min_liq:.2f}"
+        if atr_pct > 0 and atr_pct > max_atr:
+            return False, f"atr_pct>{max_atr:.4f}"
+        if model_confidence_factor > 0 and model_confidence_factor < min_mcf:
+            return False, f"mcf<{min_mcf:.2f}"
+        if micro_score > 0 and micro_score < min_micro:
+            return False, f"micro_score<{min_micro:.2f}"
+        if p_gap > 0 and p_gap < min_gap:
+            return False, f"p_gap<{min_gap:.3f}"
+
+        return True, "ok"
+
+    def _check_stale_signal_age(
+        self,
+        symbol: str,
+        side: str,
+        extra: Optional[Dict[str, Any]],
+    ) -> tuple[bool, float]:
+        extra0 = extra if isinstance(extra, dict) else {}
+        raw0 = extra0.get("raw") or {}
+
+        ts_utc = str(
+            extra0.get("ts_utc")
+            or (raw0.get("ts_utc") if isinstance(raw0, dict) else "")
+            or ""
+        ).strip()
+
+        if not ts_utc:
+            return True, 0.0
+
+        try:
+            signal_age_sec = time.time() - datetime.fromisoformat(
+                ts_utc.replace("Z", "+00:00")
+            ).timestamp()
+        except Exception:
+            return True, 0.0
+
+        try:
+            max_age = float(os.getenv("UEF_STALE_SIGNAL_MAX_AGE_SEC", "12") or 12)
+        except Exception:
+            max_age = 12.0
+
+        return signal_age_sec <= max_age, float(signal_age_sec)
+
+    def _should_block_fake_breakout(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        extra: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        try:
+            enabled = bool(int(os.getenv("UEF_BLOCK_FAKE_BREAKOUT", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return False, "disabled"
+
+        try:
+            max_chase_pct = float(os.getenv("UEF_FAKE_BREAKOUT_MAX_CHASE_PCT", "0.0028") or 0.0028)
+        except Exception:
+            max_chase_pct = 0.0028
+
+        extra0 = extra if isinstance(extra, dict) else {}
+        ref_price = None
+        for k in ("mark_price", "last_price", "price"):
+            try:
+                v = float(extra0.get(k))
+                if v > 0:
+                    ref_price = v
+                    break
+            except Exception:
+                pass
+
+        if ref_price is None or entry_price <= 0:
+            return False, "no_ref"
+
+        if str(side).lower() == "long":
+            chase_pct = (float(ref_price) - float(entry_price)) / max(float(entry_price), 1e-12)
+        else:
+            chase_pct = (float(entry_price) - float(ref_price)) / max(float(entry_price), 1e-12)
+
+        if chase_pct > max_chase_pct:
+            return True, f"chase_pct>{max_chase_pct:.4f}"
+
+        return False, "ok"
+
+    def _log_ultra_entry_reject(
+        self,
+        symbol: str,
+        side: str,
+        reason: str,
+        extra: Optional[Dict[str, Any]],
+    ) -> None:
+        try:
+            enabled = bool(int(os.getenv("UEF_LOG_REJECTS", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return
+
+        extra0 = extra if isinstance(extra, dict) else {}
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][OPEN-BLOCK][UEF] symbol=%s side=%s reason=%s signal_score=%.4f whale_score=%.4f whale_dir=%s",
+                    str(symbol).upper().strip(),
+                    str(side).lower().strip(),
+                    str(reason),
+                    float(
+                        extra0.get("signal_score")
+                        or extra0.get("score")
+                        or extra0.get("_score_total_final")
+                        or extra0.get("_score_selected")
+                        or 0.0
+                    ),
+                    float(extra0.get("whale_score") or 0.0),
+                    str(extra0.get("whale_dir") or ""),
+                )
+        except Exception:
+            pass
+
+    def _mark_lifecycle_heartbeat(self, symbol: str = "") -> None:
+        try:
+            self._last_lifecycle_ts = float(time.time())
+            if symbol:
+                self._last_lifecycle_symbol = str(symbol).upper().strip()
+        except Exception:
+            pass
+
+    def _check_lifecycle_freeze(self) -> None:
+        try:
+            force_every = float(os.getenv("FORCE_LIFECYCLE_EVERY_SEC", "10") or 10)
+        except Exception:
+            force_every = 10.0
+
+        last_ts = float(getattr(self, "_last_lifecycle_ts", 0.0) or 0.0)
+        now_ts = float(time.time())
+
+        if last_ts <= 0:
+            self._last_lifecycle_ts = now_ts
+            return
+
+        if (now_ts - last_ts) >= force_every:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=%.1f last_symbol=%s",
+                        float(now_ts - last_ts),
+                        str(getattr(self, "_last_lifecycle_symbol", "") or "-"),
+                    )
+            except Exception:
+                pass
+            self._last_lifecycle_ts = now_ts
+
     # ---------------------------------------------------------
     # leverage helpers
     # ---------------------------------------------------------
@@ -1878,7 +2206,158 @@ class TradeExecutor:
             target = int(round(float(rec_f)))
 
         target = max(lev_min, min(target, lev_max))
+
+        try:
+            signal_score = float(extra0.get("score", 0.0))
+            whale_score = float(extra0.get("whale_score", 0.0))
+            whale_dir = str(extra0.get("whale_dir", ""))
+            side = str(extra0.get("side", ""))
+            symbol = str(extra0.get("symbol", ""))
+
+            target = self._apply_whale_weighted_leverage_boost(
+                symbol=symbol,
+                side=side,
+                target_leverage=target,
+                signal_score=signal_score,
+                whale_score=whale_score,
+                whale_dir=whale_dir,
+            )
+        except Exception:
+            pass
+
         return int(target)
+
+    def _can_whale_scale_in(
+        self,
+        pos: Dict[str, Any],
+        side: str,
+        signal_score: float,
+        whale_score: float,
+        whale_dir: str,
+        pnl_pct: float,
+        now_ts: float,
+    ) -> bool:
+        try:
+            enabled = bool(int(os.getenv("WHALE_SCALEIN_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return False
+
+        try:
+            min_signal = float(os.getenv("WHALE_SCALEIN_MIN_SIGNAL_SCORE", "0.68") or 0.68)
+            min_whale = float(os.getenv("WHALE_SCALEIN_MIN_WHALE_SCORE", "0.58") or 0.58)
+            max_adds = int(os.getenv("WHALE_SCALEIN_MAX_ADDS", "1") or 1)
+            min_profit = float(os.getenv("WHALE_SCALEIN_MIN_PROFIT_PCT", "-0.0015") or -0.0015)
+            cooldown_sec = float(os.getenv("WHALE_SCALEIN_COOLDOWN_SEC", "180") or 180)
+        except Exception:
+            min_signal = 0.68
+            min_whale = 0.58
+            max_adds = 1
+            min_profit = -0.0015
+            cooldown_sec = 180.0
+
+        aligned = str(whale_dir or "").lower() == str(side or "").lower()
+        if not aligned:
+            return False
+
+        if float(signal_score) < min_signal:
+            return False
+
+        if float(whale_score) < min_whale:
+            return False
+
+        if float(pnl_pct) < min_profit:
+            return False
+
+        try:
+            extra = ((pos.get("meta") or {}).get("extra") or {})
+            add_count = int(extra.get("scale_in_count") or 0)
+            last_add_ts = float(extra.get("last_scale_in_ts") or 0.0)
+        except Exception:
+            add_count = 0
+            last_add_ts = 0.0
+
+        if add_count >= max_adds:
+            return False
+
+        if last_add_ts > 0 and (float(now_ts) - float(last_add_ts)) < cooldown_sec:
+            return False
+
+        return True
+    def _mark_whale_scale_in(
+        self,
+        pos: Dict[str, Any],
+        now_ts: float,
+    ) -> None:
+        try:
+            meta = pos.setdefault("meta", {})
+            extra = meta.setdefault("extra", {})
+            extra["scale_in_count"] = int(extra.get("scale_in_count") or 0) + 1
+            extra["last_scale_in_ts"] = float(now_ts)
+        except Exception:
+            pass
+    def _get_whale_scale_in_notional(self, current_notional: float) -> float:
+        try:
+            add_pct = float(os.getenv("WHALE_SCALEIN_ADD_PCT", "0.35") or 0.35)
+        except Exception:
+            add_pct = 0.35
+
+        add_notional = max(0.0, float(current_notional) * float(add_pct))
+        return float(add_notional)
+        # ===== WHALE MOMENTUM SCALE-IN =====
+        try:
+            extra = ((pos.get("meta") or {}).get("extra") or {})
+            signal_score = float(
+                extra.get("signal_score")
+                or extra.get("score")
+                or 0.0
+            )
+            whale_score = float(extra.get("whale_score") or 0.0)
+            whale_dir = str(extra.get("whale_dir") or "")
+
+            current_notional = float(pos.get("notional") or 0.0)
+
+            if self._can_whale_scale_in(
+                pos=pos,
+                side=side,
+                signal_score=signal_score,
+                whale_score=whale_score,
+                whale_dir=whale_dir,
+                pnl_pct=float(pnl_pct),
+                now_ts=float(now_ts),
+            ):
+                add_notional = self._get_whale_scale_in_notional(current_notional)
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SCALE-IN] trigger | symbol=%s side=%s signal_score=%.4f whale_score=%.4f whale_dir=%s pnl_pct=%.6f current_notional=%.2f add_notional=%.2f",
+                            sym,
+                            side,
+                            float(signal_score),
+                            float(whale_score),
+                            str(whale_dir),
+                            float(pnl_pct),
+                            float(current_notional),
+                            float(add_notional),
+                        )
+                except Exception:
+                    pass
+
+                # şimdilik sadece işaret koyuyoruz; gerçek add order ikinci adımda
+                self._mark_whale_scale_in(pos, now_ts)
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][SCALE-IN] evaluate failed | symbol=%s err=%s",
+                        sym,
+                        str(e),
+                    )
+            except Exception:
+                pass
 
     def _set_symbol_leverage(self, symbol: str, leverage: int) -> int:
         sym = str(symbol).upper()
@@ -5216,6 +5695,39 @@ class TradeExecutor:
 
         return None
 
+    def _mark_lifecycle_heartbeat(self, symbol: str = "") -> None:
+        try:
+            self._last_lifecycle_ts = float(time.time())
+            if symbol:
+                self._last_lifecycle_symbol = str(symbol).upper().strip()
+        except Exception:
+            pass
+
+    def _check_lifecycle_freeze(self) -> None:
+        try:
+            force_every = float(os.getenv("FORCE_LIFECYCLE_EVERY_SEC", "10") or 10)
+        except Exception:
+            force_every = 10.0
+
+        last_ts = float(getattr(self, "_last_lifecycle_ts", 0.0) or 0.0)
+        now_ts = float(time.time())
+
+        if last_ts <= 0:
+            self._last_lifecycle_ts = now_ts
+            return
+
+        if (now_ts - last_ts) >= force_every:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=%.1f last_symbol=%s",
+                        float(now_ts - last_ts),
+                        str(getattr(self, "_last_lifecycle_symbol", "") or "-"),
+                    )
+            except Exception:
+                pass
+            self._last_lifecycle_ts = now_ts
+
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
         pos = self._get_position(sym)
@@ -5454,43 +5966,6 @@ class TradeExecutor:
             stalled_for = now_ts - last_best_ts
             if stall_ttl_sec > 0 and stalled_for >= stall_ttl_sec:
                 close_reason = "stall_exit"
-
-        pos.update({
-            "highest_price": highest_price,
-            "lowest_price": lowest_price,
-            "best_pnl_pct": best_pnl_pct,
-            "last_best_ts": last_best_ts,
-            "sl_price": sl_price,
-            "tp_price": tp_price,
-            "tp_runner_armed": tp_runner_armed,
-            "tp_runner_armed_ts": tp_runner_armed_ts,
-            "last_price": price,
-        })
-
-        self._set_position(sym, pos)
-
-        if close_reason:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][CLOSE][TRIGGER] symbol=%s reason=%s pnl=%.6f best=%.6f trailing_armed=%s trail_stop=%.6f",
-                        sym,
-                        str(close_reason),
-                        float(pnl_pct),
-                        float(best_pnl_pct),
-                        bool(trailing_armed),
-                        float(trail_stop_price),
-                    )
-            except Exception:
-                pass
-
-            self.close_position(
-                symbol=sym,
-                price=float(price),
-                reason=str(close_reason),
-                interval=str(interval or pos.get("interval") or ""),
-            )
-
         # ===== ROI PROFIT LOCK =====
         profit_lock_reason = None
         try:
@@ -5612,9 +6087,37 @@ class TradeExecutor:
 
                 if opened_ts > 0:
                     alive_sec = float(now_ts) - float(opened_ts)
-                    max_sec = float(getattr(self, "dead_trade_max_sec", 90) or 90)
+                    max_sec = float(getattr(self, "dead_trade_max_sec", 240) or 240)
                     min_best = float(
-                        getattr(self, "dead_trade_min_best_pnl_pct", 0.002) or 0.002
+                        getattr(self, "dead_trade_min_best_pnl_pct", 0.0005) or 0.0005
+                    )
+
+                    signal_score = 0.0
+                    whale_score = 0.0
+                    whale_dir = ""
+
+                    try:
+                        extra = ((pos.get("meta") or {}).get("extra") or {})
+                        signal_score = float(
+                            extra.get("signal_score")
+                            or extra.get("score")
+                            or 0.0
+                        )
+                        whale_score = float(extra.get("whale_score") or 0.0)
+                        whale_dir = str(extra.get("whale_dir") or "")
+                    except Exception:
+                        signal_score = 0.0
+                        whale_score = 0.0
+                        whale_dir = ""
+
+                    max_sec, min_best = self._adapt_dead_trade_thresholds(
+                        symbol=sym,
+                        side=side,
+                        base_max_sec=max_sec,
+                        base_min_best=min_best,
+                        signal_score=signal_score,
+                        whale_score=whale_score,
+                        whale_dir=whale_dir,
                     )
 
                     if (
@@ -5626,12 +6129,15 @@ class TradeExecutor:
                         try:
                             if self.logger:
                                 self.logger.info(
-                                    "[EXEC][DEAD-TRADE] trigger | symbol=%s side=%s alive_sec=%.1f best_pnl_pct=%.6f min_best=%.6f",
+                                    "[EXEC][DEAD-TRADE] trigger | symbol=%s side=%s alive_sec=%.1f best_pnl_pct=%.6f min_best=%.6f signal_score=%.4f whale_score=%.4f whale_dir=%s",
                                     sym,
                                     side,
                                     float(alive_sec),
                                     float(best_pnl_pct),
                                     float(min_best),
+                                    float(signal_score),
+                                    float(whale_score),
+                                    str(whale_dir),
                                 )
                         except Exception:
                             pass
@@ -5648,6 +6154,69 @@ class TradeExecutor:
 
         if close_reason is None and dead_trade_reason is not None:
             close_reason = str(dead_trade_reason)
+
+        # ===== POSITION STATE PERSIST =====
+        try:
+            pos["highest_price"] = float(highest_price)
+            pos["lowest_price"] = float(lowest_price)
+            pos["best_pnl_pct"] = float(best_pnl_pct)
+            pos["last_best_ts"] = float(last_best_ts)
+
+            pos["sl_price"] = float(sl_price)
+            pos["tp_price"] = float(tp_price)
+
+            pos["tp_runner_armed"] = bool(tp_runner_armed)
+            pos["tp_runner_armed_ts"] = float(tp_runner_armed_ts)
+
+            pos["trailing_armed"] = bool(trailing_armed)
+            pos["trail_stop_price"] = float(trail_stop_price)
+
+            self._set_position(sym, pos)
+        except Exception:
+            try:
+                if self.logger:
+                    self.logger.exception(
+                        "[EXEC][STATE] persist failed | symbol=%s",
+                        sym,
+                    )
+            except Exception:
+                pass
+
+        # ===== FINAL CLOSE EXECUTION =====
+        if close_reason is not None:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE][TRIGGER] symbol=%s side=%s reason=%s price=%.6f entry=%.6f pnl_pct=%.6f",
+                        sym,
+                        side,
+                        str(close_reason),
+                        float(price),
+                        float(entry_price),
+                        float(pnl_pct),
+                    )
+            except Exception:
+                pass
+
+            try:
+                self.close_position(
+                    symbol=sym,
+                    price=float(price),
+                    reason=str(close_reason),
+                    interval=str(interval or ""),
+                )
+            except Exception:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][CLOSE] execution failed | symbol=%s reason=%s",
+                            sym,
+                            str(close_reason),
+                        )
+                except Exception:
+                    pass
+
+            return
 
     def _handle_weak_signal_position(self, symbol: str, price: float, interval: str) -> None:
         sym = str(symbol).upper().strip()
@@ -6808,6 +7377,7 @@ class TradeExecutor:
                 )
         except Exception:
             pass
+
         try:
             if self.logger:
                 self.logger.info(
@@ -6823,10 +7393,10 @@ class TradeExecutor:
 
         try:
             open_min_score = float(
-                os.getenv("OPEN_MIN_SCORE", os.getenv("MIN_SCORE", "0.42")) or 0.42
+                os.getenv("OPEN_MIN_SCORE", os.getenv("MIN_SCORE", "0.66")) or 0.66
             )
         except Exception:
-            open_min_score = 0.42
+            open_min_score = 0.66
 
         try:
             whale_open_min_score = float(
@@ -7090,6 +7660,83 @@ class TradeExecutor:
             return
 
         try:
+            extra_raw = extra0.get("raw") or {}
+            ts_utc = str(
+                extra0.get("ts_utc")
+                or (extra_raw.get("ts_utc") if isinstance(extra_raw, dict) else "")
+                or ""
+            ).strip()
+
+            signal_age_sec = 0.0
+            if ts_utc:
+                signal_age_sec = time.time() - datetime.fromisoformat(
+                    ts_utc.replace("Z", "+00:00")
+                ).timestamp()
+
+            max_age_sec = float(os.getenv("OPEN_SIGNAL_MAX_AGE_SEC", "20") or 20)
+
+            if signal_age_sec > max_age_sec:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] stale signal | symbol=%s side=%s signal_age_sec=%.1f max_age=%.1f",
+                            sym_u,
+                            side_norm,
+                            float(signal_age_sec),
+                            float(max_age_sec),
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        ok_age, signal_age_sec = self._check_stale_signal_age(
+            symbol=sym_u,
+            side=side_norm,
+            extra=extra0,
+        )
+        if not ok_age:
+            self._log_ultra_entry_reject(
+                symbol=sym_u,
+                side=side_norm,
+                reason=f"stale_signal age={signal_age_sec:.1f}s",
+                extra=extra0,
+            )
+            return
+
+        ok_uef, uef_reason = self._ultra_entry_filter(
+            symbol=sym_u,
+            side=side_norm,
+            interval=str(interval or ""),
+            extra=extra0,
+            probs=probs,
+        )
+        if not ok_uef:
+            self._log_ultra_entry_reject(
+                symbol=sym_u,
+                side=side_norm,
+                reason=str(uef_reason),
+                extra=extra0,
+            )
+            return
+
+        block_fb, fb_reason = self._should_block_fake_breakout(
+            symbol=sym_u,
+            side=side_norm,
+            entry_price=float(price or 0.0),
+            extra=extra0,
+        )
+        if block_fb:
+            self._log_ultra_entry_reject(
+                symbol=sym_u,
+                side=side_norm,
+                reason=f"fake_breakout {fb_reason}",
+                extra=extra0,
+            )
+            return
+
+        try:
             if self._should_block_open_by_whale(side_norm, extra0):
                 if self.logger:
                     self.logger.info(
@@ -7103,7 +7750,6 @@ class TradeExecutor:
                 return
         except Exception:
             pass
-
         cur = self._get_effective_position(sym_u)
         cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None
 
@@ -7149,7 +7795,6 @@ class TradeExecutor:
                 except Exception:
                     pass
                 return
-
             try:
                 if self.logger:
                     self.logger.info(
@@ -7160,6 +7805,7 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
             try:
                 self.close_position(
                     symbol=sym_u,

@@ -134,17 +134,25 @@ class TopSelector:
         self.group_start_id = os.getenv("TOPSEL_GROUP_START_ID", "$")
         self.drain_pending = _env_bool("TOPSEL_DRAIN_PENDING", False)
 
-        self.window_sec = _env_int("TOPSEL_WINDOW_SEC", 30)
+        # Scalp için daha kısa seçim penceresi:
+        # eski default 30s yerine 8s
+        self.window_sec = _env_int("TOPSEL_WINDOW_SEC", 8)
         if self.window_sec <= 0:
-            self.window_sec = 30
+            self.window_sec = 8
 
-        self.topk = _env_int("TOPSEL_TOPK", 5)
+        # Daha az aday taşı: eski default 5 yerine 3
+        self.topk = _env_int("TOPSEL_TOPK", 3)
+        if self.topk <= 0:
+            self.topk = 3
+
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
 
+        # Selector cooldown'u scalp için daha kısa ama spam'i engelleyecek düzeyde tut
+        # eski fallback TG_DUPLICATE_SIGNAL_COOLDOWN_SEC -> 20 idi; burada 90 öncelikli
         self.cooldown_sec = _env_int(
             "TOPSEL_COOLDOWN_SEC",
-            _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 20),
+            _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 90),
         )
 
         self.min_score = _env_float(
@@ -291,7 +299,6 @@ class TopSelector:
                 ws = raw.get("whale_score", None)
         if ws is not None:
             d["whale_score"] = _clamp(_safe_float(ws, 0.0), 0.0, 1.0)
-
         st = d.get("score_total", None)
         if st is None:
             st = d.get("_score_total", None)
@@ -312,6 +319,7 @@ class TopSelector:
             pass
 
         return d
+
     def _required_ok(self, c: Dict[str, Any]) -> bool:
         if not self.require_fields:
             return True
@@ -574,6 +582,7 @@ class TopSelector:
         if out_id:
             return str(out_id), top
         return None
+
     def run_forever(self) -> None:
         print(
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
