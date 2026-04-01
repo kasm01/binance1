@@ -1903,6 +1903,159 @@ class TradeExecutor:
 
         return lev
 
+    def _apply_volatility_adaptive_leverage(
+        self,
+        symbol: str,
+        side: str,
+        target_leverage: int,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        extra0 = extra if isinstance(extra, dict) else {}
+
+        def _f(x: Any, default: float = 0.0) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return float(default)
+
+        raw0 = extra0.get("raw") or {}
+        if isinstance(raw0, str):
+            try:
+                raw0 = json.loads(raw0)
+            except Exception:
+                raw0 = {}
+        if not isinstance(raw0, dict):
+            raw0 = {}
+
+        meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
+
+        atr_pct = _f(
+            extra0.get("atr_pct"),
+            _f(raw0.get("atr_pct"), _f(meta0.get("atr_pct"), 0.0)),
+        )
+        spread_pct = _f(
+            extra0.get("spread_pct"),
+            _f(raw0.get("spread_pct"), _f(meta0.get("spread_pct"), 0.0)),
+        )
+        liq_score = _f(
+            extra0.get("liq_score"),
+            _f(raw0.get("liq_score"), _f(meta0.get("liq_score"), 0.0)),
+        )
+        micro_score = _f(
+            extra0.get("micro_score"),
+            _f(raw0.get("micro_score"), _f(meta0.get("micro_score"), 0.0)),
+        )
+        signal_score = max(
+            _f(extra0.get("signal_score"), 0.0),
+            _f(extra0.get("score"), 0.0),
+            _f(extra0.get("_score_total_final"), 0.0),
+            _f(extra0.get("_score_selected"), 0.0),
+            _f(extra0.get("score_total"), 0.0),
+        )
+        whale_score = _f(extra0.get("whale_score"), 0.0)
+        whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
+        side0 = str(side or "").strip().lower()
+
+        try:
+            enabled = bool(int(os.getenv("VOL_ADAPTIVE_LEVERAGE_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return int(target_leverage)
+
+        try:
+            atr_soft = float(os.getenv("VOL_LEV_ATR_SOFT_PCT", "0.012") or 0.012)
+            atr_hard = float(os.getenv("VOL_LEV_ATR_HARD_PCT", "0.022") or 0.022)
+            spread_soft = float(os.getenv("VOL_LEV_SPREAD_SOFT_PCT", "0.0005") or 0.0005)
+            spread_hard = float(os.getenv("VOL_LEV_SPREAD_HARD_PCT", "0.0012") or 0.0012)
+            liq_soft = float(os.getenv("VOL_LEV_LIQ_SOFT", "0.35") or 0.35)
+            liq_hard = float(os.getenv("VOL_LEV_LIQ_HARD", "0.18") or 0.18)
+            micro_soft = float(os.getenv("VOL_LEV_MICRO_SOFT", "0.60") or 0.60)
+            micro_hard = float(os.getenv("VOL_LEV_MICRO_HARD", "0.40") or 0.40)
+
+            cut_soft = float(os.getenv("VOL_LEV_CUT_SOFT", "0.85") or 0.85)
+            cut_hard = float(os.getenv("VOL_LEV_CUT_HARD", "0.65") or 0.65)
+
+            good_signal_thr = float(os.getenv("VOL_LEV_GOOD_SIGNAL_THR", "0.70") or 0.70)
+            whale_bonus_thr = float(os.getenv("VOL_LEV_WHALE_BONUS_THR", "0.58") or 0.58)
+            whale_bonus_mult = float(os.getenv("VOL_LEV_WHALE_BONUS_MULT", "1.08") or 1.08)
+        except Exception:
+            atr_soft, atr_hard = 0.012, 0.022
+            spread_soft, spread_hard = 0.0005, 0.0012
+            liq_soft, liq_hard = 0.35, 0.18
+            micro_soft, micro_hard = 0.60, 0.40
+            cut_soft, cut_hard = 0.85, 0.65
+            good_signal_thr, whale_bonus_thr, whale_bonus_mult = 0.70, 0.58, 1.08
+
+        lev = float(target_leverage)
+        base_lev = float(target_leverage)
+
+        # ATR pressure
+        if atr_pct > 0:
+            if atr_pct >= atr_hard:
+                lev *= cut_hard
+            elif atr_pct >= atr_soft:
+                lev *= cut_soft
+
+        # Spread pressure
+        if spread_pct > 0:
+            if spread_pct >= spread_hard:
+                lev *= cut_hard
+            elif spread_pct >= spread_soft:
+                lev *= cut_soft
+
+        # Liquidity pressure
+        if liq_score > 0:
+            if liq_score <= liq_hard:
+                lev *= cut_hard
+            elif liq_score <= liq_soft:
+                lev *= cut_soft
+
+        # Microstructure pressure
+        if micro_score > 0:
+            if micro_score <= micro_hard:
+                lev *= cut_hard
+            elif micro_score <= micro_soft:
+                lev *= cut_soft
+
+        # Controlled bonus only when good signal + aligned whale
+        if (
+            signal_score >= good_signal_thr
+            and whale_score >= whale_bonus_thr
+            and whale_dir in ("long", "short")
+            and whale_dir == side0
+        ):
+            lev *= whale_bonus_mult
+
+        lev_min = int(self._env_int("LEV_MIN", 3))
+        lev_max_env = int(self._env_int("LEV_MAX", max(lev_min, self.max_leverage)))
+        lev_max = max(lev_min, min(int(lev_max_env), int(self.max_leverage)))
+
+        final_lev = int(round(lev))
+        final_lev = max(lev_min, min(final_lev, lev_max))
+
+        try:
+            if self.logger and float(final_lev) != float(base_lev):
+                self.logger.info(
+                    "[EXEC][LEV][VOL] symbol=%s side=%s base=%.2f final=%.2f atr_pct=%.4f spread_pct=%.4f liq_score=%.4f micro_score=%.4f signal_score=%.4f whale_score=%.4f whale_dir=%s",
+                    str(symbol).upper().strip(),
+                    side0,
+                    float(base_lev),
+                    float(final_lev),
+                    float(atr_pct),
+                    float(spread_pct),
+                    float(liq_score),
+                    float(micro_score),
+                    float(signal_score),
+                    float(whale_score),
+                    str(whale_dir),
+                )
+        except Exception:
+            pass
+
+        return int(final_lev)
+
     def _adapt_dead_trade_thresholds(
         self,
         symbol: str,
@@ -2175,6 +2328,230 @@ class TradeExecutor:
                         or extra0.get("_score_selected")
                         or 0.0
                     ),
+                    float(extra0.get("whale_score") or 0.0),
+                    str(extra0.get("whale_dir") or ""),
+                )
+        except Exception:
+            pass
+
+    def _uef_v2_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    def _uef_v2_normalize_raw(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        extra0 = extra if isinstance(extra, dict) else {}
+        raw0 = extra0.get("raw") or {}
+
+        if isinstance(raw0, str):
+            try:
+                raw0 = json.loads(raw0)
+            except Exception:
+                raw0 = {}
+
+        if not isinstance(raw0, dict):
+            raw0 = {}
+
+        meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
+        return {"extra": extra0, "raw": raw0, "meta": meta0}
+
+    def _ultra_entry_filter_v2(
+        self,
+        symbol: str,
+        side: str,
+        interval: str,
+        extra: Optional[Dict[str, Any]],
+        probs: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        try:
+            enabled = bool(int(os.getenv("UEF_V2_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return True, "disabled"
+
+        side0 = str(side or "").strip().lower()
+        ctx = self._uef_v2_normalize_raw(extra)
+        extra0 = ctx["extra"]
+        raw0 = ctx["raw"]
+        meta0 = ctx["meta"]
+
+        signal_score = max(
+            self._uef_v2_float(extra0.get("signal_score"), 0.0),
+            self._uef_v2_float(extra0.get("score"), 0.0),
+            self._uef_v2_float(extra0.get("_score_total_final"), 0.0),
+            self._uef_v2_float(extra0.get("score_total"), 0.0),
+            self._uef_v2_float(extra0.get("_score_selected"), 0.0),
+        )
+        final_score = self._uef_v2_float(
+            extra0.get("_score_total_final"),
+            self._uef_v2_float(extra0.get("score"), 0.0),
+        )
+        selected_score = self._uef_v2_float(
+            extra0.get("_score_selected"),
+            self._uef_v2_float(extra0.get("score_total"), 0.0),
+        )
+
+        whale_score = self._uef_v2_float(extra0.get("whale_score"), 0.0)
+        whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
+
+        spread_pct = self._uef_v2_float(
+            extra0.get("spread_pct"),
+            self._uef_v2_float(raw0.get("spread_pct"), self._uef_v2_float(meta0.get("spread_pct"), 0.0)),
+        )
+        liq_score = self._uef_v2_float(
+            extra0.get("liq_score"),
+            self._uef_v2_float(raw0.get("liq_score"), self._uef_v2_float(meta0.get("liq_score"), 0.0)),
+        )
+        atr_pct = self._uef_v2_float(
+            extra0.get("atr_pct"),
+            self._uef_v2_float(raw0.get("atr_pct"), self._uef_v2_float(meta0.get("atr_pct"), 0.0)),
+        )
+        micro_score = self._uef_v2_float(
+            extra0.get("micro_score"),
+            self._uef_v2_float(raw0.get("micro_score"), self._uef_v2_float(meta0.get("micro_score"), 0.0)),
+        )
+        confidence = self._uef_v2_float(
+            extra0.get("model_confidence_factor"),
+            self._uef_v2_float(raw0.get("confidence"), self._uef_v2_float(meta0.get("confidence"), 0.0)),
+        )
+
+        p_buy_ema = extra0.get("p_buy_ema")
+        p_buy_raw = extra0.get("p_buy_raw")
+        try:
+            p_gap = abs(float(p_buy_ema) - float(p_buy_raw))
+        except Exception:
+            p_gap = 0.0
+
+        ts_utc = str(extra0.get("ts_utc") or "").strip()
+        signal_age_sec = 0.0
+        if ts_utc:
+            try:
+                signal_age_sec = time.time() - datetime.fromisoformat(
+                    ts_utc.replace("Z", "+00:00")
+                ).timestamp()
+            except Exception:
+                signal_age_sec = 0.0
+
+        entry_price = self._uef_v2_float(extra0.get("price"), 0.0)
+        mark_price = self._uef_v2_float(extra0.get("mark_price"), 0.0)
+        if mark_price <= 0:
+            mark_price = self._uef_v2_float(extra0.get("last_price"), 0.0)
+
+        chase_pct = 0.0
+        if entry_price > 0 and mark_price > 0:
+            try:
+                if side0 == "long":
+                    chase_pct = max(0.0, (mark_price - entry_price) / entry_price)
+                elif side0 == "short":
+                    chase_pct = max(0.0, (entry_price - mark_price) / entry_price)
+            except Exception:
+                chase_pct = 0.0
+
+        try:
+            min_signal = float(os.getenv("UEF_V2_MIN_SIGNAL_SCORE", "0.62") or 0.62)
+            min_final = float(os.getenv("UEF_V2_MIN_FINAL_SCORE", "0.60") or 0.60)
+            min_selected = float(os.getenv("UEF_V2_MIN_SELECTED_SCORE", "0.58") or 0.58)
+            min_whale = float(os.getenv("UEF_V2_MIN_WHALE_SCORE", "0.52") or 0.52)
+            require_align = bool(int(os.getenv("UEF_V2_REQUIRE_ALIGN", "0") or 0))
+            block_weak_counter = bool(int(os.getenv("UEF_V2_BLOCK_WEAK_COUNTER_WHALE", "1") or 1))
+            max_spread = float(os.getenv("UEF_V2_MAX_SPREAD_PCT", "0.0010") or 0.0010)
+            min_liq = float(os.getenv("UEF_V2_MIN_LIQ_SCORE", "0.18") or 0.18)
+            max_atr = float(os.getenv("UEF_V2_MAX_ATR_PCT", "0.028") or 0.028)
+            min_micro = float(os.getenv("UEF_V2_MIN_MICRO_SCORE", "0.45") or 0.45)
+            min_conf = float(os.getenv("UEF_V2_MIN_CONFIDENCE", "0.52") or 0.52)
+            max_age = float(os.getenv("UEF_V2_MAX_SIGNAL_AGE_SEC", "18") or 18)
+            max_chase = float(os.getenv("UEF_V2_MAX_CHASE_PCT", "0.0035") or 0.0035)
+            min_p_gap = float(os.getenv("UEF_V2_MIN_P_GAP", "0.020") or 0.020)
+            block_counter_trend = bool(int(os.getenv("UEF_V2_BLOCK_COUNTER_TREND", "0") or 0))
+        except Exception:
+            min_signal, min_final, min_selected = 0.62, 0.60, 0.58
+            min_whale, require_align, block_weak_counter = 0.52, False, True
+            max_spread, min_liq, max_atr = 0.0010, 0.18, 0.028
+            min_micro, min_conf, max_age = 0.45, 0.52, 18.0
+            max_chase, min_p_gap, block_counter_trend = 0.0035, 0.020, False
+
+        if signal_score < min_signal:
+            return False, f"v2_signal<{min_signal:.3f}"
+        if final_score < min_final:
+            return False, f"v2_final<{min_final:.3f}"
+        if selected_score < min_selected:
+            return False, f"v2_selected<{min_selected:.3f}"
+
+        if require_align and whale_dir in ("long", "short") and whale_dir != side0:
+            return False, "v2_whale_misaligned"
+
+        if block_weak_counter and whale_dir in ("long", "short") and whale_dir != side0 and whale_score < min_whale:
+            return False, "v2_weak_counter_whale"
+
+        if spread_pct > 0 and spread_pct > max_spread:
+            return False, f"v2_spread>{max_spread:.4f}"
+        if liq_score > 0 and liq_score < min_liq:
+            return False, f"v2_liq<{min_liq:.2f}"
+        if atr_pct > 0 and atr_pct > max_atr:
+            return False, f"v2_atr>{max_atr:.4f}"
+        if micro_score > 0 and micro_score < min_micro:
+            return False, f"v2_micro<{min_micro:.2f}"
+        if confidence > 0 and confidence < min_conf:
+            return False, f"v2_conf<{min_conf:.2f}"
+
+        if signal_age_sec > 0 and signal_age_sec > max_age:
+            return False, f"v2_stale>{max_age:.1f}s"
+        if chase_pct > 0 and chase_pct > max_chase:
+            return False, f"v2_chase>{max_chase:.4f}"
+        if p_gap > 0 and p_gap < min_p_gap:
+            return False, f"v2_pgap<{min_p_gap:.3f}"
+
+        if block_counter_trend:
+            best_side = str(extra0.get("best_side") or "").strip().lower()
+            if best_side in ("long", "short") and side0 in ("long", "short") and best_side != side0:
+                return False, "v2_counter_trend"
+
+        return True, "ok"
+
+    def _log_ultra_entry_v2(
+        self,
+        symbol: str,
+        side: str,
+        ok: bool,
+        reason: str,
+        extra: Optional[Dict[str, Any]],
+    ) -> None:
+        extra0 = extra if isinstance(extra, dict) else {}
+
+        try:
+            log_accepts = bool(int(os.getenv("UEF_V2_LOG_ACCEPTS", "1") or 1))
+        except Exception:
+            log_accepts = True
+
+        try:
+            log_rejects = bool(int(os.getenv("UEF_V2_LOG_REJECTS", "1") or 1))
+        except Exception:
+            log_rejects = True
+
+        if ok and not log_accepts:
+            return
+        if (not ok) and not log_rejects:
+            return
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][UEF-V2] %s | symbol=%s side=%s reason=%s signal_score=%.4f final_score=%.4f whale_score=%.4f whale_dir=%s",
+                    "ALLOW" if ok else "BLOCK",
+                    str(symbol).upper().strip(),
+                    str(side).lower().strip(),
+                    str(reason),
+                    float(
+                        extra0.get("signal_score")
+                        or extra0.get("score")
+                        or extra0.get("_score_total_final")
+                        or extra0.get("_score_selected")
+                        or 0.0
+                    ),
+                    float(extra0.get("_score_total_final") or extra0.get("score") or 0.0),
                     float(extra0.get("whale_score") or 0.0),
                     str(extra0.get("whale_dir") or ""),
                 )
@@ -7783,6 +8160,38 @@ class TradeExecutor:
                 extra=extra0,
             )
             return
+
+        ok_v2, v2_reason = self._ultra_entry_filter_v2(
+            symbol=sym_u,
+            side=side_norm,
+            interval=str(interval or ""),
+            extra=extra0,
+            probs=probs,
+        )
+
+        try:
+            v2_warn_only = bool(int(os.getenv("UEF_V2_WARN_ONLY", "1") or 1))
+        except Exception:
+            v2_warn_only = True
+
+        if not ok_v2:
+            self._log_ultra_entry_v2(
+                symbol=sym_u,
+                side=side_norm,
+                ok=False,
+                reason=str(v2_reason),
+                extra=extra0,
+            )
+            if not v2_warn_only:
+                return
+        else:
+            self._log_ultra_entry_v2(
+                symbol=sym_u,
+                side=side_norm,
+                ok=True,
+                reason=str(v2_reason),
+                extra=extra0,
+            )
 
         try:
             if self._should_block_open_by_whale(side_norm, extra0):
