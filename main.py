@@ -1722,21 +1722,35 @@ def _pick_method(obj, names):
     return None
 
 async def consume_exec_events_stream(logger, executor, *, redis_url: str):
-    if os.getenv("EXEC_EVENTS_ENABLE", "1").strip() not in ("1", "true", "True", "yes", "YES"):
+    if os.getenv("EXEC_EVENTS_ENABLE", "1").strip() not in (
+        "1",
+        "true",
+        "True",
+        "yes",
+        "YES",
+    ):
         logger.info("[EXEC-EVENTS] disabled via EXEC_EVENTS_ENABLE")
         return
 
-    stream = os.getenv("EXEC_EVENTS_STREAM", os.getenv("BRIDGE_OUT_STREAM", "exec_events_stream"))
+    stream = os.getenv(
+        "EXEC_EVENTS_STREAM",
+        os.getenv("BRIDGE_OUT_STREAM", "exec_events_stream"),
+    )
     group = os.getenv("EXEC_EVENTS_GROUP", "main_exec_g")
     consumer = os.getenv("EXEC_EVENTS_CONSUMER", "main_1")
-    block_ms = int(os.getenv("EXEC_EVENTS_BLOCK_MS", "5000"))
-    batch = int(os.getenv("EXEC_EVENTS_BATCH", "50"))
+    block_ms = int(os.getenv("EXEC_EVENTS_BLOCK_MS", "5000") or "5000")
+    batch = int(os.getenv("EXEC_EVENTS_BATCH", "50") or "50")
     start_id = os.getenv("EXEC_EVENTS_START_ID", "$")
 
     r = redis.Redis.from_url(redis_url, decode_responses=True)
     ensure_group(r, stream, group, start_id=start_id)
 
-    logger.info("[EXEC-EVENTS] consuming stream=%s group=%s consumer=%s", stream, group, consumer)
+    logger.info(
+        "[EXEC-EVENTS] consuming stream=%s group=%s consumer=%s",
+        stream,
+        group,
+        consumer,
+    )
 
     try:
         logger.info(
@@ -1748,6 +1762,273 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
         )
     except Exception:
         pass
+
+    try:
+        decision_name = getattr(getattr(executor, "execute_decision", None), "__name__", None)
+        store_name = getattr(getattr(executor, "_store_latest_signal", None), "__name__", None)
+        open_name = getattr(getattr(executor, "open_position_from_signal", None), "__name__", None)
+        close_name = getattr(getattr(executor, "close_position", None), "__name__", None)
+        logger.info(
+            "[EXEC-EVENTS] methods resolved | decision=%s store_signal=%s open=%s close=%s",
+            decision_name,
+            store_name,
+            open_name,
+            close_name,
+        )
+    except Exception:
+        pass
+
+    while True:
+        try:
+            try:
+                hb_enable = bool(int(os.getenv("EXEC_STREAM_HEARTBEAT_ENABLE", "1") or 1))
+            except Exception:
+                hb_enable = True
+
+            if hb_enable:
+                now_ts = time.time()
+                last_hb = float(getattr(executor, "_last_exec_stream_hb_ts", 0.0) or 0.0)
+                try:
+                    hb_sec = float(os.getenv("EXEC_STREAM_HEARTBEAT_SEC", "15") or 15)
+                except Exception:
+                    hb_sec = 15.0
+
+                if (now_ts - last_hb) >= hb_sec:
+                    try:
+                        if logger:
+                            logger.info(
+                                "[EXEC-EVENTS][HEARTBEAT] consumer_alive stream=%s group=%s consumer=%s",
+                                stream,
+                                group,
+                                consumer,
+                            )
+                    except Exception:
+                        pass
+                    executor._last_exec_stream_hb_ts = now_ts
+
+            resp = r.xreadgroup(
+                groupname=group,
+                consumername=consumer,
+                streams={stream: ">"},
+                count=batch,
+                block=block_ms,
+            )
+
+            if not resp:
+                await asyncio.sleep(0.2)
+                continue
+
+            for _stream_name, messages in resp:
+                for msg_id, fields in messages:
+                    try:
+                        raw = fields.get("json")
+                        if not raw:
+                            try:
+                                r.xack(stream, group, msg_id)
+                            except Exception:
+                                pass
+                            continue
+
+                        try:
+                            payload = json.loads(raw)
+                        except Exception:
+                            logger.warning("[EXEC-EVENTS] invalid json | msg_id=%s", msg_id)
+                            try:
+                                r.xack(stream, group, msg_id)
+                            except Exception:
+                                pass
+                            continue
+
+                        if not isinstance(payload, dict):
+                            try:
+                                r.xack(stream, group, msg_id)
+                            except Exception:
+                                pass
+                            continue
+
+                        # BATCH payload desteği
+                        if isinstance(payload.get("items"), list):
+                            items = [x for x in payload.get("items", []) if isinstance(x, dict)]
+                        else:
+                            items = [payload]
+
+                        if not items:
+                            try:
+                                logger.info(
+                                    "[EXEC-EVENTS] skip empty batch payload | msg_id=%s keys=%s",
+                                    msg_id,
+                                    sorted(payload.keys()),
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                r.xack(stream, group, msg_id)
+                            except Exception:
+                                pass
+                            continue
+
+                        for item in items:
+                            intent_id = str(item.get("intent_id") or "").strip()
+                            side = str(item.get("side") or "").strip().lower()
+                            symbol = str(item.get("symbol") or "").upper().strip()
+                            interval = str(item.get("interval") or "5m").strip() or "5m"
+
+                            try:
+                                price = float(item.get("price") or 0.0)
+                            except Exception:
+                                price = 0.0
+
+                            try:
+                                score = float(
+                                    item.get("score")
+                                    or item.get("signal_score")
+                                    or item.get("_score_total_final")
+                                    or item.get("_score_selected")
+                                    or item.get("score_total")
+                                    or 0.0
+                                )
+                            except Exception:
+                                score = 0.0
+
+                            # boş item'ı geç
+                            if not symbol or side not in ("long", "short", "hold", "close", "exit", "flat"):
+                                try:
+                                    logger.info(
+                                        "[EXEC-EVENTS] skip invalid item | symbol=%s side=%s score=%.4f keys=%s",
+                                        symbol,
+                                        side,
+                                        float(score),
+                                        sorted(item.keys()),
+                                    )
+                                except Exception:
+                                    pass
+                                continue
+
+                            try:
+                                logger.info(
+                                    "[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
+                                    intent_id,
+                                    side,
+                                    symbol,
+                                    interval,
+                                    price,
+                                )
+                            except Exception:
+                                pass
+
+                            try:
+                                store_fn = getattr(executor, "_store_latest_signal", None)
+                                if callable(store_fn):
+                                    try:
+                                        store_fn(
+                                            symbol=symbol,
+                                            side=side,
+                                            interval=interval,
+                                            score=score,
+                                            payload=item,
+                                        )
+                                    except TypeError:
+                                        store_fn(symbol, side, interval, score, item)
+
+                                    try:
+                                        logger.info(
+                                            "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                                            symbol,
+                                            side,
+                                            interval,
+                                            float(score),
+                                            intent_id,
+                                        )
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                try:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
+                                        symbol,
+                                        intent_id,
+                                    )
+                                except Exception:
+                                    pass
+
+                            try:
+                                decision_fn = getattr(executor, "execute_decision", None)
+                                if callable(decision_fn):
+                                    try:
+                                        logger.info(
+                                            "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                                            symbol,
+                                            side,
+                                            interval,
+                                            float(score),
+                                            intent_id,
+                                        )
+                                    except Exception:
+                                        pass
+
+                                    await decision_fn(
+                                        signal=side,
+                                        symbol=symbol,
+                                        price=price,
+                                        size=None,
+                                        interval=interval,
+                                        training_mode=False,
+                                        hybrid_mode=True,
+                                        probs={},
+                                        extra=item,
+                                    )
+
+                                    try:
+                                        logger.info(
+                                            "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
+                                            symbol,
+                                            side,
+                                            float(score),
+                                            intent_id,
+                                        )
+                                    except Exception:
+                                        pass
+                                else:
+                                    logger.warning(
+                                        "[EXEC-EVENTS] execute_decision missing | symbol=%s intent=%s",
+                                        symbol,
+                                        intent_id,
+                                    )
+                            except Exception:
+                                try:
+                                    logger.exception(
+                                        "[EXEC-EVENTS] decision dispatch failed | symbol=%s intent=%s",
+                                        symbol,
+                                        intent_id,
+                                    )
+                                except Exception:
+                                    pass
+
+                        try:
+                            r.xack(stream, group, msg_id)
+                        except Exception:
+                            pass
+
+                    except Exception as e:
+                        try:
+                            logger.exception(
+                                "[EXEC-EVENTS] message handling failed | msg_id=%s err=%s",
+                                msg_id,
+                                str(e),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            r.xack(stream, group, msg_id)
+                        except Exception:
+                            pass
+
+        except Exception as e:
+            try:
+                logger.exception("[EXEC-EVENTS] consumer loop failed | err=%s", str(e))
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
 
     decision_m = getattr(executor, "execute_decision", None)
     if not callable(decision_m):

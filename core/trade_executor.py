@@ -1977,7 +1977,7 @@ class TradeExecutor:
         if not enabled:
             return True, "disabled"
 
-        def _f(x, default=0.0):
+        def _f(x: Any, default: float = 0.0) -> float:
             try:
                 return float(x)
             except Exception:
@@ -1993,11 +1993,38 @@ class TradeExecutor:
 
         whale_score = _f(extra0.get("whale_score"), 0.0)
         whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
-        liq_score = _f(extra0.get("liq_score"), _f((extra0.get("raw") or {}).get("liq_score"), 0.0))
-        atr_pct = _f(extra0.get("atr_pct"), _f((extra0.get("raw") or {}).get("atr_pct"), 0.0))
-        spread_pct = _f(extra0.get("spread_pct"), _f((extra0.get("raw") or {}).get("spread_pct"), 0.0))
-        micro_score = _f(extra0.get("micro_score"), _f((extra0.get("raw") or {}).get("micro_score"), 0.0))
-        model_confidence_factor = _f(extra0.get("model_confidence_factor"), 0.0)
+
+        raw0 = extra0.get("raw") or {}
+        if isinstance(raw0, str):
+            try:
+                raw0 = json.loads(raw0)
+            except Exception:
+                raw0 = {}
+        if not isinstance(raw0, dict):
+            raw0 = {}
+
+        raw_meta = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
+
+        liq_score = _f(
+            extra0.get("liq_score"),
+            _f(raw0.get("liq_score"), _f(raw_meta.get("liq_score"), 0.0)),
+        )
+        atr_pct = _f(
+            extra0.get("atr_pct"),
+            _f(raw0.get("atr_pct"), _f(raw_meta.get("atr_pct"), 0.0)),
+        )
+        spread_pct = _f(
+            extra0.get("spread_pct"),
+            _f(raw0.get("spread_pct"), _f(raw_meta.get("spread_pct"), 0.0)),
+        )
+        micro_score = _f(
+            extra0.get("micro_score"),
+            _f(raw0.get("micro_score"), _f(raw_meta.get("micro_score"), 0.0)),
+        )
+        model_confidence_factor = _f(
+            extra0.get("model_confidence_factor"),
+            _f(raw0.get("confidence"), _f(raw_meta.get("confidence"), 0.0)),
+        )
 
         p_buy_ema = extra0.get("p_buy_ema")
         p_buy_raw = extra0.get("p_buy_raw")
@@ -2027,7 +2054,7 @@ class TradeExecutor:
             return False, f"whale_score<{min_whale:.3f}"
         if require_align and whale_dir in ("long", "short") and whale_dir != str(side).lower():
             return False, "whale_misaligned"
-        if spread_pct > max_spread:
+        if spread_pct > 0 and spread_pct > max_spread:
             return False, f"spread_pct>{max_spread:.4f}"
         if liq_score > 0 and liq_score < min_liq:
             return False, f"liq_score<{min_liq:.2f}"
@@ -4081,10 +4108,15 @@ class TradeExecutor:
                 await asyncio.sleep(300)
 
     async def _position_lifecycle_loop(self) -> None:
-        interval_sec = max(1, int(getattr(self, "position_lifecycle_interval_sec", 15)))
+        interval_sec = max(
+            1,
+            int(getattr(self, "position_lifecycle_interval_sec", 15)),
+        )
 
         while True:
             try:
+                self._check_lifecycle_freeze()
+
                 positions = self._get_all_local_positions()
 
                 # local boş ama exchange/local senkron kaçmış olabilir -> hydrate dene
@@ -4121,6 +4153,8 @@ class TradeExecutor:
                 for sym, pos in positions.items():
                     try:
                         sym_u = str(sym).upper().strip()
+                        self._mark_lifecycle_heartbeat(sym_u)
+
                         side = str(pos.get("side") or "").strip().lower()
                         qty = float(pos.get("qty") or 0.0)
                         interval = str(pos.get("interval") or "5m").strip() or "5m"
@@ -4153,7 +4187,11 @@ class TradeExecutor:
                         if px is None or px <= 0:
                             try:
                                 client = getattr(self, "client", None)
-                                fn = getattr(client, "futures_mark_price", None) if client is not None else None
+                                fn = (
+                                    getattr(client, "futures_mark_price", None)
+                                    if client is not None
+                                    else None
+                                )
                                 if callable(fn):
                                     mp = fn(symbol=sym_u)
                                     if isinstance(mp, dict):
@@ -5638,7 +5676,9 @@ class TradeExecutor:
         price: float,
     ) -> Optional[str]:
         try:
-            enabled = bool(int(str(os.getenv("OPPOSITE_SIGNAL_CLOSE_ENABLE", "1")).strip()))
+            enabled = bool(
+                int(str(os.getenv("OPPOSITE_SIGNAL_CLOSE_ENABLE", "1")).strip())
+            )
         except Exception:
             enabled = True
 
@@ -5646,7 +5686,9 @@ class TradeExecutor:
             return None
 
         try:
-            min_score = float(str(os.getenv("OPPOSITE_SIGNAL_MIN_SCORE", "0.58")).strip())
+            min_score = float(
+                str(os.getenv("OPPOSITE_SIGNAL_MIN_SCORE", "0.58")).strip()
+            )
         except Exception:
             min_score = 0.58
 
@@ -5656,7 +5698,10 @@ class TradeExecutor:
 
         sig_side = str(sig.get("side") or "").strip().lower()
         sig_interval = str(sig.get("interval") or "").strip()
-        sig_score = float(sig.get("score") or 0.0)
+        try:
+            sig_score = float(sig.get("score") or 0.0)
+        except Exception:
+            sig_score = 0.0
 
         if sig_interval and interval and sig_interval != interval:
             return None
@@ -5705,7 +5750,9 @@ class TradeExecutor:
 
     def _check_lifecycle_freeze(self) -> None:
         try:
-            force_every = float(os.getenv("FORCE_LIFECYCLE_EVERY_SEC", "10") or 10)
+            force_every = float(
+                os.getenv("FORCE_LIFECYCLE_EVERY_SEC", "10") or 10
+            )
         except Exception:
             force_every = 10.0
 
@@ -5726,6 +5773,7 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
             self._last_lifecycle_ts = now_ts
 
     def _check_sl_tp_trailing(self, symbol: str, price: float, interval: str) -> None:
