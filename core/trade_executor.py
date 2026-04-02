@@ -2594,6 +2594,63 @@ class TradeExecutor:
     # ---------------------------------------------------------
     # leverage helpers
     # ---------------------------------------------------------
+    def _resolve_signal_score_for_open(
+        self,
+        side: str,
+        extra: Optional[Dict[str, Any]] = None,
+        probs: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        extra0 = extra if isinstance(extra, dict) else {}
+        probs0 = probs if isinstance(probs, dict) else {}
+        side0 = str(side or "").strip().lower()
+
+        def _f(x: Any, default: float = 0.0) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return float(default)
+
+        raw0 = extra0.get("raw") or {}
+        if isinstance(raw0, str):
+            try:
+                raw0 = json.loads(raw0)
+            except Exception:
+                raw0 = {}
+        if not isinstance(raw0, dict):
+            raw0 = {}
+
+        score = max(
+            _f(extra0.get("signal_score"), 0.0),
+            _f(extra0.get("score"), 0.0),
+            _f(extra0.get("_score_total_final"), 0.0),
+            _f(extra0.get("_score_selected"), 0.0),
+            _f(extra0.get("score_total"), 0.0),
+            _f(raw0.get("signal_score"), 0.0),
+            _f(raw0.get("score"), 0.0),
+            _f(raw0.get("_score_total_final"), 0.0),
+            _f(raw0.get("_score_selected"), 0.0),
+            _f(raw0.get("score_total"), 0.0),
+        )
+        if score > 0:
+            return float(score)
+
+        p_buy = max(
+            _f(extra0.get("p_buy_ema"), 0.0),
+            _f(extra0.get("p_buy_raw"), 0.0),
+            _f(probs0.get("p_buy"), 0.0),
+        )
+        if 0.0 < p_buy <= 1.0:
+            if side0 == "long":
+                return float(p_buy)
+            if side0 == "short":
+                return float(1.0 - p_buy)
+
+        mcf = _f(extra0.get("model_confidence_factor"), 0.0)
+        if mcf > 0:
+            return float(mcf)
+
+        return 0.0
+
     def _resolve_target_leverage(self, extra: Optional[Dict[str, Any]] = None) -> int:
         extra0 = extra if isinstance(extra, dict) else {}
 
@@ -5156,6 +5213,25 @@ class TradeExecutor:
         position_side = self._side_to_position_side(side)
 
         target_leverage = self._resolve_target_leverage(extra0)
+
+        target_leverage = self._apply_volatility_adaptive_leverage(
+            symbol=sym,
+            side=side,
+            target_leverage=int(target_leverage),
+            extra=extra0,
+        )
+
+        target_leverage = int(
+            self._apply_whale_weighted_leverage_boost(
+                symbol=sym,
+                side=side,
+                target_leverage=int(target_leverage),
+                signal_score=float(signal_score),
+                whale_score=float(whale_score),
+                whale_dir=str(whale_dir),
+            )
+        )
+
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         applied_leverage = int(target_leverage)
 
@@ -7562,6 +7638,25 @@ class TradeExecutor:
         )
 
         target_leverage = self._resolve_target_leverage(extra_safe)
+
+        target_leverage = self._apply_volatility_adaptive_leverage(
+            symbol=sym_u,
+            side=side_norm,
+            target_leverage=int(target_leverage),
+            extra=extra_safe,
+        )
+
+        target_leverage = int(
+            self._apply_whale_weighted_leverage_boost(
+                symbol=sym_u,
+                side=side_norm,
+                target_leverage=int(target_leverage),
+                signal_score=float(signal_score),
+                whale_score=float(whale_score),
+                whale_dir=str(whale_dir),
+            )
+        )
+
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         extra_safe["target_leverage"] = int(target_leverage)
 
