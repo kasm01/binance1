@@ -2121,6 +2121,7 @@ class TradeExecutor:
     ) -> tuple[bool, str]:
         extra0 = extra if isinstance(extra, dict) else {}
         probs0 = probs if isinstance(probs, dict) else {}
+        side0 = str(side or "").strip().lower()
 
         try:
             enabled = bool(int(os.getenv("ULTRA_ENTRY_FILTER_ENABLE", "1") or 1))
@@ -2136,13 +2137,31 @@ class TradeExecutor:
             except Exception:
                 return float(default)
 
-        signal_score = max(
-            _f(extra0.get("signal_score"), 0.0),
-            _f(extra0.get("score"), 0.0),
-            _f(extra0.get("score_total"), 0.0),
-            _f(extra0.get("_score_total_final"), 0.0),
-            _f(extra0.get("_score_selected"), 0.0),
+        signal_score = self._resolve_signal_score_for_open(
+            side=side0,
+            extra=extra0,
+            probs=probs0,
         )
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][UEF][DEBUG] symbol=%s side=%s signal_score=%.4f keys=%s score=%.4f score_total=%.4f final=%.4f selected=%.4f p_buy_ema=%.4f p_buy_raw=%.4f mcf=%.4f probs_keys=%s",
+                    str(symbol).upper().strip(),
+                    side0,
+                    float(signal_score),
+                    sorted(list(extra0.keys())) if isinstance(extra0, dict) else [],
+                    _f(extra0.get("score"), 0.0),
+                    _f(extra0.get("score_total"), 0.0),
+                    _f(extra0.get("_score_total_final"), 0.0),
+                    _f(extra0.get("_score_selected"), 0.0),
+                    _f(extra0.get("p_buy_ema"), 0.0),
+                    _f(extra0.get("p_buy_raw"), 0.0),
+                    _f(extra0.get("model_confidence_factor"), 0.0),
+                    sorted(list(probs0.keys())) if isinstance(probs0, dict) else [],
+                )
+        except Exception:
+            pass
 
         whale_score = _f(extra0.get("whale_score"), 0.0)
         whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
@@ -2187,25 +2206,25 @@ class TradeExecutor:
             p_gap = 0.0
 
         try:
-            min_signal = float(os.getenv("UEF_MIN_SIGNAL_SCORE", "0.68") or 0.68)
-            min_whale = float(os.getenv("UEF_MIN_WHALE_SCORE", "0.56") or 0.56)
-            require_align = bool(int(os.getenv("UEF_REQUIRE_WHALE_ALIGN", "1") or 1))
-            max_spread = float(os.getenv("UEF_MAX_SPREAD_PCT", "0.0009") or 0.0009)
-            min_liq = float(os.getenv("UEF_MIN_LIQ_SCORE", "0.22") or 0.22)
-            max_atr = float(os.getenv("UEF_MAX_ATR_PCT", "0.022") or 0.022)
-            min_mcf = float(os.getenv("UEF_MIN_MCF", "0.55") or 0.55)
-            min_gap = float(os.getenv("UEF_MIN_P_BUY_GAP", "0.035") or 0.035)
-            min_micro = float(os.getenv("UEF_MIN_MICRO_SCORE", "0.55") or 0.55)
+            min_signal = float(os.getenv("UEF_MIN_SIGNAL_SCORE", "0.58") or 0.58)
+            min_whale = float(os.getenv("UEF_MIN_WHALE_SCORE", "0.52") or 0.52)
+            require_align = bool(int(os.getenv("UEF_REQUIRE_WHALE_ALIGN", "0") or 0))
+            max_spread = float(os.getenv("UEF_MAX_SPREAD_PCT", "0.0010") or 0.0010)
+            min_liq = float(os.getenv("UEF_MIN_LIQ_SCORE", "0.18") or 0.18)
+            max_atr = float(os.getenv("UEF_MAX_ATR_PCT", "0.028") or 0.028)
+            min_mcf = float(os.getenv("UEF_MIN_MCF", "0.50") or 0.50)
+            min_gap = float(os.getenv("UEF_MIN_P_BUY_GAP", "0.020") or 0.020)
+            min_micro = float(os.getenv("UEF_MIN_MICRO_SCORE", "0.45") or 0.45)
         except Exception:
-            min_signal, min_whale, require_align = 0.68, 0.56, True
-            max_spread, min_liq, max_atr = 0.0009, 0.22, 0.022
-            min_mcf, min_gap, min_micro = 0.55, 0.035, 0.55
+            min_signal, min_whale, require_align = 0.58, 0.52, False
+            max_spread, min_liq, max_atr = 0.0010, 0.18, 0.028
+            min_mcf, min_gap, min_micro = 0.50, 0.020, 0.45
 
         if signal_score < min_signal:
             return False, f"signal_score<{min_signal:.3f}"
         if whale_score < min_whale:
             return False, f"whale_score<{min_whale:.3f}"
-        if require_align and whale_dir in ("long", "short") and whale_dir != str(side).lower():
+        if require_align and whale_dir in ("long", "short") and whale_dir != side0:
             return False, "whale_misaligned"
         if spread_pct > 0 and spread_pct > max_spread:
             return False, f"spread_pct>{max_spread:.4f}"
@@ -2314,6 +2333,16 @@ class TradeExecutor:
             return
 
         extra0 = extra if isinstance(extra, dict) else {}
+
+        try:
+            signal_score = self._resolve_signal_score_for_open(
+                side=side,
+                extra=extra0,
+                probs=None,
+            )
+        except Exception:
+            signal_score = 0.0
+
         try:
             if self.logger:
                 self.logger.info(
@@ -2321,19 +2350,12 @@ class TradeExecutor:
                     str(symbol).upper().strip(),
                     str(side).lower().strip(),
                     str(reason),
-                    float(
-                        extra0.get("signal_score")
-                        or extra0.get("score")
-                        or extra0.get("_score_total_final")
-                        or extra0.get("_score_selected")
-                        or 0.0
-                    ),
+                    float(signal_score),
                     float(extra0.get("whale_score") or 0.0),
                     str(extra0.get("whale_dir") or ""),
                 )
         except Exception:
             pass
-
     def _uef_v2_float(self, value: Any, default: float = 0.0) -> float:
         try:
             return float(value)
@@ -2378,22 +2400,39 @@ class TradeExecutor:
         raw0 = ctx["raw"]
         meta0 = ctx["meta"]
 
-        signal_score = max(
-            self._uef_v2_float(extra0.get("signal_score"), 0.0),
-            self._uef_v2_float(extra0.get("score"), 0.0),
+        signal_score = self._resolve_signal_score_for_open(
+            side=side0,
+            extra=extra0,
+            probs=probs,
+        )
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][UEF-V2][DEBUG] symbol=%s side=%s signal_score=%.4f keys=%s score=%.4f score_total=%.4f final=%.4f selected=%.4f p_buy_ema=%.4f p_buy_raw=%.4f mcf=%.4f",
+                    str(symbol).upper().strip(),
+                    str(side0).lower().strip(),
+                    float(signal_score),
+                    sorted(list(extra0.keys())) if isinstance(extra0, dict) else [],
+                    self._uef_v2_float(extra0.get("score"), 0.0),
+                    self._uef_v2_float(extra0.get("score_total"), 0.0),
+                    self._uef_v2_float(extra0.get("_score_total_final"), 0.0),
+                    self._uef_v2_float(extra0.get("_score_selected"), 0.0),
+                    self._uef_v2_float(extra0.get("p_buy_ema"), 0.0),
+                    self._uef_v2_float(extra0.get("p_buy_raw"), 0.0),
+                    self._uef_v2_float(extra0.get("model_confidence_factor"), 0.0),
+                )
+        except Exception:
+            pass
+        final_score = max(
             self._uef_v2_float(extra0.get("_score_total_final"), 0.0),
-            self._uef_v2_float(extra0.get("score_total"), 0.0),
-            self._uef_v2_float(extra0.get("_score_selected"), 0.0),
-        )
-        final_score = self._uef_v2_float(
-            extra0.get("_score_total_final"),
             self._uef_v2_float(extra0.get("score"), 0.0),
+            float(signal_score),
         )
-        selected_score = self._uef_v2_float(
-            extra0.get("_score_selected"),
+        selected_score = max(
+            self._uef_v2_float(extra0.get("_score_selected"), 0.0),
             self._uef_v2_float(extra0.get("score_total"), 0.0),
+            float(signal_score),
         )
-
         whale_score = self._uef_v2_float(extra0.get("whale_score"), 0.0)
         whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
 
@@ -2644,6 +2683,11 @@ class TradeExecutor:
                 return float(p_buy)
             if side0 == "short":
                 return float(1.0 - p_buy)
+            if side0 == "hold":
+                return float(max(p_buy, 1.0 - p_buy))
+
+        if side0 == "hold":
+            return 0.0
 
         mcf = _f(extra0.get("model_confidence_factor"), 0.0)
         if mcf > 0:
@@ -7933,15 +7977,6 @@ class TradeExecutor:
             os.getenv("STRICT_WHALE_ALIGNMENT", "0")
         ).strip().lower() in ("1", "true", "yes", "on")
 
-        signal_score = 0.0
-        for k in ("score", "score_total", "_score_total_final", "_score_selected"):
-            try:
-                v = float(extra0.get(k) or 0.0)
-            except Exception:
-                v = 0.0
-            if v > signal_score:
-                signal_score = v
-
         whale_action = str(self._whale_action(extra0) or "").strip().lower()
         whale_dir = str(extra0.get("whale_dir", "none") or "none").strip().lower()
         whale_score = float(extra0.get("whale_score", 0.0) or 0.0)
@@ -7988,6 +8023,26 @@ class TradeExecutor:
         signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
 
+        signal_score = self._resolve_signal_score_for_open(
+            side=side_norm,
+            extra=extra0,
+            probs=probs,
+        )
+
+        if side_norm in ("long", "short"):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN][SCORE] symbol=%s side=%s resolved_score=%.4f p_buy_ema=%.4f p_buy_raw=%.4f mcf=%.4f",
+                        sym_u,
+                        side_norm,
+                        float(signal_score),
+                        float(extra0.get("p_buy_ema") or 0.0),
+                        float(extra0.get("p_buy_raw") or 0.0),
+                        float(extra0.get("model_confidence_factor") or 0.0),
+                    )
+            except Exception:
+                pass
         try:
             p_used = extra0.get("ensemble_p")
             if p_used is None:
@@ -8064,6 +8119,7 @@ class TradeExecutor:
                     )
             except Exception:
                 pass
+
             try:
                 cur = self._get_effective_position(sym_u)
                 if isinstance(cur, dict):
@@ -8255,7 +8311,6 @@ class TradeExecutor:
                 extra=extra0,
             )
             return
-
         ok_v2, v2_reason = self._ultra_entry_filter_v2(
             symbol=sym_u,
             side=side_norm,
@@ -8302,6 +8357,7 @@ class TradeExecutor:
                 return
         except Exception:
             pass
+
         cur = self._get_effective_position(sym_u)
         cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None
 
@@ -8347,6 +8403,7 @@ class TradeExecutor:
                 except Exception:
                     pass
                 return
+
             try:
                 if self.logger:
                     self.logger.info(

@@ -2520,13 +2520,27 @@ async def async_main() -> None:
         await scanner_loop(engine)
         return
 
+    orch_only_mode = get_bool_env("ORCH_ONLY_MODE", False)
+    exec_events_enable = str(os.getenv("EXEC_EVENTS_ENABLE", "1")).strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+    if orch_only_mode and exec_events_enable:
+        if system_logger:
+            system_logger.info(
+                "[MAIN] ORCH_ONLY_MODE=true -> local single-symbol bot loop disabled; exec-events consumer only."
+            )
+
+        while True:
+            await asyncio.sleep(30)
+        return
+
     symbol = str(
         trading_objects.get("symbol")
         or os.getenv("SYMBOL")
         or getattr(Settings, "SYMBOL", "BTCUSDT")
     ).upper()
     await bot_loop_single_symbol(engine, symbol)
-
 
 def main() -> None:
     loop = asyncio.new_event_loop()
