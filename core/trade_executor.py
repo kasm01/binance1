@@ -7533,6 +7533,76 @@ class TradeExecutor:
 
         if order_price is None or order_price <= 0:
             order_price = float(intent_price)
+        try:
+            price_sanity_ratio_max = float(
+                os.getenv("INTENT_PRICE_SANITY_RATIO_MAX", "3.0") or 3.0
+            )
+        except Exception:
+            price_sanity_ratio_max = 3.0
+
+        try:
+            price_sanity_ratio_min = float(
+                os.getenv("INTENT_PRICE_SANITY_RATIO_MIN", "0.333333") or 0.333333
+            )
+        except Exception:
+            price_sanity_ratio_min = 0.333333
+
+        try:
+            original_intent_price = float(intent_price)
+        except Exception:
+            original_intent_price = 0.0
+
+        try:
+            intent_order_ratio = (
+                float(original_intent_price) / float(order_price)
+                if float(order_price) > 0
+                else 1.0
+            )
+        except Exception:
+            intent_order_ratio = 1.0
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][PRICE][CHECK] symbol=%s side=%s intent_price=%.6f order_price=%.6f ratio=%.6f min_ratio=%.6f max_ratio=%.6f",
+                    sym_u,
+                    side0,
+                    float(original_intent_price),
+                    float(order_price),
+                    float(intent_order_ratio),
+                    float(price_sanity_ratio_min),
+                    float(price_sanity_ratio_max),
+                )
+        except Exception:
+            pass
+
+        if (
+            float(order_price) > 0
+            and (
+                float(intent_order_ratio) > float(price_sanity_ratio_max)
+                or float(intent_order_ratio) < float(price_sanity_ratio_min)
+            )
+        ):
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][PRICE][SANITY-FALLBACK] symbol=%s side=%s abnormal intent/order mismatch | intent_price=%.6f order_price=%.6f ratio=%.6f -> using order_price",
+                        sym_u,
+                        side0,
+                        float(original_intent_price),
+                        float(order_price),
+                        float(intent_order_ratio),
+                    )
+            except Exception:
+                pass
+
+            intent_price = float(order_price)
+            meta0["price"] = float(order_price)
+            meta0["intent_price_sanity_fallback"] = True
+            meta0["intent_price_original"] = float(original_intent_price)
+        else:
+            meta0["intent_price_sanity_fallback"] = False
+            meta0["intent_price_original"] = float(original_intent_price)
 
         cur = self._get_effective_position(sym_u)
         cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None

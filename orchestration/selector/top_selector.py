@@ -570,6 +570,12 @@ class TopSelector:
 
         final_score = float(total * mult)
 
+        # normalize
+        if final_score > 1.0:
+            final_score = 1.0
+        elif final_score < 0.0:
+            final_score = 0.0
+
         return final_score, {
             "base_score": base_score,
             "whale_score": whale_score,
@@ -610,13 +616,19 @@ class TopSelector:
                 acp_score, acp_meta = self._adaptive_coin_priority_score(c2)
                 c2["_acp_score"] = float(acp_score)
                 c2["_acp_meta"] = acp_meta if isinstance(acp_meta, dict) else {}
-            except Exception:
+            except Exception as e:
+                try:
+                    print(f"[TopSelector][ACP-ERROR] {e}", flush=True)
+                except Exception:
+                    pass
+
                 try:
                     c2["_acp_score"] = float(
                         c2.get("_score_selected", c2.get("score_total", 0.0)) or 0.0
                     )
                 except Exception:
                     c2["_acp_score"] = 0.0
+
                 c2["_acp_meta"] = {}
 
             windowed.append((sid, c2))
