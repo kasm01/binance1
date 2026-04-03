@@ -1752,284 +1752,6 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
         consumer,
     )
 
-    try:
-        logger.info(
-            "[EXEC-EVENTS][DEBUG] executor=%s methods: open=%s decision=%s close=%s",
-            type(executor).__name__,
-            hasattr(executor, "open_position"),
-            hasattr(executor, "execute_decision"),
-            hasattr(executor, "close_position"),
-        )
-    except Exception:
-        pass
-
-    try:
-        decision_name = getattr(getattr(executor, "execute_decision", None), "__name__", None)
-        store_name = getattr(getattr(executor, "_store_latest_signal", None), "__name__", None)
-        open_name = getattr(getattr(executor, "open_position_from_signal", None), "__name__", None)
-        close_name = getattr(getattr(executor, "close_position", None), "__name__", None)
-        logger.info(
-            "[EXEC-EVENTS] methods resolved | decision=%s store_signal=%s open=%s close=%s",
-            decision_name,
-            store_name,
-            open_name,
-            close_name,
-        )
-    except Exception:
-        pass
-
-    while True:
-        try:
-            try:
-                hb_enable = bool(int(os.getenv("EXEC_STREAM_HEARTBEAT_ENABLE", "1") or 1))
-            except Exception:
-                hb_enable = True
-
-            if hb_enable:
-                now_ts = time.time()
-                last_hb = float(getattr(executor, "_last_exec_stream_hb_ts", 0.0) or 0.0)
-                try:
-                    hb_sec = float(os.getenv("EXEC_STREAM_HEARTBEAT_SEC", "15") or 15)
-                except Exception:
-                    hb_sec = 15.0
-
-                if (now_ts - last_hb) >= hb_sec:
-                    try:
-                        if logger:
-                            logger.info(
-                                "[EXEC-EVENTS][HEARTBEAT] consumer_alive stream=%s group=%s consumer=%s",
-                                stream,
-                                group,
-                                consumer,
-                            )
-                    except Exception:
-                        pass
-                    executor._last_exec_stream_hb_ts = now_ts
-
-            resp = r.xreadgroup(
-                groupname=group,
-                consumername=consumer,
-                streams={stream: ">"},
-                count=batch,
-                block=block_ms,
-            )
-
-            if not resp:
-                await asyncio.sleep(0.2)
-                continue
-
-            for _stream_name, messages in resp:
-                for msg_id, fields in messages:
-                    try:
-                        raw = fields.get("json")
-                        if not raw:
-                            try:
-                                r.xack(stream, group, msg_id)
-                            except Exception:
-                                pass
-                            continue
-
-                        try:
-                            payload = json.loads(raw)
-                        except Exception:
-                            logger.warning("[EXEC-EVENTS] invalid json | msg_id=%s", msg_id)
-                            try:
-                                r.xack(stream, group, msg_id)
-                            except Exception:
-                                pass
-                            continue
-
-                        if not isinstance(payload, dict):
-                            try:
-                                r.xack(stream, group, msg_id)
-                            except Exception:
-                                pass
-                            continue
-
-                        # BATCH payload desteği
-                        if isinstance(payload.get("items"), list):
-                            items = [x for x in payload.get("items", []) if isinstance(x, dict)]
-                        else:
-                            items = [payload]
-
-                        if not items:
-                            try:
-                                logger.info(
-                                    "[EXEC-EVENTS] skip empty batch payload | msg_id=%s keys=%s",
-                                    msg_id,
-                                    sorted(payload.keys()),
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                r.xack(stream, group, msg_id)
-                            except Exception:
-                                pass
-                            continue
-
-                        for item in items:
-                            intent_id = str(item.get("intent_id") or "").strip()
-                            side = str(item.get("side") or "").strip().lower()
-                            symbol = str(item.get("symbol") or "").upper().strip()
-                            interval = str(item.get("interval") or "5m").strip() or "5m"
-
-                            try:
-                                price = float(item.get("price") or 0.0)
-                            except Exception:
-                                price = 0.0
-
-                            try:
-                                score = float(
-                                    item.get("score")
-                                    or item.get("signal_score")
-                                    or item.get("_score_total_final")
-                                    or item.get("_score_selected")
-                                    or item.get("score_total")
-                                    or 0.0
-                                )
-                            except Exception:
-                                score = 0.0
-
-                            # boş item'ı geç
-                            if not symbol or side not in ("long", "short", "hold", "close", "exit", "flat"):
-                                try:
-                                    logger.info(
-                                        "[EXEC-EVENTS] skip invalid item | symbol=%s side=%s score=%.4f keys=%s",
-                                        symbol,
-                                        side,
-                                        float(score),
-                                        sorted(item.keys()),
-                                    )
-                                except Exception:
-                                    pass
-                                continue
-
-                            try:
-                                logger.info(
-                                    "[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
-                                    intent_id,
-                                    side,
-                                    symbol,
-                                    interval,
-                                    price,
-                                )
-                            except Exception:
-                                pass
-
-                            try:
-                                store_fn = getattr(executor, "_store_latest_signal", None)
-                                if callable(store_fn):
-                                    try:
-                                        store_fn(
-                                            symbol=symbol,
-                                            side=side,
-                                            interval=interval,
-                                            score=score,
-                                            payload=item,
-                                        )
-                                    except TypeError:
-                                        store_fn(symbol, side, interval, score, item)
-
-                                    try:
-                                        logger.info(
-                                            "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                                            symbol,
-                                            side,
-                                            interval,
-                                            float(score),
-                                            intent_id,
-                                        )
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                try:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
-                                        symbol,
-                                        intent_id,
-                                    )
-                                except Exception:
-                                    pass
-
-                            try:
-                                decision_fn = getattr(executor, "execute_decision", None)
-                                if callable(decision_fn):
-                                    try:
-                                        logger.info(
-                                            "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                                            symbol,
-                                            side,
-                                            interval,
-                                            float(score),
-                                            intent_id,
-                                        )
-                                    except Exception:
-                                        pass
-
-                                    await decision_fn(
-                                        signal=side,
-                                        symbol=symbol,
-                                        price=price,
-                                        size=None,
-                                        interval=interval,
-                                        training_mode=False,
-                                        hybrid_mode=True,
-                                        probs={},
-                                        extra=item,
-                                    )
-
-                                    try:
-                                        logger.info(
-                                            "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
-                                            symbol,
-                                            side,
-                                            float(score),
-                                            intent_id,
-                                        )
-                                    except Exception:
-                                        pass
-                                else:
-                                    logger.warning(
-                                        "[EXEC-EVENTS] execute_decision missing | symbol=%s intent=%s",
-                                        symbol,
-                                        intent_id,
-                                    )
-                            except Exception:
-                                try:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] decision dispatch failed | symbol=%s intent=%s",
-                                        symbol,
-                                        intent_id,
-                                    )
-                                except Exception:
-                                    pass
-
-                        try:
-                            r.xack(stream, group, msg_id)
-                        except Exception:
-                            pass
-
-                    except Exception as e:
-                        try:
-                            logger.exception(
-                                "[EXEC-EVENTS] message handling failed | msg_id=%s err=%s",
-                                msg_id,
-                                str(e),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            r.xack(stream, group, msg_id)
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            try:
-                logger.exception("[EXEC-EVENTS] consumer loop failed | err=%s", str(e))
-            except Exception:
-                pass
-            await asyncio.sleep(1.0)
-
     decision_m = getattr(executor, "execute_decision", None)
     if not callable(decision_m):
         decision_m = None
@@ -2067,348 +1789,415 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
             type(executor).__name__,
         )
         return
-    logger.info(
-        "[EXEC-EVENTS] methods | decision=%s open=%s close=%s store_signal=%s",
-        getattr(decision_m, "__name__", None),
-        getattr(open_m, "__name__", None),
-        getattr(close_m, "__name__", None),
-        getattr(store_signal_m, "__name__", None),
-    )
 
-    if decision_m is None and open_m is None and close_m is None:
-        logger.error(
-            "[EXEC-EVENTS] TradeExecutor decision/open/close method not found. Check core/trade_executor.py"
-        )
-        return
+    def _heartbeat():
+        try:
+            hb_enable = bool(int(os.getenv("EXEC_STREAM_HEARTBEAT_ENABLE", "1") or 1))
+        except Exception:
+            hb_enable = True
+
+        if not hb_enable:
+            return
+
+        now_ts = time.time()
+        last_hb = float(getattr(executor, "_last_exec_stream_hb_ts", 0.0) or 0.0)
+        try:
+            hb_sec = float(os.getenv("EXEC_STREAM_HEARTBEAT_SEC", "15") or 15)
+        except Exception:
+            hb_sec = 15.0
+
+        if (now_ts - last_hb) >= hb_sec:
+            try:
+                logger.info(
+                    "[EXEC-EVENTS][HEARTBEAT] consumer_alive stream=%s group=%s consumer=%s",
+                    stream,
+                    group,
+                    consumer,
+                )
+            except Exception:
+                pass
+            executor._last_exec_stream_hb_ts = now_ts
+
+    def _parse_payload(raw, msg_id):
+        if not raw:
+            return None
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            logger.warning("[EXEC-EVENTS] invalid json | msg_id=%s", msg_id)
+            return None
+
+        if not isinstance(payload, dict):
+            logger.warning("[EXEC-EVENTS] payload not dict | msg_id=%s", msg_id)
+            return None
+
+        if isinstance(payload.get("items"), list):
+            items = [x for x in payload.get("items", []) if isinstance(x, dict)]
+        else:
+            items = [payload]
+
+        if not items:
+            try:
+                logger.info(
+                    "[EXEC-EVENTS] skip empty batch payload | msg_id=%s keys=%s",
+                    msg_id,
+                    sorted(payload.keys()),
+                )
+            except Exception:
+                pass
+            return None
+
+        return items
+
+    def _normalize_item(item):
+        intent_id = str(item.get("intent_id") or "").strip()
+        side = str(item.get("side") or "").strip().lower()
+        symbol = str(item.get("symbol") or "").upper().strip()
+        interval = str(item.get("interval") or "5m").strip() or "5m"
+
+        try:
+            price = float(item.get("price") or 0.0)
+        except Exception:
+            price = 0.0
+
+        try:
+            score = float(
+                item.get("score")
+                or item.get("signal_score")
+                or item.get("_score_total_final")
+                or item.get("_score_selected")
+                or item.get("score_total")
+                or 0.0
+            )
+        except Exception:
+            score = 0.0
+
+        return {
+            "intent_id": intent_id,
+            "side": side,
+            "symbol": symbol,
+            "interval": interval,
+            "price": price,
+            "score": score,
+            "trail_pct": item.get("trail_pct"),
+            "stall_ttl_sec": item.get("stall_ttl_sec"),
+            "raw": item,
+        }
+    async def _dispatch_long_short(data):
+        symbol = data["symbol"]
+        side = data["side"]
+        interval = data["interval"]
+        price = data["price"]
+        score = data["score"]
+        intent_id = data["intent_id"]
+        raw = data["raw"]
+
+        if callable(store_signal_m):
+            try:
+                store_signal_m(
+                    symbol=symbol,
+                    side=side,
+                    interval=interval,
+                    score=score,
+                    payload=raw,
+                )
+            except TypeError:
+                try:
+                    store_signal_m(
+                        symbol=symbol,
+                        side=side,
+                        interval=interval,
+                        score=score,
+                        raw=raw,
+                    )
+                except TypeError:
+                    store_signal_m(symbol, side, interval, score, raw)
+
+            logger.info(
+                "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                symbol,
+                side,
+                interval,
+                score,
+                intent_id,
+            )
+
+        handled = False
+
+        if callable(decision_m):
+            try:
+                logger.info(
+                    "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
+                    symbol,
+                    side,
+                    interval,
+                    score,
+                    intent_id,
+                )
+
+                await _maybe_await(
+                    decision_m(
+                        signal=side,
+                        symbol=symbol,
+                        price=price,
+                        size=None,
+                        interval=interval,
+                        training_mode=False,
+                        hybrid_mode=True,
+                        probs={},
+                        extra=raw,
+                    )
+                )
+
+                logger.info(
+                    "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
+                    symbol,
+                    side,
+                    score,
+                    intent_id,
+                )
+                handled = True
+            except TypeError:
+                logger.exception(
+                    "[EXEC-EVENTS] execute_decision signature mismatch | item=%s",
+                    raw,
+                )
+            except Exception:
+                logger.exception(
+                    "[EXEC-EVENTS] execute_decision failed | item=%s",
+                    raw,
+                )
+
+        if handled or open_m is None:
+            if not handled and open_m is None:
+                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
+            return
+
+        try:
+            if getattr(open_m, "__name__", "") in (
+                "open_position_from_signal",
+                "open_from_intent",
+            ):
+                await _maybe_await(
+                    open_m(
+                        symbol=symbol,
+                        side=side,
+                        interval=interval,
+                        meta={
+                            "price": price,
+                            "trail_pct": data["trail_pct"],
+                            "stall_ttl_sec": data["stall_ttl_sec"],
+                            "intent_id": intent_id,
+                            "score": score,
+                            "raw": raw,
+                        },
+                    )
+                )
+            else:
+                await _maybe_await(
+                    open_m(
+                        symbol=symbol,
+                        side=side,
+                        interval=interval,
+                        price=price,
+                        trail_pct=data["trail_pct"],
+                        stall_ttl_sec=data["stall_ttl_sec"],
+                        intent_id=intent_id,
+                        raw=raw,
+                    )
+                )
+
+            logger.info(
+                "[EXEC-EVENTS] fallback open applied | symbol=%s side=%s score=%.4f intent=%s",
+                symbol,
+                side,
+                score,
+                intent_id,
+            )
+        except TypeError:
+            logger.exception("[EXEC-EVENTS] fallback open signature mismatch | item=%s", raw)
+        except Exception:
+            logger.exception("[EXEC-EVENTS] fallback open failed | item=%s", raw)
+
+    async def _dispatch_close_like(data):
+        symbol = data["symbol"]
+        side = data["side"]
+        interval = data["interval"]
+        price = data["price"]
+        score = data["score"]
+        intent_id = data["intent_id"]
+        raw = data["raw"]
+
+        handled = False
+
+        if callable(decision_m):
+            try:
+                logger.info(
+                    "[EXEC-EVENTS] dispatch decision close | symbol=%s side=%s interval=%s intent=%s",
+                    symbol,
+                    side,
+                    interval,
+                    intent_id,
+                )
+
+                await _maybe_await(
+                    decision_m(
+                        signal="close",
+                        symbol=symbol,
+                        price=price,
+                        size=None,
+                        interval=interval,
+                        training_mode=False,
+                        hybrid_mode=True,
+                        probs={},
+                        extra={
+                            "intent_id": intent_id,
+                            "score": score,
+                            "raw": raw,
+                        },
+                    )
+                )
+
+                logger.info(
+                    "[EXEC-EVENTS] decision close dispatched | symbol=%s side=%s intent=%s",
+                    symbol,
+                    side,
+                    intent_id,
+                )
+                handled = True
+            except TypeError:
+                logger.exception(
+                    "[EXEC-EVENTS] execute_decision close signature mismatch | item=%s",
+                    raw,
+                )
+            except Exception:
+                logger.exception(
+                    "[EXEC-EVENTS] execute_decision close failed | item=%s",
+                    raw,
+                )
+
+        if handled or close_m is None:
+            if not handled and close_m is None:
+                logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
+            return
+
+        try:
+            if getattr(close_m, "__name__", "") in (
+                "close_position_from_signal",
+                "close_from_intent",
+            ):
+                await _maybe_await(
+                    close_m(
+                        symbol=symbol,
+                        interval=interval,
+                        meta={"intent_id": intent_id, "raw": raw},
+                        price=price,
+                    )
+                )
+            else:
+                await _maybe_await(
+                    close_m(
+                        symbol=symbol,
+                        interval=interval,
+                        intent_id=intent_id,
+                        raw=raw,
+                        price=price,
+                    )
+                )
+
+            logger.info(
+                "[EXEC-EVENTS] fallback close applied | symbol=%s side=%s intent=%s",
+                symbol,
+                side,
+                intent_id,
+            )
+        except TypeError:
+            logger.exception("[EXEC-EVENTS] fallback close signature mismatch | item=%s", raw)
+        except Exception:
+            logger.exception("[EXEC-EVENTS] fallback close failed | item=%s", raw)
 
     while True:
         try:
-            entries = read_group(
-                r,
-                stream=stream,
-                group=group,
-                consumer=consumer,
-                start_id=">",
-                group_start_id=start_id,
+            _heartbeat()
+
+            resp = r.xreadgroup(
+                groupname=group,
+                consumername=consumer,
+                streams={stream: ">"},
                 count=batch,
-                block_ms=block_ms,
+                block=block_ms,
             )
 
-            if not entries:
+            if not resp:
+                await asyncio.sleep(0.2)
                 continue
 
-            ids = []
-
-            for sid, pkg in entries:
-                ids.append(sid)
-                payload = pkg
-
-                if isinstance(pkg, dict) and "json" in pkg:
+            for _stream_name, messages in resp:
+                for msg_id, fields in messages:
                     try:
-                        payload = json.loads(pkg["json"])
-                    except Exception:
-                        logger.exception("[EXEC-EVENTS] json parse failed sid=%s", sid)
-                        continue
-
-                items = (payload or {}).get("items") or []
-                if not isinstance(items, list):
-                    logger.warning("[EXEC-EVENTS] payload items invalid sid=%s payload=%s", sid, payload)
-                    continue
-
-                for it in items:
-                    try:
-                        if not isinstance(it, dict):
-                            logger.warning("[EXEC-EVENTS] skip non-dict item sid=%s item=%r", sid, it)
+                        items = _parse_payload(fields.get("json"), msg_id)
+                        if not items:
+                            xack_safe(r, stream, group, [msg_id])
                             continue
 
-                        symbol = str(it.get("symbol", "")).upper().strip()
-                        side = str(it.get("side", "")).lower().strip()
-                        interval = str(it.get("interval", "") or "5m").strip() or "5m"
-                        intent_id = str(it.get("intent_id", "") or "")
-                        price = it.get("price", None)
-                        trail_pct = it.get("trail_pct", None)
-                        stall_ttl_sec = it.get("stall_ttl_sec", None)
+                        for item in items:
+                            try:
+                                data = _normalize_item(item)
 
-                        try:
-                            score = float(it.get("score") or 0.0)
-                        except Exception:
-                            score = 0.0
+                                if not data["symbol"] or data["side"] not in (
+                                    "long",
+                                    "short",
+                                    "hold",
+                                    "close",
+                                    "exit",
+                                    "flat",
+                                ):
+                                    logger.info(
+                                        "[EXEC-EVENTS] skip invalid item | symbol=%s side=%s score=%.4f keys=%s",
+                                        data["symbol"],
+                                        data["side"],
+                                        data["score"],
+                                        sorted(item.keys()),
+                                    )
+                                    continue
 
-                        logger.info(
-                            "[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
-                            intent_id,
-                            side,
-                            symbol,
-                            interval,
-                            price,
+                                logger.info(
+                                    "[EXEC-EVENTS] recv intent=%s side=%s symbol=%s interval=%s price=%s",
+                                    data["intent_id"],
+                                    data["side"],
+                                    data["symbol"],
+                                    data["interval"],
+                                    data["price"],
+                                )
+
+                                if data["side"] in ("long", "short"):
+                                    await _dispatch_long_short(data)
+                                elif data["side"] in ("close", "flat", "exit"):
+                                    await _dispatch_close_like(data)
+                                else:
+                                    logger.info(
+                                        "[EXEC-EVENTS] ignore neutral side=%s intent=%s",
+                                        data["side"],
+                                        data["intent_id"],
+                                    )
+
+                            except Exception:
+                                logger.exception("[EXEC-EVENTS] failed to apply item=%s", item)
+
+                        xack_safe(r, stream, group, [msg_id])
+
+                    except Exception as e:
+                        logger.exception(
+                            "[EXEC-EVENTS] message handling failed | msg_id=%s err=%s",
+                            msg_id,
+                            str(e),
                         )
+                        xack_safe(r, stream, group, [msg_id])
 
-                        if not symbol:
-                            logger.warning(
-                                "[EXEC-EVENTS] missing symbol; skip intent=%s item=%s",
-                                intent_id,
-                                it,
-                            )
-                            continue
-
-                        if side in ("long", "short"):
-                            try:
-                                if callable(store_signal_m):
-                                    store_signal_m(
-                                        symbol=symbol,
-                                        side=side,
-                                        interval=interval,
-                                        score=score,
-                                        raw=it,
-                                    )
-                                    logger.info(
-                                        "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                                        symbol,
-                                        side,
-                                        interval,
-                                        score,
-                                        intent_id,
-                                    )
-                                else:
-                                    logger.warning(
-                                        "[EXEC-EVENTS] _store_latest_signal missing on executor | symbol=%s",
-                                        symbol,
-                                    )
-                            except Exception:
-                                logger.exception(
-                                    "[EXEC-EVENTS] latest signal store failed | symbol=%s intent=%s",
-                                    symbol,
-                                    intent_id,
-                                )
-
-                            handled = False
-
-                            if callable(decision_m):
-                                try:
-                                    logger.info(
-                                        "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                                        symbol,
-                                        side,
-                                        interval,
-                                        score,
-                                        intent_id,
-                                    )
-
-                                    await _maybe_await(
-                                        decision_m(
-                                            signal=side,
-                                            symbol=symbol,
-                                            price=float(price or 0.0),
-                                            size=None,
-                                            interval=interval,
-                                            training_mode=False,
-                                            hybrid_mode=True,
-                                            probs={},
-                                            extra={
-                                                "price": price,
-                                                "trail_pct": trail_pct,
-                                                "stall_ttl_sec": stall_ttl_sec,
-                                                "intent_id": intent_id,
-                                                "score": score,
-                                                "raw": it,
-                                            },
-                                        )
-                                    )
-
-                                    logger.info(
-                                        "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
-                                        symbol,
-                                        side,
-                                        score,
-                                        intent_id,
-                                    )
-                                    handled = True
-
-                                except TypeError:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] execute_decision signature mismatch | item=%s",
-                                        it,
-                                    )
-                                except Exception:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] execute_decision failed | item=%s",
-                                        it,
-                                    )
-
-                            if handled:
-                                continue
-
-                            if open_m is None:
-                                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
-                                continue
-                            try:
-                                if getattr(open_m, "__name__", "") in (
-                                    "open_position_from_signal",
-                                    "open_from_intent",
-                                ):
-                                    await _maybe_await(
-                                        open_m(
-                                            symbol=symbol,
-                                            side=side,
-                                            interval=interval,
-                                            meta={
-                                                "price": price,
-                                                "trail_pct": trail_pct,
-                                                "stall_ttl_sec": stall_ttl_sec,
-                                                "intent_id": intent_id,
-                                                "score": score,
-                                                "raw": it,
-                                            },
-                                        )
-                                    )
-                                else:
-                                    await _maybe_await(
-                                        open_m(
-                                            symbol=symbol,
-                                            side=side,
-                                            interval=interval,
-                                            price=price,
-                                            trail_pct=trail_pct,
-                                            stall_ttl_sec=stall_ttl_sec,
-                                            intent_id=intent_id,
-                                            raw=it,
-                                        )
-                                    )
-
-                                logger.info(
-                                    "[EXEC-EVENTS] fallback open applied | symbol=%s side=%s score=%.4f intent=%s",
-                                    symbol,
-                                    side,
-                                    score,
-                                    intent_id,
-                                )
-                            except TypeError:
-                                logger.exception(
-                                    "[EXEC-EVENTS] fallback open signature mismatch | item=%s",
-                                    it,
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "[EXEC-EVENTS] fallback open failed | item=%s",
-                                    it,
-                                )
-
-                        elif side in ("close", "flat", "exit"):
-                            handled = False
-
-                            if callable(decision_m):
-                                try:
-                                    logger.info(
-                                        "[EXEC-EVENTS] dispatch decision close | symbol=%s side=%s interval=%s intent=%s",
-                                        symbol,
-                                        side,
-                                        interval,
-                                        intent_id,
-                                    )
-
-                                    await _maybe_await(
-                                        decision_m(
-                                            signal="close",
-                                            symbol=symbol,
-                                            price=float(price or 0.0),
-                                            size=None,
-                                            interval=interval,
-                                            training_mode=False,
-                                            hybrid_mode=True,
-                                            probs={},
-                                            extra={
-                                                "intent_id": intent_id,
-                                                "score": score,
-                                                "raw": it,
-                                            },
-                                        )
-                                    )
-
-                                    logger.info(
-                                        "[EXEC-EVENTS] decision close dispatched | symbol=%s side=%s intent=%s",
-                                        symbol,
-                                        side,
-                                        intent_id,
-                                    )
-                                    handled = True
-
-                                except TypeError:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] execute_decision close signature mismatch | item=%s",
-                                        it,
-                                    )
-                                except Exception:
-                                    logger.exception(
-                                        "[EXEC-EVENTS] execute_decision close failed | item=%s",
-                                        it,
-                                    )
-
-                            if handled:
-                                continue
-
-                            if close_m is None:
-                                logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
-                                continue
-
-                            try:
-                                if getattr(close_m, "__name__", "") in (
-                                    "close_position_from_signal",
-                                    "close_from_intent",
-                                ):
-                                    await _maybe_await(
-                                        close_m(
-                                            symbol=symbol,
-                                            interval=interval,
-                                            meta={
-                                                "intent_id": intent_id,
-                                                "raw": it,
-                                            },
-                                            price=price,
-                                        )
-                                    )
-                                else:
-                                    await _maybe_await(
-                                        close_m(
-                                            symbol=symbol,
-                                            interval=interval,
-                                            intent_id=intent_id,
-                                            raw=it,
-                                            price=price,
-                                        )
-                                    )
-
-                                logger.info(
-                                    "[EXEC-EVENTS] fallback close applied | symbol=%s side=%s intent=%s",
-                                    symbol,
-                                    side,
-                                    intent_id,
-                                )
-                            except TypeError:
-                                logger.exception(
-                                    "[EXEC-EVENTS] fallback close signature mismatch | item=%s",
-                                    it,
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "[EXEC-EVENTS] fallback close failed | item=%s",
-                                    it,
-                                )
-
-                        else:
-                            logger.warning("[EXEC-EVENTS] unknown side=%s intent=%s", side, intent_id)
-
-                    except TypeError:
-                        logger.exception("[EXEC-EVENTS] method signature mismatch for item=%s", it)
-                    except Exception:
-                        logger.exception("[EXEC-EVENTS] failed to apply item=%s", it)
-
-            if ids:
-                xack_safe(r, stream, group, ids)
-
-        except Exception:
-            logger.exception("[EXEC-EVENTS] loop error; retrying")
+        except Exception as e:
+            logger.exception("[EXEC-EVENTS] consumer loop failed | err=%s", str(e))
             await asyncio.sleep(1.0)
-
 # ----------------------------------------------------------------------
 # Async main
 # ----------------------------------------------------------------------

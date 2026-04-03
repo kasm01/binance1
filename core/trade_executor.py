@@ -5194,10 +5194,39 @@ class TradeExecutor:
         s = str(side or "").strip().lower()
         if s == "long":
             order_side = "BUY"
+            side0 = "long"
         elif s == "short":
             order_side = "SELL"
+            side0 = "short"
         else:
             raise ValueError(f"bad side={side}")
+
+        try:
+            signal_score = float(
+                extra0.get("signal_score")
+                or extra0.get("score")
+                or extra0.get("_score_total_final")
+                or extra0.get("_score_selected")
+                or extra0.get("score_total")
+                or 0.0
+            )
+        except Exception:
+            signal_score = 0.0
+
+        try:
+            whale_score = float(extra0.get("whale_score") or 0.0)
+        except Exception:
+            whale_score = 0.0
+
+        whale_dir = str(extra0.get("whale_dir") or "none").strip().lower()
+        if whale_dir in ("buy", "bull", "up"):
+            whale_dir = "long"
+        elif whale_dir in ("sell", "bear", "down"):
+            whale_dir = "short"
+        elif whale_dir not in ("long", "short"):
+            whale_dir = "none"
+
+        whale_action = str(extra0.get("whale_action") or "").strip().lower()
 
         raw_q = self._round_qty(float(qty))
 
@@ -5252,15 +5281,17 @@ class TradeExecutor:
             pass
 
         if q <= 0:
-            raise ValueError(f"qty invalid after normalization: {self._safe_json(qmeta, limit=900)}")
+            raise ValueError(
+                f"qty invalid after normalization: {self._safe_json(qmeta, limit=900)}"
+            )
 
-        position_side = self._side_to_position_side(side)
+        position_side = self._side_to_position_side(side0)
 
         target_leverage = self._resolve_target_leverage(extra0)
 
         target_leverage = self._apply_volatility_adaptive_leverage(
             symbol=sym,
-            side=side,
+            side=side0,
             target_leverage=int(target_leverage),
             extra=extra0,
         )
@@ -5268,7 +5299,7 @@ class TradeExecutor:
         target_leverage = int(
             self._apply_whale_weighted_leverage_boost(
                 symbol=sym,
-                side=side,
+                side=side0,
                 target_leverage=int(target_leverage),
                 signal_score=float(signal_score),
                 whale_score=float(whale_score),
@@ -5278,6 +5309,22 @@ class TradeExecutor:
 
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
         applied_leverage = int(target_leverage)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][ORDER][PREP] symbol=%s side=%s reduce_only=%s signal_score=%.4f whale_score=%.4f whale_dir=%s whale_action=%s lev_target=%s",
+                    sym,
+                    side0,
+                    bool(reduce_only),
+                    float(signal_score),
+                    float(whale_score),
+                    whale_dir,
+                    whale_action or "-",
+                    int(target_leverage),
+                )
+        except Exception:
+            pass
 
         try:
             if self.enable_dynamic_leverage and not reduce_only:
@@ -5303,7 +5350,7 @@ class TradeExecutor:
                 self.logger.info(
                     "[EXEC][LEV] symbol=%s side=%s reduce_only=%s target=%s applied=%s positionSide=%s",
                     sym,
-                    str(side),
+                    side0,
                     bool(reduce_only),
                     int(target_leverage),
                     int(applied_leverage),
@@ -5333,21 +5380,35 @@ class TradeExecutor:
         t0 = self._now_ms()
         attempts = int(os.getenv("ORDER_RETRY_ATTEMPTS", "3"))
         base_sleep = float(os.getenv("ORDER_RETRY_SLEEP_S", "0.6"))
-
         try:
             fn = getattr(client, "futures_create_order", None)
             if callable(fn):
-                resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+                resp = self._call_with_retry(
+                    fn,
+                    payload,
+                    attempts=attempts,
+                    base_sleep=base_sleep,
+                )
             else:
                 fn = getattr(client, "create_order", None)
                 used = "create_order"
                 if callable(fn):
-                    resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+                    resp = self._call_with_retry(
+                        fn,
+                        payload,
+                        attempts=attempts,
+                        base_sleep=base_sleep,
+                    )
                 else:
                     fn = getattr(client, "new_order", None)
                     used = "new_order"
                     if callable(fn):
-                        resp = self._call_with_retry(fn, payload, attempts=attempts, base_sleep=base_sleep)
+                        resp = self._call_with_retry(
+                            fn,
+                            payload,
+                            attempts=attempts,
+                            base_sleep=base_sleep,
+                        )
                     else:
                         raise RuntimeError(
                             "no supported order function on client "
@@ -5359,7 +5420,8 @@ class TradeExecutor:
                 if self.logger:
                     self.logger.exception(
                         "[EXEC][ORDER] %s FAIL | fn=%s symbol=%s side=%s qty=%.10f "
-                        "reduceOnly=%s lev=%s dt_ms=%d client_oid=%s payload=%s err=%s",
+                        "reduceOnly=%s lev=%s dt_ms=%d client_oid=%s "
+                        "signal_score=%.4f whale_score=%.4f whale_dir=%s payload=%s err=%s",
                         ("CLOSE" if reduce_only else "OPEN"),
                         used,
                         sym,
@@ -5369,6 +5431,9 @@ class TradeExecutor:
                         int(applied_leverage),
                         int(dt),
                         client_oid,
+                        float(signal_score),
+                        float(whale_score),
+                        whale_dir,
                         self._safe_json(payload, limit=900),
                         str(e)[:300],
                     )
@@ -5403,7 +5468,12 @@ class TradeExecutor:
                 coid = ""
                 if isinstance(resp, dict):
                     oid = resp.get("orderId")
-                    coid = str(resp.get("clientOrderId") or resp.get("newClientOrderId") or client_oid or "")
+                    coid = str(
+                        resp.get("clientOrderId")
+                        or resp.get("newClientOrderId")
+                        or client_oid
+                        or ""
+                    )
                 pol = self._poll_order_status(
                     sym,
                     order_id=oid,
@@ -7157,6 +7227,8 @@ class TradeExecutor:
         if side0 not in ("long", "short"):
             side0 = "long"
 
+        interval0 = str(interval or "5m").strip() or "5m"
+
         def _maybe_json(x: Any) -> Optional[Dict[str, Any]]:
             if isinstance(x, dict):
                 return x
@@ -7186,13 +7258,17 @@ class TradeExecutor:
         _merge_pref(meta0, raw2)
         _merge_pref(meta0, raw3)
 
+        meta0["symbol"] = sym_u
+        meta0["side"] = side0
+        meta0["interval"] = interval0
+
         try:
             if self.logger:
                 self.logger.info(
                     "[EXEC][OPEN] enter | symbol=%s side=%s interval=%s meta_keys=%s",
                     sym_u,
                     side0,
-                    str(interval),
+                    interval0,
                     sorted(list(meta_in.keys())) if isinstance(meta_in, dict) else [],
                 )
         except Exception:
@@ -7260,6 +7336,7 @@ class TradeExecutor:
             whale_bias_now = whale_dir if whale_dir in ("long", "short") else "hold"
 
         meta0["signal_score"] = float(signal_score)
+        meta0["score"] = float(signal_score) if not meta0.get("score") else meta0.get("score")
         meta0["whale_score"] = float(whale_score)
         meta0["whale_dir"] = whale_dir
         meta0["whale_action"] = whale_action
@@ -7426,6 +7503,8 @@ class TradeExecutor:
                 pass
             return {"status": "skip", "reason": "missing_price"}
 
+        meta0["price"] = float(intent_price)
+
         order_price: Optional[float] = None
 
         try:
@@ -7493,7 +7572,7 @@ class TradeExecutor:
                     symbol=sym_u,
                     price=float(order_price),
                     reason=f"reverse_to_{side0}",
-                    interval=str(interval or ""),
+                    interval=interval0,
                     intent_id=str(meta0.get("intent_id") or ""),
                 )
                 return {
@@ -7541,7 +7620,7 @@ class TradeExecutor:
                 }
         except Exception:
             pass
-        # ===== NO-TRADE ZONE =====
+
         no_trade_reason = self._in_no_trade_zone(
             symbol=sym_u,
             side=side0,
@@ -7573,6 +7652,7 @@ class TradeExecutor:
                 "symbol": sym_u,
                 "side": side0,
             }
+
         try:
             eq_live = self._get_futures_equity_usdt_sync()
             if eq_live > 0:
@@ -7586,6 +7666,7 @@ class TradeExecutor:
                 meta0["available_balance_usdt"] = float(avail_live)
         except Exception:
             pass
+
         npct = self._clip_float(meta0.get("recommended_notional_pct"), None)
         if npct is None:
             npct = self._clip_float(meta0.get("notional_pct"), None)
@@ -7613,10 +7694,11 @@ class TradeExecutor:
             price=float(order_price),
             symbol_info=symbol_info,
         )
+
         confirmed = self._confirm_entry_signal(
             symbol=sym_u,
             side=side0,
-            interval=str(interval or "5m"),
+            interval=interval0,
             score=float(signal_score),
         )
 
@@ -7638,12 +7720,11 @@ class TradeExecutor:
                 "symbol": sym_u,
                 "side": side0,
             }
+
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][INTENT][QTY] symbol=%s intent_price=%.6f order_price=%.6f "
-                    "raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f "
-                    "min_notional=%.6f reject=%s",
+                    "[EXEC][INTENT][QTY] symbol=%s intent_price=%.6f order_price=%.6f raw_qty=%.10f norm_qty=%.10f step=%.10f min_qty=%.10f min_notional=%.6f reject=%s",
                     sym_u,
                     float(intent_price),
                     float(order_price),
@@ -7663,18 +7744,22 @@ class TradeExecutor:
                 "reason": "bad_qty_after_normalization",
                 "meta": qmeta,
             }
-
         final_notional = float(qty) * float(order_price)
 
         extra_safe = dict(meta0)
-        extra_safe.setdefault("trail_pct", meta0.get("trail_pct", None))
-        extra_safe.setdefault("stall_ttl_sec", meta0.get("stall_ttl_sec", None))
+        extra_safe["symbol"] = sym_u
+        extra_safe["side"] = side0
+        extra_safe["interval"] = interval0
+        extra_safe["price"] = float(order_price)
+        extra_safe["intent_price"] = float(intent_price)
+        extra_safe["order_price"] = float(order_price)
         extra_safe["signal_score"] = float(signal_score)
+        extra_safe["score"] = float(signal_score)
         extra_safe["whale_action"] = whale_action
         extra_safe["whale_score"] = float(whale_score)
         extra_safe["whale_dir"] = whale_dir
-        extra_safe["intent_price"] = float(intent_price)
-        extra_safe["order_price"] = float(order_price)
+        extra_safe["trail_pct"] = meta0.get("trail_pct", None)
+        extra_safe["stall_ttl_sec"] = meta0.get("stall_ttl_sec", None)
         extra_safe["whale_open_notional_before"] = float(raw_notional)
         extra_safe["whale_open_notional_after"] = float(final_notional)
         extra_safe["whale_notional_adjusted"] = bool(
@@ -7685,7 +7770,7 @@ class TradeExecutor:
 
         target_leverage = self._apply_volatility_adaptive_leverage(
             symbol=sym_u,
-            side=side_norm,
+            side=side0,
             target_leverage=int(target_leverage),
             extra=extra_safe,
         )
@@ -7693,7 +7778,7 @@ class TradeExecutor:
         target_leverage = int(
             self._apply_whale_weighted_leverage_boost(
                 symbol=sym_u,
-                side=side_norm,
+                side=side0,
                 target_leverage=int(target_leverage),
                 signal_score=float(signal_score),
                 whale_score=float(whale_score),
@@ -7710,9 +7795,7 @@ class TradeExecutor:
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][WHALE][OPEN-CHECK] symbol=%s side=%s action=%s bias=%s "
-                    "whale_dir=%s whale_score=%.3f signal_score=%.4f raw_notional=%.2f "
-                    "final_notional=%.2f target_leverage=%s",
+                    "[EXEC][WHALE][OPEN-CHECK] symbol=%s side=%s action=%s bias=%s whale_dir=%s whale_score=%.3f signal_score=%.4f raw_notional=%.2f final_notional=%.2f target_leverage=%s",
                     sym_u,
                     side0,
                     whale_action or "-",
@@ -7741,8 +7824,7 @@ class TradeExecutor:
                 try:
                     if self.logger:
                         self.logger.exception(
-                            "[EXEC][INTENT] exchange_open_failed | symbol=%s side=%s "
-                            "qty=%.10f price=%.6f err=%s",
+                            "[EXEC][INTENT] exchange_open_failed | symbol=%s side=%s qty=%.10f price=%.6f err=%s",
                             sym_u,
                             side0,
                             float(qty),
@@ -7763,7 +7845,7 @@ class TradeExecutor:
             price=float(order_price),
             qty=float(qty),
             notional=float(final_notional),
-            interval=str(interval or ""),
+            interval=interval0,
             probs=probs,
             extra=extra_safe,
         )
@@ -7780,7 +7862,8 @@ class TradeExecutor:
         pos["qty"] = float(qty)
         pos["entry_price"] = float(pos.get("entry_price") or order_price or 0.0)
         pos["notional"] = float(pos.get("notional") or final_notional or 0.0)
-        pos["interval"] = str(pos.get("interval") or interval or "5m").strip() or "5m"
+        pos["interval"] = str(pos.get("interval") or interval0).strip() or "5m"
+
         self._set_position(sym_u, pos)
 
         try:
@@ -7800,7 +7883,7 @@ class TradeExecutor:
             self._upsert_bridge_state_on_open(
                 symbol=sym_u,
                 side=side0,
-                interval=str(interval or ""),
+                interval=interval0,
                 intent_id=str(extra_safe.get("intent_id") or ""),
             )
         except Exception:
@@ -7834,9 +7917,7 @@ class TradeExecutor:
         try:
             if self.logger:
                 self.logger.info(
-                    "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f "
-                    "order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s "
-                    "whale_bias=%s score=%.4f dry_run=%s",
+                    "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s whale_bias=%s score=%.4f dry_run=%s",
                     side0.upper(),
                     sym_u,
                     float(qty),
@@ -7856,7 +7937,7 @@ class TradeExecutor:
         try:
             self._notify_position_open(
                 sym_u,
-                str(interval or ""),
+                interval0,
                 side0,
                 float(qty),
                 float(order_price),
@@ -7874,7 +7955,7 @@ class TradeExecutor:
                     qty=float(qty),
                     notional=float(final_notional),
                     price=float(order_price),
-                    interval=str(interval or ""),
+                    interval=interval0,
                     meta={
                         "reason": "INTENT_OPEN",
                         **extra_safe,
