@@ -301,13 +301,17 @@ autoreset_stream_group() {
     XAUTOCLAIM "$stream" "$group" "$SUP_AUTORESET_CONSUMER" "$SUP_AUTORESET_IDLE_MS" 0 \
     COUNT "$SUP_AUTORESET_COUNT" >/dev/null 2>&1 || true
 }
-
 autoreset_best_effort() {
   is_truthy "$SUP_AUTORESET_ENABLED" || return 0
   autoreset_stream_group "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP"
   autoreset_stream_group "$TOP5_STREAM" "$MASTER_GROUP"
 }
-autoreset_best_effort
+
+if [[ "${SUP_AUTORESET_ENABLED:-0}" == "1" ]]; then
+  autoreset_best_effort
+else
+  echo "[START] autoreset_best_effort disabled (SUP_AUTORESET_ENABLED=0)"
+fi
 
 # -----------------------------
 # DRY_RUN reset policy

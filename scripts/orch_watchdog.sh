@@ -231,7 +231,6 @@ stream_group_last_delivered_age_sec() {
   id="$(stream_group_last_delivered_id "$stream" "$group")"
   stream_age_sec "$id"
 }
-
 heal_stream_group_target() {
   local label="$1"
   local stream="$2"
@@ -241,7 +240,8 @@ heal_stream_group_target() {
 
   case "$label" in
     selector)
-      pkill -f "orchestration/selector/top_selector.py" 2>/dev/null || true
+      echo "[WATCHDOG] group self-heal disabled -> top_selector" >&2
+      return 0
       ;;
     master)
       pkill -f "orchestration/executor/master_executor.py" 2>/dev/null || true
@@ -266,6 +266,7 @@ heal_stream_group_target() {
 
   return 0
 }
+
 # -----------------------------
 # Skip checks if orch service is not active (prevents false alarms during manual stop)
 # -----------------------------
@@ -400,8 +401,8 @@ restart_target_for_label() {
       pkill -f "orchestration/aggregator/run_aggregator.py" 2>/dev/null || true
       ;;
     selector)
-      echo "[WATCHDOG] targeted recovery -> top_selector" >&2
-      pkill -f "orchestration/selector/top_selector.py" 2>/dev/null || true
+      echo "[WATCHDOG] targeted recovery disabled -> top_selector" >&2
+      return 0
       ;;
     master)
       echo "[WATCHDOG] targeted recovery -> master_executor" >&2
