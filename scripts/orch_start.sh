@@ -362,10 +362,29 @@ if is_truthy "$STERILE"; then
   exit 0
 fi
 
+if [[ "${VOLSEL_ENABLE:-0}" == "1" ]]; then
+  echo "[VOLSEL] running volatility selector..."
+  if "$PY" -u ./orchestration/scanners/volatility_selector.py >>"$LOGDIR/volatility_selector.log" 2>&1; then
+    if [[ -f "${VOLSEL_OUT_FILE:-/tmp/binance1_volsel_symbols.txt}" ]]; then
+      SEL_SYMBOLS="$(cat "${VOLSEL_OUT_FILE:-/tmp/binance1_volsel_symbols.txt}" 2>/dev/null || true)"
+      if [[ -n "${SEL_SYMBOLS:-}" ]]; then
+        SYMBOLS_24="$SEL_SYMBOLS"
+        echo "[VOLSEL] selected symbols: $SYMBOLS_24"
+      else
+        echo "[VOLSEL][WARN] output file empty, keeping existing SYMBOLS_24"
+      fi
+    else
+      echo "[VOLSEL][WARN] output file missing, keeping existing SYMBOLS_24"
+    fi
+  else
+    echo "[VOLSEL][WARN] selector failed, keeping existing SYMBOLS_24"
+  fi
+fi
+
 # -----------------------------
 # SCANNERS
 # -----------------------------
-SYMBOLS_24="${SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,LINKUSDT,AVAXUSDT,ADAUSDT,DOGEUSDT,TRXUSDT,OPUSDT,ARBUSDT,NEARUSDT,HBARUSDT,INJUSDT}"
+SYMBOLS_24="${SYMBOLS_24:-${SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,LINKUSDT,AVAXUSDT,ADAUSDT,DOGEUSDT,TRXUSDT,OPUSDT,ARBUSDT,NEARUSDT,HBARUSDT,INJUSDT}}"
 WORKER_INTERVAL="${WORKER_INTERVAL:-5m}"
 SCANNER_MODE="${SCANNER_MODE:-fast}"
 

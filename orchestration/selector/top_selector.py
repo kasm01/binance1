@@ -463,6 +463,90 @@ class TopSelector:
         meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
         return raw0, meta0
 
+    def _acp_env_bool(self, name: str, default: bool = False) -> bool:
+        try:
+            v = os.getenv(name)
+            if v is None:
+                return bool(default)
+            s = str(v).strip().lower()
+            return s in ("1", "true", "t", "yes", "y", "on")
+        except Exception:
+            return bool(default)
+
+    def _acp_limit_score(
+        self,
+        base_score: float,
+        final_score: float,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        ACP şişirmesini sınırlar.
+
+        Kurallar:
+          - base_score, hard floor altındaysa aday reddedilir
+          - ACP boost en fazla belirli bir miktar olabilir
+          - selected/final score için üst tavan uygulanır
+        """
+        try:
+            limiter_enabled = self._acp_env_bool("ACP_LIMITER_ENABLE", True)
+        except Exception:
+            limiter_enabled = True
+
+        base0 = _clamp(self._acp_float(base_score, 0.0), 0.0, 1.0)
+        final0 = _clamp(self._acp_float(final_score, 0.0), 0.0, 1.0)
+
+        if not limiter_enabled:
+            return final0, {
+                "limiter_enabled": False,
+                "base_score": base0,
+                "input_final_score": final0,
+                "limited_score": final0,
+                "blocked": False,
+                "reason": "disabled",
+            }
+
+        try:
+            hard_floor = float(os.getenv("ACP_LIMITER_HARD_FLOOR", "0.60") or 0.60)
+        except Exception:
+            hard_floor = 0.60
+
+        try:
+            max_boost = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
+        except Exception:
+            max_boost = 0.08
+
+        try:
+            hard_cap = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
+        except Exception:
+            hard_cap = 0.92
+
+        if base0 < hard_floor:
+            return 0.0, {
+                "limiter_enabled": True,
+                "base_score": base0,
+                "input_final_score": final0,
+                "limited_score": 0.0,
+                "blocked": True,
+                "reason": f"base_below_floor<{hard_floor:.3f}",
+                "hard_floor": float(hard_floor),
+                "max_boost": float(max_boost),
+                "hard_cap": float(hard_cap),
+            }
+
+        limited = min(final0, base0 + max_boost, hard_cap)
+        limited = _clamp(limited, 0.0, 1.0)
+
+        return limited, {
+            "limiter_enabled": True,
+            "base_score": base0,
+            "input_final_score": final0,
+            "limited_score": float(limited),
+            "blocked": False,
+            "reason": "ok",
+            "hard_floor": float(hard_floor),
+            "max_boost": float(max_boost),
+            "hard_cap": float(hard_cap),
+        }
+
     def _adaptive_coin_priority_score(self, item):
         try:
             enabled = bool(int(os.getenv("ACP_ENABLE", "1") or 1))
@@ -570,13 +654,17 @@ class TopSelector:
 
         final_score = float(total * mult)
 
-        # normalize
         if final_score > 1.0:
             final_score = 1.0
         elif final_score < 0.0:
             final_score = 0.0
 
-        return final_score, {
+        limited_score, limiter_meta = self._acp_limit_score(
+            base_score=base_score,
+            final_score=final_score,
+        )
+
+        return limited_score, {
             "base_score": base_score,
             "whale_score": whale_score,
             "liq_score": liq_score,
@@ -585,6 +673,8 @@ class TopSelector:
             "atr_pct": atr_pct,
             "mult": mult,
             "final_score": final_score,
+            "limited_score": float(limited_score),
+            "acp_limiter": limiter_meta,
         }
 
     def _select_topk(self, items: List[Tuple[str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -616,6 +706,23 @@ class TopSelector:
                 acp_score, acp_meta = self._adaptive_coin_priority_score(c2)
                 c2["_acp_score"] = float(acp_score)
                 c2["_acp_meta"] = acp_meta if isinstance(acp_meta, dict) else {}
+
+                if float(c2.get("_acp_score", 0.0) or 0.0) <= 0.0:
+                    try:
+                        if bool(int(os.getenv("ACP_LIMITER_LOG_BLOCKS", "1") or 1)):
+                            limiter_meta = ((c2.get("_acp_meta") or {}).get("acp_limiter") or {})
+                            print(
+                                f"[TopSelector][ACP-LIMITER][BLOCK] "
+                                f"symbol={c2.get('symbol')} side={c2.get('side')} "
+                                f"base={float((c2.get('score_total') or 0.0)):.3f} "
+                                f"acp={float(c2.get('_acp_score', 0.0)):.3f} "
+                                f"reason={limiter_meta.get('reason', 'blocked')}",
+                                flush=True,
+                            )
+                    except Exception:
+                        pass
+                    continue
+
             except Exception as e:
                 try:
                     print(f"[TopSelector][ACP-ERROR] {e}", flush=True)
@@ -677,7 +784,23 @@ class TopSelector:
 
         out: List[Dict[str, Any]] = []
         for sc, sid, c in filtered[: max(1, int(self.topk))]:
-            c["_score_selected"] = float(sc)
+            try:
+                base_sc0 = float(c.get("score_total", c.get("score", 0.0)) or 0.0)
+            except Exception:
+                base_sc0 = 0.0
+
+            try:
+                hard_cap0 = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
+            except Exception:
+                hard_cap0 = 0.92
+
+            try:
+                max_boost0 = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
+            except Exception:
+                max_boost0 = 0.08
+
+            selected_sc = min(float(sc), float(base_sc0 + max_boost0), float(hard_cap0))
+            c["_score_selected"] = float(_clamp(selected_sc, 0.0, 1.0))
             c["_source_stream_id"] = sid
             out.append(c)
 
@@ -692,7 +815,9 @@ class TopSelector:
                     "[TopSelector][ACP] topk="
                     + ", ".join(
                         [
-                            f"{x.get('symbol')}:{x.get('side')} acp={float(x.get('_acp_score', 0.0)):.3f} sel={float(x.get('_score_selected', 0.0)):.3f}"
+                            f"{x.get('symbol')}:{x.get('side')} "
+                            f"acp={float(x.get('_acp_score', 0.0)):.3f} "
+                            f"sel={float(x.get('_score_selected', 0.0)):.3f}"
                             for x in out
                         ]
                     ),

@@ -8344,6 +8344,48 @@ class TradeExecutor:
                 pass
             return
 
+        # ===== WEAK SIGNAL KILL FILTER =====
+        try:
+            mcf = float(extra0.get("model_confidence_factor") or 0.0)
+            p_raw = float(extra0.get("p_buy_raw") or 0.0)
+            p_ema = float(extra0.get("p_buy_ema") or 0.0)
+
+            weak_mcf_thr = float(os.getenv("WEAK_SIGNAL_MCF_THR", "0.25"))
+            weak_prob_thr = float(os.getenv("WEAK_SIGNAL_PROB_THR", "0.53"))
+
+            if mcf < weak_mcf_thr and max(p_raw, p_ema) < weak_prob_thr:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] weak signal kill | symbol=%s side=%s mcf=%.3f p_raw=%.3f p_ema=%.3f",
+                        sym_u,
+                        side_norm,
+                        mcf,
+                        p_raw,
+                        p_ema,
+                    )
+                return
+        except Exception:
+            pass
+        # ===== WHALE MOMENTUM FILTER =====
+        try:
+            whale_momentum_filter = bool(int(os.getenv("WHALE_MOMENTUM_FILTER", "0")))
+        except Exception:
+            whale_momentum_filter = False
+
+        if whale_momentum_filter:
+            if whale_dir == "none":
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] whale momentum missing | symbol=%s side=%s whale_score=%.3f",
+                            sym_u,
+                            side_norm,
+                            float(whale_score),
+                        )
+                except Exception:
+                    pass
+                return
+
         if require_whale_for_open and float(whale_score) < float(whale_open_min_score):
             try:
                 if self.logger:
