@@ -760,26 +760,61 @@ class TopSelector:
                 best_by_key[ck] = (acp_sc, sid, c)
 
         filtered: List[Tuple[float, str, Dict[str, Any]]] = []
+
         for ck, (sc, sid, c) in best_by_key.items():
+
             try:
                 base_score = float(
-                    c.get("_score_selected", c.get("score_total", c.get("score", 0.0))) or 0.0
+                    c.get("score_total", c.get("score", 0.0)) or 0.0
                 )
             except Exception:
                 base_score = 0.0
+
+            # ===== BASE SCORE FILTER =====
+            try:
+                base_floor = float(os.getenv("ACP_FILTER_BASE_FLOOR", "0.60") or 0.60)
+            except Exception:
+                base_floor = 0.60
+
+            if base_score < float(base_floor):
+                try:
+                    if bool(int(os.getenv("ACP_LIMITER_LOG_BLOCKS", "1") or 1)):
+                        print(
+                            f"[TopSelector][FILTER-BLOCK] "
+                            f"symbol={c.get('symbol')} side={c.get('side')} "
+                            f"base={float(base_score):.3f} "
+                            f"reason=base_below_floor<{float(base_floor):.3f}",
+                            flush=True,
+                        )
+                except Exception:
+                    pass
+                continue
 
             if base_score < float(self.min_score):
                 continue
 
             last = self.last_sent.get(ck, 0.0)
+
             if float(self.cooldown_sec) > 0 and (now_sec - last) < float(self.cooldown_sec):
                 continue
 
-            filtered.append((float(sc), sid, c))
+            # ===== ACP LIMITER =====
+            try:
+                hard_cap1 = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
+            except Exception:
+                hard_cap1 = 0.92
+
+            try:
+                max_boost1 = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
+            except Exception:
+                max_boost1 = 0.08
+
+            sc_limited = min(float(sc), float(base_score + max_boost1), float(hard_cap1))
+
+            filtered.append((float(_clamp(sc_limited, 0.0, 1.0)), sid, c))
 
         if not filtered:
             return []
-
         filtered.sort(key=lambda t: t[0], reverse=True)
 
         out: List[Dict[str, Any]] = []

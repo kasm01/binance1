@@ -2378,6 +2378,179 @@ class TradeExecutor:
         meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
         return {"extra": extra0, "raw": raw0, "meta": meta0}
 
+    def _entry_float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    def _entry_market_ctx(self, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        extra0 = extra if isinstance(extra, dict) else {}
+        raw0 = extra0.get("raw") or {}
+
+        if isinstance(raw0, str):
+            try:
+                raw0 = json.loads(raw0)
+            except Exception:
+                raw0 = {}
+
+        if not isinstance(raw0, dict):
+            raw0 = {}
+
+        meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
+
+        def _pick(*keys: str, default: float = 0.0) -> float:
+            for k in keys:
+                if k in extra0 and extra0.get(k) not in (None, ""):
+                    return self._entry_float(extra0.get(k), default)
+                if k in raw0 and raw0.get(k) not in (None, ""):
+                    return self._entry_float(raw0.get(k), default)
+                if k in meta0 and meta0.get(k) not in (None, ""):
+                    return self._entry_float(meta0.get(k), default)
+            return float(default)
+
+        return {
+            "ema_fast": _pick("ema_fast", "ema7", default=0.0),
+            "ema_slow": _pick("ema_slow", "ema25", default=0.0),
+            "recent_high": _pick("recent_high", "swing_high", default=0.0),
+            "recent_low": _pick("recent_low", "swing_low", default=0.0),
+            "micro_score": _pick("micro_score", default=0.0),
+            "spread_pct": _pick("spread_pct", default=0.0),
+            "atr_pct": _pick("atr_pct", default=0.0),
+            "liq_score": _pick("liq_score", default=0.0),
+            "volume_ratio": _pick("volume_ratio", "vol_ratio", "volume_spike_ratio", default=0.0),
+            "pullback_pct": _pick("pullback_pct", "micro_pullback_pct", default=0.0),
+        }
+
+    def _micro_pullback_entry_ok(
+        self,
+        side: str,
+        price_now: float,
+        extra: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        try:
+            enabled = bool(int(os.getenv("MICRO_PULLBACK_ENTRY_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return True, "disabled"
+
+        ctx = self._entry_market_ctx(extra)
+        side0 = str(side or "").strip().lower()
+        ema_fast = float(ctx.get("ema_fast") or 0.0)
+        ema_slow = float(ctx.get("ema_slow") or 0.0)
+        pullback_pct = float(ctx.get("pullback_pct") or 0.0)
+
+        try:
+            max_ext = float(os.getenv("MICRO_PULLBACK_MAX_EXT_PCT", "0.008") or 0.008)
+        except Exception:
+            max_ext = 0.008
+
+        try:
+            min_pullback = float(os.getenv("MICRO_PULLBACK_MIN_PCT", "0.0008") or 0.0008)
+        except Exception:
+            min_pullback = 0.0008
+
+        if price_now <= 0:
+            return True, "no_price"
+
+        if side0 == "long":
+            if ema_fast > 0:
+                ext = (float(price_now) - float(ema_fast)) / max(float(ema_fast), 1e-12)
+                if ext > max_ext:
+                    return False, f"long_ext>{max_ext:.4f}"
+            if ema_fast > 0 and ema_slow > 0 and ema_fast < ema_slow:
+                return False, "long_fast_below_slow"
+            if pullback_pct > 0 and pullback_pct < min_pullback:
+                return False, f"long_pullback<{min_pullback:.4f}"
+
+        if side0 == "short":
+            if ema_fast > 0:
+                ext = (float(ema_fast) - float(price_now)) / max(float(ema_fast), 1e-12)
+                if ext > max_ext:
+                    return False, f"short_ext>{max_ext:.4f}"
+            if ema_fast > 0 and ema_slow > 0 and ema_fast > ema_slow:
+                return False, "short_fast_above_slow"
+            if pullback_pct > 0 and pullback_pct < min_pullback:
+                return False, f"short_pullback<{min_pullback:.4f}"
+
+        return True, "ok"
+
+    def _volume_spike_trigger_ok(
+        self,
+        side: str,
+        extra: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        try:
+            enabled = bool(int(os.getenv("VOLUME_SPIKE_TRIGGER_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return True, "disabled"
+
+        ctx = self._entry_market_ctx(extra)
+        volume_ratio = float(ctx.get("volume_ratio") or 0.0)
+
+        try:
+            min_ratio = float(os.getenv("VOLUME_SPIKE_MIN_RATIO", "1.10") or 1.10)
+        except Exception:
+            min_ratio = 1.10
+
+        if volume_ratio > 0 and volume_ratio < min_ratio:
+            return False, f"vol_ratio<{min_ratio:.2f}"
+
+        return True, "ok"
+
+    def _fake_breakout_filter_v2(
+        self,
+        side: str,
+        price_now: float,
+        extra: Optional[Dict[str, Any]],
+    ) -> tuple[bool, str]:
+        try:
+            enabled = bool(int(os.getenv("FAKE_BREAKOUT_FILTER_V2_ENABLE", "1") or 1))
+        except Exception:
+            enabled = True
+
+        if not enabled:
+            return False, "disabled"
+
+        ctx = self._entry_market_ctx(extra)
+        side0 = str(side or "").strip().lower()
+        recent_high = float(ctx.get("recent_high") or 0.0)
+        recent_low = float(ctx.get("recent_low") or 0.0)
+        spread_pct = float(ctx.get("spread_pct") or 0.0)
+
+        try:
+            near_level_pct = float(os.getenv("FAKE_BREAKOUT_NEAR_LEVEL_PCT", "0.0035") or 0.0035)
+        except Exception:
+            near_level_pct = 0.0035
+
+        try:
+            max_spread_pct = float(os.getenv("FAKE_BREAKOUT_MAX_SPREAD_PCT", "0.0012") or 0.0012)
+        except Exception:
+            max_spread_pct = 0.0012
+
+        if price_now <= 0:
+            return False, "no_price"
+
+        if spread_pct > 0 and spread_pct > max_spread_pct:
+            return True, f"spread>{max_spread_pct:.4f}"
+
+        if side0 == "long" and recent_high > 0:
+            dist = (float(recent_high) - float(price_now)) / max(float(price_now), 1e-12)
+            if dist >= 0.0 and dist < near_level_pct:
+                return True, f"near_high<{near_level_pct:.4f}"
+
+        if side0 == "short" and recent_low > 0:
+            dist = (float(price_now) - float(recent_low)) / max(float(price_now), 1e-12)
+            if dist >= 0.0 and dist < near_level_pct:
+                return True, f"near_low<{near_level_pct:.4f}"
+
+        return False, "ok"
+
     def _ultra_entry_filter_v2(
         self,
         symbol: str,
@@ -8344,28 +8517,238 @@ class TradeExecutor:
                 pass
             return
 
-        # ===== WEAK SIGNAL KILL FILTER =====
+        # ===== LATE ENTRY / CHASE BLOCK =====
         try:
-            mcf = float(extra0.get("model_confidence_factor") or 0.0)
-            p_raw = float(extra0.get("p_buy_raw") or 0.0)
-            p_ema = float(extra0.get("p_buy_ema") or 0.0)
+            price_now = float(price or 0.0)
 
-            weak_mcf_thr = float(os.getenv("WEAK_SIGNAL_MCF_THR", "0.25"))
-            weak_prob_thr = float(os.getenv("WEAK_SIGNAL_PROB_THR", "0.53"))
+            ema_fast = float(
+                extra0.get("ema_fast")
+                or extra0.get("ema7")
+                or 0.0
+            )
 
-            if mcf < weak_mcf_thr and max(p_raw, p_ema) < weak_prob_thr:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][OPEN-BLOCK] weak signal kill | symbol=%s side=%s mcf=%.3f p_raw=%.3f p_ema=%.3f",
-                        sym_u,
-                        side_norm,
-                        mcf,
-                        p_raw,
-                        p_ema,
-                    )
+            recent_high = float(
+                extra0.get("recent_high")
+                or 0.0
+            )
+
+            recent_low = float(
+                extra0.get("recent_low")
+                or 0.0
+            )
+
+            chase_entry_pct = float(os.getenv("CHASE_ENTRY_PCT", "0.004") or 0.004)
+            ema_extension_pct = float(os.getenv("EMA_EXTENSION_PCT", "0.003") or 0.003)
+
+            if price_now > 0 and side_norm == "long":
+                if ema_fast > 0:
+                    ext_long = (price_now - ema_fast) / max(ema_fast, 1e-12)
+                    if ext_long > ema_extension_pct:
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK] late long entry | symbol=%s price=%.6f ema_fast=%.6f ext=%.6f thr=%.6f",
+                                    sym_u,
+                                    float(price_now),
+                                    float(ema_fast),
+                                    float(ext_long),
+                                    float(ema_extension_pct),
+                                )
+                        except Exception:
+                            pass
+                        return
+
+                if recent_high > 0:
+                    dist_to_high = (recent_high - price_now) / max(price_now, 1e-12)
+                    if dist_to_high >= 0.0 and dist_to_high < chase_entry_pct:
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK] chasing top | symbol=%s price=%.6f recent_high=%.6f dist=%.6f thr=%.6f",
+                                    sym_u,
+                                    float(price_now),
+                                    float(recent_high),
+                                    float(dist_to_high),
+                                    float(chase_entry_pct),
+                                )
+                        except Exception:
+                            pass
+                        return
+
+            if price_now > 0 and side_norm == "short":
+                if ema_fast > 0:
+                    ext_short = (ema_fast - price_now) / max(ema_fast, 1e-12)
+                    if ext_short > ema_extension_pct:
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK] late short entry | symbol=%s price=%.6f ema_fast=%.6f ext=%.6f thr=%.6f",
+                                    sym_u,
+                                    float(price_now),
+                                    float(ema_fast),
+                                    float(ext_short),
+                                    float(ema_extension_pct),
+                                )
+                        except Exception:
+                            pass
+                        return
+
+                if recent_low > 0:
+                    dist_to_low = (price_now - recent_low) / max(price_now, 1e-12)
+                    if dist_to_low >= 0.0 and dist_to_low < chase_entry_pct:
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK] chasing bottom | symbol=%s price=%.6f recent_low=%.6f dist=%.6f thr=%.6f",
+                                    sym_u,
+                                    float(price_now),
+                                    float(recent_low),
+                                    float(dist_to_low),
+                                    float(chase_entry_pct),
+                                )
+                        except Exception:
+                            pass
+                        return
+
+        except Exception:
+            pass
+
+        # ===== MICRO PULLBACK ENTRY FILTER =====
+        try:
+            ok_pullback, pullback_reason = self._micro_pullback_entry_ok(
+                side=side_norm,
+                price_now=float(price or 0.0),
+                extra=extra0,
+            )
+            if not ok_pullback:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] micro pullback reject | symbol=%s side=%s reason=%s score=%.4f",
+                            sym_u,
+                            side_norm,
+                            str(pullback_reason),
+                            float(signal_score),
+                        )
+                except Exception:
+                    pass
                 return
         except Exception:
             pass
+
+        # ===== VOLUME SPIKE TRIGGER =====
+        try:
+            ok_vol, vol_reason = self._volume_spike_trigger_ok(
+                side=side_norm,
+                extra=extra0,
+            )
+            if not ok_vol:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] volume spike reject | symbol=%s side=%s reason=%s score=%.4f",
+                            sym_u,
+                            side_norm,
+                            str(vol_reason),
+                            float(signal_score),
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        # ===== FAKE BREAKOUT FILTER V2 =====
+        try:
+            fb2_block, fb2_reason = self._fake_breakout_filter_v2(
+                side=side_norm,
+                price_now=float(price or 0.0),
+                extra=extra0,
+            )
+            if fb2_block:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] fake breakout v2 | symbol=%s side=%s reason=%s score=%.4f",
+                            sym_u,
+                            side_norm,
+                            str(fb2_reason),
+                            float(signal_score),
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        # ===== SMART WEAK SIGNAL KILL FILTER =====
+        try:
+            weak_kill_enabled = bool(int(os.getenv("WEAK_SIGNAL_KILL_ENABLE", "1") or 1))
+        except Exception:
+            weak_kill_enabled = True
+
+        if weak_kill_enabled:
+            try:
+                mcf = float(extra0.get("model_confidence_factor") or 0.0)
+            except Exception:
+                mcf = 0.0
+
+            try:
+                p_raw = float(extra0.get("p_buy_raw") or 0.0)
+            except Exception:
+                p_raw = 0.0
+
+            try:
+                p_ema = float(extra0.get("p_buy_ema") or 0.0)
+            except Exception:
+                p_ema = 0.0
+
+            try:
+                weak_mcf_thr = float(os.getenv("WEAK_SIGNAL_MCF_THR", "0.25") or 0.25)
+            except Exception:
+                weak_mcf_thr = 0.25
+
+            try:
+                weak_prob_thr = float(os.getenv("WEAK_SIGNAL_PROB_THR", "0.53") or 0.53)
+            except Exception:
+                weak_prob_thr = 0.53
+
+            have_model_metrics = any([
+                float(mcf) > 0.0,
+                float(p_raw) > 0.0,
+                float(p_ema) > 0.0,
+            ])
+
+            # Model metrikleri hiç yoksa veto etme
+            if have_model_metrics:
+                if float(mcf) < float(weak_mcf_thr) and max(float(p_raw), float(p_ema)) < float(weak_prob_thr):
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK] weak signal kill | symbol=%s side=%s mcf=%.3f p_raw=%.3f p_ema=%.3f",
+                                sym_u,
+                                side_norm,
+                                float(mcf),
+                                float(p_raw),
+                                float(p_ema),
+                            )
+                    except Exception:
+                        pass
+                    return
+            else:
+                try:
+                    if bool(int(os.getenv("WEAK_SIGNAL_LOG_SKIP_NO_METRICS", "1") or 1)):
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][WEAK-SIGNAL] skip no model metrics | symbol=%s side=%s score=%.4f",
+                                sym_u,
+                                side_norm,
+                                float(signal_score),
+                            )
+                    pass
+                except Exception:
+                    pass
+
         # ===== WHALE MOMENTUM FILTER =====
         try:
             whale_momentum_filter = bool(int(os.getenv("WHALE_MOMENTUM_FILTER", "0")))
