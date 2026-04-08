@@ -577,9 +577,6 @@ class MasterExecutor:
             pass
 
     def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
-        price = _safe_float(c.get("price", 0.0), 0.0)
-        if price > 0:
-            return float(price)
 
         ctx = self._extract_whale_context(raw_evt)
 
@@ -588,6 +585,7 @@ class MasterExecutor:
             _deep_get(raw_evt, ["raw", "price"]),
             _deep_get(raw_evt, ["raw", "raw", "price"]),
             _deep_get(raw_evt, ["raw", "raw", "raw", "price"]),
+            c.get("price"),
         ]
 
         for d in ctx.get("raw_chain", []):
@@ -600,6 +598,7 @@ class MasterExecutor:
                 return float(pv)
 
         return 0.0
+
     def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
         base = float(_clamp(self._candidate_score(c), 0.0, 1.0))
         return base, ["heavy_passthrough"]

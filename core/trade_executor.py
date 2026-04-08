@@ -7777,6 +7777,35 @@ class TradeExecutor:
             meta0["intent_price_sanity_fallback"] = False
             meta0["intent_price_original"] = float(original_intent_price)
 
+        try:
+            max_gap_pct_block = float(os.getenv("OPEN_PRICE_MAX_GAP_PCT_BLOCK", "0.20") or 0.20)
+        except Exception:
+            max_gap_pct_block = 0.20
+
+        try:
+            intent_order_gap = (
+                abs(float(original_intent_price) - float(order_price)) / max(abs(float(order_price)), 1e-12)
+                if float(order_price) > 0
+                else 0.0
+            )
+        except Exception:
+            intent_order_gap = 0.0
+
+        if float(order_price) > 0 and intent_order_gap >= float(max_gap_pct_block):
+            try:
+                self.system_logger.info(
+                    "[EXEC][OPEN-BLOCK][PRICE-MISMATCH] symbol=%s side=%s intent_price=%.6f order_price=%.6f gap_pct=%.4f max_gap=%.4f",
+                    sym_u,
+                    side0,
+                    float(original_intent_price),
+                    float(order_price),
+                    float(intent_order_gap),
+                    float(max_gap_pct_block),
+                )
+            except Exception:
+                pass
+            return False
+
         cur = self._get_effective_position(sym_u)
         cur_side = str(cur.get("side")).lower().strip() if isinstance(cur, dict) else None
 
@@ -7798,6 +7827,36 @@ class TradeExecutor:
                     "symbol": sym_u,
                     "side": side0,
                 }
+        try:
+            same_symbol_cooldown_sec = float(os.getenv("SAME_SYMBOL_OPEN_COOLDOWN_SEC", "180") or 180)
+        except Exception:
+            same_symbol_cooldown_sec = 180.0
+
+        try:
+            last_open_key = f"bot:last_open_ts:{sym_u}"
+            last_open_ts_raw = self.redis.get(last_open_key) if getattr(self, "redis", None) is not None else None
+            last_open_ts = float(last_open_ts_raw or 0.0)
+        except Exception:
+            last_open_ts = 0.0
+
+        now_ts = time.time()
+        if last_open_ts > 0 and (now_ts - last_open_ts) < same_symbol_cooldown_sec:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK][SYMBOL-COOLDOWN] symbol=%s wait_left=%.1f cooldown=%.1f",
+                        sym_u,
+                        float(same_symbol_cooldown_sec - (now_ts - last_open_ts)),
+                        float(same_symbol_cooldown_sec),
+                    )
+            except Exception:
+                pass
+            return {
+                "status": "skip",
+                "reason": "symbol_cooldown",
+                "symbol": sym_u,
+                "side": side0,
+            }
 
             try:
                 if self.logger:
@@ -8148,6 +8207,7 @@ class TradeExecutor:
                         float(now2 + sync_grace_sec),
                     )
         except Exception:
+
             try:
                 if self.logger:
                     self.logger.exception(
@@ -8157,26 +8217,31 @@ class TradeExecutor:
             except Exception:
                 pass
 
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s whale_bias=%s score=%.4f dry_run=%s",
-                    side0.upper(),
-                    sym_u,
-                    float(qty),
-                    float(intent_price),
-                    float(order_price),
-                    float(final_notional),
-                    ("-" if npct is None else f"{npct:.4f}"),
-                    int(target_leverage),
-                    whale_action or "-",
-                    whale_bias_now,
-                    float(signal_score),
-                    self.dry_run,
-                )
-        except Exception:
-            pass
+            try:
+                if getattr(self, "redis", None) is not None:
+                    self.redis.setex(f"bot:last_open_ts:{sym_u}", 3600, str(time.time()))
+            except Exception:
+                pass
 
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][INTENT] OPEN %s | symbol=%s qty=%.10f intent_price=%.6f order_price=%.6f notional=%.2f npct=%s lev=%s whale_action=%s whale_bias=%s score=%.4f dry_run=%s",
+                        side0.upper(),
+                        sym_u,
+                        float(qty),
+                        float(intent_price),
+                        float(order_price),
+                        float(final_notional),
+                        ("-" if npct is None else f"{npct:.4f}"),
+                        int(target_leverage),
+                        whale_action or "-",
+                        whale_bias_now,
+                        float(signal_score),
+                        self.dry_run,
+                    )
+            except Exception:
+                pass
         try:
             self._notify_position_open(
                 sym_u,
@@ -8516,6 +8581,61 @@ class TradeExecutor:
             except Exception:
                 pass
             return
+
+
+        # ------------------------------
+        # EMA TREND FILTER (NEW BLOCK)
+        # ------------------------------
+
+        try:
+            ema7 = float(extra0.get("ema7") or extra0.get("ema_fast") or 0.0)
+        except Exception:
+            ema7 = 0.0
+
+        try:
+            ema25 = float(extra0.get("ema25") or extra0.get("ema_slow") or 0.0)
+        except Exception:
+            ema25 = 0.0
+
+        try:
+            ema99 = float(extra0.get("ema99") or 0.0)
+        except Exception:
+            ema99 = 0.0
+
+
+        require_ema_trend = str(os.getenv("OPEN_REQUIRE_EMA_TREND", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+        if require_ema_trend and ema7 > 0 and ema25 > 0 and ema99 > 0:
+
+            if side_norm == "long" and not (ema7 >= ema25 and ema25 >= ema99):
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s ema7=%.6f ema25=%.6f ema99=%.6f",
+                            sym_u,
+                            side_norm,
+                            float(ema7),
+                            float(ema25),
+                            float(ema99),
+                        )
+                except Exception:
+                    pass
+                return
+
+            if side_norm == "short" and not (ema7 <= ema25 and ema25 <= ema99):
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s ema7=%.6f ema25=%.6f ema99=%.6f",
+                            sym_u,
+                            side_norm,
+                            float(ema7),
+                            float(ema25),
+                            float(ema99),
+                        )
+                except Exception:
+                    pass
+                return
 
         # ===== LATE ENTRY / CHASE BLOCK =====
         try:

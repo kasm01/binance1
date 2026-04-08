@@ -1,0 +1,555 @@
+2026-04-08 03:57:52,413 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:57:52,433 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:57:52,440 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(120, 12)
+2026-04-08 03:57:52,452 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=TRXUSDT interval=3m shape=(120, 12)
+2026-04-08 03:57:52,457 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:57:57,961 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:57,962 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:57,963 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:57,963 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:57:57,964 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:57,964 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:57,964 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:57,964 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:57,965 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:57,965 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:57,965 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:57:57,965 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:57,966 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:57,966 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:58,452 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:58,453 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:58,453 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:58,453 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:57:58,454 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:58,454 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:58,454 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:58,455 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:58,455 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:58,455 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:57:58,456 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:57:58,463 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=3m shape=(120, 12)
+2026-04-08 03:57:58,474 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=OPUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:03,496 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=XRPUSDT
+2026-04-08 03:58:03,503 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:03,504 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:03,504 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:03,991 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:03,992 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:03,992 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:03,992 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:03,993 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:03,993 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:03,993 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:03,994 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:03,994 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:03,994 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:03,994 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:03,995 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:03,995 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:03,995 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:03,995 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:03,995 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:04,002 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=HBARUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:04,013 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=NEARUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:09,070 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:09,074 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:09,075 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:09,556 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:09,556 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:09,556 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:09,557 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:09,557 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:09,558 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:09,558 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:09,558 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:09,559 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:09,559 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:09,559 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:09,560 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:09,560 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:09,560 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:09,560 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:09,560 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:09,568 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=INJUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:09,573 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:58:14,622 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.1 last_symbol=XRPUSDT
+2026-04-08 03:58:14,626 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:14,627 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:14,627 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:15,121 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:15,121 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:15,122 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:15,122 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:15,122 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:15,123 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:15,123 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:15,123 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:15,124 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:15,124 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:15,124 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:15,124 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:15,125 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:15,125 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:15,125 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:15,125 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:20,178 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:20,179 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:20,179 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:20,668 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:20,669 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:20,669 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:20,669 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:20,670 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:20,670 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:20,670 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:20,671 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:20,671 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:20,671 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:20,671 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:20,672 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:20,672 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:20,672 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:20,672 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:20,672 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:25,710 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.1 last_symbol=XRPUSDT
+2026-04-08 03:58:25,714 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:25,715 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:25,715 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:26,202 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:26,203 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:26,203 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:26,204 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:26,204 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:26,204 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:26,204 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:26,205 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:26,205 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:26,205 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:26,206 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:26,214 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:26,254 | INFO | system | [ANOM] IsolationForest FIT[heavy:ARBUSDT:3m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:26,450 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:26,451 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:26,762 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:58:31,779 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(120, 12)
+2026-04-08 03:58:31,810 | INFO | system | [ANOM] IsolationForest FIT[heavy:ARBUSDT:1m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:32,009 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:32,010 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:32,506 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:32,507 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:32,507 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:32,508 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:32,508 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:32,508 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:32,508 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:32,509 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:32,509 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:32,509 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:32,510 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:32,510 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:32,510 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:32,510 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:33,008 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:33,008 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:33,009 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:33,009 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:33,009 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:33,010 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:33,010 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:33,010 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:33,011 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:33,011 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:33,011 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:33,012 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:33,012 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:33,012 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:33,012 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:33,012 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:33,020 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=5m shape=(120, 12)
+2026-04-08 03:58:33,053 | INFO | system | [ANOM] IsolationForest FIT[heavy:ARBUSDT:5m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:33,250 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:33,251 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:33,281 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m', '5m']
+2026-04-08 03:58:34,183 | INFO | system | [EXEC][DECISION] enter | symbol=ARBUSDT signal=hold interval=3m price=0.1026 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:58:34,183 | INFO | system | [EXEC][WHALE][CTX] symbol=ARBUSDT side=hold whale_dir=long whale_score=0.1988 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:58:34,183 | INFO | system | [EXEC] Signal=HOLD symbol=ARBUSDT whale_action=- whale_dir=long whale_score=0.199 signal_score=0.6326
+2026-04-08 03:58:39,734 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:39,769 | INFO | system | [ANOM] IsolationForest FIT[heavy:AVAXUSDT:3m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:39,958 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:39,958 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:40,272 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=14.6 last_symbol=XRPUSDT
+2026-04-08 03:58:40,276 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:40,277 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:40,277 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:40,762 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:40,763 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:40,763 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:40,763 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:40,763 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:40,764 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:40,764 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:40,764 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:40,765 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:40,765 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:40,765 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:40,765 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:40,766 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:40,766 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:40,766 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:40,766 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:40,773 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(120, 12)
+2026-04-08 03:58:40,801 | INFO | system | [ANOM] IsolationForest FIT[heavy:AVAXUSDT:1m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:40,991 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:40,992 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:46,009 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=5m shape=(120, 12)
+2026-04-08 03:58:46,041 | INFO | system | [ANOM] IsolationForest FIT[heavy:AVAXUSDT:5m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:58:46,235 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:58:46,236 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:58:46,264 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m', '5m']
+2026-04-08 03:58:47,278 | INFO | system | [EXEC][DECISION] enter | symbol=AVAXUSDT signal=hold interval=3m price=9.43 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:58:47,278 | INFO | system | [EXEC][WHALE][CTX] symbol=AVAXUSDT side=hold whale_dir=long whale_score=0.1260 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:58:47,279 | INFO | system | [EXEC] Signal=HOLD symbol=AVAXUSDT whale_action=- whale_dir=long whale_score=0.126 signal_score=0.5367
+2026-04-08 03:58:47,772 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:47,772 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:47,773 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:48,271 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:48,272 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:48,273 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:48,273 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:58:48,273 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:48,274 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:48,274 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:48,274 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:48,275 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:48,275 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:48,275 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:48,276 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:48,276 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:48,276 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:48,276 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:48,276 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:48,277 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:58:53,135 | INFO | system | [EXEC-EVENTS] recv intent=02a5570f-0749-4bd9-aa94-9cb11dd41daf side=long symbol=XRPUSDT interval=3m price=0.6375544638572374
+2026-04-08 03:58:53,136 | INFO | system | [EXEC][WEAK] latest signal stored | symbol=XRPUSDT side=long interval=3m score=0.712421
+2026-04-08 03:58:53,136 | INFO | system | [EXEC-EVENTS] latest signal stored | symbol=XRPUSDT side=long interval=3m score=0.7124 intent=02a5570f-0749-4bd9-aa94-9cb11dd41daf
+2026-04-08 03:58:53,136 | INFO | system | [EXEC-EVENTS] dispatch decision | symbol=XRPUSDT side=long interval=3m score=0.7124 intent=02a5570f-0749-4bd9-aa94-9cb11dd41daf
+2026-04-08 03:58:53,136 | INFO | system | [EXEC][DECISION] enter | symbol=XRPUSDT signal=long interval=3m price=0.6375544638572374 size=None extra_keys=['intent_id', 'interval', 'price', 'raw', 'score', 'side', 'stall_ttl_sec', 'symbol', 'trail_pct']
+2026-04-08 03:58:53,137 | INFO | system | [EXEC][WHALE][CTX] symbol=XRPUSDT side=long whale_dir=long whale_score=0.5476 keys=['_score_selected', '_score_total_final', 'intent_id', 'interval', 'price', 'raw', 'reason_codes', 'reasons', 'recommended_leverage', 'recommended_notional_pct', 'risk_tags', 'score', 'score_total', 'side', 'stall_ttl_sec', 'symbol', 'trail_pct', 'w_min', 'whale_bias', 'whale_dir', 'whale_score']
+2026-04-08 03:58:53,137 | INFO | system | [EXEC][OPEN][SCORE] symbol=XRPUSDT side=long resolved_score=0.8437 p_buy_ema=0.0000 p_buy_raw=0.0000 mcf=0.0000
+2026-04-08 03:58:53,137 | INFO | system | [EXEC][WEAK-SIGNAL] skip no model metrics | symbol=XRPUSDT side=long score=0.8437
+2026-04-08 03:58:53,137 | INFO | system | [EXEC][UEF][DEBUG] symbol=XRPUSDT side=long signal_score=0.8437 keys=['_score_selected', '_score_total_final', 'intent_id', 'interval', 'price', 'raw', 'reason_codes', 'reasons', 'recommended_leverage', 'recommended_notional_pct', 'risk_tags', 'score', 'score_total', 'side', 'stall_ttl_sec', 'symbol', 'trail_pct', 'w_min', 'whale_bias', 'whale_dir', 'whale_score'] score=0.7124 score_total=0.7237 final=0.7124 selected=0.8437 p_buy_ema=0.0000 p_buy_raw=0.0000 mcf=0.0000 probs_keys=[]
+2026-04-08 03:58:53,138 | INFO | system | [EXEC][UEF-V2] ALLOW | symbol=XRPUSDT side=long reason=disabled signal_score=0.7124 final_score=0.7124 whale_score=0.5476 whale_dir=long
+2026-04-08 03:58:54,335 | INFO | system | [EXEC][OPEN] enter | symbol=XRPUSDT side=long interval=3m meta_keys=['_score_selected', '_score_total_final', 'intent_id', 'interval', 'price', 'raw', 'reason_codes', 'reasons', 'recommended_leverage', 'recommended_notional_pct', 'risk_tags', 'score', 'score_total', 'side', 'signal_score', 'stall_ttl_sec', 'symbol', 'trail_pct', 'w_min', 'whale_bias', 'whale_dir', 'whale_score']
+2026-04-08 03:58:54,339 | INFO | system | [EXEC][WHALE][CTX] symbol=XRPUSDT side=long whale_dir=long whale_score=0.5476 signal_score=0.8437 require_whale=False strict_align=False
+2026-04-08 03:58:54,346 | INFO | system | [EXEC][LEV][INTENT] symbol=XRPUSDT side=long recommended=9 score=0.8437 whale_dir=long whale_score=0.5476 require_whale=False strict_align=False
+2026-04-08 03:58:54,350 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BTCUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:54,362 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ETHUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:54,368 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=14.1 last_symbol=XRPUSDT
+2026-04-08 03:58:54,369 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:54,369 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:54,369 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:54,569 | INFO | system | [EXEC][PRICE][CHECK] symbol=XRPUSDT side=long intent_price=0.637554 order_price=1.369400 ratio=0.465572 min_ratio=0.333333 max_ratio=3.000000
+2026-04-08 03:58:54,852 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:54,852 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:54,852 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:54,853 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=1
+2026-04-08 03:58:54,853 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:54,853 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:54,854 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:54,854 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:54,854 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:54,854 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:54,855 | INFO | system | [EXEC][SYNC] promote bridge-only state to local | symbol=XRPUSDT
+2026-04-08 03:58:54,856 | INFO | system | [EXEC][STATE] removed from bridge state | key=open_positions_state symbol=XRPUSDT
+2026-04-08 03:58:54,856 | INFO | system | [EXEC][SYNC] removed stale bridge-only state | symbol=XRPUSDT
+2026-04-08 03:58:54,856 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=1 removed_local=[] removed_bridge=['XRPUSDT'] added_local=['XRPUSDT'] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:58:54,856 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:54,857 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:54,857 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:58:54,857 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 1, 'removed_local': [], 'removed_bridge': ['XRPUSDT'], 'added_local': ['XRPUSDT'], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:58:54,857 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:58:54,857 | INFO | system | [EXEC-EVENTS] decision dispatched | symbol=XRPUSDT side=long score=0.7124 intent=02a5570f-0749-4bd9-aa94-9cb11dd41daf
+2026-04-08 03:58:59,884 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:59,898 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=3m shape=(120, 12)
+2026-04-08 03:58:59,904 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:58:59,905 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:58:59,905 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:00,393 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:00,393 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:00,393 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:00,394 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:00,394 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:00,394 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:00,394 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:00,395 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:00,396 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:00,396 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:00,396 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:00,396 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:00,397 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:00,397 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:00,397 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:00,397 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:05,446 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=XRPUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:05,457 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:05,952 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:05,953 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:05,953 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:05,953 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:05,953 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:05,954 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:05,954 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:05,954 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:05,955 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:05,955 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:05,955 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:05,955 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=XRPUSDT
+2026-04-08 03:59:05,955 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:05,956 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:05,956 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:06,444 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:06,444 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:06,445 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:06,445 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:06,445 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:06,445 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:06,446 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:06,446 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:06,446 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:06,446 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:06,447 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:06,447 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:06,447 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:06,447 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:06,447 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:06,448 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:06,448 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:59:11,475 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:11,487 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ADAUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:11,493 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:11,494 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:11,494 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:11,981 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:11,982 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:11,982 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:11,982 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:11,983 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:11,983 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:11,983 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:11,983 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:11,984 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:11,984 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:11,984 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:11,984 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:11,985 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:11,985 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:11,985 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:11,985 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:17,050 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=TRXUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:17,061 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:17,067 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.1 last_symbol=XRPUSDT
+2026-04-08 03:59:17,067 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:17,068 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:17,068 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:17,566 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:17,567 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:17,568 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:17,568 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:17,568 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:17,569 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:17,569 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:17,569 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:17,570 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:17,570 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:17,570 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:17,570 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:17,571 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:17,571 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:17,571 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:17,571 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:22,619 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=OPUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:22,636 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:22,645 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:22,646 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:22,646 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:23,143 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:23,143 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:23,144 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:23,144 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:23,144 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:23,145 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:23,145 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:23,145 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:23,146 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:23,146 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:23,146 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:23,146 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:23,147 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:23,147 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:23,147 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:23,147 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:23,148 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:59:28,170 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=HBARUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:28,185 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=NEARUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:28,193 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.1 last_symbol=XRPUSDT
+2026-04-08 03:59:28,195 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:28,196 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:28,196 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:28,691 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:28,692 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:28,692 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:28,692 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:28,693 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:28,693 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:28,693 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:28,694 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:28,694 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:28,694 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:28,695 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:28,695 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:28,696 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:28,696 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:28,696 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:28,696 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:33,721 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=INJUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:33,728 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:33,728 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:33,728 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:34,214 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:34,215 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:34,215 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:34,215 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:34,216 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:34,216 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:34,216 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:34,216 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:34,217 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:34,217 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:34,217 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:34,218 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:34,218 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:34,218 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:34,218 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:34,219 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:39,741 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:39,743 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:39,743 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:39,744 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:39,744 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:39,745 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:39,745 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:39,745 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:39,746 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:39,746 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:39,746 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:39,747 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=XRPUSDT
+2026-04-08 03:59:39,747 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:39,747 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:39,747 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:40,244 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:40,245 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:40,245 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:40,245 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:40,245 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:40,246 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:40,246 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:40,246 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:40,247 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:40,247 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:40,247 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:40,248 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:40,248 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:40,248 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:40,248 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:40,248 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:40,249 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-08 03:59:45,327 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:45,329 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:45,330 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:45,828 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:45,829 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:45,829 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:45,830 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:45,830 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:45,830 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:45,830 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:45,831 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:45,831 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:45,831 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:45,832 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:45,832 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:45,833 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:45,833 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:45,833 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:45,833 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:50,862 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=INJUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:50,905 | INFO | system | [ANOM] IsolationForest FIT[heavy:INJUSDT:3m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:59:51,144 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:59:51,145 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:59:51,512 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.8 last_symbol=XRPUSDT
+2026-04-08 03:59:51,518 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:51,519 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:51,519 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:52,012 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:52,013 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:52,013 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:52,014 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:52,014 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:52,014 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:52,014 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:52,015 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:52,015 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:52,015 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:52,016 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:52,023 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=INJUSDT interval=1m shape=(120, 12)
+2026-04-08 03:59:52,052 | INFO | system | [ANOM] IsolationForest FIT[heavy:INJUSDT:1m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:59:52,230 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:59:52,230 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:59:57,274 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=INJUSDT interval=5m shape=(120, 12)
+2026-04-08 03:59:57,304 | INFO | system | [ANOM] IsolationForest FIT[heavy:INJUSDT:5m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:59:57,494 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:59:57,495 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:59:57,522 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m', '5m']
+2026-04-08 03:59:58,514 | INFO | system | [EXEC][DECISION] enter | symbol=INJUSDT signal=hold interval=3m price=3.026 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:59:58,515 | INFO | system | [EXEC][WHALE][CTX] symbol=INJUSDT side=hold whale_dir=long whale_score=0.4902 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-08 03:59:58,515 | INFO | system | [EXEC] Signal=HOLD symbol=INJUSDT whale_action=- whale_dir=long whale_score=0.490 signal_score=0.5476
+2026-04-08 03:59:59,002 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:59,005 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:59,005 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:59,498 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:59,499 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:59,499 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:59,499 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-08 03:59:59,500 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:59,500 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:59,500 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:59,501 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:59,501 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:59,501 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:59,501 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-08 03:59:59,502 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-08 03:59:59,502 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-08 03:59:59,502 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-08 03:59:59,502 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-08 03:59:59,502 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-08 03:59:59,509 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=NEARUSDT interval=3m shape=(120, 12)
+2026-04-08 03:59:59,537 | INFO | system | [ANOM] IsolationForest FIT[heavy:NEARUSDT:3m]: n=120, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-08 03:59:59,716 | INFO | system | [ANOM] Removed 3 anomalous rows. Remaining=117
+2026-04-08 03:59:59,717 | WARNING | system | [ANOM] guard_keep_tail triggered: before=120 after=117 removed=3 ratio=0.025 min_keep=120 max_ratio=0.80
+2026-04-08 03:59:59,952 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
