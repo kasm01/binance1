@@ -1,0 +1,130 @@
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'XRPUSDT', 'LINKUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'XRPUSDT', 'LINKUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'XRPUSDT', 'LINKUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'XRPUSDT', 'LINKUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'XRPUSDT', 'LINKUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT', 'SOLUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.6 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.5 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor
+[WorkerStub] Redis ping ok on attempt=1
+[WorkerStub] started. publishing to signals_stream | source=w2 mode=fast itv=3m syms=['BNBUSDT'] | gates(min_conf=0.48 max_spread=0.0015 max_atr=0.02) | sleep=0.8s meta=True throttle_key=scanner:throttle_factor

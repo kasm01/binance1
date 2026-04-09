@@ -559,8 +559,13 @@ async def fetch_klines(
             import inspect
 
             fn = getattr(client, "get_klines", None)
+
+            # Binance futures fallback
             if fn is None:
-                raise AttributeError("client.get_klines not found")
+                fn = getattr(client, "futures_klines", None)
+
+            if fn is None:
+                raise AttributeError("client.get_klines / futures_klines not found")
 
             if inspect.iscoroutinefunction(fn):
                 klines = await fn(symbol=symbol, interval=interval, limit=limit)

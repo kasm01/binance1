@@ -3585,7 +3585,10 @@ class TradeExecutor:
         except Exception:
             pass
 
-        if side == "long":
+        side_norm = str(side or "").strip().lower()
+        sym_u = str(symbol or "").upper().strip()
+
+        if side_norm == "long":
             pnl_pct = (float(price) - float(entry_price)) / max(float(entry_price), 1e-12)
             retrace_pct = (
                 (float(highest_price) - float(price)) / max(float(highest_price), 1e-12)
@@ -3665,6 +3668,131 @@ class TradeExecutor:
                 )
         except Exception:
             pass
+
+        # ------------------------------
+        # EXTRA / META NORMALIZE
+        # ------------------------------
+        extra0: Dict[str, Any] = {}
+
+        try:
+            pos_extra = pos.get("extra")
+            if isinstance(pos_extra, dict):
+                extra0.update(pos_extra)
+        except Exception:
+            pass
+
+        try:
+            pos_meta = pos.get("meta")
+            if isinstance(pos_meta, dict):
+                meta_extra = pos_meta.get("extra")
+                if isinstance(meta_extra, dict):
+                    extra0.update(meta_extra)
+                extra0.update(pos_meta)
+        except Exception:
+            pass
+
+        try:
+            if isinstance(pos, dict):
+                extra0.update(pos)
+        except Exception:
+            pass
+        # ------------------------------
+        # TREND CONTINUATION FILTER
+        # ------------------------------
+        try:
+            trend_continue_enable = str(
+                os.getenv("EXIT_TREND_CONTINUATION_ENABLE", "1")
+            ).strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            trend_continue_enable = True
+
+        if trend_continue_enable:
+            try:
+                ema7_tc = float(extra0.get("ema7") or extra0.get("ema_fast") or 0.0)
+            except Exception:
+                ema7_tc = 0.0
+
+            try:
+                ema25_tc = float(extra0.get("ema25") or extra0.get("ema_slow") or 0.0)
+            except Exception:
+                ema25_tc = 0.0
+
+            try:
+                ema99_tc = float(extra0.get("ema99") or 0.0)
+            except Exception:
+                ema99_tc = 0.0
+
+            try:
+                whale_dir_tc = str(extra0.get("whale_dir") or "").strip().lower()
+            except Exception:
+                whale_dir_tc = ""
+
+            try:
+                whale_score_tc = float(extra0.get("whale_score") or 0.0)
+            except Exception:
+                whale_score_tc = 0.0
+
+            try:
+                tc_min_profit = float(
+                    os.getenv("EXIT_TREND_CONTINUE_MIN_PROFIT_PCT", "0.0015") or 0.0015
+                )
+            except Exception:
+                tc_min_profit = 0.0015
+
+            try:
+                tc_whale_min = float(
+                    os.getenv("EXIT_TREND_CONTINUE_MIN_WHALE_SCORE", "0.18") or 0.18
+                )
+            except Exception:
+                tc_whale_min = 0.18
+
+            trend_ok = False
+
+            if side_norm == "long":
+
+                if ema7_tc > 0 and ema25_tc > 0 and ema99_tc > 0:
+                    if ema7_tc >= ema25_tc >= ema99_tc:
+                        trend_ok = True
+
+                else:
+                    if float(best_roi_pct) > float(roi_pct):
+                        trend_ok = True
+
+                if whale_dir_tc == "short" and whale_score_tc >= tc_whale_min:
+                    trend_ok = False
+
+            elif side_norm == "short":
+
+                if ema7_tc > 0 and ema25_tc > 0 and ema99_tc > 0:
+                    if ema7_tc <= ema25_tc <= ema99_tc:
+                        trend_ok = True
+
+                else:
+                    if float(best_roi_pct) > float(roi_pct):
+                        trend_ok = True
+
+                if whale_dir_tc == "long" and whale_score_tc >= tc_whale_min:
+                    trend_ok = False
+
+            if trend_ok and pnl_pct is not None and float(pnl_pct) >= float(tc_min_profit):
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][EXIT-BLOCK][TREND-CONTINUE] symbol=%s side=%s pnl_pct=%.6f roi_pct=%.6f best_roi_pct=%.6f ema7=%.6f ema25=%.6f ema99=%.6f whale_dir=%s whale_score=%.4f",
+                            sym_u,
+                            side_norm,
+                            float(pnl_pct),
+                            float(roi_pct),
+                            float(best_roi_pct),
+                            float(ema7_tc),
+                            float(ema25_tc),
+                            float(ema99_tc),
+                            whale_dir_tc,
+                            float(whale_score_tc),
+                        )
+                except Exception:
+                    pass
+                return None
 
         if float(roi_pct) <= -roi_hard_stop_pct:
             try:
@@ -8582,6 +8710,138 @@ class TradeExecutor:
                 pass
             return
 
+        # ------------------------------
+        # LATE CANDLE ENTRY FILTER
+        # ------------------------------
+
+        try:
+            candle_progress = float(extra0.get("candle_progress") or 0.0)
+        except Exception:
+            candle_progress = 0.0
+
+        late_candle_block = str(os.getenv("OPEN_BLOCK_LATE_CANDLE", "1")).strip().lower() in ("1","true","yes","on")
+        late_candle_max = float(os.getenv("OPEN_MAX_CANDLE_PROGRESS", "0.80") or 0.80)
+
+        if late_candle_block and candle_progress > late_candle_max:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK][LATE-CANDLE] symbol=%s side=%s progress=%.3f max=%.3f",
+                        sym_u,
+                        side_norm,
+                        float(candle_progress),
+                        float(late_candle_max),
+                    )
+            except Exception:
+                pass
+            return
+
+        # ------------------------------
+        # PUMP CHASE FILTER
+        # ------------------------------
+
+        try:
+            candle_change = float(extra0.get("candle_change_pct") or 0.0)
+        except Exception:
+            candle_change = 0.0
+
+        pump_chase_block = str(os.getenv("OPEN_BLOCK_PUMP_CHASE", "1")).strip().lower() in ("1","true","yes","on")
+        pump_max = float(os.getenv("OPEN_MAX_CANDLE_CHANGE", "0.007") or 0.007)
+
+        if pump_chase_block and side_norm == "long" and candle_change > pump_max:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK][PUMP-CHASE] symbol=%s side=%s change=%.4f max=%.4f",
+                        sym_u,
+                        side_norm,
+                        float(candle_change),
+                        float(pump_max),
+                    )
+            except Exception:
+                pass
+            return
+
+        # ------------------------------
+        # LIQUIDITY ABSORPTION FILTER
+        # ------------------------------
+
+        try:
+            candle_open = float(extra0.get("candle_open") or extra0.get("open") or 0.0)
+        except Exception:
+            candle_open = 0.0
+
+        try:
+            candle_high = float(extra0.get("candle_high") or extra0.get("high") or 0.0)
+        except Exception:
+            candle_high = 0.0
+
+        try:
+            candle_low = float(extra0.get("candle_low") or extra0.get("low") or 0.0)
+        except Exception:
+            candle_low = 0.0
+
+        try:
+            candle_close = float(extra0.get("candle_close") or extra0.get("close") or price or 0.0)
+        except Exception:
+            candle_close = 0.0
+
+        absorption_block = str(os.getenv("OPEN_BLOCK_LIQUIDITY_ABSORPTION", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+        try:
+            wick_ratio_thr = float(os.getenv("OPEN_ABSORPTION_WICK_RATIO", "0.45") or 0.45)
+        except Exception:
+            wick_ratio_thr = 0.45
+
+        try:
+            body_ratio_max = float(os.getenv("OPEN_ABSORPTION_BODY_RATIO_MAX", "0.35") or 0.35)
+        except Exception:
+            body_ratio_max = 0.35
+
+        if absorption_block and candle_high > 0 and candle_low > 0 and candle_close > 0 and candle_open > 0:
+            full_range = max(candle_high - candle_low, 1e-12)
+            body_size = abs(candle_close - candle_open)
+
+            upper_wick = candle_high - max(candle_open, candle_close)
+            lower_wick = min(candle_open, candle_close) - candle_low
+
+            upper_wick_ratio = upper_wick / full_range
+            lower_wick_ratio = lower_wick / full_range
+            body_ratio = body_size / full_range
+
+            if side_norm == "long":
+                if upper_wick_ratio >= wick_ratio_thr and body_ratio <= body_ratio_max:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][ABSORPTION] symbol=%s side=%s upper_wick_ratio=%.4f body_ratio=%.4f wick_thr=%.4f body_max=%.4f",
+                                sym_u,
+                                side_norm,
+                                float(upper_wick_ratio),
+                                float(body_ratio),
+                                float(wick_ratio_thr),
+                                float(body_ratio_max),
+                            )
+                    except Exception:
+                        pass
+                    return
+
+            if side_norm == "short":
+                if lower_wick_ratio >= wick_ratio_thr and body_ratio <= body_ratio_max:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][ABSORPTION] symbol=%s side=%s lower_wick_ratio=%.4f body_ratio=%.4f wick_thr=%.4f body_max=%.4f",
+                                sym_u,
+                                side_norm,
+                                float(lower_wick_ratio),
+                                float(body_ratio),
+                                float(wick_ratio_thr),
+                                float(body_ratio_max),
+                            )
+                    except Exception:
+                        pass
+                    return
 
         # ------------------------------
         # EMA TREND FILTER (NEW BLOCK)
@@ -8733,6 +8993,201 @@ class TradeExecutor:
         except Exception:
             pass
 
+        # ------------------------------
+        # FAKE BREAKOUT KILLER
+        # ------------------------------
+
+        try:
+            fb_open = float(extra0.get("candle_open") or extra0.get("open") or 0.0)
+        except Exception:
+            fb_open = 0.0
+
+        try:
+            fb_high = float(extra0.get("candle_high") or extra0.get("high") or 0.0)
+        except Exception:
+            fb_high = 0.0
+
+        try:
+            fb_low = float(extra0.get("candle_low") or extra0.get("low") or 0.0)
+        except Exception:
+            fb_low = 0.0
+
+        try:
+            fb_close = float(extra0.get("candle_close") or extra0.get("close") or px_now or 0.0)
+        except Exception:
+            fb_close = 0.0
+
+        fake_break_block = str(os.getenv("OPEN_BLOCK_FAKE_BREAKOUT_KILLER", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+        try:
+            fake_wick_thr = float(os.getenv("OPEN_FAKE_BREAKOUT_WICK_RATIO", "0.50") or 0.50)
+        except Exception:
+            fake_wick_thr = 0.50
+
+        try:
+            fake_body_max = float(os.getenv("OPEN_FAKE_BREAKOUT_BODY_RATIO_MAX", "0.30") or 0.30)
+        except Exception:
+            fake_body_max = 0.30
+
+        if fake_break_block and fb_high > 0 and fb_low > 0 and fb_open > 0 and fb_close > 0:
+            fb_range = max(fb_high - fb_low, 1e-12)
+            fb_body = abs(fb_close - fb_open)
+            fb_body_ratio = fb_body / fb_range
+
+            fb_upper_wick = fb_high - max(fb_open, fb_close)
+            fb_lower_wick = min(fb_open, fb_close) - fb_low
+
+            fb_upper_ratio = fb_upper_wick / fb_range
+            fb_lower_ratio = fb_lower_wick / fb_range
+
+            if side_norm == "long" and fb_upper_ratio >= fake_wick_thr and fb_body_ratio <= fake_body_max:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][FAKE-BREAKOUT] symbol=%s side=%s upper_wick_ratio=%.4f body_ratio=%.4f wick_thr=%.4f body_max=%.4f",
+                            sym_u,
+                            side_norm,
+                            float(fb_upper_ratio),
+                            float(fb_body_ratio),
+                            float(fake_wick_thr),
+                            float(fake_body_max),
+                        )
+                except Exception:
+                    pass
+                return
+
+            if side_norm == "short" and fb_lower_ratio >= fake_wick_thr and fb_body_ratio <= fake_body_max:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][FAKE-BREAKOUT] symbol=%s side=%s lower_wick_ratio=%.4f body_ratio=%.4f wick_thr=%.4f body_max=%.4f",
+                            sym_u,
+                            side_norm,
+                            float(fb_lower_ratio),
+                            float(fb_body_ratio),
+                            float(fake_wick_thr),
+                            float(fake_body_max),
+                        )
+                except Exception:
+                    pass
+                return
+
+        # ===== WHALE OPPOSITE DIRECTION BLOCK =====
+        try:
+            whale_dir_now = str(extra0.get("whale_dir") or "").strip().lower()
+            whale_score_now = float(extra0.get("whale_score") or 0.0)
+            whale_oppose_min = float(os.getenv("OPEN_WHALE_OPPOSE_BLOCK_MIN_SCORE", "0.15") or 0.15)
+
+            if side_norm == "long" and whale_dir_now == "short" and whale_score_now >= whale_oppose_min:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] whale opposite long veto | symbol=%s side=%s whale_dir=%s whale_score=%.4f min_score=%.4f",
+                            sym_u,
+                            side_norm,
+                            whale_dir_now,
+                            float(whale_score_now),
+                            float(whale_oppose_min),
+                        )
+                except Exception:
+                    pass
+                return
+
+            if side_norm == "short" and whale_dir_now == "long" and whale_score_now >= whale_oppose_min:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK] whale opposite short veto | symbol=%s side=%s whale_dir=%s whale_score=%.4f min_score=%.4f",
+                            sym_u,
+                            side_norm,
+                            whale_dir_now,
+                            float(whale_score_now),
+                            float(whale_oppose_min),
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        # ------------------------------
+        # PUMP CHASE FILTER
+        # ------------------------------
+        try:
+
+            pump_enable = str(
+                os.getenv("PUMP_CHASE_FILTER_ENABLE", "1")
+            ).lower() in ("1", "true", "yes")
+
+            if pump_enable:
+
+                atr_val = float(extra.get("atr") or 0.0)
+                candle_open = float(extra.get("open") or 0.0)
+                candle_close = float(extra.get("close") or 0.0)
+
+                if atr_val > 0 and candle_open > 0 and candle_close > 0:
+
+                    move = abs(candle_close - candle_open)
+
+                    pump_factor = float(
+                        os.getenv("PUMP_CHASE_ATR_FACTOR", "1.2")
+                    )
+
+                    if move > atr_val * pump_factor:
+
+                        if self.system_logger:
+                            self.system_logger.info(
+                                "[EXEC][OPEN-BLOCK][PUMP-CHASE] symbol=%s move=%.6f atr=%.6f",
+                                symbol,
+                                move,
+                                atr_val,
+                            )
+
+                        return False
+
+        except Exception:
+            pass
+
+        # ------------------------------
+        # EMA DISTANCE ANTI-PUMP FILTER
+        # ------------------------------
+
+        try:
+            ema7_dist = float(extra0.get("ema7") or extra0.get("ema_fast") or 0.0)
+        except Exception:
+            ema7_dist = 0.0
+
+        ema_distance_block = str(os.getenv("OPEN_BLOCK_EMA_DISTANCE", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+        try:
+            ema_distance_max = float(os.getenv("OPEN_EMA_DISTANCE_MAX_PCT", "0.0018") or 0.0018)
+        except Exception:
+            ema_distance_max = 0.0018
+
+        try:
+            px_now = float(price or extra0.get("price") or extra0.get("close") or 0.0)
+        except Exception:
+            px_now = 0.0
+
+        if ema_distance_block and px_now > 0 and ema7_dist > 0:
+            ema_dist_pct = abs(float(px_now) - float(ema7_dist)) / max(abs(float(ema7_dist)), 1e-12)
+
+            if ema_dist_pct > ema_distance_max:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][EMA-DIST] symbol=%s side=%s price=%.6f ema7=%.6f dist_pct=%.4f max=%.4f",
+                            sym_u,
+                            side_norm,
+                            float(px_now),
+                            float(ema7_dist),
+                            float(ema_dist_pct),
+                            float(ema_distance_max),
+                        )
+                except Exception:
+                    pass
+                return
+
         # ===== MICRO PULLBACK ENTRY FILTER =====
         try:
             ok_pullback, pullback_reason = self._micro_pullback_entry_ok(
@@ -8755,6 +9210,43 @@ class TradeExecutor:
                 return
         except Exception:
             pass
+
+        # ------------------------------
+        # WHALE MOMENTUM FILTER
+        # ------------------------------
+
+        whale_momentum_block = str(os.getenv("OPEN_BLOCK_WHALE_MOMENTUM", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+        try:
+            whale_score_now = float(extra0.get("whale_score") or 0.0)
+        except Exception:
+            whale_score_now = 0.0
+
+        try:
+            whale_dir_now = str(extra0.get("whale_dir") or "").strip().lower()
+        except Exception:
+            whale_dir_now = ""
+
+        try:
+            whale_momentum_min = float(os.getenv("OPEN_WHALE_MOMENTUM_MIN_SCORE", "0.22") or 0.22)
+        except Exception:
+            whale_momentum_min = 0.22
+
+        if whale_momentum_block and whale_dir_now in ("long", "short"):
+            if whale_score_now < whale_momentum_min:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][WHALE-MOMENTUM] symbol=%s side=%s whale_dir=%s whale_score=%.4f min_score=%.4f",
+                            sym_u,
+                            side_norm,
+                            whale_dir_now,
+                            float(whale_score_now),
+                            float(whale_momentum_min),
+                        )
+                except Exception:
+                    pass
+                return
 
         # ===== VOLUME SPIKE TRIGGER =====
         try:
