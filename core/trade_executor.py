@@ -1417,6 +1417,155 @@ class TradeExecutor:
             return float(cached)
 
         return None
+
+    def _backfill_ema_metrics(
+        self,
+        symbol: str,
+        interval: str,
+        extra: Optional[Dict[str, Any]] = None,
+        limit: int = 120,
+    ) -> Dict[str, float]:
+        extra0 = extra if isinstance(extra, dict) else {}
+
+        def _safe_float(v: Any, default: float = 0.0) -> float:
+            try:
+                return float(v)
+            except Exception:
+                return float(default)
+
+        ema7 = _safe_float(extra0.get("ema7") or extra0.get("ema_fast") or 0.0)
+        ema25 = _safe_float(extra0.get("ema25") or extra0.get("ema_slow") or 0.0)
+        ema99 = _safe_float(extra0.get("ema99") or 0.0)
+
+        if ema7 > 0 and ema25 > 0 and ema99 > 0:
+            return {
+                "ema7": float(ema7),
+                "ema25": float(ema25),
+                "ema99": float(ema99),
+                "ema_fast": float(ema7),
+                "ema_slow": float(ema25),
+            }
+
+        closes: List[float] = []
+        source = "none"
+
+        # 1) raw / cached closes
+        try:
+            raw = extra0.get("raw") or {}
+            raw = raw if isinstance(raw, dict) else {}
+            maybe_closes = (
+                raw.get("closes")
+                or extra0.get("closes")
+                or raw.get("close_series")
+                or extra0.get("close_series")
+                or []
+            )
+            if isinstance(maybe_closes, (list, tuple)):
+                closes = [float(x) for x in maybe_closes if x is not None]
+                if len(closes) >= 30:
+                    source = "extra_closes"
+        except Exception:
+            closes = []
+
+        # 2) client.futures_klines
+        if len(closes) < 30:
+            try:
+                client = getattr(self, "client", None)
+                fn = getattr(client, "futures_klines", None) if client is not None else None
+                if callable(fn):
+                    rows = fn(
+                        symbol=str(symbol).upper(),
+                        interval=str(interval or "3m"),
+                        limit=int(limit),
+                    )
+                    tmp: List[float] = []
+                    if isinstance(rows, list):
+                        for row in rows:
+                            try:
+                                if isinstance(row, (list, tuple)) and len(row) >= 5:
+                                    tmp.append(float(row[4]))
+                                elif isinstance(row, dict):
+                                    tmp.append(float(row.get("close")))
+                            except Exception:
+                                pass
+                    if len(tmp) >= 30:
+                        closes = tmp
+                        source = "futures_klines"
+            except Exception as e:
+                try:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][STATE][EMA] futures_klines failed | symbol=%s interval=%s err=%s",
+                            str(symbol).upper(),
+                            str(interval or ""),
+                            str(e),
+                        )
+                except Exception:
+                    pass
+
+        # 3) last fallback: tek fiyatla doldurma yerine başarısızlığı görünür bırak
+        if len(closes) < 30:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][STATE][EMA] insufficient closes | symbol=%s interval=%s closes_n=%s source=%s",
+                        str(symbol).upper(),
+                        str(interval or ""),
+                        int(len(closes)),
+                        source,
+                    )
+            except Exception:
+                pass
+            return {
+                "ema7": 0.0,
+                "ema25": 0.0,
+                "ema99": 0.0,
+                "ema_fast": 0.0,
+                "ema_slow": 0.0,
+            }
+
+        if len(closes) < 99:
+            last_px = _safe_float(closes[-1] if closes else 0.0)
+            closes = list(closes) + [last_px] * (99 - len(closes))
+
+        def _ema(values: List[float], span: int) -> float:
+            if not values:
+                return 0.0
+            alpha = 2.0 / (float(span) + 1.0)
+            ema_val = float(values[0])
+            for v in values[1:]:
+                ema_val = alpha * float(v) + (1.0 - alpha) * ema_val
+            return float(ema_val)
+
+        ema7 = _ema(closes, 7)
+        ema25 = _ema(closes, 25)
+        ema99 = _ema(closes, 99)
+
+        result = {
+            "ema7": float(ema7),
+            "ema25": float(ema25),
+            "ema99": float(ema99),
+            "ema_fast": float(ema7),
+            "ema_slow": float(ema25),
+        }
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE][EMA] symbol=%s interval=%s ema7=%.6f ema25=%.6f ema99=%.6f closes_n=%s source=%s",
+                    str(symbol).upper(),
+                    str(interval or ""),
+                    float(result["ema7"]),
+                    float(result["ema25"]),
+                    float(result["ema99"]),
+                    int(len(closes)),
+                    source,
+                )
+        except Exception:
+            pass
+
+        return result
+
     # ---------------------------------------------------------
     # exchange info cache
     # ---------------------------------------------------------
@@ -5321,6 +5470,35 @@ class TradeExecutor:
         sl_mult_adj = 1.0
         tp_mult_adj = 1.0
 
+        try:
+            ema7_v = float(extra.get("ema7") or extra.get("ema_fast") or 0.0)
+        except Exception:
+            ema7_v = 0.0
+
+        try:
+            ema25_v = float(extra.get("ema25") or extra.get("ema_slow") or 0.0)
+        except Exception:
+            ema25_v = 0.0
+
+        try:
+            ema99_v = float(extra.get("ema99") or 0.0)
+        except Exception:
+            ema99_v = 0.0
+
+        if ema7_v <= 0 or ema25_v <= 0 or ema99_v <= 0:
+            try:
+                ema_fill = self._backfill_ema_metrics(
+                    symbol=str(symbol).upper(),
+                    interval=str(interval or "3m"),
+                    extra=extra,
+                )
+            except Exception:
+                ema_fill = {}
+
+            ema7_v = float(ema_fill.get("ema7") or ema7_v or 0.0)
+            ema25_v = float(ema_fill.get("ema25") or ema25_v or 0.0)
+            ema99_v = float(ema_fill.get("ema99") or ema99_v or 0.0)
+
         pos: Dict[str, Any] = {
             "symbol": str(symbol).upper(),
             "side": str(signal),
@@ -5338,6 +5516,32 @@ class TradeExecutor:
             "atr_value": float(atr_value),
             "highest_price": float(price),
             "lowest_price": float(price),
+
+            # ------------------------------
+            # PERSIST LEVERAGE STATE
+            # ------------------------------
+            "target_leverage": int(extra.get("target_leverage") or 0),
+            "applied_leverage": int(
+                extra.get("applied_leverage")
+                or extra.get("target_leverage")
+                or 0
+            ),
+            "leverage": int(
+                extra.get("leverage")
+                or extra.get("applied_leverage")
+                or extra.get("target_leverage")
+                or 0
+            ),
+
+            # ------------------------------
+            # PERSIST EMA STATE
+            # ------------------------------
+            "ema7": float(ema7_v),
+            "ema25": float(ema25_v),
+            "ema99": float(ema99_v),
+            "ema_fast": float(ema7_v),
+            "ema_slow": float(ema25_v),
+
             "meta": {
                 "probs": dict(probs or {}),
                 "extra": dict(extra or {}),
@@ -5349,6 +5553,7 @@ class TradeExecutor:
         return pos, opened_at
 
     @staticmethod
+
     def _calc_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
         if qty <= 0:
             return 0.0
@@ -8280,6 +8485,37 @@ class TradeExecutor:
             abs(float(final_notional) - float(raw_notional)) > 1e-12
         )
 
+        # ------------------------------
+        # PERSIST ENTRY TREND METRICS
+        # ------------------------------
+        try:
+            ema_backfill = self._backfill_ema_metrics(
+                symbol=sym_u,
+                interval=interval0,
+                extra=extra_safe,
+            )
+        except Exception:
+            ema_backfill = {}
+
+        extra_safe["ema7"] = float(ema_backfill.get("ema7") or 0.0)
+        extra_safe["ema25"] = float(ema_backfill.get("ema25") or 0.0)
+        extra_safe["ema99"] = float(ema_backfill.get("ema99") or 0.0)
+        extra_safe["ema_fast"] = float(ema_backfill.get("ema_fast") or extra_safe["ema7"] or 0.0)
+        extra_safe["ema_slow"] = float(ema_backfill.get("ema_slow") or extra_safe["ema25"] or 0.0)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][STATE][EMA] symbol=%s interval=%s ema7=%.6f ema25=%.6f ema99=%.6f source=open_position_from_signal",
+                    sym_u,
+                    interval0,
+                    float(extra_safe["ema7"]),
+                    float(extra_safe["ema25"]),
+                    float(extra_safe["ema99"]),
+                )
+        except Exception:
+            pass
+
         target_leverage = self._resolve_target_leverage(extra_safe)
 
         target_leverage = self._apply_volatility_adaptive_leverage(
@@ -8301,7 +8537,19 @@ class TradeExecutor:
         )
 
         target_leverage = int(max(1, min(int(target_leverage), int(self.max_leverage))))
+
+        applied_leverage = int(target_leverage)
+        try:
+            if not self.dry_run:
+                applied_leverage = int(self._set_symbol_leverage(sym_u, int(target_leverage)))
+            else:
+                applied_leverage = int(target_leverage)
+        except Exception:
+            applied_leverage = int(target_leverage)
+
         extra_safe["target_leverage"] = int(target_leverage)
+        extra_safe["applied_leverage"] = int(applied_leverage)
+        extra_safe["leverage"] = int(applied_leverage)
 
         whale_bias_now = self._whale_bias(side=side0, extra=extra_safe)
         extra_safe["whale_bias"] = whale_bias_now
@@ -8379,6 +8627,22 @@ class TradeExecutor:
         pos["interval"] = str(pos.get("interval") or interval0).strip() or "5m"
 
         self._set_position(sym_u, pos)
+
+        try:
+            if getattr(self, "redis", None) is not None:
+                self.redis.setex(
+                    f"bot:smart_entry_cd:{sym_u}",
+                    3600,
+                    json.dumps(
+                        {
+                            "ts": float(time.time()),
+                            "side": str(side0),
+                            "score": float(signal_score),
+                        }
+                    ),
+                )
+        except Exception:
+            pass
 
         try:
             chk_local = self._get_position(sym_u)
@@ -8793,6 +9057,81 @@ class TradeExecutor:
             except Exception:
                 pass
             return
+
+        # ------------------------------
+        # SMART ENTRY COOLDOWN
+        # ------------------------------
+        try:
+            smart_entry_cooldown_enable = bool(
+                int(os.getenv("SMART_ENTRY_COOLDOWN_ENABLE", "1") or 1)
+            )
+        except Exception:
+            smart_entry_cooldown_enable = True
+
+        if smart_entry_cooldown_enable:
+            try:
+                smart_entry_cooldown_sec = float(
+                    os.getenv("SMART_ENTRY_COOLDOWN_SEC", "180") or 180
+                )
+            except Exception:
+                smart_entry_cooldown_sec = 180.0
+
+            try:
+                smart_entry_same_side_only = bool(
+                    int(os.getenv("SMART_ENTRY_COOLDOWN_SAME_SIDE_ONLY", "1") or 1)
+                )
+            except Exception:
+                smart_entry_same_side_only = True
+
+            try:
+                smart_entry_min_score_bypass = float(
+                    os.getenv("SMART_ENTRY_COOLDOWN_BYPASS_SCORE", "0.72") or 0.72
+                )
+            except Exception:
+                smart_entry_min_score_bypass = 0.72
+
+            try:
+                cd_key = f"bot:smart_entry_cd:{sym_u}"
+                cd_raw = self.redis.get(cd_key) if getattr(self, "redis", None) is not None else None
+                cd_obj = json.loads(cd_raw) if cd_raw else {}
+                if not isinstance(cd_obj, dict):
+                    cd_obj = {}
+            except Exception:
+                cd_obj = {}
+
+            try:
+                last_ts = float(cd_obj.get("ts") or 0.0)
+            except Exception:
+                last_ts = 0.0
+
+            last_side = str(cd_obj.get("side") or "").strip().lower()
+            now_ts_cd = float(time.time())
+            cooldown_active = last_ts > 0 and (now_ts_cd - last_ts) < smart_entry_cooldown_sec
+
+            same_side_match = (not smart_entry_same_side_only) or (last_side == side_norm)
+            bypass_strong_signal = float(signal_score) >= float(smart_entry_min_score_bypass)
+
+            if cooldown_active and same_side_match and not bypass_strong_signal:
+                try:
+                    wait_left = float(smart_entry_cooldown_sec - (now_ts_cd - last_ts))
+                except Exception:
+                    wait_left = 0.0
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][SMART-COOLDOWN] symbol=%s side=%s last_side=%s wait_left=%.1f cooldown=%.1f score=%.4f bypass=%.4f",
+                            sym_u,
+                            side_norm,
+                            last_side or "-",
+                            float(wait_left),
+                            float(smart_entry_cooldown_sec),
+                            float(signal_score),
+                            float(smart_entry_min_score_bypass),
+                        )
+                except Exception:
+                    pass
+                return
 
         # ------------------------------
         # ENTRY MARKET CONTEXT
