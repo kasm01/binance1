@@ -9559,13 +9559,11 @@ class TradeExecutor:
                 and (trend_px_now <= 0.0 or (trend_px_now > ema7_1m and trend_px_now > ema7_3m))
             )
             short_ok = (
-                ema7_1m > 0 and ema25_1m > 0 and ema7_3m > 0 and ema25_3m > 0 and ema99_3m > 0
+                ema7_1m > 0 and ema25_1m > 0 and ema7_3m > 0 and ema25_3m > 0
                 and ema7_1m < ema25_1m
                 and ema7_3m < ema25_3m
-                and ema25_3m <= ema99_3m * 1.003
-                and (trend_px_now <= 0.0 or (trend_px_now < ema7_1m and trend_px_now < ema7_3m))
+                and (trend_px_now <= 0.0 or trend_px_now < ema25_1m)
             )
-
             if side_norm == "long" and not long_ok:
                 try:
                     if self.logger:
