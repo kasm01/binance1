@@ -9498,8 +9498,172 @@ class TradeExecutor:
                     return
             except Exception:
                 pass
+
         # ------------------------------
-        # EMA TREND FILTER (MTF: 1m + 3m)
+        # EARLY MOMENTUM ENTRY (SCALP)
+        # ------------------------------
+        try:
+            candle_progress = float(extra0.get("candle_progress_1m") or 0.0)
+        except Exception:
+            candle_progress = 0.0
+
+        try:
+            close_jump_pct = float(extra0.get("close_jump_pct") or 0.0)
+        except Exception:
+            close_jump_pct = 0.0
+
+        try:
+            range_1m = float(extra0.get("range_1m") or 0.0)
+        except Exception:
+            range_1m = 0.0
+
+        try:
+            avg_range_1m = float(extra0.get("avg_range_1m") or 0.0)
+        except Exception:
+            avg_range_1m = 0.0
+
+
+        early_momentum = False
+
+        # mumun ilk %20'si
+        if candle_progress < 0.20:
+
+            # küçük momentum
+            if close_jump_pct > 0.0006:
+                early_momentum = True
+
+            # normalden büyük mum
+            if avg_range_1m > 0 and range_1m > avg_range_1m * 1.4:
+                early_momentum = True
+
+
+        # erken momentum yoksa scalp erken giriş engelle
+        if candle_progress < 0.12 and not early_momentum:
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK][EARLY-GATE] symbol=%s side=%s candle_progress_1m=%.4f close_jump_pct=%.6f range_1m=%.6f avg_range_1m=%.6f",
+                        sym_u,
+                        side_norm,
+                        float(candle_progress),
+                        float(close_jump_pct),
+                        float(range_1m),
+                        float(avg_range_1m),
+                    )
+            except Exception:
+                pass
+
+            return
+
+        # ------------------------------
+        # MICRO PULLBACK ENTRY (SCALP)
+        # ------------------------------
+        try:
+            px_now_mp = float(
+                price
+                or extra0.get("price")
+                or extra0.get("close")
+                or extra0.get("last_price")
+                or extra0.get("mark_price")
+                or extra0.get("mid_price")
+                or 0.0
+            )
+        except Exception:
+            px_now_mp = 0.0
+
+        try:
+            ema7_now_mp = float(extra0.get("ema7") or extra0.get("ema_fast") or 0.0)
+        except Exception:
+            ema7_now_mp = 0.0
+
+        try:
+            ema25_now_mp = float(extra0.get("ema25") or extra0.get("ema_slow") or 0.0)
+        except Exception:
+            ema25_now_mp = 0.0
+
+        try:
+            candle_progress_mp = float(extra0.get("candle_progress_1m") or 0.0)
+        except Exception:
+            candle_progress_mp = 0.0
+
+        try:
+            close_jump_pct_mp = float(extra0.get("close_jump_pct") or 0.0)
+        except Exception:
+            close_jump_pct_mp = 0.0
+
+        try:
+            range_1m_mp = float(extra0.get("range_1m") or 0.0)
+        except Exception:
+            range_1m_mp = 0.0
+
+        try:
+            avg_range_1m_mp = float(extra0.get("avg_range_1m") or 0.0)
+        except Exception:
+            avg_range_1m_mp = 0.0
+
+        micro_pullback_block = False
+        micro_pullback_reason = ""
+
+        if px_now_mp > 0.0 and ema7_now_mp > 0.0 and ema25_now_mp > 0.0:
+            try:
+                dist_to_ema7 = abs(px_now_mp - ema7_now_mp) / max(abs(ema7_now_mp), 1e-12)
+            except Exception:
+                dist_to_ema7 = 0.0
+
+            try:
+                dist_to_ema25 = abs(px_now_mp - ema25_now_mp) / max(abs(ema25_now_mp), 1e-12)
+            except Exception:
+                dist_to_ema25 = 0.0
+
+            if side_norm == "long":
+                # Long için: fiyat çok kaçmışsa bekle, ema7/ema25 civarına çekilirse izin ver
+                if candle_progress_mp <= 0.55 and close_jump_pct_mp >= 0.0018 and dist_to_ema7 >= 0.0018:
+                    micro_pullback_block = True
+                    micro_pullback_reason = "wait_long_pullback"
+
+                if micro_pullback_block and px_now_mp <= ema7_now_mp * 1.0012:
+                    micro_pullback_block = False
+                    micro_pullback_reason = ""
+
+            elif side_norm == "short":
+                # Short için: fiyat çok kaçmışsa bekle, ema7/ema25 civarına çekilirse izin ver
+                if candle_progress_mp <= 0.55 and close_jump_pct_mp >= 0.0018 and dist_to_ema7 >= 0.0018:
+                    micro_pullback_block = True
+                    micro_pullback_reason = "wait_short_pullback"
+
+                if micro_pullback_block and px_now_mp >= ema7_now_mp * 0.9988:
+                    micro_pullback_block = False
+                    micro_pullback_reason = ""
+
+            # Mum aşırı genişlemişse, pullback bekle
+            if not micro_pullback_block and avg_range_1m_mp > 0.0 and range_1m_mp >= avg_range_1m_mp * 1.8:
+                if candle_progress_mp <= 0.60:
+                    micro_pullback_block = True
+                    micro_pullback_reason = "range_expanded_wait_pullback"
+
+        if micro_pullback_block:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK][MICRO-PULLBACK] symbol=%s side=%s reason=%s px=%.6f ema7=%.6f ema25=%.6f candle_progress_1m=%.4f close_jump_pct=%.6f range_1m=%.6f avg_range_1m=%.6f",
+                        sym_u,
+                        side_norm,
+                        micro_pullback_reason,
+                        float(px_now_mp),
+                        float(ema7_now_mp),
+                        float(ema25_now_mp),
+                        float(candle_progress_mp),
+                        float(close_jump_pct_mp),
+                        float(range_1m_mp),
+                        float(avg_range_1m_mp),
+                    )
+            except Exception:
+                pass
+            return
+
+        # ------------------------------
+        # EMA TREND FILTER (SCALP OPTIMIZED)
         # ------------------------------
         if require_ema_trend:
             try:
@@ -9516,26 +9680,21 @@ class TradeExecutor:
                 ema7_1m = float(ema_1m.get("ema7") or ema_1m.get("ema_fast") or 0.0)
             except Exception:
                 ema7_1m = 0.0
+
             try:
                 ema25_1m = float(ema_1m.get("ema25") or ema_1m.get("ema_slow") or 0.0)
             except Exception:
                 ema25_1m = 0.0
-            try:
-                ema99_1m = float(ema_1m.get("ema99") or 0.0)
-            except Exception:
-                ema99_1m = 0.0
+
             try:
                 ema7_3m = float(ema_3m.get("ema7") or ema_3m.get("ema_fast") or 0.0)
             except Exception:
                 ema7_3m = 0.0
+
             try:
                 ema25_3m = float(ema_3m.get("ema25") or ema_3m.get("ema_slow") or 0.0)
             except Exception:
                 ema25_3m = 0.0
-            try:
-                ema99_3m = float(ema_3m.get("ema99") or 0.0)
-            except Exception:
-                ema99_3m = 0.0
 
             trend_px_now = 0.0
             try:
@@ -9551,26 +9710,53 @@ class TradeExecutor:
             except Exception:
                 trend_px_now = 0.0
 
+            # EMA farkı (flat market kontrolü)
+            ema_gap_1m = abs(ema7_1m - ema25_1m)
+            ema_gap_3m = abs(ema7_3m - ema25_3m)
+
+            flat_market = (
+                ema_gap_1m < (ema25_1m * 0.0008)
+                and ema_gap_3m < (ema25_3m * 0.0008)
+            )
+
+            # Trend skor sistemi
+            trend_long_score = 0
+            trend_short_score = 0
+
+            if ema7_1m > ema25_1m:
+                trend_long_score += 1
+            if ema7_3m > ema25_3m:
+                trend_long_score += 1
+
+            if ema7_1m < ema25_1m:
+                trend_short_score += 1
+            if ema7_3m < ema25_3m:
+                trend_short_score += 1
+
             long_ok = (
-                ema7_1m > 0 and ema25_1m > 0 and ema7_3m > 0 and ema25_3m > 0 and ema99_3m > 0
-                and ema7_1m > ema25_1m
-                and ema7_3m > ema25_3m
-                and ema25_3m >= ema99_3m * 0.997
-                and (trend_px_now <= 0.0 or (trend_px_now > ema7_1m and trend_px_now > ema7_3m))
+                flat_market
+                or trend_long_score >= 1
+                or (trend_px_now > ema7_1m and trend_px_now > ema7_3m)
             )
+
             short_ok = (
-                ema7_1m > 0 and ema25_1m > 0 and ema7_3m > 0 and ema25_3m > 0
-                and ema7_1m < ema25_1m
-                and ema7_3m < ema25_3m
-                and (trend_px_now <= 0.0 or trend_px_now < ema25_1m)
+                flat_market
+                or trend_short_score >= 1
+                or (trend_px_now < ema25_1m and trend_px_now < ema25_3m)
             )
+
             if side_norm == "long" and not long_ok:
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema99_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f ema99_3m=%.6f",
-                            sym_u, side_norm, float(trend_px_now), float(ema7_1m), float(ema25_1m),
-                            float(ema99_1m), float(ema7_3m), float(ema25_3m), float(ema99_3m),
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f",
+                            sym_u,
+                            side_norm,
+                            float(trend_px_now),
+                            float(ema7_1m),
+                            float(ema25_1m),
+                            float(ema7_3m),
+                            float(ema25_3m),
                         )
                 except Exception:
                     pass
@@ -9580,9 +9766,14 @@ class TradeExecutor:
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema99_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f ema99_3m=%.6f",
-                            sym_u, side_norm, float(trend_px_now), float(ema7_1m), float(ema25_1m),
-                            float(ema99_1m), float(ema7_3m), float(ema25_3m), float(ema99_3m),
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f",
+                            sym_u,
+                            side_norm,
+                            float(trend_px_now),
+                            float(ema7_1m),
+                            float(ema25_1m),
+                            float(ema7_3m),
+                            float(ema25_3m),
                         )
                 except Exception:
                     pass
@@ -9740,49 +9931,122 @@ class TradeExecutor:
         # EARLY ENTRY GATE / LATE MOVE PENALTY
         # ------------------------------
         try:
-            early_entry_gate_enable = str(os.getenv("EARLY_ENTRY_GATE_ENABLE", "1")).strip().lower() in ("1", "true", "yes", "on")
+            early_entry_gate_enable = str(
+                os.getenv("EARLY_ENTRY_GATE_ENABLE", "1")
+            ).strip().lower() in ("1", "true", "yes", "on")
         except Exception:
             early_entry_gate_enable = True
 
         if early_entry_gate_enable:
             try:
-                early_entry_max_progress = float(os.getenv("EARLY_ENTRY_MAX_CANDLE_PROGRESS", "0.45") or 0.45)
-                early_entry_max_close_jump_pct = float(os.getenv("EARLY_ENTRY_MAX_CLOSE_JUMP_PCT", "0.0018") or 0.0018)
-                early_entry_max_range_vs_avg = float(os.getenv("EARLY_ENTRY_MAX_RANGE_VS_AVG", "1.60") or 1.60)
-                early_entry_min_ema_slope_pct = float(os.getenv("EARLY_ENTRY_MIN_EMA_SLOPE_PCT", "0.00010") or 0.00010)
+                early_entry_max_progress = float(
+                    os.getenv("EARLY_ENTRY_MAX_CANDLE_PROGRESS", "0.45") or 0.45
+                )
+                early_entry_max_close_jump_pct = float(
+                    os.getenv("EARLY_ENTRY_MAX_CLOSE_JUMP_PCT", "0.0018") or 0.0018
+                )
+                early_entry_max_range_vs_avg = float(
+                    os.getenv("EARLY_ENTRY_MAX_RANGE_VS_AVG", "1.60") or 1.60
+                )
+                early_entry_min_ema_slope_pct = float(
+                    os.getenv("EARLY_ENTRY_MIN_EMA_SLOPE_PCT", "0.00010") or 0.00010
+                )
             except Exception:
-                early_entry_max_progress, early_entry_max_close_jump_pct = 0.45, 0.0018
-                early_entry_max_range_vs_avg, early_entry_min_ema_slope_pct = 1.60, 0.00010
+                early_entry_max_progress = 0.45
+                early_entry_max_close_jump_pct = 0.0018
+                early_entry_max_range_vs_avg = 1.60
+                early_entry_min_ema_slope_pct = 0.00010
 
             try:
-                ema_slope_pct_gate = ((float(ema7_now_1m) - float(ema7_prev_1m)) / max(abs(float(ema7_prev_1m)), 1e-12)) if ema7_prev_1m > 0 else 0.0
+                cp_1m = float(candle_progress_1m or 0.0)
             except Exception:
-                ema_slope_pct_gate = 0.0
+                cp_1m = 0.0
 
-            late_gate_reason = ""
-            if candle_progress_1m > 0 and candle_progress_1m >= early_entry_max_progress:
-                late_gate_reason = "late_progress"
-            if not late_gate_reason and close_jump_pct > 0 and close_jump_pct >= early_entry_max_close_jump_pct:
-                late_gate_reason = "late_close_jump"
-            if not late_gate_reason and avg_range_1m > 0 and range_1m > 0 and range_1m >= avg_range_1m * early_entry_max_range_vs_avg:
-                late_gate_reason = "late_range_expansion"
-            if not late_gate_reason:
-                if side_norm == "long" and ema_slope_pct_gate <= early_entry_min_ema_slope_pct:
-                    late_gate_reason = "weak_early_long"
-                elif side_norm == "short" and (-ema_slope_pct_gate) <= early_entry_min_ema_slope_pct:
-                    late_gate_reason = "weak_early_short"
+            try:
+                cj_1m = float(close_jump_pct or 0.0)
+            except Exception:
+                cj_1m = 0.0
 
-            if late_gate_reason:
+            try:
+                r_1m = float(range_1m or 0.0)
+            except Exception:
+                r_1m = 0.0
+
+            try:
+                ar_1m = float(avg_range_1m or 0.0)
+            except Exception:
+                ar_1m = 0.0
+
+            try:
+                e7_now_1m = float(ema7_now_1m or 0.0)
+            except Exception:
+                e7_now_1m = 0.0
+
+            try:
+                e7_prev_1m = float(ema7_prev_1m or 0.0)
+            except Exception:
+                e7_prev_1m = 0.0
+
+            # Veri yoksa gate çalışmasın
+            early_gate_has_data = (
+                cp_1m > 0.0
+                and (r_1m > 0.0 or ar_1m > 0.0 or cj_1m > 0.0)
+            )
+
+            if early_gate_has_data:
                 try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC][OPEN-BLOCK][EARLY-GATE] symbol=%s side=%s reason=%s candle_progress_1m=%.4f close_jump_pct=%.4f range_1m=%.6f avg_range_1m=%.6f ema7_now_1m=%.6f ema7_prev_1m=%.6f",
-                            sym_u, side_norm, late_gate_reason, float(candle_progress_1m), float(close_jump_pct),
-                            float(range_1m), float(avg_range_1m), float(ema7_now_1m), float(ema7_prev_1m),
-                        )
+                    ema_slope_pct_gate = (
+                        (e7_now_1m - e7_prev_1m) / max(abs(e7_prev_1m), 1e-12)
+                        if e7_prev_1m > 0.0 and e7_now_1m > 0.0
+                        else 0.0
+                    )
                 except Exception:
-                    pass
-                return
+                    ema_slope_pct_gate = 0.0
+
+                late_gate_reason = ""
+
+                if cp_1m >= early_entry_max_progress:
+                    late_gate_reason = "late_progress"
+
+                if (
+                    not late_gate_reason
+                    and cj_1m > 0.0
+                    and cj_1m >= early_entry_max_close_jump_pct
+                ):
+                    late_gate_reason = "late_close_jump"
+
+                if (
+                    not late_gate_reason
+                    and ar_1m > 0.0
+                    and r_1m > 0.0
+                    and r_1m >= ar_1m * early_entry_max_range_vs_avg
+                ):
+                    late_gate_reason = "late_range_expansion"
+
+                if not late_gate_reason and e7_prev_1m > 0.0 and e7_now_1m > 0.0:
+                    if side_norm == "long" and ema_slope_pct_gate <= early_entry_min_ema_slope_pct:
+                        late_gate_reason = "weak_early_long"
+                    elif side_norm == "short" and (-ema_slope_pct_gate) <= early_entry_min_ema_slope_pct:
+                        late_gate_reason = "weak_early_short"
+
+                if late_gate_reason:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][EARLY-GATE] symbol=%s side=%s reason=%s candle_progress_1m=%.4f close_jump_pct=%.6f range_1m=%.6f avg_range_1m=%.6f ema7_now_1m=%.6f ema7_prev_1m=%.6f",
+                                sym_u,
+                                side_norm,
+                                late_gate_reason,
+                                float(cp_1m),
+                                float(cj_1m),
+                                float(r_1m),
+                                float(ar_1m),
+                                float(e7_now_1m),
+                                float(e7_prev_1m),
+                            )
+                    except Exception:
+                        pass
+                    return
 
         # ------------------------------
         # REMAINING FILTERS / OPEN FLOW
