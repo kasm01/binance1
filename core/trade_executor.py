@@ -9523,38 +9523,48 @@ class TradeExecutor:
             avg_range_1m = 0.0
 
 
-        early_momentum = False
+        # ------------------------------------------------
+        # veri yoksa EARLY GATE çalışmasın
+        # ------------------------------------------------
+        early_gate_has_data = (
+            candle_progress > 0.0
+            and (close_jump_pct > 0.0 or range_1m > 0.0 or avg_range_1m > 0.0)
+        )
 
-        # mumun ilk %20'si
-        if candle_progress < 0.20:
+        if early_gate_has_data:
 
-            # küçük momentum
-            if close_jump_pct > 0.0006:
-                early_momentum = True
+            early_momentum = False
 
-            # normalden büyük mum
-            if avg_range_1m > 0 and range_1m > avg_range_1m * 1.4:
-                early_momentum = True
+            # mumun ilk %20'si
+            if candle_progress < 0.20:
+
+                # küçük momentum
+                if close_jump_pct > 0.0006:
+                    early_momentum = True
+
+                # normalden büyük mum
+                if avg_range_1m > 0 and range_1m > avg_range_1m * 1.4:
+                    early_momentum = True
 
 
-        # erken momentum yoksa scalp erken giriş engelle
-        if candle_progress < 0.12 and not early_momentum:
+            # erken momentum yoksa scalp erken giriş engelle
+            if candle_progress < 0.12 and not early_momentum:
 
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC][OPEN-BLOCK][EARLY-GATE] symbol=%s side=%s candle_progress_1m=%.4f close_jump_pct=%.6f range_1m=%.6f avg_range_1m=%.6f",
-                        sym_u,
-                        side_norm,
-                        float(candle_progress),
-                        float(close_jump_pct),
-                        float(range_1m),
-                        float(avg_range_1m),
-                    )
-            except Exception:
-                pass
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][OPEN-BLOCK][EARLY-GATE] symbol=%s side=%s candle_progress_1m=%.4f close_jump_pct=%.6f range_1m=%.6f avg_range_1m=%.6f",
+                            sym_u,
+                            side_norm,
+                            float(candle_progress),
+                            float(close_jump_pct),
+                            float(range_1m),
+                            float(avg_range_1m),
+                        )
+                except Exception:
+                    pass
 
-            return
+                return
 
         # ------------------------------
         # MICRO PULLBACK ENTRY (SCALP)

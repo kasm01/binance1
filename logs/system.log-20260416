@@ -1,0 +1,1371 @@
+2026-04-16 03:56:04,476 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:04,496 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:04,496 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:04,497 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:04,497 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:04,497 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:04,498 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:04,498 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:04,498 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:04,499 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:04,499 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:04,499 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:04,499 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:04,500 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:04,500 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:09,523 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(180, 12)
+2026-04-16 03:56:09,554 | INFO | system | [ANOM] IsolationForest FIT[heavy:ARBUSDT:1m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:56:09,757 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:10,145 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.7 last_symbol=DOGEUSDT
+2026-04-16 03:56:10,148 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:10,149 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:10,149 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:10,634 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:10,635 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:10,635 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:10,635 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:10,636 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:10,636 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:10,636 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:10,636 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:10,637 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:10,637 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:10,637 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:10,637 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:10,638 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:10,638 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:10,638 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:10,638 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:10,645 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=3m shape=(180, 12)
+2026-04-16 03:56:10,674 | INFO | system | [ANOM] IsolationForest FIT[heavy:ARBUSDT:3m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:56:10,858 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:10,875 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:56:11,478 | INFO | system | [EXEC][DECISION] enter | symbol=ARBUSDT signal=long interval=1m price=0.1169 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:11,478 | INFO | system | [EXEC][WHALE][CTX] symbol=ARBUSDT side=long whale_dir=none whale_score=0.0000 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:11,479 | INFO | system | [EXEC][OPEN][SCORE] symbol=ARBUSDT side=long resolved_score=0.6076 p_buy_ema=0.5919 p_buy_raw=0.6076 mcf=1.0000
+2026-04-16 03:56:11,700 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116759 ema25=0.116691 ema99=0.116419 closes_n=120 source=futures_klines
+2026-04-16 03:56:11,919 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=3m ema7=0.116709 ema25=0.116501 ema99=0.115962 closes_n=120 source=futures_klines
+2026-04-16 03:56:13,133 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:56:13,133 | INFO | system | [EXEC][OPEN] enter | symbol=ARBUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:13,134 | INFO | system | [EXEC][WHALE][CTX] symbol=ARBUSDT side=long whale_dir=none whale_score=0.0000 signal_score=0.6076 require_whale=False strict_align=False
+2026-04-16 03:56:13,134 | INFO | system | [EXEC][LEV][INTENT] symbol=ARBUSDT side=long recommended=None score=0.6076 whale_dir=none whale_score=0.0000 require_whale=False strict_align=False
+2026-04-16 03:56:13,358 | INFO | system | [EXEC][PRICE][CHECK] symbol=ARBUSDT side=long intent_price=0.116900 order_price=0.116900 ratio=1.000000 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:56:14,820 | INFO | system | [EXEC][NOTIONAL] symbol=ARBUSDT side=long price=0.116900 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:56:15,074 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ARBUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-04-16 03:56:15,075 | INFO | system | [EXEC][INTENT][QTY] symbol=ARBUSDT intent_price=0.116900 order_price=0.116900 raw_qty=641.5739948674 norm_qty=641.5000000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-04-16 03:56:15,294 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116784 ema25=0.116698 ema99=0.116421 closes_n=120 source=futures_klines
+2026-04-16 03:56:15,294 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116784 ema25=0.116698 ema99=0.116421 source=open_position_from_signal
+2026-04-16 03:56:15,520 | INFO | system | [EXEC][LEV][SET] symbol=ARBUSDT requested=5 response={"symbol": "ARBUSDT", "leverage": 5, "maxNotionalValue": "5000000"}
+2026-04-16 03:56:15,520 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=ARBUSDT side=long action=- bias=hold whale_dir=none whale_score=0.000 signal_score=0.6076 raw_notional=75.00 final_notional=74.99 target_leverage=5
+2026-04-16 03:56:15,774 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ARBUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-04-16 03:56:15,774 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=ARBUSDT raw_qty=641.5000000000 norm_qty=641.5000000000 price=0.116900 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-04-16 03:56:15,774 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "ARBUSDT", "raw_qty": 641.5, "price": 0.1169, "step_size": 0.1, "min_qty": 0.1, "min_notional": 5.0, "normalized_qty": 641.5, "normalized_notional": 74.99135, "reject_reason": ""}
+2026-04-16 03:56:15,774 | INFO | system | [EXEC][ORDER][PREP] symbol=ARBUSDT side=long reduce_only=False signal_score=0.6076 whale_score=0.0000 whale_dir=none whale_action=- lev_target=5
+2026-04-16 03:56:16,000 | INFO | system | [EXEC][LEV][SET] symbol=ARBUSDT requested=5 response={"symbol": "ARBUSDT", "leverage": 5, "maxNotionalValue": "5000000"}
+2026-04-16 03:56:16,000 | INFO | system | [EXEC][LEV] symbol=ARBUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:56:18,185 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:18,185 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:18,185 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:18,471 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=ARBUSDT side=BUY qty=641.5000000000 reduceOnly=False lev=5 dt_ms=2471 client_oid=b1_open_ARBUSDT_8d9a60d3dc41 signal_score=0.6076 whale_score=0.0000 whale_dir=none payload={"symbol": "ARBUSDT", "side": "BUY", "type": "MARKET", "quantity": 641.5, "newClientOrderId": "b1_open_ARBUSDT_8d9a60d3dc41", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:56:18,474 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=ARBUSDT side=long qty=641.5000000000 price=0.116900 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:56:18,680 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:18,681 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:18,681 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:18,682 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:18,682 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:18,682 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:18,683 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:18,683 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:18,683 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:18,683 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:18,684 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:18,684 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:18,684 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:18,685 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:18,685 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:18,685 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:23,741 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(180, 12)
+2026-04-16 03:56:23,779 | INFO | system | [ANOM] Removed 6 anomalous rows. Remaining=174
+2026-04-16 03:56:24,108 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=14.0 last_symbol=DOGEUSDT
+2026-04-16 03:56:24,113 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:24,114 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:24,114 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:24,611 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:24,611 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:24,611 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:24,612 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:24,612 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:24,612 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:24,613 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:24,613 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:24,613 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:24,613 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:24,614 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:24,614 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:24,614 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:24,614 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:24,614 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:24,615 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:24,623 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(180, 12)
+2026-04-16 03:56:24,698 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:56:24,730 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:56:25,491 | INFO | system | [EXEC][DECISION] enter | symbol=DOGEUSDT signal=long interval=1m price=0.09735 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:25,491 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.6494 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:25,491 | INFO | system | [EXEC][OPEN][SCORE] symbol=DOGEUSDT side=long resolved_score=0.6373 p_buy_ema=0.6362 p_buy_raw=0.6373 mcf=1.0000
+2026-04-16 03:56:25,713 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097017 ema25=0.096652 ema99=0.096163 closes_n=120 source=futures_klines
+2026-04-16 03:56:25,936 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=3m ema7=0.096708 ema25=0.096296 ema99=0.095580 closes_n=120 source=futures_klines
+2026-04-16 03:56:27,147 | INFO | system | [EXEC][OPEN] enter | symbol=DOGEUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:27,148 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.6494 signal_score=0.6373 require_whale=False strict_align=False
+2026-04-16 03:56:27,148 | INFO | system | [EXEC][LEV][INTENT] symbol=DOGEUSDT side=long recommended=None score=0.6373 whale_dir=long whale_score=0.6494 require_whale=False strict_align=False
+2026-04-16 03:56:27,369 | INFO | system | [EXEC][PRICE][CHECK] symbol=DOGEUSDT side=long intent_price=0.097350 order_price=0.097325 ratio=1.000252 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:56:28,804 | INFO | system | [EXEC][NOTIONAL] symbol=DOGEUSDT side=long price=0.097325 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:56:29,058 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:56:29,058 | INFO | system | [EXEC][INTENT][QTY] symbol=DOGEUSDT intent_price=0.097350 order_price=0.097325 raw_qty=770.6103593664 norm_qty=770.0000000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:56:29,281 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097007 ema25=0.096649 ema99=0.096162 closes_n=120 source=futures_klines
+2026-04-16 03:56:29,281 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097007 ema25=0.096649 ema99=0.096162 source=open_position_from_signal
+2026-04-16 03:56:29,281 | INFO | system | [EXEC][LEV][BOOST] symbol=DOGEUSDT base=5.00 boosted=5.75
+2026-04-16 03:56:29,281 | INFO | system | [EXEC][LEV][BOOST] symbol=DOGEUSDT base=5.00 boosted=5.75
+2026-04-16 03:56:29,941 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:56:29,941 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=DOGEUSDT side=long action=- bias=align whale_dir=long whale_score=0.649 signal_score=0.6373 raw_notional=75.00 final_notional=74.94 target_leverage=5
+2026-04-16 03:56:30,194 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:56:30,196 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=DOGEUSDT raw_qty=770.0000000000 norm_qty=770.0000000000 price=0.097325 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:56:30,196 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "DOGEUSDT", "raw_qty": 770.0, "price": 0.09732545, "step_size": 1.0, "min_qty": 1.0, "min_notional": 5.0, "normalized_qty": 770.0, "normalized_notional": 74.9405965, "reject_reason": ""}
+2026-04-16 03:56:30,196 | INFO | system | [EXEC][LEV][BOOST] symbol=DOGEUSDT base=5.00 boosted=5.75
+2026-04-16 03:56:30,196 | INFO | system | [EXEC][LEV][BOOST] symbol=DOGEUSDT base=5.00 boosted=5.75
+2026-04-16 03:56:30,196 | INFO | system | [EXEC][ORDER][PREP] symbol=DOGEUSDT side=long reduce_only=False signal_score=0.6373 whale_score=0.6494 whale_dir=long whale_action=- lev_target=5
+2026-04-16 03:56:30,420 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:56:30,420 | INFO | system | [EXEC][LEV] symbol=DOGEUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:56:32,208 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:32,208 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:32,208 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:32,694 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:32,694 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:32,695 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:32,695 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:32,695 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:32,696 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:32,696 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:32,696 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:32,696 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:32,697 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:32,697 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:32,697 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:32,697 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:32,698 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:32,698 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:32,698 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:32,883 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=DOGEUSDT side=BUY qty=770.0000000000 reduceOnly=False lev=5 dt_ms=2463 client_oid=b1_open_DOGEUSDT_4643bdc3a99b signal_score=0.6373 whale_score=0.6494 whale_dir=long payload={"symbol": "DOGEUSDT", "side": "BUY", "type": "MARKET", "quantity": 770.0, "newClientOrderId": "b1_open_DOGEUSDT_4643bdc3a99b", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:56:32,884 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=DOGEUSDT side=long qty=770.0000000000 price=0.097325 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:56:33,190 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:33,191 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:33,191 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:33,191 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:33,192 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:33,192 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:33,192 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:33,192 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:33,193 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:33,193 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:33,193 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:33,194 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:56:38,264 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(180, 12)
+2026-04-16 03:56:38,303 | INFO | system | [ANOM] IsolationForest FIT[heavy:AVAXUSDT:1m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:56:38,498 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:38,775 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=14.7 last_symbol=DOGEUSDT
+2026-04-16 03:56:38,779 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:38,780 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:38,780 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:39,266 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:39,267 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:39,267 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:39,267 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:39,268 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:39,268 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:39,268 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:39,268 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:39,269 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:39,269 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:39,269 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:39,269 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:39,270 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:39,270 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:39,270 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:39,270 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:39,277 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(180, 12)
+2026-04-16 03:56:39,305 | INFO | system | [ANOM] IsolationForest FIT[heavy:AVAXUSDT:3m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:56:39,505 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:39,531 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:56:40,141 | INFO | system | [EXEC][DECISION] enter | symbol=AVAXUSDT signal=short interval=1m price=9.5 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:40,143 | INFO | system | [EXEC][WHALE][CTX] symbol=AVAXUSDT side=short whale_dir=long whale_score=0.4325 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:40,143 | INFO | system | [EXEC][OPEN][SCORE] symbol=AVAXUSDT side=short resolved_score=0.5768 p_buy_ema=0.4232 p_buy_raw=0.4226 mcf=1.0000
+2026-04-16 03:56:40,143 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=AVAXUSDT side=short signal_score=0.5768 min_open=0.5800
+2026-04-16 03:56:45,173 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(180, 12)
+2026-04-16 03:56:45,218 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:45,555 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:45,555 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:45,556 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:46,058 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:46,059 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:46,059 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:46,059 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:46,060 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:46,060 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:46,060 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:46,061 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:46,061 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:46,061 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:46,061 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:46,062 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:46,062 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:46,062 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:46,062 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:46,062 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:46,069 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=3m shape=(180, 12)
+2026-04-16 03:56:46,103 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:56:46,120 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:56:46,749 | INFO | system | [EXEC][DECISION] enter | symbol=LINKUSDT signal=short interval=1m price=9.3 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:46,749 | INFO | system | [EXEC][WHALE][CTX] symbol=LINKUSDT side=short whale_dir=long whale_score=0.2833 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:56:46,749 | INFO | system | [EXEC][OPEN][SCORE] symbol=LINKUSDT side=short resolved_score=0.5587 p_buy_ema=0.4370 p_buy_raw=0.4413 mcf=1.0000
+2026-04-16 03:56:46,750 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=LINKUSDT side=short signal_score=0.5587 min_open=0.5800
+2026-04-16 03:56:51,777 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=13.0 last_symbol=DOGEUSDT
+2026-04-16 03:56:51,789 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:51,790 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:51,790 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:52,285 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:52,286 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:52,286 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:52,286 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:52,287 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:52,287 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:52,287 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:52,288 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:52,288 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:52,288 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:52,288 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:52,289 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:52,289 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:52,289 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:52,289 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:52,290 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:52,298 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BTCUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:52,312 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ETHUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:52,329 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:52,348 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:52,356 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:56:57,434 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:57,438 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:57,438 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:57,935 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:57,935 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:57,935 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:57,936 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:56:57,936 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:57,937 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:57,937 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:57,938 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:57,938 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:57,939 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:57,939 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:56:57,939 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:56:57,940 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:56:57,940 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:56:57,940 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:56:57,940 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:56:57,955 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:57,970 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:57,984 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(150, 12)
+2026-04-16 03:56:57,998 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(150, 12)
+2026-04-16 03:57:03,034 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.3 last_symbol=DOGEUSDT
+2026-04-16 03:57:03,038 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:03,039 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:03,039 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:03,535 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:03,535 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:03,536 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:03,536 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:03,537 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:03,537 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:03,537 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:03,538 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:03,538 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:03,538 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:03,539 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:03,539 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:03,539 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:03,540 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:03,540 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:03,540 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:04,047 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:04,047 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:04,047 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:04,048 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:04,048 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:04,048 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:04,048 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:04,049 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:04,049 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:04,050 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:04,050 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:09,117 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:09,121 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:09,121 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:09,613 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:09,613 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:09,614 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:09,614 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:09,614 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:09,615 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:09,615 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:09,616 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:09,617 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:09,617 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:09,617 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:09,618 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:09,618 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:09,618 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:09,619 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:09,619 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:09,655 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:57:14,679 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=DOGEUSDT
+2026-04-16 03:57:14,683 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:14,685 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:14,686 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:15,181 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:15,181 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:15,182 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:15,182 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:15,182 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:15,183 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:15,183 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:15,183 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:15,183 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:15,184 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:15,184 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:15,184 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:15,185 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:15,185 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:15,185 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:15,185 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:15,193 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(180, 12)
+2026-04-16 03:57:15,229 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:57:20,611 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(180, 12)
+2026-04-16 03:57:20,663 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:57:20,688 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:57:21,690 | INFO | system | [EXEC][DECISION] enter | symbol=AVAXUSDT signal=short interval=1m price=9.51 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:21,691 | INFO | system | [EXEC][WHALE][CTX] symbol=AVAXUSDT side=short whale_dir=long whale_score=0.0934 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:21,691 | INFO | system | [EXEC][OPEN][SCORE] symbol=AVAXUSDT side=short resolved_score=0.5775 p_buy_ema=0.4225 p_buy_raw=0.4102 mcf=1.0000
+2026-04-16 03:57:21,692 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=AVAXUSDT side=short signal_score=0.5775 min_open=0.5800
+2026-04-16 03:57:21,695 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:21,696 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:21,696 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:22,197 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:22,197 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:22,197 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:22,198 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:22,198 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:22,198 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:22,198 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:22,199 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:22,199 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:22,199 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:22,200 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:22,200 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:22,200 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:22,200 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:22,201 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:22,201 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:22,208 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(180, 12)
+2026-04-16 03:57:22,241 | INFO | system | [ANOM] Removed 7 anomalous rows. Remaining=173
+2026-04-16 03:57:27,603 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(180, 12)
+2026-04-16 03:57:27,646 | INFO | system | [ANOM] Removed 6 anomalous rows. Remaining=174
+2026-04-16 03:57:27,665 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:57:28,390 | INFO | system | [EXEC][DECISION] enter | symbol=DOGEUSDT signal=long interval=1m price=0.09724 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:28,390 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.1660 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:28,390 | INFO | system | [EXEC][OPEN][SCORE] symbol=DOGEUSDT side=long resolved_score=0.6393 p_buy_ema=0.6364 p_buy_raw=0.6393 mcf=1.0000
+2026-04-16 03:57:28,615 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097027 ema25=0.096681 ema99=0.096182 closes_n=120 source=futures_klines
+2026-04-16 03:57:28,841 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=3m ema7=0.096809 ema25=0.096358 ema99=0.095627 closes_n=120 source=futures_klines
+2026-04-16 03:57:30,054 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=15.4 last_symbol=DOGEUSDT
+2026-04-16 03:57:30,055 | INFO | system | [EXEC][OPEN] enter | symbol=DOGEUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:30,055 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.1660 signal_score=0.6393 require_whale=False strict_align=False
+2026-04-16 03:57:30,056 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:30,056 | INFO | system | [EXEC][LEV][INTENT] symbol=DOGEUSDT side=long recommended=None score=0.6393 whale_dir=long whale_score=0.1660 require_whale=False strict_align=False
+2026-04-16 03:57:30,056 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:30,059 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:30,278 | INFO | system | [EXEC][PRICE][CHECK] symbol=DOGEUSDT side=long intent_price=0.097240 order_price=0.097153 ratio=1.000894 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:57:30,560 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:30,561 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:30,561 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:30,562 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:30,562 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:30,562 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:30,563 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:30,563 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:30,563 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:30,563 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:30,564 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:30,564 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:30,564 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:30,565 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:30,565 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:30,565 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:30,565 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:57:32,593 | INFO | system | [EXEC][NOTIONAL] symbol=DOGEUSDT side=long price=0.097153 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:57:32,850 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:57:32,852 | INFO | system | [EXEC][INTENT][QTY] symbol=DOGEUSDT intent_price=0.097240 order_price=0.097153 raw_qty=771.9770280223 norm_qty=771.0000000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:57:33,071 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097015 ema25=0.096678 ema99=0.096181 closes_n=120 source=futures_klines
+2026-04-16 03:57:33,071 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097015 ema25=0.096678 ema99=0.096181 source=open_position_from_signal
+2026-04-16 03:57:33,296 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:57:33,297 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=DOGEUSDT side=long action=- bias=align whale_dir=long whale_score=0.166 signal_score=0.6393 raw_notional=75.00 final_notional=74.91 target_leverage=5
+2026-04-16 03:57:33,551 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:57:33,551 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=DOGEUSDT raw_qty=771.0000000000 norm_qty=771.0000000000 price=0.097153 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:57:33,551 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "DOGEUSDT", "raw_qty": 771.0, "price": 0.09715315, "step_size": 1.0, "min_qty": 1.0, "min_notional": 5.0, "normalized_qty": 771.0, "normalized_notional": 74.90507865, "reject_reason": ""}
+2026-04-16 03:57:33,551 | INFO | system | [EXEC][ORDER][PREP] symbol=DOGEUSDT side=long reduce_only=False signal_score=0.6393 whale_score=0.1660 whale_dir=long whale_action=- lev_target=5
+2026-04-16 03:57:33,773 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:57:33,774 | INFO | system | [EXEC][LEV] symbol=DOGEUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:57:35,568 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:35,569 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:35,569 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,053 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,054 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,054 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,054 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:36,055 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,055 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,055 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,056 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,056 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,056 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:36,057 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:36,240 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=DOGEUSDT side=BUY qty=771.0000000000 reduceOnly=False lev=5 dt_ms=2466 client_oid=b1_open_DOGEUSDT_cb3bfbb98531 signal_score=0.6393 whale_score=0.1660 whale_dir=long payload={"symbol": "DOGEUSDT", "side": "BUY", "type": "MARKET", "quantity": 771.0, "newClientOrderId": "b1_open_DOGEUSDT_cb3bfbb98531", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:57:36,241 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=DOGEUSDT side=long qty=771.0000000000 price=0.097153 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:57:36,550 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,550 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,550 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,551 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:36,551 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,551 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,552 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,552 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:36,552 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:36,552 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:36,553 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:41,632 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(180, 12)
+2026-04-16 03:57:41,669 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:57:41,980 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.9 last_symbol=DOGEUSDT
+2026-04-16 03:57:41,984 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:41,984 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:41,984 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:42,485 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:42,486 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:42,486 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:42,486 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:42,487 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:42,487 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:42,487 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:42,488 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:42,488 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:42,488 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:42,489 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:42,489 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:42,489 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:42,489 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:42,489 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:42,490 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:42,498 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=3m shape=(180, 12)
+2026-04-16 03:57:42,541 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:57:42,559 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:57:43,338 | INFO | system | [EXEC][DECISION] enter | symbol=ARBUSDT signal=long interval=1m price=0.1169 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:43,338 | INFO | system | [EXEC][WHALE][CTX] symbol=ARBUSDT side=long whale_dir=long whale_score=0.2490 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:43,338 | INFO | system | [EXEC][OPEN][SCORE] symbol=ARBUSDT side=long resolved_score=0.5910 p_buy_ema=0.5910 p_buy_raw=0.5740 mcf=1.0000
+2026-04-16 03:57:43,566 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116744 ema25=0.116691 ema99=0.116433 closes_n=120 source=futures_klines
+2026-04-16 03:57:43,787 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=3m ema7=0.116688 ema25=0.116509 ema99=0.115975 closes_n=120 source=futures_klines
+2026-04-16 03:57:45,001 | INFO | system | [EXEC][OPEN] enter | symbol=ARBUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:45,002 | INFO | system | [EXEC][WHALE][CTX] symbol=ARBUSDT side=long whale_dir=long whale_score=0.2490 signal_score=0.5910 require_whale=False strict_align=False
+2026-04-16 03:57:45,002 | INFO | system | [EXEC][LEV][INTENT] symbol=ARBUSDT side=long recommended=None score=0.5910 whale_dir=long whale_score=0.2490 require_whale=False strict_align=False
+2026-04-16 03:57:45,226 | INFO | system | [EXEC][PRICE][CHECK] symbol=ARBUSDT side=long intent_price=0.116900 order_price=0.116700 ratio=1.001714 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:57:46,695 | INFO | system | [EXEC][NOTIONAL] symbol=ARBUSDT side=long price=0.116700 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:57:46,945 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ARBUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-04-16 03:57:46,945 | INFO | system | [EXEC][INTENT][QTY] symbol=ARBUSDT intent_price=0.116900 order_price=0.116700 raw_qty=642.6735218509 norm_qty=642.6000000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-04-16 03:57:47,167 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116744 ema25=0.116691 ema99=0.116433 closes_n=120 source=futures_klines
+2026-04-16 03:57:47,167 | INFO | system | [EXEC][STATE][EMA] symbol=ARBUSDT interval=1m ema7=0.116744 ema25=0.116691 ema99=0.116433 source=open_position_from_signal
+2026-04-16 03:57:47,388 | INFO | system | [EXEC][LEV][SET] symbol=ARBUSDT requested=5 response={"symbol": "ARBUSDT", "leverage": 5, "maxNotionalValue": "5000000"}
+2026-04-16 03:57:47,389 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=ARBUSDT side=long action=- bias=align whale_dir=long whale_score=0.249 signal_score=0.5910 raw_notional=75.00 final_notional=74.99 target_leverage=5
+2026-04-16 03:57:47,642 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=ARBUSDT tick_size=0.0001000000 step=0.1000000000 min_qty=0.1000000000 min_notional=5.0000000000
+2026-04-16 03:57:47,643 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=ARBUSDT raw_qty=642.6000000000 norm_qty=642.6000000000 price=0.116700 step=0.1000000000 min_qty=0.1000000000 min_notional=5.000000 reject=-
+2026-04-16 03:57:47,643 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "ARBUSDT", "raw_qty": 642.6, "price": 0.1167, "step_size": 0.1, "min_qty": 0.1, "min_notional": 5.0, "normalized_qty": 642.6, "normalized_notional": 74.99142, "reject_reason": ""}
+2026-04-16 03:57:47,643 | INFO | system | [EXEC][ORDER][PREP] symbol=ARBUSDT side=long reduce_only=False signal_score=0.5910 whale_score=0.2490 whale_dir=long whale_action=- lev_target=5
+2026-04-16 03:57:47,862 | INFO | system | [EXEC][LEV][SET] symbol=ARBUSDT requested=5 response={"symbol": "ARBUSDT", "leverage": 5, "maxNotionalValue": "5000000"}
+2026-04-16 03:57:47,862 | INFO | system | [EXEC][LEV] symbol=ARBUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:57:50,087 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:50,087 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:50,087 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:50,338 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=ARBUSDT side=BUY qty=642.6000000000 reduceOnly=False lev=5 dt_ms=2475 client_oid=b1_open_ARBUSDT_750cb30e04b5 signal_score=0.5910 whale_score=0.2490 whale_dir=long payload={"symbol": "ARBUSDT", "side": "BUY", "type": "MARKET", "quantity": 642.6, "newClientOrderId": "b1_open_ARBUSDT_750cb30e04b5", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:57:50,339 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=ARBUSDT side=long qty=642.6000000000 price=0.116700 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:57:50,588 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:50,588 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:50,588 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:50,589 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:50,589 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:50,590 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:50,590 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:50,590 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:50,591 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:50,591 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:50,591 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:50,592 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:50,592 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:50,592 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:50,592 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:50,592 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:50,593 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:57:55,637 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(180, 12)
+2026-04-16 03:57:55,674 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:57:55,989 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=14.0 last_symbol=DOGEUSDT
+2026-04-16 03:57:55,993 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:55,994 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:55,994 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:56,489 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:56,490 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:56,490 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:56,490 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:57:56,490 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:56,491 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:56,491 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:56,491 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:56,492 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:56,492 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:56,492 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:57:56,492 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:57:56,493 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:57:56,493 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:57:56,493 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:57:56,493 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:57:56,500 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=3m shape=(180, 12)
+2026-04-16 03:57:56,537 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:57:56,555 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:57:57,237 | INFO | system | [EXEC][DECISION] enter | symbol=LINKUSDT signal=short interval=1m price=9.29 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:57,237 | INFO | system | [EXEC][WHALE][CTX] symbol=LINKUSDT side=short whale_dir=short whale_score=0.2579 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:57:57,237 | INFO | system | [EXEC][OPEN][SCORE] symbol=LINKUSDT side=short resolved_score=0.5634 p_buy_ema=0.4366 p_buy_raw=0.4297 mcf=1.0000
+2026-04-16 03:57:57,237 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=LINKUSDT side=short signal_score=0.5634 min_open=0.5800
+2026-04-16 03:58:02,275 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:02,275 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:02,275 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:02,775 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:02,775 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:02,776 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:02,776 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:02,776 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:02,777 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:02,777 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:02,777 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:02,777 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:02,778 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:02,778 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:02,778 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:02,778 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:02,779 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:02,779 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:02,779 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:02,788 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BTCUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:02,801 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ETHUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:02,815 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:02,834 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:07,853 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.9 last_symbol=DOGEUSDT
+2026-04-16 03:58:07,866 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:07,866 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:07,866 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,356 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,356 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,357 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,357 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:08,357 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,358 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,358 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,358 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,358 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,359 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,359 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:08,359 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,359 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,359 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,360 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:08,360 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:08,845 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,846 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,846 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,846 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:08,847 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,847 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,847 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,848 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:08,848 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:08,848 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:08,848 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:08,856 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:08,870 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:08,882 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:08,895 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(150, 12)
+2026-04-16 03:58:08,900 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:58:13,909 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:13,910 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:13,910 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:14,398 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:14,399 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:14,399 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:14,399 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:14,400 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:14,400 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:14,400 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:14,401 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:14,401 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:14,401 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:14,401 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:14,402 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:14,402 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:14,402 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:14,402 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:14,402 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:19,451 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=DOGEUSDT
+2026-04-16 03:58:19,464 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:19,464 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:19,465 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:19,959 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:19,960 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:19,960 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:19,960 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:19,961 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:19,961 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:19,961 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:19,962 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:19,962 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:19,962 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:19,962 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:19,963 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:19,963 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:19,963 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:19,963 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:19,963 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:25,000 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:25,001 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:25,001 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:25,498 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:25,499 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:25,499 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:25,499 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:25,500 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:25,500 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:25,500 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:25,500 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:25,501 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:25,501 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:25,501 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:25,501 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:25,502 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:25,502 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:25,502 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:25,502 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:25,509 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(180, 12)
+2026-04-16 03:58:25,543 | INFO | system | [ANOM] Removed 7 anomalous rows. Remaining=173
+2026-04-16 03:58:25,814 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:58:30,828 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(180, 12)
+2026-04-16 03:58:30,866 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:58:30,883 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:58:31,602 | INFO | system | [EXEC][DECISION] enter | symbol=DOGEUSDT signal=long interval=1m price=0.09694 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:31,602 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.2953 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:31,602 | INFO | system | [EXEC][OPEN][SCORE] symbol=DOGEUSDT side=long resolved_score=0.6387 p_buy_ema=0.6365 p_buy_raw=0.6387 mcf=1.0000
+2026-04-16 03:58:31,824 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.096987 ema25=0.096695 ema99=0.096198 closes_n=120 source=futures_klines
+2026-04-16 03:58:32,049 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=3m ema7=0.096739 ema25=0.096336 ema99=0.095621 closes_n=120 source=futures_klines
+2026-04-16 03:58:33,272 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=13.8 last_symbol=DOGEUSDT
+2026-04-16 03:58:33,272 | INFO | system | [EXEC][OPEN] enter | symbol=DOGEUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:33,273 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.2953 signal_score=0.6387 require_whale=False strict_align=False
+2026-04-16 03:58:33,273 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:33,273 | INFO | system | [EXEC][LEV][INTENT] symbol=DOGEUSDT side=long recommended=None score=0.6387 whale_dir=long whale_score=0.2953 require_whale=False strict_align=False
+2026-04-16 03:58:33,276 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:33,277 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:33,493 | INFO | system | [EXEC][PRICE][CHECK] symbol=DOGEUSDT side=long intent_price=0.096940 order_price=0.096920 ratio=1.000206 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:58:33,768 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:33,769 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:33,769 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:33,770 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:33,770 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:33,770 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:33,770 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:33,771 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:33,771 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:33,771 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:33,771 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:33,772 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:33,772 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:33,772 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:33,772 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:33,772 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:34,950 | INFO | system | [EXEC][NOTIONAL] symbol=DOGEUSDT side=long price=0.096920 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:58:35,208 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:58:35,208 | INFO | system | [EXEC][INTENT][QTY] symbol=DOGEUSDT intent_price=0.096940 order_price=0.096920 raw_qty=773.8340899711 norm_qty=773.0000000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:58:35,434 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.096994 ema25=0.096697 ema99=0.096198 closes_n=120 source=futures_klines
+2026-04-16 03:58:35,435 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.096994 ema25=0.096697 ema99=0.096198 source=open_position_from_signal
+2026-04-16 03:58:35,660 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:58:35,660 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=DOGEUSDT side=long action=- bias=align whale_dir=long whale_score=0.295 signal_score=0.6387 raw_notional=75.00 final_notional=74.92 target_leverage=5
+2026-04-16 03:58:35,913 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:58:35,913 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=DOGEUSDT raw_qty=773.0000000000 norm_qty=773.0000000000 price=0.096920 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:58:35,914 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "DOGEUSDT", "raw_qty": 773.0, "price": 0.09692, "step_size": 1.0, "min_qty": 1.0, "min_notional": 5.0, "normalized_qty": 773.0, "normalized_notional": 74.91916, "reject_reason": ""}
+2026-04-16 03:58:35,914 | INFO | system | [EXEC][ORDER][PREP] symbol=DOGEUSDT side=long reduce_only=False signal_score=0.6387 whale_score=0.2953 whale_dir=long whale_action=- lev_target=5
+2026-04-16 03:58:36,136 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:58:36,136 | INFO | system | [EXEC][LEV] symbol=DOGEUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:58:38,605 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=DOGEUSDT side=BUY qty=773.0000000000 reduceOnly=False lev=5 dt_ms=2469 client_oid=b1_open_DOGEUSDT_8156a48385e9 signal_score=0.6387 whale_score=0.2953 whale_dir=long payload={"symbol": "DOGEUSDT", "side": "BUY", "type": "MARKET", "quantity": 773.0, "newClientOrderId": "b1_open_DOGEUSDT_8156a48385e9", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:58:38,608 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=DOGEUSDT side=long qty=773.0000000000 price=0.096920 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:58:38,817 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:38,819 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:38,819 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:39,317 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:39,318 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:39,318 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:39,318 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:39,319 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:39,319 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:39,319 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:39,320 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:39,320 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:39,320 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:39,320 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:39,321 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:39,321 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:39,322 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:39,322 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:39,322 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:39,335 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(180, 12)
+2026-04-16 03:58:39,375 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:58:40,163 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:40,165 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:40,165 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:40,166 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:40,166 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:40,166 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:40,167 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:40,167 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:40,168 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:40,168 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:40,168 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:45,178 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(180, 12)
+2026-04-16 03:58:45,222 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:58:45,240 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:58:45,882 | INFO | system | [EXEC][DECISION] enter | symbol=AVAXUSDT signal=short interval=1m price=9.48 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:45,882 | INFO | system | [EXEC][WHALE][CTX] symbol=AVAXUSDT side=short whale_dir=long whale_score=0.2834 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:45,882 | INFO | system | [EXEC][OPEN][SCORE] symbol=AVAXUSDT side=short resolved_score=0.5777 p_buy_ema=0.4223 p_buy_raw=0.4173 mcf=1.0000
+2026-04-16 03:58:45,882 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=AVAXUSDT side=short signal_score=0.5777 min_open=0.5800
+2026-04-16 03:58:45,883 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=12.6 last_symbol=DOGEUSDT
+2026-04-16 03:58:45,887 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:45,887 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:45,887 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:46,375 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:46,376 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:46,376 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:46,376 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:46,377 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:46,377 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:46,377 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:46,377 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:46,378 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:46,378 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:46,378 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:46,378 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:46,379 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:46,379 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:46,379 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:46,379 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:46,386 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(180, 12)
+2026-04-16 03:58:46,420 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:58:46,684 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:58:51,738 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=3m shape=(180, 12)
+2026-04-16 03:58:51,780 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:58:51,797 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:58:52,369 | INFO | system | [EXEC][DECISION] enter | symbol=LINKUSDT signal=short interval=1m price=9.27 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:52,370 | INFO | system | [EXEC][WHALE][CTX] symbol=LINKUSDT side=short whale_dir=short whale_score=0.2514 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:52,370 | INFO | system | [EXEC][OPEN][SCORE] symbol=LINKUSDT side=short resolved_score=0.5638 p_buy_ema=0.4362 p_buy_raw=0.4293 mcf=1.0000
+2026-04-16 03:58:52,370 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=LINKUSDT side=short signal_score=0.5638 min_open=0.5800
+2026-04-16 03:58:52,373 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:52,374 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:52,374 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:52,872 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:52,874 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:52,874 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:52,874 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:52,875 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:52,875 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:52,875 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:52,875 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:52,876 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:52,876 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:52,876 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:52,876 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:52,877 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:52,877 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:52,877 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:52,877 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:58:52,884 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=1m shape=(180, 12)
+2026-04-16 03:58:52,921 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:58:58,497 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=3m shape=(180, 12)
+2026-04-16 03:58:58,533 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:58:58,552 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:58:59,210 | INFO | system | [EXEC][DECISION] enter | symbol=SOLUSDT signal=short interval=1m price=85.27 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:59,210 | INFO | system | [EXEC][WHALE][CTX] symbol=SOLUSDT side=short whale_dir=short whale_score=0.2727 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:58:59,210 | INFO | system | [EXEC][OPEN][SCORE] symbol=SOLUSDT side=short resolved_score=0.5600 p_buy_ema=0.4380 p_buy_raw=0.4400 mcf=1.0000
+2026-04-16 03:58:59,210 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=SOLUSDT side=short signal_score=0.5600 min_open=0.5800
+2026-04-16 03:58:59,211 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=13.3 last_symbol=DOGEUSDT
+2026-04-16 03:58:59,211 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:59,212 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:59,212 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:59,702 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:59,703 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:59,703 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:59,703 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:58:59,704 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:59,704 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:59,704 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:59,705 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:59,705 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:59,705 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:59,705 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:58:59,706 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:58:59,706 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:58:59,706 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:58:59,706 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:58:59,706 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:04,732 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ETHUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:04,744 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BTCUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:04,757 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:04,769 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:04,775 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:04,776 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:04,776 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:05,270 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:05,271 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:05,271 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:05,272 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:05,272 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:05,272 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:05,272 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:05,273 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:05,273 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:05,273 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:05,274 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:05,274 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:05,274 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:05,274 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:05,275 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:05,275 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:05,275 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:59:10,306 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=LINKUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:10,321 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:10,334 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=ARBUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:10,353 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(150, 12)
+2026-04-16 03:59:10,360 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.1 last_symbol=DOGEUSDT
+2026-04-16 03:59:10,361 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:10,361 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:10,361 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:10,848 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:10,849 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:10,849 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:10,849 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:10,850 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:10,850 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:10,850 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:10,851 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:10,851 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:10,851 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:10,851 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:10,852 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:10,852 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:10,852 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:10,852 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:10,853 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:11,342 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:11,342 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:11,343 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:11,343 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:11,343 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:11,344 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:11,344 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:11,344 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:11,344 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:11,345 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:11,345 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:16,361 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:16,362 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:16,362 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:16,853 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:16,853 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:16,854 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:16,854 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:16,854 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:16,855 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:16,855 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:16,855 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:16,856 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:16,856 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:16,856 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:16,856 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:16,857 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:16,857 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:16,857 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:16,857 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:21,926 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=11.6 last_symbol=DOGEUSDT
+2026-04-16 03:59:21,927 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:21,927 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:21,928 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:22,420 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:22,421 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:22,421 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:22,422 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:22,422 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:22,422 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:22,422 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:22,423 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:22,423 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:22,423 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:22,424 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:22,425 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:59:27,455 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=1m shape=(180, 12)
+2026-04-16 03:59:27,485 | INFO | system | [ANOM] IsolationForest FIT[heavy:BNBUSDT:1m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:59:27,676 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:27,944 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:27,945 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:27,945 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:28,432 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:28,432 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:28,433 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:28,433 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:28,433 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:28,434 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:28,434 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:28,435 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:28,435 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:28,435 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:28,436 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:28,436 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:28,436 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:28,436 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:28,437 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:28,437 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:28,443 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=BNBUSDT interval=3m shape=(180, 12)
+2026-04-16 03:59:28,473 | INFO | system | [ANOM] IsolationForest FIT[heavy:BNBUSDT:3m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:59:28,662 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:28,680 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:59:29,280 | INFO | system | [EXEC][DECISION] enter | symbol=BNBUSDT signal=short interval=1m price=624.19 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:29,280 | INFO | system | [EXEC][WHALE][CTX] symbol=BNBUSDT side=short whale_dir=short whale_score=0.2794 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:29,280 | INFO | system | [EXEC][OPEN][SCORE] symbol=BNBUSDT side=short resolved_score=0.5748 p_buy_ema=0.4252 p_buy_raw=0.4252 mcf=1.0000
+2026-04-16 03:59:29,280 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=BNBUSDT side=short signal_score=0.5748 min_open=0.5800
+2026-04-16 03:59:34,311 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=1m shape=(180, 12)
+2026-04-16 03:59:34,340 | INFO | system | [ANOM] IsolationForest FIT[heavy:SOLUSDT:1m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:59:34,534 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:34,810 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=12.9 last_symbol=DOGEUSDT
+2026-04-16 03:59:34,813 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:34,814 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:34,814 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:35,299 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:35,300 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:35,300 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:35,300 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:35,301 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:35,301 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:35,301 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:35,301 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:35,302 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:35,302 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:35,302 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:35,302 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:35,303 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:35,303 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:35,303 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:35,303 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:35,310 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=SOLUSDT interval=3m shape=(180, 12)
+2026-04-16 03:59:35,343 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:35,370 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:59:35,989 | INFO | system | [EXEC][DECISION] enter | symbol=SOLUSDT signal=short interval=1m price=85.28 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:35,989 | INFO | system | [EXEC][WHALE][CTX] symbol=SOLUSDT side=short whale_dir=short whale_score=0.2317 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:35,989 | INFO | system | [EXEC][OPEN][SCORE] symbol=SOLUSDT side=short resolved_score=0.5623 p_buy_ema=0.4377 p_buy_raw=0.4334 mcf=1.0000
+2026-04-16 03:59:35,989 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=SOLUSDT side=short signal_score=0.5623 min_open=0.5800
+2026-04-16 03:59:41,057 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=1m shape=(180, 12)
+2026-04-16 03:59:41,090 | INFO | system | [ANOM] IsolationForest FIT[heavy:DOGEUSDT:1m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:59:41,287 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:41,597 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:41,598 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:41,598 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:42,084 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:42,085 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:42,085 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:42,085 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:42,086 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:42,086 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:42,086 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:42,087 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:42,087 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:42,087 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:42,088 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:42,096 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=DOGEUSDT interval=3m shape=(180, 12)
+2026-04-16 03:59:42,141 | INFO | system | [ANOM] IsolationForest FIT[heavy:DOGEUSDT:3m]: n=180, d=20, contamination=0.0200 (refit_every_sec=300)
+2026-04-16 03:59:42,350 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:42,377 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:59:43,033 | INFO | system | [EXEC][DECISION] enter | symbol=DOGEUSDT signal=long interval=1m price=0.09705 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:43,034 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.3108 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:43,034 | INFO | system | [EXEC][OPEN][SCORE] symbol=DOGEUSDT side=long resolved_score=0.6384 p_buy_ema=0.6366 p_buy_raw=0.6384 mcf=1.0000
+2026-04-16 03:59:43,253 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097000 ema25=0.096722 ema99=0.096216 closes_n=120 source=futures_klines
+2026-04-16 03:59:43,475 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=3m ema7=0.096759 ema25=0.096342 ema99=0.095623 closes_n=120 source=futures_klines
+2026-04-16 03:59:44,680 | INFO | system | [EXEC-EVENTS][HEARTBEAT] consumer_alive stream=exec_events_stream group=main_exec_g consumer=main_1
+2026-04-16 03:59:44,680 | INFO | system | [EXEC][OPEN] enter | symbol=DOGEUSDT side=long interval=1m meta_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price', 'price_source', 'signal_score', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:44,681 | INFO | system | [EXEC][WHALE][CTX] symbol=DOGEUSDT side=long whale_dir=long whale_score=0.3108 signal_score=0.6384 require_whale=False strict_align=False
+2026-04-16 03:59:44,681 | INFO | system | [EXEC][LEV][INTENT] symbol=DOGEUSDT side=long recommended=None score=0.6384 whale_dir=long whale_score=0.3108 require_whale=False strict_align=False
+2026-04-16 03:59:44,906 | INFO | system | [EXEC][PRICE][CHECK] symbol=DOGEUSDT side=long intent_price=0.097050 order_price=0.097000 ratio=1.000515 min_ratio=0.333333 max_ratio=3.000000
+2026-04-16 03:59:46,365 | INFO | system | [EXEC][NOTIONAL] symbol=DOGEUSDT side=long price=0.097000 balance_source=fallback base_balance=1000.00 pct=0.1200 notional=75.00
+2026-04-16 03:59:46,622 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:59:46,624 | INFO | system | [EXEC][INTENT][QTY] symbol=DOGEUSDT intent_price=0.097050 order_price=0.097000 raw_qty=773.1958762887 norm_qty=773.0000000000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:59:46,847 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097000 ema25=0.096722 ema99=0.096216 closes_n=120 source=futures_klines
+2026-04-16 03:59:46,848 | INFO | system | [EXEC][STATE][EMA] symbol=DOGEUSDT interval=1m ema7=0.097000 ema25=0.096722 ema99=0.096216 source=open_position_from_signal
+2026-04-16 03:59:47,070 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:59:47,070 | INFO | system | [EXEC][WHALE][OPEN-CHECK] symbol=DOGEUSDT side=long action=- bias=align whale_dir=long whale_score=0.311 signal_score=0.6384 raw_notional=75.00 final_notional=74.98 target_leverage=5
+2026-04-16 03:59:47,330 | INFO | system | [EXEC][SYMBOL_INFO] resolved(refresh) | symbol=DOGEUSDT tick_size=0.0000100000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.0000000000
+2026-04-16 03:59:47,330 | INFO | system | [EXEC][QTY][NORMALIZE] symbol=DOGEUSDT raw_qty=773.0000000000 norm_qty=773.0000000000 price=0.097000 step=1.0000000000 min_qty=1.0000000000 min_notional=5.000000 reject=-
+2026-04-16 03:59:47,331 | INFO | system | [EXEC][QTY][DECISION] {"symbol": "DOGEUSDT", "raw_qty": 773.0, "price": 0.097, "step_size": 1.0, "min_qty": 1.0, "min_notional": 5.0, "normalized_qty": 773.0, "normalized_notional": 74.98100000000001, "reject_reason": ""}
+2026-04-16 03:59:47,331 | INFO | system | [EXEC][ORDER][PREP] symbol=DOGEUSDT side=long reduce_only=False signal_score=0.6384 whale_score=0.3108 whale_dir=long whale_action=- lev_target=5
+2026-04-16 03:59:47,552 | INFO | system | [EXEC][LEV][SET] symbol=DOGEUSDT requested=5 response={"symbol": "DOGEUSDT", "leverage": 5, "maxNotionalValue": "40000000"}
+2026-04-16 03:59:47,552 | INFO | system | [EXEC][LEV] symbol=DOGEUSDT side=long reduce_only=False target=5 applied=5 positionSide=LONG
+2026-04-16 03:59:50,016 | ERROR | system | [EXEC][ORDER] OPEN FAIL | fn=futures_create_order symbol=DOGEUSDT side=BUY qty=773.0000000000 reduceOnly=False lev=5 dt_ms=2463 client_oid=b1_open_DOGEUSDT_72cec3f941e3 signal_score=0.6384 whale_score=0.3108 whale_dir=long payload={"symbol": "DOGEUSDT", "side": "BUY", "type": "MARKET", "quantity": 773.0, "newClientOrderId": "b1_open_DOGEUSDT_72cec3f941e3", "positionSide": "LONG"} err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:59:50,017 | ERROR | system | [EXEC][INTENT] exchange_open_failed | symbol=DOGEUSDT side=long qty=773.0000000000 price=0.097000 err=APIError(code=-2019): Margin is insufficient.
+Traceback (most recent call last):
+  File "/home/kasm920/binance1/core/trade_executor.py", line 8635, in open_position_from_signal
+    self._exchange_open_market(
+  File "/home/kasm920/binance1/core/trade_executor.py", line 6034, in _exchange_open_market
+    resp = self._call_with_retry(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1210, in _call_with_retry
+    raise last_err
+  File "/home/kasm920/binance1/core/trade_executor.py", line 1201, in _call_with_retry
+    return fn(**payload)
+           ^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 5985, in futures_create_order
+    return self._request_futures_api('post', 'order', True, data=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 339, in _request_futures_api
+    return self._request(method, uri, signed, True, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 315, in _request
+    return self._handle_response(self.response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kasm920/binance1/venv/lib/python3.11/site-packages/binance/client.py", line 324, in _handle_response
+    raise BinanceAPIException(response, response.status_code, response.text)
+binance.exceptions.BinanceAPIException: APIError(code=-2019): Margin is insufficient.
+2026-04-16 03:59:50,181 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,182 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,182 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,182 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:50,183 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,183 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,183 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,183 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,184 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,184 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,184 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:50,185 | WARNING | system | [EXEC][LIFECYCLE][FREEZE-WARN] last_seen_sec=15.4 last_symbol=DOGEUSDT
+2026-04-16 03:59:50,188 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,188 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,189 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,680 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,680 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,680 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,681 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:50,681 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,681 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,682 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,682 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,682 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,682 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,683 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:50,683 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:50,683 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:50,683 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:50,683 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:50,684 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:55,698 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=1m shape=(180, 12)
+2026-04-16 03:59:55,736 | INFO | system | [ANOM] Removed 5 anomalous rows. Remaining=175
+2026-04-16 03:59:56,053 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:56,053 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:56,053 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:56,541 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:56,542 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:56,542 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:56,542 | INFO | system | [EXEC][SYNC] start | exchange_open=0 local_open=0 bridge_open=0
+2026-04-16 03:59:56,543 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:56,543 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:56,543 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:56,544 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:56,544 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:56,544 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:56,545 | INFO | system | [EXEC][SYNC] done | exchange_open=0 local_open=0 bridge_open=0 removed_local=[] removed_bridge=[] added_local=[] added_bridge=[] kept=[] skipped_fresh_local=[] skipped_fresh_bridge=[]
+2026-04-16 03:59:56,545 | INFO | system | [EXEC][STATE] position_manager symbols | count=0 symbols=[]
+2026-04-16 03:59:56,545 | INFO | system | [EXEC][STATE] redis keys scan | count=0 keys=[]
+2026-04-16 03:59:56,546 | INFO | system | [EXEC][STATE] local positions resolved | count=0 symbols=[]
+2026-04-16 03:59:56,546 | INFO | system | [EXEC][LIFECYCLE] post-sync refresh | positions=0 summary={'exchange_open': 0, 'local_open': 0, 'bridge_open': 0, 'removed_local': [], 'removed_bridge': [], 'added_local': [], 'added_bridge': [], 'kept': [], 'skipped_fresh_local': [], 'skipped_fresh_bridge': []}
+2026-04-16 03:59:56,546 | INFO | system | [EXEC][LIFECYCLE] tick | positions=0 symbols=[]
+2026-04-16 03:59:56,553 | INFO | system | [DATA] LIVE(CLIENT) kline çekildi. symbol=AVAXUSDT interval=3m shape=(180, 12)
+2026-04-16 03:59:56,598 | INFO | system | [ANOM] Removed 4 anomalous rows. Remaining=176
+2026-04-16 03:59:56,616 | INFO | system | [HYBRID-MTF] predict_ensemble called | intervals=['1m', '3m']
+2026-04-16 03:59:57,350 | INFO | system | [EXEC][DECISION] enter | symbol=AVAXUSDT signal=short interval=1m price=9.49 size=None extra_keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:57,351 | INFO | system | [EXEC][WHALE][CTX] symbol=AVAXUSDT side=short whale_dir=long whale_score=0.2201 keys=['atr', 'best_auc', 'best_side', 'ema_alpha', 'ema_whale_on', 'ema_whale_only', 'ema_whale_thr', 'latency_steps', 'model_confidence_factor', 'mtf_debug', 'p_buy_ema', 'p_buy_raw', 'p_buy_source', 'price_source', 'signal_source', 'whale_bias', 'whale_dir', 'whale_meta', 'whale_score']
+2026-04-16 03:59:57,351 | INFO | system | [EXEC][OPEN][SCORE] symbol=AVAXUSDT side=short resolved_score=0.5780 p_buy_ema=0.4220 p_buy_raw=0.4159 mcf=1.0000
+2026-04-16 03:59:57,351 | INFO | system | [EXEC][OPEN-BLOCK] low score | symbol=AVAXUSDT side=short signal_score=0.5780 min_open=0.5800
