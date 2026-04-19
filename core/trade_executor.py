@@ -1832,7 +1832,6 @@ class TradeExecutor:
             except Exception:
                 norm_qty = 0.0
 
-            # kayan nokta artıklarını temizle
             try:
                 step_str = f"{step:.16f}".rstrip("0")
                 if "." in step_str:
@@ -1842,8 +1841,6 @@ class TradeExecutor:
                     norm_qty = round(norm_qty, 0)
             except Exception:
                 pass
-
-        # step yoksa ham qty ile devam et
         else:
             norm_qty = float(raw_qty)
 
@@ -1853,44 +1850,41 @@ class TradeExecutor:
             out["reject_reason"] = "below_min_qty"
             return out
 
-        # min_notional kontrolü
-        if px > 0.0 and min_notional > 0.0:
-            if (norm_qty * px) < min_notional:
-                # close'ta mümkünse min_notional yüzünden pozisyonu sıfırlamaya çalış:
-                # önce raw qty yeterliyse ham qty'yi tekrar deneyelim
-                retry_qty = float(raw_qty)
+        # CLOSE PATH:
+        # reduce-only close mantığında min_notional yüzünden qty'yi 0 yapma.
+        # Burada amaç mevcut pozisyonu kapatmak; open gibi veto etme.
+        if norm_qty <= 0.0:
+            # son fallback: raw qty zaten min_qty ise en az min_qty ile dene
+            if min_qty > 0.0 and raw_qty >= min_qty:
+                norm_qty = float(min_qty)
+            else:
+                out["norm_qty"] = 0.0
+                out["reject_reason"] = "normalized_zero"
+                return out
 
-                if step > 0.0:
-                    try:
-                        steps = int(retry_qty / step)
-                        retry_qty = float(steps * step)
-                    except Exception:
-                        retry_qty = 0.0
+        # ekstra güvenlik: step sonrası oluşan qty, raw_qty'den büyük olmasın
+        if norm_qty > raw_qty:
+            norm_qty = float(raw_qty)
+            if step > 0.0:
+                try:
+                    steps = int(norm_qty / step)
+                    norm_qty = float(steps * step)
+                except Exception:
+                    pass
 
-                    try:
-                        step_str = f"{step:.16f}".rstrip("0")
-                        if "." in step_str:
-                            decimals = len(step_str.split(".")[1])
-                            retry_qty = round(retry_qty, decimals)
-                        else:
-                            retry_qty = round(retry_qty, 0)
-                    except Exception:
-                        pass
-
-                if retry_qty > 0.0 and retry_qty >= norm_qty and (retry_qty * px) >= min_notional:
-                    norm_qty = float(retry_qty)
-                else:
-                    out["norm_qty"] = 0.0
-                    out["reject_reason"] = "below_min_notional"
-                    return out
+        # close'ta min_notional veto etmiyoruz; sadece bilgi olarak logluyoruz
+        if px > 0.0 and min_notional > 0.0 and (norm_qty * px) < min_notional:
+            out["reject_reason"] = "below_min_notional_but_close_allowed"
+        else:
+            out["reject_reason"] = "-"
 
         if norm_qty <= 0.0:
             out["norm_qty"] = 0.0
-            out["reject_reason"] = "normalized_zero"
+            if out["reject_reason"] == "-":
+                out["reject_reason"] = "normalized_zero"
             return out
 
         out["norm_qty"] = float(norm_qty)
-        out["reject_reason"] = "-"
 
         try:
             if self.logger:
@@ -2008,6 +2002,69 @@ class TradeExecutor:
         if reject_reason:
             return 0.0, meta
         return float(q), meta
+
+    def _env_bool(self, key: str, default: bool = False) -> bool:
+        try:
+            return str(os.getenv(key, "1" if default else "0")).strip().lower() in (
+                "1", "true", "yes", "on"
+            )
+        except Exception:
+            return default
+
+    def _env_float(self, key: str, default: float) -> float:
+        try:
+            v = os.getenv(key, "")
+            if v is None or str(v).strip() == "":
+                return float(default)
+            return float(v)
+        except Exception:
+            return float(default)
+
+    def _get_coin_side_min_open_score(
+        self,
+        symbol: str,
+        side: str,
+        default_score: float,
+    ) -> float:
+        sym = str(symbol or "").upper().strip()
+        side_norm = str(side or "").lower().strip()
+
+        enabled = self._env_bool("COIN_SIDE_MIN_SCORE_ENABLE", False)
+        fallback_to_global = self._env_bool("COIN_SIDE_MIN_SCORE_FALLBACK_TO_GLOBAL", True)
+
+        if not enabled or sym == "" or side_norm not in ("long", "short"):
+            return float(default_score)
+
+        key = f"COIN_{side_norm.upper()}_MIN_SCORE_{sym}"
+        raw = os.getenv(key, "")
+
+        if raw is None or str(raw).strip() == "":
+            return float(default_score) if fallback_to_global else float(default_score)
+
+        try:
+            return float(raw)
+        except Exception:
+            return float(default_score)
+
+    def _get_coin_side_thresholds(
+        self,
+        symbol: str,
+        default_long_thr: float,
+        default_short_thr: float,
+    ) -> tuple[float, float]:
+        sym = str(symbol or "").upper().strip()
+        enabled = self._env_bool("COIN_SIDE_MODEL_THRESHOLD_ENABLE", False)
+
+        if not enabled or sym == "":
+            return float(default_long_thr), float(default_short_thr)
+
+        long_key = f"COIN_LONG_THRESHOLD_{sym}"
+        short_key = f"COIN_SHORT_THRESHOLD_{sym}"
+
+        long_thr = self._env_float(long_key, default_long_thr)
+        short_thr = self._env_float(short_key, default_short_thr)
+
+        return float(long_thr), float(short_thr)
 
     def _apply_whale_weighted_leverage_boost(
         self,
@@ -8879,13 +8936,6 @@ class TradeExecutor:
             pass
 
         try:
-            open_min_score = float(
-                os.getenv("OPEN_MIN_SCORE", os.getenv("MIN_SCORE", "0.66")) or 0.66
-            )
-        except Exception:
-            open_min_score = 0.66
-
-        try:
             whale_open_min_score = float(
                 os.getenv("WHALE_OPEN_MIN_SCORE", os.getenv("W_MIN", "0.54")) or 0.54
             )
@@ -8945,6 +8995,30 @@ class TradeExecutor:
 
         signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
+
+        try:
+            min_open_score = float(
+                os.getenv("OPEN_MIN_SCORE", os.getenv("MIN_SCORE", "0.66")) or 0.66
+            )
+        except Exception:
+            min_open_score = 0.66
+
+        open_min_score = self._get_coin_side_min_open_score(
+            symbol=sym_u,
+            side=side_norm,
+            default_score=min_open_score,
+        )
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC][COIN-MIN-SCORE] symbol=%s side=%s min_open=%.4f",
+                    sym_u,
+                    side_norm,
+                    float(open_min_score),
+                )
+        except Exception:
+            pass
 
         signal_score = self._resolve_signal_score_for_open(
             side=side_norm,
@@ -9673,7 +9747,7 @@ class TradeExecutor:
             return
 
         # ------------------------------
-        # EMA TREND FILTER (SCALP OPTIMIZED)
+        # EMA TREND FILTER (RELAXED MTF)
         # ------------------------------
         if require_ema_trend:
             try:
@@ -9690,21 +9764,27 @@ class TradeExecutor:
                 ema7_1m = float(ema_1m.get("ema7") or ema_1m.get("ema_fast") or 0.0)
             except Exception:
                 ema7_1m = 0.0
-
             try:
                 ema25_1m = float(ema_1m.get("ema25") or ema_1m.get("ema_slow") or 0.0)
             except Exception:
                 ema25_1m = 0.0
+            try:
+                ema99_1m = float(ema_1m.get("ema99") or 0.0)
+            except Exception:
+                ema99_1m = 0.0
 
             try:
                 ema7_3m = float(ema_3m.get("ema7") or ema_3m.get("ema_fast") or 0.0)
             except Exception:
                 ema7_3m = 0.0
-
             try:
                 ema25_3m = float(ema_3m.get("ema25") or ema_3m.get("ema_slow") or 0.0)
             except Exception:
                 ema25_3m = 0.0
+            try:
+                ema99_3m = float(ema_3m.get("ema99") or 0.0)
+            except Exception:
+                ema99_3m = 0.0
 
             trend_px_now = 0.0
             try:
@@ -9720,53 +9800,78 @@ class TradeExecutor:
             except Exception:
                 trend_px_now = 0.0
 
-            # EMA farkı (flat market kontrolü)
-            ema_gap_1m = abs(ema7_1m - ema25_1m)
-            ema_gap_3m = abs(ema7_3m - ema25_3m)
+            # flat market toleransı
+            flat_market = False
+            try:
+                flat_thr = float(os.getenv("EMA_TREND_FLAT_TOL_PCT", "0.0015") or 0.0015)
+            except Exception:
+                flat_thr = 0.0015
 
-            flat_market = (
-                ema_gap_1m < (ema25_1m * 0.0008)
-                and ema_gap_3m < (ema25_3m * 0.0008)
-            )
+            try:
+                dist_1m = abs(float(ema7_1m) - float(ema25_1m)) / max(abs(float(ema25_1m)), 1e-12) if ema25_1m > 0 else 0.0
+            except Exception:
+                dist_1m = 0.0
 
-            # Trend skor sistemi
+            try:
+                dist_3m = abs(float(ema7_3m) - float(ema25_3m)) / max(abs(float(ema25_3m)), 1e-12) if ema25_3m > 0 else 0.0
+            except Exception:
+                dist_3m = 0.0
+
+            if max(dist_1m, dist_3m) <= float(flat_thr):
+                flat_market = True
+
             trend_long_score = 0
             trend_short_score = 0
 
-            if ema7_1m > ema25_1m:
+            # 1m trend
+            if ema7_1m > 0 and ema25_1m > 0 and ema7_1m >= ema25_1m:
                 trend_long_score += 1
-            if ema7_3m > ema25_3m:
-                trend_long_score += 1
-
-            if ema7_1m < ema25_1m:
-                trend_short_score += 1
-            if ema7_3m < ema25_3m:
+            if ema7_1m > 0 and ema25_1m > 0 and ema7_1m <= ema25_1m:
                 trend_short_score += 1
 
-            long_ok = (
-                flat_market
-                or trend_long_score >= 1
-                or (trend_px_now > ema7_1m and trend_px_now > ema7_3m)
-            )
+            # 3m trend
+            if ema7_3m > 0 and ema25_3m > 0 and ema7_3m >= ema25_3m:
+                trend_long_score += 1
+            if ema7_3m > 0 and ema25_3m > 0 and ema7_3m <= ema25_3m:
+                trend_short_score += 1
 
-            short_ok = (
-                flat_market
-                or trend_short_score >= 1
-                or (trend_px_now < ema25_1m and trend_px_now < ema25_3m)
-            )
+            # 3m major trend confirm
+            if ema25_3m > 0 and ema99_3m > 0:
+                if ema25_3m >= ema99_3m:
+                    trend_long_score += 1
+                if ema25_3m <= ema99_3m:
+                    trend_short_score += 1
+
+            # price location confirm
+            if trend_px_now > 0:
+                if ema7_1m > 0 and trend_px_now >= ema7_1m:
+                    trend_long_score += 1
+                if ema25_1m > 0 and trend_px_now <= ema25_1m:
+                    trend_short_score += 1
+
+            # relaxed rules:
+            # long için 4 kriterden en az 2
+            # short için 4 kriterden en az 2
+            long_ok = flat_market or (trend_long_score >= 2)
+            short_ok = flat_market or (trend_short_score >= 2)
 
             if side_norm == "long" and not long_ok:
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f",
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema99_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f ema99_3m=%.6f long_score=%s short_score=%s flat=%s",
                             sym_u,
                             side_norm,
                             float(trend_px_now),
                             float(ema7_1m),
                             float(ema25_1m),
+                            float(ema99_1m),
                             float(ema7_3m),
                             float(ema25_3m),
+                            float(ema99_3m),
+                            str(trend_long_score),
+                            str(trend_short_score),
+                            str(flat_market),
                         )
                 except Exception:
                     pass
@@ -9776,14 +9881,19 @@ class TradeExecutor:
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f",
+                            "[EXEC][OPEN-BLOCK][EMA-TREND] symbol=%s side=%s px=%.6f ema7_1m=%.6f ema25_1m=%.6f ema99_1m=%.6f ema7_3m=%.6f ema25_3m=%.6f ema99_3m=%.6f long_score=%s short_score=%s flat=%s",
                             sym_u,
                             side_norm,
                             float(trend_px_now),
                             float(ema7_1m),
                             float(ema25_1m),
+                            float(ema99_1m),
                             float(ema7_3m),
                             float(ema25_3m),
+                            float(ema99_3m),
+                            str(trend_long_score),
+                            str(trend_short_score),
+                            str(flat_market),
                         )
                 except Exception:
                     pass
