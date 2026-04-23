@@ -3,7 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
-
+# Load secrets from GCP
+bash scripts/load_secrets_from_gcp.sh || true
 # -----------------------------
 # Load .env into THIS shell (export to children) WITHOUT overriding existing env
 # CLI/env vars should win over .env

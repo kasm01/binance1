@@ -38,7 +38,7 @@ class TradeExecutor:
         self.risk_manager = risk_manager
         self.telegram_bot = telegram_bot
 
-        self.dry_run = bool(dry_run)
+        self.dry_run = str(dry_run or "0").strip().lower() in ("1", "true", "yes", "on")
         self.base_order_notional = float(base_order_notional or 120.0)
         self.max_position_notional = float(max_position_notional or 500.0)
         self.max_leverage = float(max_leverage or 3.0)
@@ -1024,6 +1024,57 @@ class TradeExecutor:
             pass
 
         return int(len(seen))
+
+    def _count_open_positions_for_side(self, side: Optional[str] = None) -> int:
+        try:
+            target = str(side or "").strip().lower()
+            if target not in ("long", "short"):
+                return int(self._count_open_positions())
+
+            positions = []
+            try:
+                positions = list(getattr(self, "positions", {}).values())
+            except Exception:
+                positions = []
+
+            count = 0
+            for pos in positions:
+                try:
+                    qty = float(
+                        pos.get("position_amt")
+                        or pos.get("positionAmt")
+                        or pos.get("qty")
+                        or pos.get("amount")
+                        or 0.0
+                    )
+                except Exception:
+                    qty = 0.0
+
+                if abs(qty) <= 0:
+                    continue
+
+                pos_side = str(
+                    pos.get("side")
+                    or pos.get("position_side")
+                    or pos.get("positionSide")
+                    or ""
+                ).strip().lower()
+
+                if pos_side not in ("long", "short"):
+                    if qty > 0:
+                        pos_side = "long"
+                    elif qty < 0:
+                        pos_side = "short"
+
+                if pos_side == target:
+                    count += 1
+
+            return int(count)
+        except Exception:
+            try:
+                return int(self._count_open_positions())
+            except Exception:
+                return 0
 
     def _has_open_position_on_symbol(self, symbol: str) -> bool:
         sym_u = str(symbol).upper().strip()
@@ -8712,6 +8763,7 @@ class TradeExecutor:
                     pass
                 return {"status": "skip", "reason": "exchange_open_failed"}
 
+
         probs: Dict[str, float] = {}
         now_ts = time.time()
         sync_grace_sec = 45.0
@@ -8741,8 +8793,6 @@ class TradeExecutor:
         pos["notional"] = float(pos.get("notional") or final_notional or 0.0)
         pos["interval"] = str(pos.get("interval") or interval0).strip() or "5m"
 
-        self._set_position(sym_u, pos)
-
         try:
             if getattr(self, "redis", None) is not None:
                 self.redis.setex(
@@ -8760,6 +8810,54 @@ class TradeExecutor:
             pass
 
         try:
+            self._upsert_bridge_state_on_open(
+                symbol=sym_u,
+                side=side0,
+                interval=interval0,
+                intent_id=str(extra_safe.get("intent_id") or ""),
+            )
+        except Exception:
+            pass
+
+        # Local position burada değil, başarılı exchange open SONRASI yazılmalı
+        if not self.dry_run:
+            try:
+                self._exchange_open_market(
+                    symbol=sym_u,
+                    side=side0,
+                    qty=float(qty),
+                    price=float(order_price),
+                    reduce_only=False,
+                    extra=extra_safe,
+                )
+            except Exception as e:
+                try:
+                    if self.logger:
+                        self.logger.exception(
+                            "[EXEC][INTENT] exchange_open_failed | symbol=%s side=%s qty=%.10f price=%.6f err=%s",
+                            sym_u,
+                            side0,
+                            float(qty),
+                            float(order_price),
+                            str(e)[:300],
+                        )
+                except Exception:
+                    pass
+                return {"status": "skip", "reason": "exchange_open_failed"}
+
+            # Exchange open başarılıysa artık local state yaz
+            try:
+                self._set_position(sym_u, pos)
+            except Exception:
+                pass
+        else:
+            # dry run modunda test için local state yazılabilir
+            try:
+                self._set_position(sym_u, pos)
+            except Exception:
+                pass
+
+        try:
             chk_local = self._get_position(sym_u)
             if self.logger:
                 self.logger.info(
@@ -8769,16 +8867,6 @@ class TradeExecutor:
                     float(now_ts),
                     float(now_ts + sync_grace_sec),
                 )
-        except Exception:
-            pass
-
-        try:
-            self._upsert_bridge_state_on_open(
-                symbol=sym_u,
-                side=side0,
-                interval=interval0,
-                intent_id=str(extra_safe.get("intent_id") or ""),
-            )
         except Exception:
             pass
 
@@ -8798,7 +8886,6 @@ class TradeExecutor:
                         float(now2 + sync_grace_sec),
                     )
         except Exception:
-
             try:
                 if self.logger:
                     self.logger.exception(
@@ -8995,6 +9082,38 @@ class TradeExecutor:
 
         signal_u = self._signal_u_from_any(signal)
         side_norm = self._normalize_side(signal_u)
+
+        # BOT SIDE MODE FILTER (long / short / both)
+        try:
+            bot_side_mode = str(os.getenv("BOT_SIDE_MODE", "both") or "both").strip().lower()
+        except Exception:
+            bot_side_mode = "both"
+
+        if bot_side_mode == "long" and side_norm != "long":
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SIDE-MODE-BLOCK] symbol=%s mode=%s side=%s",
+                        sym_u,
+                        bot_side_mode,
+                        side_norm,
+                    )
+            except Exception:
+                pass
+            return
+
+        if bot_side_mode == "short" and side_norm != "short":
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][SIDE-MODE-BLOCK] symbol=%s mode=%s side=%s",
+                        sym_u,
+                        bot_side_mode,
+                        side_norm,
+                    )
+            except Exception:
+                pass
+            return
 
         try:
             min_open_score = float(
@@ -10349,10 +10468,16 @@ class TradeExecutor:
             return
 
         try:
-            open_count = int(self._count_open_positions())
+            open_count = int(self._count_open_positions_for_side(side_norm))
             if open_count >= int(self.max_open_positions):
                 if self.logger:
-                    self.logger.info("[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s open_count=%s limit=%s", sym_u, side_norm, int(open_count), int(self.max_open_positions))
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] max_open_positions reached | symbol=%s side=%s side_open_count=%s limit=%s",
+                        sym_u,
+                        side_norm,
+                        int(open_count),
+                        int(self.max_open_positions),
+                    )
                 return
         except Exception:
             pass
