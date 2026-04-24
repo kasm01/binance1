@@ -3865,6 +3865,149 @@ class TradeExecutor:
         best_roi_pct = float(best_pnl_pct) * lev
         retrace_roi_pct = float(retrace_pct) * lev
 
+        # =========================
+        # STEP TP + PROFIT LOCK
+        # =========================
+        try:
+            step_tp_enable = str(
+                os.getenv("STEP_TP_ENABLE", "0")
+            ).strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            step_tp_enable = False
+
+        try:
+            step_tp_step_usdt = float(os.getenv("STEP_TP_STEP_USDT", "0.10") or 0.10)
+        except Exception:
+            step_tp_step_usdt = 0.10
+
+        try:
+            step_tp_max_target_usdt = float(os.getenv("STEP_TP_MAX_TARGET_USDT", "0.50") or 0.50)
+        except Exception:
+            step_tp_max_target_usdt = 0.50
+
+        try:
+            step_tp_giveback_usdt = float(os.getenv("STEP_TP_GIVEBACK_USDT", "0.04") or 0.04)
+        except Exception:
+            step_tp_giveback_usdt = 0.04
+
+        try:
+            step_tp_min_lock_usdt = float(os.getenv("STEP_TP_MIN_LOCK_USDT", "0.08") or 0.08)
+        except Exception:
+            step_tp_min_lock_usdt = 0.08
+
+        try:
+            pos_notional = float(pos.get("notional") or 0.0)
+        except Exception:
+            pos_notional = 0.0
+
+        try:
+            live_pnl_usdt = float(roi_pct) * float(pos_notional)
+        except Exception:
+            live_pnl_usdt = 0.0
+
+        try:
+            best_pnl_usdt_step = float(best_roi_pct) * float(pos_notional)
+        except Exception:
+            best_pnl_usdt_step = 0.0
+
+        if step_tp_enable and pos_notional > 0:
+            try:
+                current_step = int(best_pnl_usdt_step // step_tp_step_usdt)
+            except Exception:
+                current_step = 0
+
+            target_usdt = min(
+                float(step_tp_max_target_usdt),
+                max(float(step_tp_step_usdt), float(current_step + 1) * float(step_tp_step_usdt)),
+            )
+
+            giveback_hit = (
+                best_pnl_usdt_step >= float(step_tp_min_lock_usdt)
+                and (best_pnl_usdt_step - live_pnl_usdt) >= float(step_tp_giveback_usdt)
+            )
+
+            max_target_hit = (
+                best_pnl_usdt_step >= float(step_tp_max_target_usdt)
+                and live_pnl_usdt >= float(step_tp_max_target_usdt)
+            )
+
+            if giveback_hit or max_target_hit:
+                close_reason = "step_tp_giveback" if giveback_hit else "step_tp_max_target"
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][CLOSE] reason=%s symbol=%s side=%s live_pnl=%.4f best_pnl=%.4f target=%.4f giveback=%.4f roi=%.4f best_roi=%.4f",
+                            close_reason,
+                            sym,
+                            pos_side,
+                            float(live_pnl_usdt),
+                            float(best_pnl_usdt_step),
+                            float(target_usdt),
+                            float(step_tp_giveback_usdt),
+                            float(roi_pct),
+                            float(best_roi_pct),
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    self.close_position(
+                        symbol=sym,
+                        price=float(price),
+                        reason=close_reason,
+                        interval=str(pos.get("interval") or interval or ""),
+                    )
+                except Exception:
+                    try:
+                        if self.logger:
+                            self.logger.exception(
+                                "[EXEC][CLOSE] step_tp close failed | symbol=%s side=%s live_pnl=%.4f best_pnl=%.4f",
+                                sym,
+                                pos_side,
+                                float(live_pnl_usdt),
+                                float(best_pnl_usdt_step),
+                            )
+                    except Exception:
+                        pass
+
+                continue
+
+        # =========================
+        # ANTI REVERSAL
+        # =========================
+        try:
+            anti_enable = str(os.getenv("ANTI_REVERSAL_ENABLE", "0")).lower() in ("1","true","yes","on")
+        except:
+            anti_enable = False
+
+        anti_max_age = float(os.getenv("ANTI_REVERSAL_MAX_AGE_SEC", "180") or 180)
+        anti_arm = float(os.getenv("ANTI_REVERSAL_MIN_ROI_TO_ARM", "0.0015") or 0.0015)
+        anti_pullback = float(os.getenv("ANTI_REVERSAL_PULLBACK_ROI_PCT", "0.0025") or 0.0025)
+
+        best_roi = float(pos.get("best_pnl_pct") or 0.0)
+
+        opened_at = pos.get("opened_at")
+        age = 0.0
+        if isinstance(opened_at, (int, float)):
+            age = time.time() - float(opened_at)
+
+        if anti_enable and age <= anti_max_age:
+            armed = best_roi >= anti_arm
+
+            pullback_hit = armed and (best_roi - roi_pct) >= anti_pullback
+
+            if pullback_hit:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][CLOSE] reason=anti_reversal symbol=%s roi=%.4f best=%.4f",
+                        sym, roi_pct, best_roi
+                    )
+
+                self.close_position(symbol=sym, price=float(price), reason="anti_reversal", interval=str(pos.get("interval") or ""))
+
+                continue
+
         roi_hard_stop_pct = abs(float(getattr(self, "roi_hard_stop_pct", 0.08) or 0.08))
 
         # ---------------------------------------------
