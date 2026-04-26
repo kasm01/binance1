@@ -3866,6 +3866,81 @@ class TradeExecutor:
         retrace_roi_pct = float(retrace_pct) * lev
 
         # =========================
+        # FIXED ROI TAKE PROFIT - NO MISS VERSION
+        # ROI %0.65 = 0.0065
+        # best_roi gördüyse, geri vermeden kapatır
+        # =========================
+        try:
+            fixed_roi_tp_enable = str(
+                os.getenv("FIXED_ROI_TP_ENABLE", "0")
+            ).strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            fixed_roi_tp_enable = False
+
+        try:
+            fixed_roi_tp_pct = float(
+                os.getenv("FIXED_ROI_TP_PCT", "0.0065") or 0.0065
+            )
+        except Exception:
+            fixed_roi_tp_pct = 0.0065
+
+        try:
+            fixed_roi_tp_giveback = float(
+                os.getenv("FIXED_ROI_TP_GIVEBACK", "0.0015") or 0.0015
+            )
+        except Exception:
+            fixed_roi_tp_giveback = 0.0015
+
+        if fixed_roi_tp_enable:
+            direct_tp_hit = float(roi_pct) >= float(fixed_roi_tp_pct)
+
+            best_tp_hit = (
+                float(best_roi_pct) >= float(fixed_roi_tp_pct)
+                and float(roi_pct) <= float(best_roi_pct) - float(fixed_roi_tp_giveback)
+            )
+
+            if direct_tp_hit or best_tp_hit:
+                close_reason = "fixed_roi_tp" if direct_tp_hit else "fixed_roi_tp_lock"
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][CLOSE] reason=%s symbol=%s side=%s roi=%.4f best_roi=%.4f tp=%.4f giveback=%.4f price=%.6f",
+                            close_reason,
+                            sym,
+                            pos_side,
+                            float(roi_pct),
+                            float(best_roi_pct),
+                            float(fixed_roi_tp_pct),
+                            float(fixed_roi_tp_giveback),
+                            float(price),
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    self.close_position(
+                        symbol=sym,
+                        price=float(price),
+                        reason=close_reason,
+                        interval=str(pos.get("interval") or interval or ""),
+                    )
+                except Exception:
+                    try:
+                        if self.logger:
+                            self.logger.exception(
+                                "[EXEC][CLOSE] fixed_roi_tp close failed | symbol=%s side=%s roi=%.4f best_roi=%.4f",
+                                sym,
+                                pos_side,
+                                float(roi_pct),
+                                float(best_roi_pct),
+                            )
+                    except Exception:
+                        pass
+
+                return
+
+        # =========================
         # STEP TP + PROFIT LOCK
         # =========================
         try:
@@ -3971,7 +4046,7 @@ class TradeExecutor:
                     except Exception:
                         pass
 
-                continue
+                return
 
         # =========================
         # ANTI REVERSAL
@@ -4004,9 +4079,14 @@ class TradeExecutor:
                         sym, roi_pct, best_roi
                     )
 
-                self.close_position(symbol=sym, price=float(price), reason="anti_reversal", interval=str(pos.get("interval") or ""))
+                self.close_position(
+                    symbol=sym,
+                    price=float(price),
+                    reason="anti_reversal",
+                    interval=str(pos.get("interval") or ""),
+                )
 
-                continue
+                return
 
         roi_hard_stop_pct = abs(float(getattr(self, "roi_hard_stop_pct", 0.08) or 0.08))
 
