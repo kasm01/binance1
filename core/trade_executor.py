@@ -8943,6 +8943,34 @@ class TradeExecutor:
         whale_bias_now = self._whale_bias(side=side0, extra=extra_safe)
         extra_safe["whale_bias"] = whale_bias_now
 
+        # =========================
+        # DUPLICATE OPEN PROTECTION
+        # aynı sinyalin 2 kere order atmasını engeller
+        # =========================
+        try:
+            if not hasattr(self, "_last_open_ts"):
+                self._last_open_ts = {}
+
+            now_dup = time.time()
+            dup_key = f"{sym_u}_{side0}"
+
+            last_dup = self._last_open_ts.get(dup_key)
+
+            if last_dup and (now_dup - float(last_dup)) < 8:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] duplicate protection | symbol=%s side=%s wait_left=%.2f",
+                        sym_u,
+                        side0,
+                        float(8 - (now_dup - float(last_dup))),
+                    )
+                return
+
+            self._last_open_ts[dup_key] = now_dup
+
+        except Exception:
+            pass
+
         try:
             if self.logger:
                 self.logger.info(
