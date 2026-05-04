@@ -111,3 +111,67 @@ class RedisPriceCache:
         except Exception:
             return None
 
+
+# ------------------------------
+# Redis Kline Cache
+# ------------------------------
+
+def _kline_redis_client():
+    if redis is None:
+        return None
+    try:
+        return redis.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            decode_responses=True,
+        )
+    except Exception:
+        return None
+
+
+def _kline_key(symbol: str, interval: str) -> str:
+    prefix = os.getenv("REDIS_PREFIX", "binance1")
+    return f"{prefix}:kline_cache:{str(symbol).upper()}:{str(interval)}"
+
+
+def write_kline_cache(symbol: str, interval: str, rows: Any, ttl_sec: int = 90) -> bool:
+    client = _kline_redis_client()
+    if client is None or rows is None:
+        return False
+
+    try:
+        payload = {
+            "symbol": str(symbol).upper(),
+            "interval": str(interval),
+            "ts": time.time(),
+            "rows": rows,
+        }
+        client.set(_kline_key(symbol, interval), json.dumps(payload, default=str), ex=int(ttl_sec))
+        return True
+    except Exception:
+        return False
+
+
+def read_kline_cache(symbol: str, interval: str, max_age_sec: float = 20.0) -> Optional[Any]:
+    client = _kline_redis_client()
+    if client is None:
+        return None
+
+    try:
+        raw = client.get(_kline_key(symbol, interval))
+
+        # fallback: supervisor env REDIS_PREFIX eksikse short prefix'i de dene
+        if not raw:
+            raw = client.get(f"binance1_short:kline_cache:{str(symbol).upper()}:{str(interval)}")
+
+        if not raw:
+            return None
+
+        payload = json.loads(raw)
+        ts = float(payload.get("ts", 0.0) or 0.0)
+        if ts <= 0 or (time.time() - ts) > float(max_age_sec):
+            return None
+
+        rows = payload.get("rows")
+        return rows if rows else None
+    except Exception:
+        return None

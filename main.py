@@ -72,6 +72,7 @@ from config.settings import Settings
 
 from config.credentials import Credentials
 from core.logger import setup_logger
+from core.redis_price_cache import write_kline_cache
 from core.binance_client import create_binance_client
 from core.position_manager import PositionManager
 from core.risk_manager import RiskManager
@@ -1216,6 +1217,17 @@ class HeavyEngine:
         )
         timer.mark("fetch_klines")
 
+        # >>> REDIS KLINE CACHE WRITE
+        try:
+            if raw_df is not None and len(raw_df) >= 30:
+                write_kline_cache(
+                    symbol=symbol,
+                    interval=interval,
+                    rows=raw_df.tail(int(self.data_limit)).to_dict("records"),
+                    ttl_sec=90,
+                )
+        except Exception:
+            pass
         feat_df = build_features(raw_df)
         feat_df = self._normalize_feat_df(feat_df, interval)
         timer.mark("features+schema")

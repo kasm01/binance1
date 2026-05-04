@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+from core.redis_price_cache import read_kline_cache
 
 import asyncio
 import inspect
@@ -1515,7 +1516,29 @@ class TradeExecutor:
             try:
                 client = getattr(self, "client", None)
                 fn = getattr(client, "futures_klines", None) if client is not None else None
-                if callable(fn):
+
+                # >>> REDIS KLINE CACHE READ FIRST
+                try:
+                    cached_rows = read_kline_cache(str(symbol).upper(), str(interval or "3m"), max_age_sec=120.0)
+                    if isinstance(cached_rows, list) and len(cached_rows) >= 30:
+                        rows = cached_rows
+                        tmp: List[float] = []
+                        rows_cache = rows
+                        for row in rows:
+                            try:
+                                if isinstance(row, (list, tuple)) and len(row) >= 5:
+                                    tmp.append(float(row[4]))
+                                elif isinstance(row, dict):
+                                    tmp.append(float(row.get("close")))
+                            except Exception:
+                                pass
+                        if len(tmp) >= 30:
+                            closes = tmp
+                            source = "redis_kline_cache"
+                except Exception:
+                    pass
+
+                if callable(fn) and len(closes) < 30:
                     rows = fn(
                         symbol=str(symbol).upper(),
                         interval=str(interval or "3m"),
