@@ -1430,7 +1430,7 @@ class TradeExecutor:
         try:
             pc = getattr(self, "price_cache", None)
             if pc is not None:
-                for method_name in ("get_mid_price", "get_price", "get_last_price"):
+                for method_name in ("get_mid", "get_mid_price", "get_price", "get_last_price"):
                     fn = getattr(pc, method_name, None)
                     if callable(fn):
                         v = fn(sym)
@@ -1450,7 +1450,42 @@ class TradeExecutor:
         except Exception:
             pass
 
+        
+        # >>> REDIS PRICECACHE (WITH PREFIX)
+        try:
+            import json, os
+            prefix = os.getenv("REDIS_PREFIX", "binance1")
+            raw = self.redis.get(f"{prefix}:pricecache:{sym}")
+            if raw:
+                data = json.loads(raw)
+                mid = float(data.get("mid", 0.0) or 0.0)
+                if mid > 0:
+                    return mid
+        except Exception:
+            pass
+
+        
+        # >>> TRY BOTH PREFIXES (CRITICAL FIX)
+        try:
+            import json, os
+            prefix = os.getenv("REDIS_PREFIX", "binance1")
+
+            for key in (
+                f"{prefix}:pricecache:{sym}",
+                f"pricecache:{sym}",
+            ):
+                raw = self.redis.get(key)
+                if raw:
+                    data = json.loads(raw)
+                    mid = float(data.get("mid", 0.0) or 0.0)
+                    if mid > 0:
+                        return mid
+        except Exception:
+            pass
+
         return None
+
+
 
     def _resolve_price(
         self,

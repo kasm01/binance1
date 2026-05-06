@@ -72,7 +72,7 @@ from config.settings import Settings
 
 from config.credentials import Credentials
 from core.logger import setup_logger
-from core.redis_price_cache import write_kline_cache
+from core.redis_price_cache import write_kline_cache, read_kline_cache
 from core.binance_client import create_binance_client
 from core.position_manager import PositionManager
 from core.risk_manager import RiskManager
@@ -750,8 +750,20 @@ def create_trading_objects(
     global BINANCE_API_KEY, BINANCE_API_SECRET
     global HYBRID_MODE, TRAINING_MODE, USE_MTF_ENS, DRY_RUN, USE_TESTNET
 
-    symbol = os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", None) or "BTCUSDT"
-    interval = os.getenv("INTERVAL") or getattr(Settings, "INTERVAL", None) or "5m"
+    symbols = parse_symbols_env()
+
+    # güvenli default
+    symbol = symbols[0] if symbols else (
+        os.getenv("SYMBOL")
+        or getattr(Settings, "SYMBOL", None)
+        or "BTCUSDT"
+    )
+
+    interval = (
+        os.getenv("INTERVAL")
+        or getattr(Settings, "INTERVAL", None)
+        or "5m"
+    )
 
     k, s, is_testnet = _select_binance_keys_for_mode()
     BINANCE_API_KEY, BINANCE_API_SECRET = k, s
@@ -1208,18 +1220,76 @@ class HeavyEngine:
         interval = self.interval
         timer = _StepTimer()
 
-        raw_df = await fetch_klines(
-            client=self.client,
-            symbol=symbol,
-            interval=interval,
-            limit=self.data_limit,
-            logger=system_logger,
-        )
+        # >>> REDIS-FIRST KLINE READ
+        raw_df = None
+        cache_hit = False
+        try:
+            cached_rows = read_kline_cache(symbol, interval, max_age_sec=15.0)
+            if isinstance(cached_rows, list) and len(cached_rows) >= 30:
+                import pandas as pd
+                raw_df = pd.DataFrame(cached_rows)
+                cache_hit = True
+        except Exception:
+            raw_df = None
+            cache_hit = False
+
+        if raw_df is None or len(raw_df) < 30:
+            raw_df = await fetch_klines(
+                client=self.client,
+                symbol=symbol,
+                interval=interval,
+                limit=self.data_limit,
+                logger=system_logger,
+            )
+
         timer.mark("fetch_klines")
+
+        # >>> REDIS PRICE CACHE WRITE FOR CURRENT SYMBOL
+        try:
+            if raw_df is not None and len(raw_df) > 0:
+                last_row = raw_df.iloc[-1]
+
+                # robust close extraction
+                close_val = None
+                for k in ("close", "Close", "c"):
+                    if k in last_row and last_row.get(k) is not None:
+                        try:
+                            close_val = float(last_row.get(k))
+                            break
+                        except Exception:
+                            pass
+
+                if (close_val is None or close_val <= 0) and hasattr(raw_df, "columns"):
+                    # fallback: last column
+                    try:
+                        close_val = float(last_row[raw_df.columns[-1]])
+                    except Exception:
+                        close_val = None
+
+                if close_val and close_val > 0:
+                    pc = RedisPriceCache(
+                        key_prefix=f"{os.getenv('REDIS_PREFIX','binance1')}:pricecache",
+                        ttl_sec=int(os.getenv("REDIS_PRICECACHE_TTL_SEC", "15")),
+                    )
+                    pc.set_bid_ask(symbol=symbol, bid=close_val, ask=close_val)
+                    try:
+                        system_logger.info("[PRICECACHE] write ok | symbol=%s close=%.6f", symbol, close_val)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        system_logger.warning("[PRICECACHE] no valid close | symbol=%s cols=%s", symbol, list(raw_df.columns))
+                    except Exception:
+                        pass
+        except Exception as e:
+            try:
+                system_logger.warning("[PRICECACHE] write failed | symbol=%s err=%s", symbol, e)
+            except Exception:
+                pass
 
         # >>> REDIS KLINE CACHE WRITE
         try:
-            if raw_df is not None and len(raw_df) >= 30:
+            if (not cache_hit) and raw_df is not None and len(raw_df) >= 30:
                 write_kline_cache(
                     symbol=symbol,
                     interval=interval,
