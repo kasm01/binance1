@@ -808,6 +808,23 @@ class TradeExecutor:
                 if entry_price <= 0:
                     continue
 
+                # -------------------------------------------------
+                # BOT SIDE FILTER
+                # -------------------------------------------------
+                try:
+                    bot_side_mode = str(
+                        os.getenv("BOT_SIDE_MODE", "both") or "both"
+                    ).strip().lower()
+
+                    if bot_side_mode == "long" and side != "long":
+                        continue
+
+                    if bot_side_mode == "short" and side != "short":
+                        continue
+
+                except Exception:
+                    pass
+
                 cp = dict(pos)
                 cp["symbol"] = sym_u
                 cp["side"] = side
@@ -1483,7 +1500,18 @@ class TradeExecutor:
         except Exception:
             pass
 
+        
+        # >>> FINAL FIX: USE LAST KLINE CLOSE
+        try:
+            if hasattr(self, "_last_kline_close"):
+                v = float(self._last_kline_close)
+                if v > 0:
+                    return v
+        except Exception:
+            pass
+
         return None
+
 
 
 
@@ -3418,6 +3446,27 @@ class TradeExecutor:
         sym = str(symbol).upper()
         lev = int(max(1, leverage))
 
+        # FAST-OPEN: aynı sembolde aynı leverage zaten set edildiyse tekrar API çağırma
+        try:
+            import time, os
+            ttl = float(os.getenv("LEVERAGE_SET_CACHE_TTL_SEC", "3600") or 3600)
+            cache = getattr(self, "_leverage_set_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                setattr(self, "_leverage_set_cache", cache)
+            now = time.time()
+            prev = cache.get(sym)
+            if isinstance(prev, dict) and int(prev.get("lev") or 0) == int(lev) and (now - float(prev.get("ts") or 0)) < ttl:
+                try:
+                    if self.logger:
+                        self.logger.info("[EXEC][LEV][SKIP] symbol=%s leverage=%s cache=1", sym, int(lev))
+                except Exception:
+                    pass
+                return int(lev)
+        except Exception:
+            cache = None
+            now = 0.0
+
         client = getattr(self, "client", None)
         if client is None:
             return lev
@@ -3427,6 +3476,12 @@ class TradeExecutor:
             return lev
 
         resp = fn(symbol=sym, leverage=lev)
+
+        try:
+            if isinstance(cache, dict):
+                cache[sym] = {"lev": int(lev), "ts": float(now)}
+        except Exception:
+            pass
 
         try:
             if self.logger:
@@ -8751,7 +8806,19 @@ class TradeExecutor:
 
             notional = self._compute_balance_based_notional(sym_u, side0, float(order_price), meta0)
             raw_notional = float(notional)
-            notional = self._apply_whale_open_adjustments(side0, float(notional), meta0)
+
+            # FAST-OPEN: whale notional adjust varsayılan kapalı; sadece env açık ise uygula
+            try:
+                import os
+                whale_adj_on = str(os.getenv("WHALE_OPEN_NOTIONAL_ADJUST", "0")).lower() in ("1", "true", "yes", "on")
+            except Exception:
+                whale_adj_on = False
+
+            if whale_adj_on:
+                notional = self._apply_whale_open_adjustments(side0, float(notional), meta0)
+            else:
+                notional = float(raw_notional)
+
             notional = float(min(float(notional), float(self.max_position_notional)))
             notional = float(max(10.0, float(notional)))
 
@@ -8807,14 +8874,23 @@ class TradeExecutor:
                 }
             )
 
-            try:
-                ema_backfill = self._backfill_ema_metrics(symbol=sym_u, interval=interval0, extra=extra_safe)
-            except Exception:
+            # FAST-OPEN: EMA meta içinde geldiyse tekrar backfill yapma
+            if extra_safe.get("ema7") and extra_safe.get("ema25") and extra_safe.get("ema99"):
+                ema_backfill = {
+                    "ema7": extra_safe.get("ema7"),
+                    "ema25": extra_safe.get("ema25"),
+                    "ema99": extra_safe.get("ema99"),
+                    "ema_fast": extra_safe.get("ema_fast") or extra_safe.get("ema7"),
+                    "ema_slow": extra_safe.get("ema_slow") or extra_safe.get("ema25"),
+                }
+            else:
+                # FAST-OPEN: open sırasında EMA tekrar fetch etme.
+                # Karar aşamasındaki EMA yoksa sıfırla geç; hard EMA zaten decision tarafında kontrol ediliyor.
                 ema_backfill = {}
 
-            extra_safe["ema7"] = float(ema_backfill.get("ema7") or 0.0)
-            extra_safe["ema25"] = float(ema_backfill.get("ema25") or 0.0)
-            extra_safe["ema99"] = float(ema_backfill.get("ema99") or 0.0)
+            extra_safe["ema7"] = float(ema_backfill.get("ema7") or extra_safe.get("ema7") or 0.0)
+            extra_safe["ema25"] = float(ema_backfill.get("ema25") or extra_safe.get("ema25") or 0.0)
+            extra_safe["ema99"] = float(ema_backfill.get("ema99") or extra_safe.get("ema99") or 0.0)
             extra_safe["ema_fast"] = float(ema_backfill.get("ema_fast") or extra_safe["ema7"] or 0.0)
             extra_safe["ema_slow"] = float(ema_backfill.get("ema_slow") or extra_safe["ema25"] or 0.0)
 
@@ -9166,6 +9242,85 @@ class TradeExecutor:
             probs=probs,
         )
 
+        # =========================================================
+        # DYNAMIC COIN SCORE ADJUST
+        # open_min_score değerini piyasa yoğunluğuna göre ayarlar.
+        # =========================================================
+        try:
+            dyn_enable = str(
+                os.getenv("DYNAMIC_COIN_SCORE_ENABLE", "0") or "0"
+            ).strip().lower() in ("1", "true", "yes", "on")
+
+            if dyn_enable and side_norm in ("long", "short"):
+                dyn_min = float(os.getenv("DYNAMIC_SCORE_MIN", "0.49") or 0.49)
+                dyn_max = float(os.getenv("DYNAMIC_SCORE_MAX", "0.58") or 0.58)
+
+                atr_boost = float(os.getenv("DYNAMIC_SCORE_ATR_BOOST", "0.0") or 0.0)
+                spread_boost = float(os.getenv("DYNAMIC_SCORE_SPREAD_BOOST", "0.0") or 0.0)
+                ema_relax = float(os.getenv("DYNAMIC_SCORE_EMA_RELAX", "0.0") or 0.0)
+                whale_relax = float(os.getenv("DYNAMIC_SCORE_WHALE_RELAX", "0.0") or 0.0)
+
+                dyn_score = float(open_min_score)
+
+                atr_v = float(extra0.get("atr") or extra0.get("atr_pct") or 0.0)
+                spread_v = float(extra0.get("spread_pct") or extra0.get("spread") or 0.0)
+
+                whale_dir = str(extra0.get("whale_dir") or "").strip().lower()
+                whale_score = float(extra0.get("whale_score") or 0.0)
+
+                ema7_v = float(extra0.get("ema7") or 0.0)
+                ema25_v = float(extra0.get("ema25") or 0.0)
+
+                # ATR yüksekse biraz daha seçici ol
+                if atr_v > 0:
+                    dyn_score += atr_boost
+
+                # Spread yüksekse biraz daha seçici ol
+                if spread_v > 0:
+                    dyn_score += spread_boost
+
+                # EMA aynı yönse gevşet
+                if side_norm == "long" and ema7_v > 0 and ema25_v > 0 and ema7_v > ema25_v:
+                    dyn_score -= ema_relax
+
+                if side_norm == "short" and ema7_v > 0 and ema25_v > 0 and ema7_v < ema25_v:
+                    dyn_score -= ema_relax
+
+                # Whale aynı yönse gevşet
+                if whale_dir == side_norm and whale_score > 0:
+                    dyn_score -= whale_relax
+
+                dyn_score = max(dyn_min, min(dyn_max, dyn_score))
+
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][DYNAMIC-SCORE] symbol=%s side=%s base=%.4f final=%.4f min=%.4f max=%.4f atr=%.6f spread=%.6f whale_dir=%s whale_score=%.4f",
+                        sym_u,
+                        side_norm,
+                        float(open_min_score),
+                        float(dyn_score),
+                        float(dyn_min),
+                        float(dyn_max),
+                        float(atr_v),
+                        float(spread_v),
+                        whale_dir,
+                        float(whale_score),
+                    )
+
+                open_min_score = float(dyn_score)
+
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][DYNAMIC-SCORE][WARN] symbol=%s side=%s err=%s",
+                        sym_u,
+                        side_norm,
+                        str(e)[:200],
+                    )
+            except Exception:
+                pass
+
         if side_norm in ("long", "short"):
             try:
                 if self.logger:
@@ -9177,6 +9332,157 @@ class TradeExecutor:
                         float(extra0.get("p_buy_ema") or 0.0),
                         float(extra0.get("p_buy_raw") or 0.0),
                         float(extra0.get("model_confidence_factor") or 0.0),
+                    )
+            except Exception:
+                pass
+
+        # =========================================================
+        # SNIPER ENTRY TIMING FILTER
+        # Low score'dan ÖNCE çalışır; böylece SNIPER logları görünür.
+        # =========================================================
+        try:
+            sniper_enable = str(os.getenv("SNIPER_ENTRY_ENABLE", "0")).strip().lower() in (
+                "1", "true", "yes", "on"
+            )
+
+            if sniper_enable and side_norm in ("long", "short"):
+                import time
+
+                max_progress = float(os.getenv("SNIPER_ENTRY_MAX_CANDLE_PROGRESS", "0.55") or 0.55)
+                min_progress = float(os.getenv("SNIPER_ENTRY_MIN_CANDLE_PROGRESS", "0.08") or 0.08)
+
+                interval_sec = 60.0
+                try:
+                    interval_s = str(interval or "1m").strip().lower()
+                    if interval_s.endswith("m"):
+                        interval_sec = float(interval_s.replace("m", "")) * 60.0
+                    elif interval_s.endswith("s"):
+                        interval_sec = float(interval_s.replace("s", ""))
+                except Exception:
+                    interval_sec = 60.0
+
+                candle_progress = (time.time() % interval_sec) / max(interval_sec, 1.0)
+
+                if candle_progress > max_progress:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][SNIPER-LATE] symbol=%s side=%s progress=%.3f max=%.3f interval=%s score=%.4f min_open=%.4f",
+                                sym_u,
+                                side_norm,
+                                float(candle_progress),
+                                float(max_progress),
+                                str(interval),
+                                float(signal_score),
+                                float(open_min_score),
+                            )
+                    except Exception:
+                        pass
+                    return
+
+                if candle_progress < min_progress:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][SNIPER-EARLY] symbol=%s side=%s progress=%.3f min=%.3f interval=%s score=%.4f min_open=%.4f",
+                                sym_u,
+                                side_norm,
+                                float(candle_progress),
+                                float(min_progress),
+                                str(interval),
+                                float(signal_score),
+                                float(open_min_score),
+                            )
+                    except Exception:
+                        pass
+                    return
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC][SNIPER-ENTRY] allow | symbol=%s side=%s progress=%.3f min=%.3f max=%.3f interval=%s score=%.4f min_open=%.4f",
+                            sym_u,
+                            side_norm,
+                            float(candle_progress),
+                            float(min_progress),
+                            float(max_progress),
+                            str(interval),
+                            float(signal_score),
+                            float(open_min_score),
+                        )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][SNIPER-ENTRY][WARN] symbol=%s side=%s err=%s",
+                        sym_u,
+                        side_norm,
+                        str(e)[:200],
+                    )
+            except Exception:
+                pass
+
+        # =========================================================
+        # EMA HARD DIRECTION VETO
+        # Long block : ema7 < ema25 < ema99
+        # Short block: ema7 > ema25 > ema99
+        # =========================================================
+        try:
+            if side_norm in ("long", "short"):
+
+                ema_pack = self._backfill_ema_metrics(
+                    symbol=sym_u,
+                    interval=str(interval or "1m"),
+                    extra=extra if isinstance(extra, dict) else {},
+                ) or {}
+
+                ema7_v = float(ema_pack.get("ema7") or 0.0)
+                ema25_v = float(ema_pack.get("ema25") or 0.0)
+                ema99_v = float(ema_pack.get("ema99") or 0.0)
+
+                if ema7_v > 0 and ema25_v > 0 and ema99_v > 0:
+
+                    block_long = (
+                        side_norm == "long"
+                        and ema7_v < ema25_v
+                        and ema25_v < ema99_v
+                    )
+
+                    block_short = (
+                        side_norm == "short"
+                        and ema7_v > ema25_v
+                        and ema25_v > ema99_v
+                    )
+
+                    if block_long or block_short:
+
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK][EMA-HARD-%s] symbol=%s side=%s ema7=%.6f ema25=%.6f ema99=%.6f",
+                                    str(side_norm).upper(),
+                                    sym_u,
+                                    side_norm,
+                                    ema7_v,
+                                    ema25_v,
+                                    ema99_v,
+                                )
+                        except Exception:
+                            pass
+
+                        return
+
+        except Exception as e:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][EMA-HARD][WARN] symbol=%s side=%s err=%s",
+                        sym_u,
+                        side_norm,
+                        str(e)[:200],
                     )
             except Exception:
                 pass

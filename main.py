@@ -1272,6 +1272,14 @@ class HeavyEngine:
                         ttl_sec=int(os.getenv("REDIS_PRICECACHE_TTL_SEC", "15")),
                     )
                     pc.set_bid_ask(symbol=symbol, bid=close_val, ask=close_val)
+
+                    # >>> EXECUTOR LAST KLINE CLOSE
+                    try:
+                        if hasattr(self, "executor") and self.executor is not None:
+                            self.executor._last_kline_close = float(close_val)
+                    except Exception:
+                        pass
+
                     try:
                         system_logger.info("[PRICECACHE] write ok | symbol=%s close=%.6f", symbol, close_val)
                     except Exception:
