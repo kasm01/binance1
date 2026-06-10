@@ -1170,11 +1170,18 @@ class TradeExecutor:
             base_balance = float(equity_usdt)
             balance_source = "equity"
         else:
-            base_balance = self._clip_float(
-                os.getenv("DEFAULT_EQUITY_USDT", "1000"),
-                1000.0,
-            ) or 1000.0
-            balance_source = "fallback"
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC][OPEN-BLOCK] balance unavailable | symbol=%s side=%s available_balance=%s equity_usdt=%s",
+                        str(symbol).upper(),
+                        str(side).lower(),
+                        str(extra0.get("available_balance_usdt")),
+                        str(extra0.get("equity_usdt")),
+                    )
+            except Exception:
+                pass
+            return 0.0
 
         pct = float(self.per_position_balance_pct)
         pct = max(0.01, min(pct, 1.0))
@@ -5807,6 +5814,83 @@ class TradeExecutor:
                         except Exception:
                             pass
 
+                        # FIXED ROI TP - lifecycle giveback/trailing close
+                        try:
+                            fixed_roi_tp_enable = str(os.getenv("FIXED_ROI_TP_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
+                            fixed_roi_tp_pct = float(os.getenv("FIXED_ROI_TP_PCT", "0.0050") or 0.0050)
+                            fixed_roi_tp_giveback = float(os.getenv("FIXED_ROI_TP_GIVEBACK", "0.0010") or 0.0010)
+                            lev = float(self._resolve_position_leverage(pos))
+
+                            if side == "long":
+                                roi_pct_direct = ((float(px) - float(entry_price)) / max(float(entry_price), 1e-12)) * lev
+                            else:
+                                roi_pct_direct = ((float(entry_price) - float(px)) / max(float(entry_price), 1e-12)) * lev
+
+                            old_best_roi = 0.0
+                            fixed_roi_best_key = "fixed_roi_best:" + str(sym_u).upper().strip()
+                            try:
+                                old_best_roi = float(pos.get("best_roi_pct") or pos.get("best_roi") or 0.0)
+                            except Exception:
+                                old_best_roi = 0.0
+
+                            try:
+                                if self.redis is not None:
+                                    redis_best = self.redis.get(fixed_roi_best_key)
+                                    if redis_best is not None:
+                                        old_best_roi = max(float(old_best_roi), float(redis_best))
+                            except Exception:
+                                pass
+
+                            best_roi_pct = max(float(old_best_roi), float(roi_pct_direct), 0.0)
+
+                            try:
+                                if self.redis is not None:
+                                    self.redis.set(fixed_roi_best_key, str(float(best_roi_pct)), ex=86400)
+                            except Exception:
+                                pass
+
+                            try:
+                                pos["best_roi_pct"] = float(best_roi_pct)
+                                pos["best_roi"] = float(best_roi_pct)
+                                pos["best_pnl_pct"] = float(best_roi_pct) / max(float(lev), 1e-12)
+                                self._set_position(sym_u, pos)
+                            except Exception:
+                                pass
+
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][FIXED-ROI][LIFECYCLE] symbol=%s side=%s roi=%.6f best_roi=%.6f tp=%.6f giveback=%.6f price=%.6f entry=%.6f lev=%.2f",
+                                    sym_u, side, float(roi_pct_direct), float(best_roi_pct), float(fixed_roi_tp_pct), float(fixed_roi_tp_giveback), float(px), float(entry_price), float(lev)
+                                )
+
+                            direct_tp_hit = (
+                                fixed_roi_tp_enable
+                                and float(fixed_roi_tp_giveback) <= 0.0
+                                and float(roi_pct_direct) >= float(fixed_roi_tp_pct)
+                            )
+
+                            giveback_tp_hit = (
+                                fixed_roi_tp_enable
+                                and float(fixed_roi_tp_giveback) > 0.0
+                                and float(best_roi_pct) >= float(fixed_roi_tp_pct)
+                                and float(roi_pct_direct) <= float(best_roi_pct) - float(fixed_roi_tp_giveback)
+                            )
+
+                            if direct_tp_hit or giveback_tp_hit:
+                                self.close_position(
+                                    symbol=sym_u,
+                                    price=float(px),
+                                    reason="fixed_roi_tp_lifecycle" if direct_tp_hit else "fixed_roi_tp_lifecycle_lock",
+                                    interval=str(interval or ""),
+                                )
+                                continue
+                        except Exception:
+                            try:
+                                if self.logger:
+                                    self.logger.exception("[EXEC][FIXED-ROI][LIFECYCLE] failed | symbol=%s", sym_u)
+                            except Exception:
+                                pass
+
                         self._check_sl_tp_trailing(
                             symbol=sym_u,
                             price=float(px),
@@ -7737,6 +7821,9 @@ class TradeExecutor:
                 close_reason = "stall_exit"
         # ===== ROI PROFIT LOCK =====
         profit_lock_reason = None
+
+        profit_lock_enable = str(os.getenv("PROFIT_LOCK_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
+
         try:
             lev = float(self._resolve_position_leverage(pos))
             roi_pct = float(pnl_pct) * lev
@@ -7768,13 +7855,15 @@ class TradeExecutor:
             )
 
             if (
-                float(best_roi_pct) >= float(profit_lock_arm_roi_pct)
+                profit_lock_enable
+                and float(best_roi_pct) >= float(profit_lock_arm_roi_pct)
                 and float(retrace_roi_pct) >= float(profit_lock_retrace_roi_pct)
             ):
                 profit_lock_reason = "profit_lock_roi"
 
             if (
-                profit_lock_reason is None
+                profit_lock_enable
+                and profit_lock_reason is None
                 and float(best_roi_pct) >= float(profit_lock_arm_roi_pct)
                 and float(roi_pct) <= float(profit_floor_roi_pct)
             ):
@@ -8809,7 +8898,6 @@ class TradeExecutor:
 
             # FAST-OPEN: whale notional adjust varsayılan kapalı; sadece env açık ise uygula
             try:
-                import os
                 whale_adj_on = str(os.getenv("WHALE_OPEN_NOTIONAL_ADJUST", "0")).lower() in ("1", "true", "yes", "on")
             except Exception:
                 whale_adj_on = False
@@ -8983,6 +9071,12 @@ class TradeExecutor:
                 }
             )
 
+            try:
+                if self.redis is not None:
+                    self.redis.delete("fixed_roi_best:" + str(sym_u).upper().strip())
+            except Exception:
+                pass
+
             self._set_position(sym_u, pos)
 
             try:
@@ -9089,8 +9183,57 @@ class TradeExecutor:
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         extra0 = self._extract_whale_context(extra if isinstance(extra, dict) else {})
+        # =========================================================
+        # INTERVAL ROUTER
+        # Decision = 3m, Entry/Sniper = 1m, Exit = 1m, Lifecycle = 3m
+        # =========================================================
+        decision_interval = str(os.getenv("DECISION_INTERVAL", os.getenv("INTERVAL", "3m")) or "3m").strip() or "3m"
+        entry_interval = str(os.getenv("ENTRY_INTERVAL", os.getenv("SNIPER_ENTRY_INTERVAL", "1m")) or "1m").strip() or "1m"
+        exit_interval = str(os.getenv("EXIT_INTERVAL", os.getenv("SCALP_EXIT_INTERVAL", "1m")) or "1m").strip() or "1m"
+        lifecycle_interval = str(os.getenv("LIFECYCLE_INTERVAL", "3m") or "3m").strip() or "3m"
+
+        interval = decision_interval
+        extra0["decision_interval"] = decision_interval
+        extra0["entry_interval"] = entry_interval
+        extra0["exit_interval"] = exit_interval
+        extra0["lifecycle_interval"] = lifecycle_interval
         raw_signal = str(signal or "").strip().lower()
         sym_u = str(symbol).upper().strip()
+        # =========================================================
+        # PRICE FALLBACK EARLY
+        # Decision'a price=0.0 gelirse cache/extra üzerinden doldur.
+        # Böylece aşağıdaki tüm filtreler gerçek fiyatla çalışır.
+        # =========================================================
+        try:
+            price_f = float(price or 0.0)
+        except Exception:
+            price_f = 0.0
+
+        if price_f <= 0.0:
+            try:
+                price_f = float(
+                    extra0.get("price")
+                    or extra0.get("close")
+                    or extra0.get("last_price")
+                    or extra0.get("mark_price")
+                    or extra0.get("mid_price")
+                    or 0.0
+                )
+            except Exception:
+                price_f = 0.0
+
+        if price_f <= 0.0:
+            try:
+                cached_px = self._get_cached_mid_price(sym_u)
+                if cached_px and float(cached_px) > 0.0:
+                    price_f = float(cached_px)
+            except Exception:
+                pass
+
+        if price_f > 0.0:
+            price = float(price_f)
+            extra0["price"] = float(price_f)
+            extra0["intent_price"] = float(price_f)
 
         try:
             if self.logger:
@@ -9353,7 +9496,7 @@ class TradeExecutor:
 
                 interval_sec = 60.0
                 try:
-                    interval_s = str(interval or "1m").strip().lower()
+                    interval_s = str(entry_interval or "1m").strip().lower()
                     if interval_s.endswith("m"):
                         interval_sec = float(interval_s.replace("m", "")) * 60.0
                     elif interval_s.endswith("s"):
@@ -9361,6 +9504,7 @@ class TradeExecutor:
                 except Exception:
                     interval_sec = 60.0
 
+                sniper_interval_label = str(entry_interval or "1m")
                 candle_progress = (time.time() % interval_sec) / max(interval_sec, 1.0)
 
                 if candle_progress > max_progress:
@@ -9372,7 +9516,7 @@ class TradeExecutor:
                                 side_norm,
                                 float(candle_progress),
                                 float(max_progress),
-                                str(interval),
+                                str(sniper_interval_label),
                                 float(signal_score),
                                 float(open_min_score),
                             )
@@ -9389,7 +9533,7 @@ class TradeExecutor:
                                 side_norm,
                                 float(candle_progress),
                                 float(min_progress),
-                                str(interval),
+                                str(sniper_interval_label),
                                 float(signal_score),
                                 float(open_min_score),
                             )
@@ -9406,7 +9550,7 @@ class TradeExecutor:
                             float(candle_progress),
                             float(min_progress),
                             float(max_progress),
-                            str(interval),
+                            str(sniper_interval_label),
                             float(signal_score),
                             float(open_min_score),
                         )
@@ -9427,6 +9571,10 @@ class TradeExecutor:
 
         # =========================================================
         # EMA HARD DIRECTION VETO
+        try:
+            _ema_hard_veto_on = str(__import__("os").getenv("EMA_HARD_VETO_ENABLE", "1")).strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            _ema_hard_veto_on = True
         # Long block : ema7 < ema25 < ema99
         # Short block: ema7 > ema25 > ema99
         # =========================================================
@@ -11158,7 +11306,11 @@ class TradeExecutor:
             order_price = float(intent_price)
 
         try:
-            self._check_sl_tp_trailing(symbol=sym_u, price=float(order_price), interval=interval)
+            self._check_sl_tp_trailing(
+                symbol=sym_u,
+                price=float(order_price),
+                interval=str(exit_interval or "1m")
+            )
         except Exception:
             pass
 
@@ -11166,8 +11318,16 @@ class TradeExecutor:
             self.open_position_from_signal,
             sym_u,
             side_norm,
-            str(interval or ""),
-            dict(extra0, price=float(intent_price), signal_score=float(signal_score)),
+            str(entry_interval or "1m"),
+            dict(
+                extra0,
+                price=float(intent_price),
+                signal_score=float(signal_score),
+                decision_interval=str(decision_interval),
+                entry_interval=str(entry_interval),
+                exit_interval=str(exit_interval),
+                lifecycle_interval=str(lifecycle_interval),
+            ),
         )
         return
 

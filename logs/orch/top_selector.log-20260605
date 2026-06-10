@@ -1,0 +1,291 @@
+[TopSelector] init ok. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 topk=2 window=30s cooldown=30s min_score=0.5 w_min=0.0 ack_immediate=False
+[TopSelector] started. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=2 cooldown=30s min_score=0.5 w_min=0.0 redis=localhost:6379/0
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.0s loops=1
+[TopSelector] idle... buf=0 window_age=2.0s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.5s loops=9
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=17
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=25
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=33
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=41
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=49
+[TopSelector][HEARTBEAT] alive buf=0 window_age=23.0s loops=57
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=65
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=73
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=81
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=89
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=97
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=105
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=113
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=121
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=129
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=137
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=145
+[TopSelector] idle... buf=0 window_age=22.9s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.3s loops=153
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=161
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=169
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=177
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=185
+[TopSelector][HEARTBEAT] alive buf=0 window_age=24.9s loops=193
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=201
+[TopSelector][HEARTBEAT] alive buf=0 window_age=26.9s loops=209
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=217
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=225
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.5s loops=233
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=241
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=249
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=257
+[TopSelector][HEARTBEAT] alive buf=0 window_age=19.0s loops=265
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.3s loops=273
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=281
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=289
+[TopSelector] idle... buf=0 window_age=12.5s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=23.0s loops=297
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=305
+[TopSelector][HEARTBEAT] alive buf=0 window_age=24.9s loops=313
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=321
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.2s loops=329
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.6s loops=337
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.3s loops=345
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=353
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=361
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.8s loops=369
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=377
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=385
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=393
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=401
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=409
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.8s loops=417
+[TopSelector][HEARTBEAT] alive buf=1 window_age=8.1s loops=425
+[TopSelector][HEARTBEAT] alive buf=1 window_age=24.7s loops=433
+[TopSelector][ACP] topk=LINKUSDT:short acp=0.689 sel=0.689
+[TopSelector] published 1 -> top5_stream_short id=1780611844392-0 | LINKUSDT:short(0.689)
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=441
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.2s loops=449
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=457
+[TopSelector][HEARTBEAT] alive buf=1 window_age=29.4s loops=466
+[TopSelector][ACP] topk=LINKUSDT:long acp=0.718 sel=0.718
+[TopSelector] published 1 -> top5_stream_short id=1780611907057-0 | LINKUSDT:long(0.718)
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=474
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=482
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=490
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=498
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=506
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=514
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=522
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=530
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.8s loops=538
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=546
+[TopSelector][HEARTBEAT] alive buf=1 window_age=25.2s loops=555
+[TopSelector][ACP-LIMITER][BLOCK] symbol=LINKUSDT side=long base=0.572 acp=0.000 reason=base_below_floor<0.600
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=563
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.2s loops=571
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=579
+[TopSelector] idle... buf=0 window_age=22.8s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=587
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.7s loops=595
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=603
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=611
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=619
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.6s loops=627
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=635
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=643
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=651
+[TopSelector][HEARTBEAT] alive buf=0 window_age=23.0s loops=659
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=667
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.1s loops=675
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=683
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.2s loops=691
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.4s loops=699
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=707
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.7s loops=715
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=723
+[TopSelector] idle... buf=0 window_age=12.5s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=731
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=739
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=747
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=755
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=763
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=771
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.8s loops=779
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=787
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=795
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=803
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=811
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=819
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=827
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.7s loops=835
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=843
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.8s loops=851
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=859
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=867
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=875
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=883
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=891
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.8s loops=899
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=907
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=915
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=923
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.2s loops=931
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=939
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=947
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=955
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=963
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=971
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=979
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.9s loops=987
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=995
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=1003
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=1011
+[TopSelector] idle... buf=0 window_age=22.8s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.8s loops=1019
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=1027
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=1035
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=1043
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.3s loops=1051
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=1059
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=1067
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.5s loops=1075
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=1083
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=1091
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=1099
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=1107
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=1115
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=1123
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=1131
+[TopSelector] init ok. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 topk=2 window=30s cooldown=30s min_score=0.5 w_min=0.0 ack_immediate=False
+[TopSelector] started. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=2 cooldown=30s min_score=0.5 w_min=0.0 redis=localhost:6379/0
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.0s loops=1
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.6s loops=9
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=17
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=25
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=33
+[TopSelector][HEARTBEAT] alive buf=1 window_age=20.5s loops=41
+[TopSelector][ACP-LIMITER][BLOCK] symbol=LINKUSDT side=short base=0.575 acp=0.000 reason=base_below_floor<0.600
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=49
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=57
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=65
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=73
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=81
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=89
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.6s loops=97
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=105
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=113
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=121
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.6s loops=129
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=137
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=145
+[TopSelector] idle... buf=0 window_age=22.8s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=153
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=161
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=169
+[TopSelector][HEARTBEAT] alive buf=0 window_age=23.2s loops=177
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=185
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=193
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=201
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.1s loops=209
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.6s loops=217
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=225
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=233
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=241
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=249
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=257
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=265
+[TopSelector][HEARTBEAT] alive buf=1 window_age=3.5s loops=273
+[TopSelector][HEARTBEAT] alive buf=1 window_age=20.1s loops=281
+[TopSelector][ACP-LIMITER][BLOCK] symbol=LINKUSDT side=long base=0.556 acp=0.000 reason=base_below_floor<0.600
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=289
+[TopSelector] idle... buf=0 window_age=12.5s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=297
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=305
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=313
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=321
+[TopSelector][HEARTBEAT] alive buf=0 window_age=26.9s loops=329
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.6s loops=337
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=345
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.5s loops=353
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=361
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.8s loops=369
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=377
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=385
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=393
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=401
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=409
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=417
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=425
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=433
+[TopSelector] idle... buf=0 window_age=2.1s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=441
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.1s loops=449
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=457
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=465
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=473
+[TopSelector] init ok. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 topk=2 window=30s cooldown=30s min_score=0.5 w_min=0.0 ack_immediate=False
+[TopSelector] started. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=2 cooldown=30s min_score=0.5 w_min=0.0 redis=localhost:6379/0
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.0s loops=1
+[TopSelector] idle... buf=0 window_age=2.0s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.5s loops=9
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=17
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.9s loops=25
+[TopSelector][ACP-LIMITER][BLOCK] symbol=LINKUSDT side=long base=0.497 acp=0.000 reason=base_below_floor<0.600
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.2s loops=33
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=41
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.3s loops=49
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=57
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=65
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=73
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=81
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=89
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=97
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=105
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.6s loops=113
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.2s loops=121
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.6s loops=129
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=137
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.6s loops=145
+[TopSelector] idle... buf=0 window_age=20.7s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=153
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=161
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=169
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=177
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=185
+[TopSelector][HEARTBEAT] alive buf=0 window_age=23.0s loops=193
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=201
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=209
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=217
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=225
+[TopSelector] init ok. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 topk=2 window=30s cooldown=30s min_score=0.5 w_min=0.0 ack_immediate=False
+[TopSelector] started. in=candidates_stream_short out=top5_stream_short group=topsel_g consumer=topsel_1 drain_pending=False window=30s topk=2 cooldown=30s min_score=0.5 w_min=0.0 redis=localhost:6379/0
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.0s loops=1
+[TopSelector] idle... buf=0 window_age=2.0s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.6s loops=9
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=17
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.8s loops=25
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=33
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.9s loops=41
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.2s loops=49
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=57
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.4s loops=65
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.1s loops=73
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.5s loops=81
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.1s loops=89
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=97
+[TopSelector][HEARTBEAT] alive buf=0 window_age=29.1s loops=105
+[TopSelector][HEARTBEAT] alive buf=0 window_age=14.8s loops=113
+[TopSelector][HEARTBEAT] alive buf=0 window_age=0.1s loops=121
+[TopSelector][HEARTBEAT] alive buf=0 window_age=16.7s loops=129
+[TopSelector][HEARTBEAT] alive buf=0 window_age=2.1s loops=137
+[TopSelector][HEARTBEAT] alive buf=0 window_age=18.7s loops=145
+[TopSelector] idle... buf=0 window_age=22.9s
+[TopSelector][HEARTBEAT] alive buf=0 window_age=4.2s loops=153
+[TopSelector][HEARTBEAT] alive buf=0 window_age=20.8s loops=161
+[TopSelector][HEARTBEAT] alive buf=0 window_age=6.3s loops=169
+[TopSelector][HEARTBEAT] alive buf=0 window_age=22.9s loops=177
+[TopSelector][HEARTBEAT] alive buf=0 window_age=8.3s loops=185
+[TopSelector][HEARTBEAT] alive buf=0 window_age=25.0s loops=193
+[TopSelector][HEARTBEAT] alive buf=0 window_age=10.4s loops=201
+[TopSelector][HEARTBEAT] alive buf=0 window_age=27.0s loops=209
+[TopSelector][HEARTBEAT] alive buf=0 window_age=12.5s loops=217
