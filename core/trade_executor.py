@@ -5462,6 +5462,48 @@ class TradeExecutor:
 
         bridge_all = self._get_bridge_state()
         bridge_all = bridge_all if isinstance(bridge_all, dict) else {}
+
+        # -------------------------------------------------
+        # BRIDGE BOT-SIDE CLEANUP
+        # short bridge içinde long, long bridge içinde short kalmışsa temizle
+        # -------------------------------------------------
+        try:
+            _sync_bot_side = str(os.getenv("BOT_SIDE_MODE", "both") or "both").strip().lower()
+        except Exception:
+            _sync_bot_side = "both"
+
+        if _sync_bot_side in ("long", "short") and bridge_all:
+            try:
+                for _bsym, _bpos in list(bridge_all.items()):
+                    try:
+                        _bside = str((_bpos or {}).get("side") or "").strip().lower()
+                    except Exception:
+                        _bside = ""
+
+                    if _bside in ("long", "short") and _bside != _sync_bot_side:
+                        try:
+                            self._remove_from_bridge_state(str(_bsym))
+                            summary["removed_bridge"].append(str(_bsym))
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][SYNC][BRIDGE-SIDE-CLEAN] symbol=%s bridge_side=%s bot_side=%s",
+                                    str(_bsym), _bside, _sync_bot_side
+                                )
+                        except Exception:
+                            try:
+                                if self.logger:
+                                    self.logger.exception(
+                                        "[EXEC][SYNC][BRIDGE-SIDE-CLEAN] failed | symbol=%s",
+                                        str(_bsym)
+                                    )
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            bridge_all = self._get_bridge_state()
+            bridge_all = bridge_all if isinstance(bridge_all, dict) else {}
+
         summary["bridge_open"] = len(bridge_all)
 
         try:
@@ -5482,6 +5524,38 @@ class TradeExecutor:
                 continue
 
             try:
+                # -------------------------------------------------
+                # SYNC BOT-SIDE FILTER
+                # short bot: exchange'deki long pozisyonları hydrate etmez
+                # long bot : exchange'deki short pozisyonları hydrate etmez
+                # -------------------------------------------------
+                try:
+                    _sync_bot_side = str(os.getenv("BOT_SIDE_MODE", "both") or "both").strip().lower()
+                except Exception:
+                    _sync_bot_side = "both"
+
+                try:
+                    _ex_side_for_sync = str(ex_pos.get("side") or "").strip().lower()
+                except Exception:
+                    _ex_side_for_sync = ""
+
+                if (
+                    _sync_bot_side in ("long", "short")
+                    and _ex_side_for_sync in ("long", "short")
+                    and _ex_side_for_sync != _sync_bot_side
+                ):
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][SYNC][SIDE-SKIP] symbol=%s ex_side=%s bot_side=%s",
+                                sym,
+                                _ex_side_for_sync,
+                                _sync_bot_side,
+                            )
+                    except Exception:
+                        pass
+                    continue
+
                 bridge_st = bridge_all.get(sym, {}) if isinstance(bridge_all, dict) else {}
 
                 hydrated = {
@@ -5862,6 +5936,41 @@ class TradeExecutor:
                                     "[EXEC][FIXED-ROI][LIFECYCLE] symbol=%s side=%s roi=%.6f best_roi=%.6f tp=%.6f giveback=%.6f price=%.6f entry=%.6f lev=%.2f",
                                     sym_u, side, float(roi_pct_direct), float(best_roi_pct), float(fixed_roi_tp_pct), float(fixed_roi_tp_giveback), float(px), float(entry_price), float(lev)
                                 )
+
+                            # =========================================================
+                            # ROI HARD STOP - LIFECYCLE
+                            # =========================================================
+                            try:
+                                _roi_hard_stop = float(os.getenv("ROI_HARD_STOP_PCT", "-0.0060") or -0.0060)
+                            except Exception:
+                                _roi_hard_stop = -0.0060
+
+                            if float(roi_pct_direct) <= float(_roi_hard_stop):
+                                try:
+                                    if self.logger:
+                                        self.logger.info(
+                                            "[EXEC][ROI-HARD-STOP][LIFECYCLE] symbol=%s side=%s roi=%.6f hard_stop=%.6f price=%.6f entry=%.6f lev=%.2f",
+                                            sym_u, side, float(roi_pct_direct), float(_roi_hard_stop), float(px), float(entry_price), float(lev)
+                                        )
+                                except Exception:
+                                    pass
+
+                                try:
+                                    self.close_position(
+                                        symbol=sym_u,
+                                        price=float(px),
+                                        reason="roi_hard_stop_lifecycle",
+                                        interval=str(interval or "1m"),
+                                    )
+                                except Exception:
+                                    try:
+                                        if self.logger:
+                                            self.logger.exception("[EXEC][ROI-HARD-STOP][LIFECYCLE] close failed | symbol=%s", sym_u)
+                                    except Exception:
+                                        pass
+                                continue
+
+
 
                             direct_tp_hit = (
                                 fixed_roi_tp_enable
@@ -9479,6 +9588,20 @@ class TradeExecutor:
             except Exception:
                 pass
 
+        if float(signal_score) < float(open_min_score):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC][OPEN-BLOCK] low score | symbol=%s side=%s signal_score=%.4f min_open=%.4f",
+                        sym_u,
+                        side_norm,
+                        float(signal_score),
+                        float(open_min_score),
+                    )
+            except Exception:
+                pass
+            return
+
         # =========================================================
         # SNIPER ENTRY TIMING FILTER
         # Low score'dan ÖNCE çalışır; böylece SNIPER logları görünür.
@@ -9570,9 +9693,106 @@ class TradeExecutor:
                 pass
 
         # =========================================================
+        # ENTRY 1M CANDLE DIRECTION FILTER
+        # short: last 1m candle must be red  (close < open)
+        # long : last 1m candle must be green(close > open)
+        # =========================================================
+        try:
+            _candle_dir_on = str(__import__("os").getenv("ENTRY_CANDLE_DIR_FILTER_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
+        except Exception:
+            _candle_dir_on = False
+
+        if _candle_dir_on and side_norm in ("long", "short"):
+            try:
+                import os as _os
+                import pandas as _pd
+
+                _dir_interval = str(_os.getenv("ENTRY_CANDLE_DIR_INTERVAL", "1m") or "1m")
+                _need_red_short = str(_os.getenv("ENTRY_CANDLE_DIR_REQUIRE_RED_FOR_SHORT", "1")).strip().lower() in ("1", "true", "yes", "on")
+                _need_green_long = str(_os.getenv("ENTRY_CANDLE_DIR_REQUIRE_GREEN_FOR_LONG", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+                _df_dir = None
+                try:
+                    _client = getattr(self, "client", None) or getattr(self, "binance_client", None) or getattr(self, "futures_client", None)
+                    if _client is not None and hasattr(_client, "futures_klines"):
+                        _raw = _client.futures_klines(symbol=sym_u, interval=_dir_interval, limit=3)
+                    elif _client is not None and hasattr(_client, "klines"):
+                        _raw = _client.klines(symbol=sym_u, interval=_dir_interval, limit=3)
+                    else:
+                        _raw = None
+
+                    if _raw:
+                        _df_dir = _pd.DataFrame(
+                            _raw,
+                            columns=[
+                                "open_time","open","high","low","close","volume",
+                                "close_time","quote_asset_volume","number_of_trades",
+                                "taker_buy_base_asset_volume","taker_buy_quote_asset_volume","ignore"
+                            ]
+                        )
+                except Exception:
+                    _df_dir = None
+
+                if _df_dir is not None and hasattr(_df_dir, "empty") and not _df_dir.empty:
+                    _last = _df_dir.iloc[-1]
+                    _o = float(_last.get("open", 0.0) or 0.0)
+                    _c = float(_last.get("close", 0.0) or 0.0)
+
+                    _block_dir = False
+                    _reason = ""
+
+                    if side_norm == "short" and _need_red_short and not (_c < _o):
+                        _block_dir = True
+                        _reason = "short_requires_red_1m"
+
+                    if side_norm == "long" and _need_green_long and not (_c > _o):
+                        _block_dir = True
+                        _reason = "long_requires_green_1m"
+
+                    if _block_dir:
+                        try:
+                            if self.logger:
+                                self.logger.info(
+                                    "[EXEC][OPEN-BLOCK][CANDLE-DIR] symbol=%s side=%s interval=%s open=%.6f close=%.6f reason=%s",
+                                    sym_u, side_norm, _dir_interval, _o, _c, _reason,
+                                )
+                        except Exception:
+                            pass
+                        return
+
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][CANDLE-DIR] allow | symbol=%s side=%s interval=%s open=%.6f close=%.6f",
+                                sym_u, side_norm, _dir_interval, _o, _c,
+                            )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC][OPEN-BLOCK][CANDLE-DIR-NODATA] symbol=%s side=%s interval=%s",
+                                sym_u, side_norm, _dir_interval,
+                            )
+                    except Exception:
+                        pass
+                    return
+
+            except Exception as e:
+                try:
+                    if self.logger:
+                        self.logger.warning(
+                            "[EXEC][CANDLE-DIR][WARN] symbol=%s side=%s err=%s",
+                            sym_u, side_norm, str(e)[:200],
+                        )
+                except Exception:
+                    pass
+
+        # =========================================================
         # EMA HARD DIRECTION VETO
         try:
-            _ema_hard_veto_on = str(__import__("os").getenv("EMA_HARD_VETO_ENABLE", "1")).strip().lower() in ("1", "true", "yes", "on")
+            _ema_hard_veto_on = str(__import__("os").getenv("EMA_HARD_VETO_ENABLE", "0")).strip().lower() in ("1", "true", "yes", "on")
         except Exception:
             _ema_hard_veto_on = True
         # Long block : ema7 < ema25 < ema99
@@ -9605,7 +9825,7 @@ class TradeExecutor:
                         and ema25_v > ema99_v
                     )
 
-                    if block_long or block_short:
+                    if _ema_hard_veto_on and (block_long or block_short):
 
                         try:
                             if self.logger:
