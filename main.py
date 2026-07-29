@@ -76,7 +76,7 @@ from core.redis_price_cache import write_kline_cache, read_kline_cache
 from core.binance_client import create_binance_client
 from core.position_manager import PositionManager
 from core.risk_manager import RiskManager
-from core.trade_executor import TradeExecutor
+from core.trade_executor_short import TradeExecutorShort as TradeExecutor
 
 from core.market_meta_builder import MarketMetaBuilder
 from core.price_cache import PriceCache
@@ -559,11 +559,11 @@ async def fetch_klines(
         try:
             import inspect
 
-            fn = getattr(client, "get_klines", None)
+            fn = getattr(client, "futures_klines", None)
 
             # Binance futures fallback
             if fn is None:
-                fn = getattr(client, "futures_klines", None)
+                fn = getattr(client, "get_klines", None)
 
             if fn is None:
                 raise AttributeError("client.get_klines / futures_klines not found")
@@ -602,6 +602,16 @@ async def fetch_klines(
             logger.error("[DATA] LIVE(PUBLIC) REST de başarısız: %s", e)
 
     raise RuntimeError(f"DATA_MODE=LIVE fakat live fetch başarısız. last_err={last_err!r}")
+async def _refresh_entry_1m_cache(client, symbol):
+    try:
+        df = await fetch_klines(client, symbol, "1m", 5, system_logger)
+        if df is not None and len(df) > 0:
+            write_kline_cache(symbol, "1m", df.tail(5).to_dict("records"), 90)
+    except Exception as exc:
+        if system_logger:
+            system_logger.warning("[ENTRY-1M-CACHE][WARN] symbol=%s err=%s", symbol, str(exc)[:200])
+
+
 class ShutdownManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1555,6 +1565,22 @@ class HeavyEngine:
         else:
             extra["signal_source"] = "EMA"
 
+        if system_logger:
+            system_logger.info(
+                "[SIGNAL-DEBUG] symbol=%s p_used=%.6f p_single=%.6f "
+                "long_thr=%.6f short_thr=%.6f signal=%s source=%s "
+                "p_buy_raw=%s p_buy_ema=%s",
+                symbol,
+                float(p_used),
+                float(p_single),
+                float(os.getenv("LONG_THRESHOLD", "0.60")),
+                float(os.getenv("SHORT_THRESHOLD", "0.40")),
+                signal_side,
+                extra.get("signal_source"),
+                probs.get("p_buy_raw"),
+                probs.get("p_buy_ema"),
+            )
+
         last_price = 0.0
         try:
             if self.price_cache is not None and hasattr(self.price_cache, "get_mid"):
@@ -1716,6 +1742,19 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             rows: List[Dict[str, Any]] = [r for r in results if isinstance(r, dict)]
             rows = sorted(rows, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
 
+            if system_logger:
+                system_logger.info(
+                    "[SCAN-SCORES] %s",
+                    [
+                        {
+                            "symbol": r.get("symbol"),
+                            "score": round(float(r.get("score", 0.0) or 0.0), 6),
+                            "err": r.get("err"),
+                        }
+                        for r in rows
+                    ],
+                )
+
             scan_every_eff = float(scan_every)
             topk_eff = int(topk)
 
@@ -1737,6 +1776,13 @@ async def scanner_loop(engine: HeavyEngine) -> None:
             if not candidates:
                 candidates = rows[:1] if rows else []
             cand_syms = [c["symbol"] for c in candidates]
+
+            if system_logger:
+                system_logger.info(
+                    "[SCAN-CANDIDATES] topk_eff=%s symbols=%s",
+                    topk_eff,
+                    cand_syms,
+                )
 
             if adaptive and cand_syms:
                 try:

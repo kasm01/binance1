@@ -2800,15 +2800,15 @@ class TradeExecutorShort:
                 reason = str(
                     candidate.get("reason")
                     or "candidate_block"
+                ).strip().lower()
+
+                retryable = bool(
+                    candidate.get("retryable", False)
                 )
 
-                # Kalıcı ret nedenlerinde pending hemen silinir.
-                if reason in (
-                    "empty_symbol",
-                    "low_score",
-                    "position_exists",
-                    "pending_window_passed",
-                ):
+                # Evaluator kararın tekrar denenebilir olup
+                # olmadığını doğrudan belirtir.
+                if not retryable:
                     self._cancel_short_pending(
                         symbol=psym,
                         reason=reason,
@@ -2816,8 +2816,18 @@ class TradeExecutorShort:
                         min_score=pending_min_score,
                     )
 
-                # Pattern veya sniper henüz hazır değilse
-                # erken pencere boyunca yeniden denenebilir.
+                else:
+                    try:
+                        if self.logger:
+                            self.logger.info(
+                                "[EXEC-SHORT][PENDING-WAIT] "
+                                "symbol=%s reason=%s retryable=true",
+                                psym,
+                                reason,
+                            )
+                    except Exception:
+                        pass
+
                 continue
 
             pending["price"] = float(pending_price)
@@ -2929,6 +2939,40 @@ class TradeExecutorShort:
             except Exception:
                 pass
 
+    def _make_short_entry_decision(
+        self,
+        *,
+        allow: bool,
+        action: str,
+        reason: str,
+        signal_score: Optional[float] = None,
+        required_score: Optional[float] = None,
+        progress: Optional[float] = None,
+        retryable: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        SHORT giriş değerlendirmeleri için standart karar sözlüğü üretir.
+
+        Bu helper state değiştirmez.
+        """
+        decision: Dict[str, Any] = {
+            "allow": bool(allow),
+            "action": str(action or "block").strip().lower(),
+            "reason": str(reason or "unknown").strip().lower(),
+            "retryable": bool(retryable),
+        }
+
+        if signal_score is not None:
+            decision["score"] = float(signal_score)
+
+        if required_score is not None:
+            decision["required_score"] = float(required_score)
+
+        if progress is not None:
+            decision["progress"] = float(progress)
+
+        return decision
+
     def _evaluate_short_candidate(
         self,
         symbol: str,
@@ -2960,11 +3004,12 @@ class TradeExecutorShort:
         sym_u = str(symbol or "").upper().strip()
 
         if not sym_u:
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "empty_symbol",
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="empty_symbol",
+                retryable=False,
+            )
 
         if signal_score < final_min_score:
             try:
@@ -2979,13 +3024,14 @@ class TradeExecutorShort:
             except Exception:
                 pass
 
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "low_score",
-                "score": float(signal_score),
-                "required_score": float(final_min_score),
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="low_score",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                retryable=False,
+            )
 
         if (
             self.block_same_symbol_reentry
@@ -3001,13 +3047,14 @@ class TradeExecutorShort:
             except Exception:
                 pass
 
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "position_exists",
-                "score": float(signal_score),
-                "required_score": float(final_min_score),
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="position_exists",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                retryable=False,
+            )
 
         progress = self._calc_candle_progress(
             self.sniper_entry_interval
@@ -3015,117 +3062,104 @@ class TradeExecutorShort:
 
         if progress > self.sniper_entry_max_candle_progress:
             if allow_pending:
-                return {
-                    "allow": False,
-                    "action": "pending",
-                    "reason": "sniper_window_passed",
-                    "progress": float(progress),
-                    "score": float(signal_score),
-                    "required_score": float(final_min_score),
-                }
+                return self._make_short_entry_decision(
+                    allow=False,
+                    action="pending",
+                    reason="sniper_window_passed",
+                    signal_score=signal_score,
+                    required_score=final_min_score,
+                    progress=progress,
+                    retryable=True,
+                )
 
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "pending_window_passed",
-                "progress": float(progress),
-                "score": float(signal_score),
-                "required_score": float(final_min_score),
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="pending_window_passed",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                progress=progress,
+                retryable=False,
+            )
 
         if not self._check_sniper_entry(
             symbol=sym_u,
             signal_score=signal_score,
             min_open_score=final_min_score,
         ):
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "sniper_window",
-                "progress": float(progress),
-                "score": float(signal_score),
-                "required_score": float(final_min_score),
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="sniper_window",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                progress=progress,
+                retryable=True,
+            )
 
         if not self._check_short_entry_pattern(
             symbol=sym_u,
         ):
-            return {
-                "allow": False,
-                "action": "block",
-                "reason": "entry_pattern",
-                "progress": float(progress),
-                "score": float(signal_score),
-                "required_score": float(final_min_score),
-            }
+            return self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason="entry_pattern",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                progress=progress,
+                retryable=True,
+            )
 
-        return {
-            "allow": True,
-            "action": "open",
-            "reason": "entry_confirmed",
-            "progress": float(progress),
-            "score": float(signal_score),
-            "required_score": float(final_min_score),
-        }
+        return self._make_short_entry_decision(
+            allow=True,
+            action="open",
+            reason="entry_confirmed",
+            signal_score=signal_score,
+            required_score=final_min_score,
+            progress=progress,
+            retryable=False,
+        )
 
-    async def execute_decision(
+    def _resolve_short_open_context(
         self,
-        signal: str,
+        *,
         symbol: str,
-        price: float,
-        size: Optional[float],
-        interval: str,
-        training_mode: bool,
-        hybrid_mode: bool,
-        probs: Dict[str, float],
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        del size
-        del interval
-        del training_mode
-        del hybrid_mode
+        probs: Optional[Dict[str, float]],
+        extra: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        SHORT giriş değerlendirmesinde kullanılacak skor bağlamını
+        hazırlar.
 
-        started_ts = time.perf_counter()
+        Bu helper:
+            - signal score hesaplar
+            - coin minimum score çözer
+            - dynamic minimum score hesaplar
+            - kopyalanmış extra sözlüğünü döndürür
 
+        Pending oluşturmaz ve emir açmaz.
+        """
         sym_u = str(symbol or "").upper().strip()
-        signal_u = str(signal or "").lower().strip()
 
-        extra0 = (
-            dict(extra)
+        extra0: Dict[str, Any] = dict(
+            extra
             if isinstance(extra, dict)
             else {}
         )
 
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC-SHORT][ENTER] symbol=%s signal=%s",
-                    symbol,
-                    signal,
-                )
-        except Exception:
-            pass
-
-        if not sym_u:
-            return
-
-        # SHORT-only executor.
-        if signal_u not in (
-            "short",
-            "sell",
-            "bear",
-            "down",
-        ):
-            return
+        probs0: Dict[str, float] = (
+            probs
+            if isinstance(probs, dict)
+            else {}
+        )
 
         side_norm = "short"
 
-        # Final score resolve.
         signal_score = (
             self._resolve_signal_score_for_open(
                 side=side_norm,
                 extra=extra0,
-                probs=probs,
+                probs=probs0,
             )
         )
 
@@ -3158,6 +3192,171 @@ class TradeExecutorShort:
         except Exception:
             pass
 
+        return {
+            "extra": extra0,
+            "signal_score": float(signal_score),
+            "coin_min_score": float(coin_min_score),
+            "final_min_score": float(final_min_score),
+        }
+
+    def _apply_short_candidate_decision(
+        self,
+        candidate: Optional[Dict[str, Any]],
+        *,
+        symbol: str,
+        price: float,
+        signal_score: float,
+        final_min_score: float,
+    ) -> bool:
+        """
+        SHORT evaluator kararını uygular.
+
+        True:
+            Emir açma akışı devam edebilir.
+
+        False:
+            Karar pending veya block olduğu için akış durmalıdır.
+
+        Evaluator state değiştirmez; pending state değişiklikleri
+        yalnızca bu uygulama katmanında yapılır.
+        """
+        decision = (
+            candidate
+            if isinstance(candidate, dict)
+            else {}
+        )
+
+        sym_u = str(symbol or "").upper().strip()
+
+        action = str(
+            decision.get("action")
+            or "block"
+        ).strip().lower()
+
+        reason = str(
+            decision.get("reason")
+            or "candidate_block"
+        ).strip().lower()
+
+        allow = bool(
+            decision.get("allow", False)
+        )
+
+        if allow and action == "open":
+            return True
+
+        if action == "pending":
+            self._create_short_pending(
+                symbol=sym_u,
+                signal_score=signal_score,
+                min_score=final_min_score,
+                price=price,
+            )
+            return False
+
+        if reason == "low_score":
+            self._cancel_short_pending(
+                symbol=sym_u,
+                reason=reason,
+                signal_score=signal_score,
+                min_score=final_min_score,
+            )
+
+        elif reason == "position_exists":
+            self._pop_short_pending(sym_u)
+
+        return False
+
+    def _prepare_short_open_payload(
+        self,
+        extra: Optional[Dict[str, Any]],
+        *,
+        price: float,
+        signal_score: float,
+        final_min_score: float,
+    ) -> Dict[str, Any]:
+        """
+        SHORT emir açılışı için kullanılacak payload'u hazırlar.
+
+        Gelen sözlüğü doğrudan değiştirmemek için yeni dict üretir.
+        Bu helper emir açmaz ve state değiştirmez.
+        """
+        payload: Dict[str, Any] = dict(
+            extra
+            if isinstance(extra, dict)
+            else {}
+        )
+
+        try:
+            price_f = float(price or 0.0)
+        except Exception:
+            price_f = 0.0
+
+        payload["price"] = price_f
+        payload["signal_score"] = float(signal_score)
+        payload["open_min_score"] = float(final_min_score)
+        payload["entry_interval"] = str(self.entry_interval)
+
+        return payload
+
+    async def execute_decision(
+        self,
+        signal: str,
+        symbol: str,
+        price: float,
+        size: Optional[float],
+        interval: str,
+        training_mode: bool,
+        hybrid_mode: bool,
+        probs: Dict[str, float],
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        del size
+        del interval
+        del training_mode
+        del hybrid_mode
+
+        started_ts = time.perf_counter()
+
+        sym_u = str(symbol or "").upper().strip()
+        signal_u = str(signal or "").lower().strip()
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][ENTER] symbol=%s signal=%s",
+                    symbol,
+                    signal,
+                )
+        except Exception:
+            pass
+
+        if not sym_u:
+            return
+
+        # SHORT-only executor.
+        if signal_u not in (
+            "short",
+            "sell",
+            "bear",
+            "down",
+        ):
+            return
+
+        open_context = self._resolve_short_open_context(
+            symbol=sym_u,
+            probs=probs,
+            extra=extra,
+        )
+
+        extra0 = open_context["extra"]
+        signal_score = float(
+            open_context["signal_score"]
+        )
+        final_min_score = float(
+            open_context["final_min_score"]
+        )
+
         candidate = self._evaluate_short_candidate(
             symbol=sym_u,
             price=price,
@@ -3165,57 +3364,24 @@ class TradeExecutorShort:
             final_min_score=final_min_score,
         )
 
-        candidate_action = str(
-            candidate.get("action")
-            or "block"
-        ).strip().lower()
-
-        candidate_reason = str(
-            candidate.get("reason")
-            or "candidate_block"
-        ).strip().lower()
-
-        # Evaluator yalnızca karar döndürür.
-        # Pending state değişikliklerini orkestratör uygular.
-        if candidate_action == "pending":
-            self._create_short_pending(
+        continue_open = (
+            self._apply_short_candidate_decision(
+                candidate=candidate,
                 symbol=sym_u,
-                signal_score=signal_score,
-                min_score=final_min_score,
                 price=price,
+                signal_score=signal_score,
+                final_min_score=final_min_score,
             )
-            return
-
-        if not candidate.get("allow", False):
-            if candidate_reason == "low_score":
-                self._cancel_short_pending(
-                    symbol=sym_u,
-                    reason=candidate_reason,
-                    signal_score=signal_score,
-                    min_score=final_min_score,
-                )
-
-            elif candidate_reason == "position_exists":
-                self._pop_short_pending(sym_u)
-
-            return
-
-        try:
-            price_f = float(price or 0.0)
-        except Exception:
-            price_f = 0.0
-
-        extra0["price"] = price_f
-        extra0["signal_score"] = float(
-            signal_score
         )
 
-        extra0["open_min_score"] = float(
-            final_min_score
-        )
+        if not continue_open:
+            return
 
-        extra0["entry_interval"] = str(
-            self.entry_interval
+        extra0 = self._prepare_short_open_payload(
+            extra=extra0,
+            price=price,
+            signal_score=signal_score,
+            final_min_score=final_min_score,
         )
 
         decision_ms = (
