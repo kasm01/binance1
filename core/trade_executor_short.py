@@ -3195,7 +3195,56 @@ class TradeExecutorShort:
         except Exception:
             pass
 
-    async def _process_single_short_pending_entry(
+    def _handle_short_candidate_result(
+        self,
+        *,
+        symbol: str,
+        candidate: Dict[str, Any],
+        signal_score: float,
+        min_score: float,
+    ) -> bool:
+        """
+        Pending SHORT aday sonucu allow değilse
+        cancel veya retry davranışını uygular.
+
+        True dönerse caller işlemi sonlandırmalıdır.
+        """
+        if candidate.get("allow", False):
+            return False
+
+        reason = str(
+            candidate.get("reason")
+            or "candidate_block"
+        ).strip().lower()
+
+        retryable = bool(
+            candidate.get("retryable", False)
+        )
+
+        if not retryable:
+            self._cancel_short_pending(
+                symbol=symbol,
+                reason=reason,
+                signal_score=signal_score,
+                min_score=min_score,
+            )
+
+        else:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-WAIT] "
+                        "symbol=%s reason=%s "
+                        "retryable=true",
+                        symbol,
+                        reason,
+                    )
+            except Exception:
+                pass
+
+        return True
+
+    def _check_short_pending_window(
         self,
         *,
         symbol: str,
@@ -3203,12 +3252,12 @@ class TradeExecutorShort:
         current_candle_id: int,
         progress: float,
         max_pending_progress: float,
-    ) -> None:
+    ) -> bool:
         """
-        Tek bir SHORT pending kaydını değerlendirir.
+        Pending SHORT kaydının mevcut mum
+        penceresinde işlenebilir olup olmadığını
+        kontrol eder.
         """
-        sym_u = str(symbol or "").upper().strip()
-
         created_candle_id = int(
             pending.get("candle_id")
             or 0
@@ -3224,22 +3273,23 @@ class TradeExecutorShort:
         )
 
         if window_state == "invalid":
-            self._pop_short_pending(sym_u)
+            self._pop_short_pending(symbol)
 
             try:
                 if self.logger:
                     self.logger.info(
                         "[EXEC-SHORT][PENDING-CANCEL] "
-                        "symbol=%s reason=invalid_candle_id",
-                        sym_u,
+                        "symbol=%s "
+                        "reason=invalid_candle_id",
+                        symbol,
                     )
             except Exception:
                 pass
 
-            return
+            return False
 
         if window_state == "expired":
-            self._pop_short_pending(sym_u)
+            self._pop_short_pending(symbol)
 
             try:
                 if self.logger:
@@ -3247,7 +3297,7 @@ class TradeExecutorShort:
                         "[EXEC-SHORT][PENDING-EXPIRE] "
                         "symbol=%s created_candle=%s "
                         "current_candle=%s age=%s",
-                        sym_u,
+                        symbol,
                         created_candle_id,
                         current_candle_id,
                         candle_age,
@@ -3255,11 +3305,20 @@ class TradeExecutorShort:
             except Exception:
                 pass
 
-            return
+            return False
 
-        if window_state != "ready":
-            return
+        return window_state == "ready"
 
+    def _prepare_short_pending_candidate(
+        self,
+        *,
+        symbol: str,
+        pending: Dict[str, Any],
+    ):
+        """
+        Pending SHORT kaydı için fiyat, skor ve
+        canlı candidate değerlendirmesini hazırlar.
+        """
         pending_score = float(
             pending.get("score")
             or 0.0
@@ -3270,9 +3329,11 @@ class TradeExecutorShort:
             or 0.0
         )
 
-        pending_price = self._resolve_short_pending_price(
-            symbol=sym_u,
-            pending=pending,
+        pending_price = (
+            self._resolve_short_pending_price(
+                symbol=symbol,
+                pending=pending,
+            )
         )
 
         if pending_price is None:
@@ -3280,58 +3341,59 @@ class TradeExecutorShort:
                 if self.logger:
                     self.logger.info(
                         "[EXEC-SHORT][PENDING-WAIT] "
-                        "symbol=%s reason=missing_price",
-                        sym_u,
+                        "symbol=%s "
+                        "reason=missing_price",
+                        symbol,
                     )
             except Exception:
                 pass
 
-            return
+            return None
 
         candidate = self._evaluate_short_candidate(
-            symbol=sym_u,
+            symbol=symbol,
             price=float(pending_price),
             signal_score=pending_score,
             final_min_score=pending_min_score,
             allow_pending=False,
         )
 
-        if not candidate.get("allow", False):
-            reason = str(
-                candidate.get("reason")
-                or "candidate_block"
-            ).strip().lower()
+        return (
+            float(pending_price),
+            pending_score,
+            pending_min_score,
+            candidate,
+        )
 
-            retryable = bool(
-                candidate.get("retryable", False)
-            )
-
-            if not retryable:
-                self._cancel_short_pending(
-                    symbol=sym_u,
-                    reason=reason,
-                    signal_score=pending_score,
-                    min_score=pending_min_score,
-                )
-
-            else:
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][PENDING-WAIT] "
-                            "symbol=%s reason=%s retryable=true",
-                            sym_u,
-                            reason,
-                        )
-                except Exception:
-                    pass
-
-            return
-
-        pending["price"] = float(pending_price)
-        pending["signal_score"] = float(pending_score)
-        pending["open_min_score"] = float(pending_min_score)
-        pending["entry_interval"] = str(self.entry_interval)
+    def _prepare_short_pending_open_payload(
+        self,
+        *,
+        symbol: str,
+        pending: Dict[str, Any],
+        pending_price: float,
+        pending_score: float,
+        pending_min_score: float,
+        candidate: Dict[str, Any],
+        progress: float,
+        created_candle_id: int,
+        current_candle_id: int,
+    ) -> None:
+        """
+        Yeniden doğrulanan SHORT pending kaydını
+        pozisyon açılışına hazırlar.
+        """
+        pending["price"] = float(
+            pending_price
+        )
+        pending["signal_score"] = float(
+            pending_score
+        )
+        pending["open_min_score"] = float(
+            pending_min_score
+        )
+        pending["entry_interval"] = str(
+            self.entry_interval
+        )
         pending["pending_revalidated"] = True
 
         try:
@@ -3343,7 +3405,7 @@ class TradeExecutorShort:
                     "current_candle=%s "
                     "score=%.4f min=%.4f "
                     "reason=%s",
-                    sym_u,
+                    symbol,
                     progress,
                     created_candle_id,
                     current_candle_id,
@@ -3354,17 +3416,95 @@ class TradeExecutorShort:
         except Exception:
             pass
 
+    async def _execute_short_pending_open(
+        self,
+        *,
+        symbol: str,
+        pending: Dict[str, Any],
+    ) -> None:
+        """
+        SHORT pending kaydını worker thread içinde
+        açar ve sonucu pending yöneticisine iletir.
+        """
         result = await asyncio.to_thread(
             self.open_position_from_signal,
-            sym_u,
+            symbol,
             "short",
             self.entry_interval,
             pending,
         )
 
         self._handle_short_pending_open_result(
-            symbol=sym_u,
+            symbol=symbol,
             result=result,
+        )
+
+    async def _process_single_short_pending_entry(
+        self,
+        *,
+        symbol: str,
+        pending: Dict[str, Any],
+        current_candle_id: int,
+        progress: float,
+        max_pending_progress: float,
+    ) -> None:
+        """
+        Tek bir SHORT pending kaydını değerlendirir.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        if not self._check_short_pending_window(
+            symbol=sym_u,
+            pending=pending,
+            current_candle_id=current_candle_id,
+            progress=progress,
+            max_pending_progress=max_pending_progress,
+        ):
+            return
+
+        prepared_candidate = (
+            self._prepare_short_pending_candidate(
+                symbol=sym_u,
+                pending=pending,
+            )
+        )
+
+        if prepared_candidate is None:
+            return
+
+        (
+            pending_price,
+            pending_score,
+            pending_min_score,
+            candidate,
+        ) = prepared_candidate
+
+        if self._handle_short_candidate_result(
+            symbol=sym_u,
+            candidate=candidate,
+            signal_score=pending_score,
+            min_score=pending_min_score,
+        ):
+            return
+
+        self._prepare_short_pending_open_payload(
+            symbol=sym_u,
+            pending=pending,
+            pending_price=pending_price,
+            pending_score=pending_score,
+            pending_min_score=pending_min_score,
+            candidate=candidate,
+            progress=progress,
+            created_candle_id=int(
+                pending.get("candle_id")
+                or 0
+            ),
+            current_candle_id=current_candle_id,
+        )
+
+        await self._execute_short_pending_open(
+            symbol=sym_u,
+            pending=pending,
         )
 
     async def _process_short_pending_entries(
