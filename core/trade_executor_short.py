@@ -723,6 +723,355 @@ class TradeExecutorShort:
 
         return float(open_px), float(close_px)
 
+    def _read_entry_kline_rows(
+        self,
+        symbol: str,
+        interval: str,
+    ):
+        try:
+            return read_kline_cache(
+                symbol,
+                interval,
+                max_age_sec=10.0,
+            )
+        except Exception:
+            return None
+
+    def _entry_candle_open_time_ms(
+        self,
+        row: Any,
+    ) -> Optional[int]:
+        try:
+            if isinstance(row, (list, tuple)):
+                return int(float(row[0]))
+
+            if isinstance(row, dict):
+                raw_ts = (
+                    row.get("open_time")
+                    or row.get("openTime")
+                    or row.get("timestamp")
+                    or row.get("time")
+                    or row.get("t")
+                )
+
+                if raw_ts is None:
+                    return None
+
+                ts = int(float(raw_ts))
+
+                # Saniye geldiyse milisaniyeye çevir.
+                if ts < 10_000_000_000:
+                    ts *= 1000
+
+                return ts
+
+        except Exception:
+            return None
+
+        return None
+
+    def _extract_entry_open_close(
+        self,
+        row: Any,
+    ) -> Optional[Tuple[float, float]]:
+        try:
+            if isinstance(row, (list, tuple)):
+                open_px = float(row[1])
+                close_px = float(row[4])
+
+            elif isinstance(row, dict):
+                open_px = float(
+                    row.get("open")
+                    or row.get("o")
+                    or 0.0
+                )
+
+                close_px = float(
+                    row.get("close")
+                    or row.get("c")
+                    or 0.0
+                )
+
+            else:
+                return None
+
+            if open_px <= 0.0 or close_px <= 0.0:
+                return None
+
+            return float(open_px), float(close_px)
+
+        except Exception:
+            return None
+
+    def _refresh_entry_1m_rows(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        rows: Any,
+        cache_has_current_candle: bool,
+        last_open_ms: Optional[int],
+        expected_current_open_ms: int,
+    ):
+        if (
+            interval != "1m"
+            or cache_has_current_candle
+        ):
+            return rows
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][1M-FORCE-REFRESH] "
+                    "symbol=%s cached_open_ms=%s "
+                    "expected_open_ms=%s",
+                    symbol,
+                    last_open_ms,
+                    expected_current_open_ms,
+                )
+        except Exception:
+            pass
+
+        # Güncel mumu Redis üzerinden tekrar okumak yerine
+        # Binance cevabını doğrudan kullan.
+        try:
+            direct_rows = None
+
+            for attempt in range(1, 4):
+                direct_rows = (
+                    self.client.futures_klines(
+                        symbol=symbol,
+                        interval="1m",
+                        limit=3,
+                    )
+                )
+
+                direct_last_open_ms = None
+
+                if (
+                    isinstance(direct_rows, list)
+                    and len(direct_rows) >= 2
+                ):
+                    direct_last_open_ms = (
+                        self._entry_candle_open_time_ms(
+                            direct_rows[-1]
+                        )
+                    )
+
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC-SHORT][1M-DIRECT-TRY] "
+                            "symbol=%s attempt=%s "
+                            "last_open_ms=%s "
+                            "expected_open_ms=%s",
+                            symbol,
+                            attempt,
+                            direct_last_open_ms,
+                            expected_current_open_ms,
+                        )
+                except Exception:
+                    pass
+
+                if (
+                    direct_last_open_ms
+                    == expected_current_open_ms
+                ):
+                    break
+
+                if attempt < 3:
+                    time.sleep(0.35)
+
+            if (
+                isinstance(direct_rows, list)
+                and len(direct_rows) >= 2
+            ):
+                rows = direct_rows
+
+                try:
+                    write_kline_cache(
+                        symbol,
+                        "1m",
+                        direct_rows,
+                        90,
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    if self.logger:
+                        direct_last_open_ms = (
+                            self._entry_candle_open_time_ms(
+                                direct_rows[-1]
+                            )
+                        )
+
+                        self.logger.info(
+                            "[EXEC-SHORT][1M-DIRECT] "
+                            "symbol=%s last_open_ms=%s "
+                            "expected_open_ms=%s",
+                            symbol,
+                            direct_last_open_ms,
+                            expected_current_open_ms,
+                        )
+                except Exception:
+                    pass
+
+            else:
+                rows = self._read_entry_kline_rows(
+                    symbol,
+                    interval,
+                )
+
+        except Exception as exc:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC-SHORT][1M-DIRECT][WARN] "
+                        "symbol=%s err=%s",
+                        symbol,
+                        str(exc)[:200],
+                    )
+            except Exception:
+                pass
+
+            rows = self._read_entry_kline_rows(
+                symbol,
+                interval,
+            )
+
+        return rows
+
+    def _validate_entry_candle_rows(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        rows: Any,
+        expected_current_open_ms: int,
+    ) -> Optional[
+        Tuple[
+            Tuple[float, float],
+            Tuple[float, float],
+        ]
+    ]:
+        if not isinstance(rows, list) or len(rows) < 2:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][OPEN-BLOCK]"
+                        "[CANDLE-PAIR] "
+                        "symbol=%s reason=missing_rows",
+                        symbol,
+                    )
+            except Exception:
+                pass
+
+            return None
+
+        previous_row = rows[-2]
+        current_row = rows[-1]
+
+        prev_open_ms = (
+            self._entry_candle_open_time_ms(
+                previous_row
+            )
+        )
+
+        curr_open_ms = (
+            self._entry_candle_open_time_ms(
+                current_row
+            )
+        )
+
+        # Yenilemeden sonra da son mum mevcut
+        # dakikaya ait değilse engelle.
+        if (
+            interval == "1m"
+            and curr_open_ms
+            != expected_current_open_ms
+        ):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][OPEN-BLOCK]"
+                        "[STALE-CURRENT-CANDLE] "
+                        "symbol=%s curr_open_ms=%s "
+                        "expected_open_ms=%s",
+                        symbol,
+                        curr_open_ms,
+                        expected_current_open_ms,
+                    )
+            except Exception:
+                pass
+
+            return None
+
+        expected_previous_open_ms = (
+            expected_current_open_ms - 60_000
+        )
+
+        # Önceki mum tam olarak bir önceki
+        # dakikaya ait olmalı.
+        if (
+            interval == "1m"
+            and prev_open_ms
+            != expected_previous_open_ms
+        ):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][OPEN-BLOCK]"
+                        "[STALE-PREVIOUS-CANDLE] "
+                        "symbol=%s prev_open_ms=%s "
+                        "expected_open_ms=%s",
+                        symbol,
+                        prev_open_ms,
+                        expected_previous_open_ms,
+                    )
+            except Exception:
+                pass
+
+            return None
+
+        previous = (
+            self._extract_entry_open_close(
+                previous_row
+            )
+        )
+
+        current = (
+            self._extract_entry_open_close(
+                current_row
+            )
+        )
+
+        if previous is None or current is None:
+            return None
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][CANDLE-PAIR] "
+                    "symbol=%s prev_time=%s "
+                    "curr_time=%s "
+                    "prev_open=%.8f "
+                    "prev_close=%.8f "
+                    "curr_open=%.8f "
+                    "curr_close=%.8f",
+                    symbol,
+                    prev_open_ms,
+                    curr_open_ms,
+                    previous[0],
+                    previous[1],
+                    current[0],
+                    current[1],
+                )
+        except Exception:
+            pass
+
+        return previous, current
+
     def _get_entry_candle_pair(
         self,
         symbol: str,
@@ -748,79 +1097,8 @@ class TradeExecutorShort:
         if not sym_u:
             return None
 
-        def _read_rows():
-            try:
-                return read_kline_cache(
-                    sym_u,
-                    interval_s,
-                    max_age_sec=10.0,
-                )
-            except Exception:
-                return None
 
-        def _open_time_ms(row: Any) -> Optional[int]:
-            try:
-                if isinstance(row, (list, tuple)):
-                    return int(float(row[0]))
-
-                if isinstance(row, dict):
-                    raw_ts = (
-                        row.get("open_time")
-                        or row.get("openTime")
-                        or row.get("timestamp")
-                        or row.get("time")
-                        or row.get("t")
-                    )
-
-                    if raw_ts is None:
-                        return None
-
-                    ts = int(float(raw_ts))
-
-                    # Saniye olarak geldiyse milisaniyeye çevir.
-                    if ts < 10_000_000_000:
-                        ts *= 1000
-
-                    return ts
-
-            except Exception:
-                return None
-
-            return None
-
-        def _extract_open_close(
-            row: Any,
-        ) -> Optional[Tuple[float, float]]:
-            try:
-                if isinstance(row, (list, tuple)):
-                    open_px = float(row[1])
-                    close_px = float(row[4])
-
-                elif isinstance(row, dict):
-                    open_px = float(
-                        row.get("open")
-                        or row.get("o")
-                        or 0.0
-                    )
-
-                    close_px = float(
-                        row.get("close")
-                        or row.get("c")
-                        or 0.0
-                    )
-
-                else:
-                    return None
-
-                if open_px <= 0.0 or close_px <= 0.0:
-                    return None
-
-                return float(open_px), float(close_px)
-
-            except Exception:
-                return None
-
-        rows = _read_rows()
+        rows = self._read_entry_kline_rows(sym_u, interval_s)
 
         # Mevcut 1 dakikalık mumun beklenen açılış zamanı.
         now_ms = int(time.time() * 1000)
@@ -831,7 +1109,7 @@ class TradeExecutorShort:
         last_open_ms = None
 
         if isinstance(rows, list) and rows:
-            last_open_ms = _open_time_ms(rows[-1])
+            last_open_ms = self._entry_candle_open_time_ms(rows[-1])
 
         cache_has_current_candle = (
             isinstance(rows, list)
@@ -841,202 +1119,27 @@ class TradeExecutorShort:
         )
 
         # Cache yeni dakikaya ait değilse mutlaka Binance'den yenile.
-        if interval_s == "1m" and not cache_has_current_candle:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][1M-FORCE-REFRESH] "
-                        "symbol=%s cached_open_ms=%s expected_open_ms=%s",
-                        sym_u,
-                        last_open_ms,
-                        expected_current_open_ms,
-                    )
-            except Exception:
-                pass
-
-            # Güncel mumu Redis üzerinden tekrar okumak yerine
-            # Binance cevabını doğrudan kullan. Böylece başka bir
-            # cache writer eski veriyi yazsa bile entry kontrolü şaşmaz.
-            try:
-                direct_rows = None
-
-                for attempt in range(1, 4):
-                    direct_rows = self.client.futures_klines(
-                        symbol=sym_u,
-                        interval="1m",
-                        limit=3,
-                    )
-
-                    direct_last_open_ms = None
-
-                    if (
-                        isinstance(direct_rows, list)
-                        and len(direct_rows) >= 2
-                    ):
-                        direct_last_open_ms = _open_time_ms(
-                            direct_rows[-1]
-                        )
-
-                    try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC-SHORT][1M-DIRECT-TRY] "
-                                "symbol=%s attempt=%s "
-                                "last_open_ms=%s expected_open_ms=%s",
-                                sym_u,
-                                attempt,
-                                direct_last_open_ms,
-                                expected_current_open_ms,
-                            )
-                    except Exception:
-                        pass
-
-                    if (
-                        direct_last_open_ms
-                        == expected_current_open_ms
-                    ):
-                        break
-
-                    if attempt < 3:
-                        time.sleep(0.35)
-
-                if (
-                    isinstance(direct_rows, list)
-                    and len(direct_rows) >= 2
-                ):
-                    rows = direct_rows
-
-                    try:
-                        write_kline_cache(
-                            sym_u,
-                            "1m",
-                            direct_rows,
-                            90,
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        if self.logger:
-                            direct_last_open_ms = _open_time_ms(
-                                direct_rows[-1]
-                            )
-                            self.logger.info(
-                                "[EXEC-SHORT][1M-DIRECT] "
-                                "symbol=%s last_open_ms=%s "
-                                "expected_open_ms=%s",
-                                sym_u,
-                                direct_last_open_ms,
-                                expected_current_open_ms,
-                            )
-                    except Exception:
-                        pass
-
-                else:
-                    rows = _read_rows()
-
-            except Exception as exc:
-                try:
-                    if self.logger:
-                        self.logger.warning(
-                            "[EXEC-SHORT][1M-DIRECT][WARN] "
-                            "symbol=%s err=%s",
-                            sym_u,
-                            str(exc)[:200],
-                        )
-                except Exception:
-                    pass
-
-                rows = _read_rows()
-
-        if not isinstance(rows, list) or len(rows) < 2:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK][CANDLE-PAIR] "
-                        "symbol=%s reason=missing_rows",
-                        sym_u,
-                    )
-            except Exception:
-                pass
-
-            return None
-
-        previous_row = rows[-2]
-        current_row = rows[-1]
-
-        prev_open_ms = _open_time_ms(previous_row)
-        curr_open_ms = _open_time_ms(current_row)
-
-        # Yenilemeden sonra da son mum mevcut dakikaya ait değilse engelle.
-        if (
-            interval_s == "1m"
-            and curr_open_ms != expected_current_open_ms
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK]"
-                        "[STALE-CURRENT-CANDLE] "
-                        "symbol=%s curr_open_ms=%s expected_open_ms=%s",
-                        sym_u,
-                        curr_open_ms,
-                        expected_current_open_ms,
-                    )
-            except Exception:
-                pass
-
-            return None
-
-        # Önceki mum tam olarak bir önceki dakikaya ait olmalı.
-        expected_previous_open_ms = (
-            expected_current_open_ms - 60_000
+        rows = self._refresh_entry_1m_rows(
+            symbol=sym_u,
+            interval=interval_s,
+            rows=rows,
+            cache_has_current_candle=(
+                cache_has_current_candle
+            ),
+            last_open_ms=last_open_ms,
+            expected_current_open_ms=(
+                expected_current_open_ms
+            ),
         )
 
-        if (
-            interval_s == "1m"
-            and prev_open_ms != expected_previous_open_ms
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK]"
-                        "[STALE-PREVIOUS-CANDLE] "
-                        "symbol=%s prev_open_ms=%s expected_open_ms=%s",
-                        sym_u,
-                        prev_open_ms,
-                        expected_previous_open_ms,
-                    )
-            except Exception:
-                pass
-
-            return None
-
-        previous = _extract_open_close(previous_row)
-        current = _extract_open_close(current_row)
-
-        if previous is None or current is None:
-            return None
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC-SHORT][CANDLE-PAIR] "
-                    "symbol=%s prev_time=%s curr_time=%s "
-                    "prev_open=%.8f prev_close=%.8f "
-                    "curr_open=%.8f curr_close=%.8f",
-                    sym_u,
-                    prev_open_ms,
-                    curr_open_ms,
-                    previous[0],
-                    previous[1],
-                    current[0],
-                    current[1],
-                )
-        except Exception:
-            pass
-
-        return previous, current
+        return self._validate_entry_candle_rows(
+            symbol=sym_u,
+            interval=interval_s,
+            rows=rows,
+            expected_current_open_ms=(
+                expected_current_open_ms
+            ),
+        )
 
     # =========================================================
     # SNIPER ENTRY
@@ -1254,40 +1357,16 @@ class TradeExecutorShort:
     # SHORT CONTINUATION ENTRY
     # =========================================================
 
-    def _check_short_continuation(
+    def _prepare_short_continuation_candles(
         self,
+        *,
         symbol: str,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
-        Düşüş trendinin devamında SHORT girişini doğrular.
-
-        Kurallar:
-        1. Son 3 tamamlanmış mumun en az 2'si kırmızı olmalı.
-        2. Üç mumluk toplam hareket aşağı yönlü olmalı.
-        3. Son tamamlanmış mum aşırı büyük olmamalı.
-        4. Mevcut mum güçlü biçimde yukarı kaçmamalı.
-        5. Mevcut fiyat aşağı yönlü tetik üretmeli.
+        SHORT continuation için 1m mumlarını çeker,
+        güncelliğini kontrol eder ve parse eder.
         """
-        enabled = str(
-            os.getenv(
-                "SHORT_CONTINUATION_ENABLE",
-                "1",
-            )
-            or "1"
-        ).strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-
-        if not enabled:
-            return False
-
         sym_u = str(symbol or "").upper().strip()
-
-        if not sym_u:
-            return False
 
         try:
             rows = self.client.futures_klines(
@@ -1307,28 +1386,44 @@ class TradeExecutorShort:
             except Exception:
                 pass
 
-            return False
+            return {
+                "ok": False,
+                "reason": "kline_exception",
+            }
 
-        if not isinstance(rows, list) or len(rows) < 4:
-            return False
+        if (
+            not isinstance(rows, list)
+            or len(rows) < 4
+        ):
+            return {
+                "ok": False,
+                "reason": "insufficient_klines",
+            }
 
         try:
-            now_ms = int(time.time() * 1000)
+            now_ms = int(
+                time.time() * 1000
+            )
 
             expected_current_open_ms = (
                 now_ms // 60_000
             ) * 60_000
 
             current_row = rows[-1]
+
             current_open_ms = int(
                 float(current_row[0])
             )
 
-            if current_open_ms != expected_current_open_ms:
+            if (
+                current_open_ms
+                != expected_current_open_ms
+            ):
                 try:
                     if self.logger:
                         self.logger.info(
-                            "[EXEC-SHORT][CONTINUATION-BLOCK]"
+                            "[EXEC-SHORT]"
+                            "[CONTINUATION-BLOCK]"
                             "[STALE-CURRENT] "
                             "symbol=%s curr_open_ms=%s "
                             "expected_open_ms=%s",
@@ -1339,14 +1434,15 @@ class TradeExecutorShort:
                 except Exception:
                     pass
 
-                return False
+                return {
+                    "ok": False,
+                    "reason": "stale_current",
+                }
 
-            completed = rows[-4:-1]
+            completed = []
 
-            parsed = []
-
-            for row in completed:
-                parsed.append(
+            for row in rows[-4:-1]:
+                completed.append(
                     {
                         "open": float(row[1]),
                         "high": float(row[2]),
@@ -1363,55 +1459,109 @@ class TradeExecutorShort:
             }
 
         except Exception:
-            return False
+            return {
+                "ok": False,
+                "reason": "kline_parse_failed",
+            }
 
-        if any(
+        invalid_completed = any(
             candle["open"] <= 0.0
             or candle["close"] <= 0.0
             or candle["high"] <= 0.0
             or candle["low"] <= 0.0
-            for candle in parsed
+            for candle in completed
+        )
+
+        if invalid_completed:
+            return {
+                "ok": False,
+                "reason": "invalid_completed_candle",
+            }
+
+        if (
+            current["open"] <= 0.0
+            or current["close"] <= 0.0
         ):
-            return False
+            return {
+                "ok": False,
+                "reason": "invalid_current_candle",
+            }
 
-        if current["open"] <= 0.0 or current["close"] <= 0.0:
-            return False
+        return {
+            "ok": True,
+            "completed": completed,
+            "current": current,
+        }
 
-        min_red_count = int(
-            self._env_float(
-                "SHORT_CONTINUATION_MIN_RED_COUNT",
-                2,
-            )
-        )
+    def _get_short_continuation_config(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        SHORT continuation eşiklerini döndürür.
+        """
+        return {
+            "min_red_count": int(
+                self._env_float(
+                    "SHORT_CONTINUATION_MIN_RED_COUNT",
+                    2,
+                )
+            ),
+            "min_trend_drop_pct": self._env_float(
+                "SHORT_CONTINUATION_MIN_TREND_DROP_PCT",
+                0.0008,
+            ),
+            "min_trigger_drop_pct": self._env_float(
+                "SHORT_CONTINUATION_MIN_TRIGGER_DROP_PCT",
+                0.0001,
+            ),
+            "max_current_rise_pct": self._env_float(
+                "SHORT_CONTINUATION_MAX_CURRENT_RISE_PCT",
+                0.0003,
+            ),
+            "max_last_body_pct": self._env_float(
+                "SHORT_CONTINUATION_MAX_LAST_BODY_PCT",
+                0.0030,
+            ),
+            "break_buffer_pct": self._env_float(
+                "SHORT_CONTINUATION_BREAK_BUFFER_PCT",
+                0.0000,
+            ),
+        }
 
-        min_trend_drop_pct = self._env_float(
-            "SHORT_CONTINUATION_MIN_TREND_DROP_PCT",
-            0.0008,
-        )
+    def _evaluate_short_continuation_rules(
+        self,
+        *,
+        symbol: str,
+        completed: list,
+        current: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> bool:
+        """
+        SHORT continuation mumlarını ve eşiklerini
+        değerlendirerek giriş kararını döndürür.
+        """
+        sym_u = str(symbol or "").upper().strip()
 
-        min_trigger_drop_pct = self._env_float(
-            "SHORT_CONTINUATION_MIN_TRIGGER_DROP_PCT",
-            0.0001,
-        )
-
-        max_current_rise_pct = self._env_float(
-            "SHORT_CONTINUATION_MAX_CURRENT_RISE_PCT",
-            0.0003,
-        )
-
-        max_last_body_pct = self._env_float(
-            "SHORT_CONTINUATION_MAX_LAST_BODY_PCT",
-            0.0030,
-        )
-
-        break_buffer_pct = self._env_float(
-            "SHORT_CONTINUATION_BREAK_BUFFER_PCT",
-            0.0000,
-        )
+        min_red_count = config["min_red_count"]
+        min_trend_drop_pct = config[
+            "min_trend_drop_pct"
+        ]
+        min_trigger_drop_pct = config[
+            "min_trigger_drop_pct"
+        ]
+        max_current_rise_pct = config[
+            "max_current_rise_pct"
+        ]
+        max_last_body_pct = config[
+            "max_last_body_pct"
+        ]
+        break_buffer_pct = config[
+            "break_buffer_pct"
+        ]
 
         red_count = sum(
             1
-            for candle in parsed
+            for candle in completed
             if candle["close"] < candle["open"]
         )
 
@@ -1431,8 +1581,8 @@ class TradeExecutorShort:
 
             return False
 
-        first_open = parsed[0]["open"]
-        last_completed = parsed[-1]
+        first_open = completed[0]["open"]
+        last_completed = completed[-1]
         last_close = last_completed["close"]
 
         trend_drop_pct = (
@@ -1572,6 +1722,83 @@ class TradeExecutorShort:
             pass
 
         return True
+
+    def _check_short_continuation(
+        self,
+        symbol: str,
+    ) -> bool:
+        """
+        Düşüş trendinin devamında SHORT girişini doğrular.
+
+        Kurallar:
+        1. Son 3 tamamlanmış mumun en az 2'si kırmızı olmalı.
+        2. Üç mumluk toplam hareket aşağı yönlü olmalı.
+        3. Son tamamlanmış mum aşırı büyük olmamalı.
+        4. Mevcut mum güçlü biçimde yukarı kaçmamalı.
+        5. Mevcut fiyat aşağı yönlü tetik üretmeli.
+        """
+        enabled = str(
+            os.getenv(
+                "SHORT_CONTINUATION_ENABLE",
+                "1",
+            )
+            or "1"
+        ).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        if not enabled:
+            return False
+
+        sym_u = str(symbol or "").upper().strip()
+
+        if not sym_u:
+            return False
+
+        candle_context = (
+            self._prepare_short_continuation_candles(
+                symbol=sym_u,
+            )
+        )
+
+        if not candle_context.get("ok", False):
+            return False
+
+        parsed = candle_context["completed"]
+        current = candle_context["current"]
+
+        config = (
+            self._get_short_continuation_config()
+        )
+
+        min_red_count = config["min_red_count"]
+        min_trend_drop_pct = config[
+            "min_trend_drop_pct"
+        ]
+        min_trigger_drop_pct = config[
+            "min_trigger_drop_pct"
+        ]
+        max_current_rise_pct = config[
+            "max_current_rise_pct"
+        ]
+        max_last_body_pct = config[
+            "max_last_body_pct"
+        ]
+        break_buffer_pct = config[
+            "break_buffer_pct"
+        ]
+
+        return (
+            self._evaluate_short_continuation_rules(
+                symbol=sym_u,
+                completed=parsed,
+                current=current,
+                config=config,
+            )
+        )
 
     def _check_short_entry_pattern(
         self,
@@ -2026,6 +2253,228 @@ class TradeExecutorShort:
     # REAL SHORT OPEN
     # =========================================================
 
+    def _validate_short_open_request(
+        self,
+        *,
+        symbol: str,
+        now_ts: float,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        SHORT pozisyon açılmadan önce yerel giriş engellerini kontrol eder.
+
+        Open lock bu helper dışında yönetilir. Böylece lock her durumda
+        open_position_from_signal() içindeki finally bloğunda temizlenir.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        if (
+            self.block_same_symbol_reentry
+            and self._get_position(sym_u) is not None
+        ):
+            return {
+                "status": "skip",
+                "reason": "position_exists",
+                "symbol": sym_u,
+            }
+
+        last_open_ts = 0.0
+
+        try:
+            if self.redis is not None:
+                raw = self.redis.get(
+                    f"bot:last_open_ts:{sym_u}"
+                )
+
+                last_open_ts = float(raw or 0.0)
+
+        except Exception:
+            last_open_ts = 0.0
+
+        if (
+            last_open_ts > 0.0
+            and (
+                float(now_ts) - last_open_ts
+            ) < self.same_symbol_open_cooldown_sec
+        ):
+            return {
+                "status": "skip",
+                "reason": "symbol_cooldown",
+                "symbol": sym_u,
+            }
+
+        if (
+            self._count_open_positions()
+            >= self.max_open_positions
+        ):
+            return {
+                "status": "skip",
+                "reason": "max_open_positions",
+                "symbol": sym_u,
+            }
+
+        return None
+
+    def _prepare_short_open_order(
+        self,
+        *,
+        symbol: str,
+        fallback_price: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        SHORT market emri için fiyat, miktar ve leverage hazırlar.
+
+        Bu helper emir göndermez ve pozisyon kaydı oluşturmaz.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        order_price = self._resolve_order_price(
+            symbol=sym_u,
+            fallback_price=fallback_price,
+        )
+
+        if order_price is None or order_price <= 0.0:
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "missing_price",
+                    "symbol": sym_u,
+                },
+            }
+
+        notional = min(
+            float(self.base_order_notional),
+            float(self.max_position_notional),
+        )
+
+        notional = max(
+            10.0,
+            float(notional),
+        )
+
+        raw_qty = (
+            float(notional)
+            / float(order_price)
+        )
+
+        qty, qty_meta = self._normalize_order_qty(
+            symbol=sym_u,
+            raw_qty=raw_qty,
+            price=float(order_price),
+        )
+
+        if qty <= 0.0:
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "bad_qty",
+                    "symbol": sym_u,
+                    "qty_meta": qty_meta,
+                },
+            }
+
+        leverage = self._set_symbol_leverage(
+            symbol=sym_u,
+            leverage=self.default_order_leverage,
+        )
+
+        return {
+            "ok": True,
+            "symbol": sym_u,
+            "order_price": float(order_price),
+            "qty": float(qty),
+            "notional": (
+                float(qty)
+                * float(order_price)
+            ),
+            "leverage": int(leverage),
+            "qty_meta": qty_meta,
+        }
+
+    def _finalize_short_open(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        qty: float,
+        order_price: float,
+        leverage: int,
+        now_ts: float,
+        order: Any,
+    ) -> Dict[str, Any]:
+        """
+        Açılan SHORT pozisyonu yerel store ve Redis'e kaydeder.
+
+        Bu helper market emri göndermez.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        pos = {
+            "symbol": sym_u,
+            "side": "short",
+            "qty": float(qty),
+            "entry_price": float(order_price),
+            "notional": (
+                float(qty)
+                * float(order_price)
+            ),
+            "interval": str(
+                interval or self.entry_interval
+            ),
+            "leverage": int(leverage),
+            "created_ts": float(now_ts),
+            "best_roi_pct": 0.0,
+        }
+
+        self._set_position(
+            sym_u,
+            pos,
+        )
+
+        try:
+            if self.redis is not None:
+                self.redis.setex(
+                    f"bot:last_open_ts:{sym_u}",
+                    3600,
+                    str(now_ts),
+                )
+        except Exception:
+            pass
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][OPENED] "
+                    "symbol=%s qty=%.10f "
+                    "price=%.8f notional=%.4f "
+                    "leverage=%s",
+                    sym_u,
+                    qty,
+                    order_price,
+                    pos["notional"],
+                    leverage,
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": (
+                "dry_run"
+                if self.dry_run
+                else "opened"
+            ),
+            "symbol": sym_u,
+            "side": "short",
+            "qty": float(qty),
+            "price": float(order_price),
+            "notional": float(
+                pos["notional"]
+            ),
+            "leverage": int(leverage),
+            "order": order,
+        }
+
     def open_position_from_signal(
         self,
         symbol: str,
@@ -2068,103 +2517,41 @@ class TradeExecutorShort:
         self._symbol_open_locks[sym_u] = now_ts
 
         try:
-            if (
-                self.block_same_symbol_reentry
-                and self._get_position(sym_u)
-                is not None
-            ):
-                return {
-                    "status": "skip",
-                    "reason": "position_exists",
-                    "symbol": sym_u,
-                }
-
-            last_open_ts = 0.0
-
-            try:
-                if self.redis is not None:
-                    raw = self.redis.get(
-                        f"bot:last_open_ts:{sym_u}"
-                    )
-
-                    last_open_ts = float(raw or 0.0)
-
-            except Exception:
-                last_open_ts = 0.0
-
-            if (
-                last_open_ts > 0.0
-                and (
-                    now_ts - last_open_ts
-                ) < self.same_symbol_open_cooldown_sec
-            ):
-                return {
-                    "status": "skip",
-                    "reason": "symbol_cooldown",
-                    "symbol": sym_u,
-                }
-
-            if (
-                self._count_open_positions()
-                >= self.max_open_positions
-            ):
-                return {
-                    "status": "skip",
-                    "reason": "max_open_positions",
-                    "symbol": sym_u,
-                }
-
-            fallback_price = meta0.get("price")
-
-            order_price = self._resolve_order_price(
+            guard_result = self._validate_short_open_request(
                 symbol=sym_u,
-                fallback_price=fallback_price,
+                now_ts=now_ts,
             )
 
-            if (
-                order_price is None
-                or order_price <= 0.0
-            ):
-                return {
-                    "status": "skip",
-                    "reason": "missing_price",
-                    "symbol": sym_u,
-                }
+            if guard_result is not None:
+                return guard_result
 
-            notional = min(
-                float(self.base_order_notional),
-                float(self.max_position_notional),
-            )
-
-            notional = max(
-                10.0,
-                float(notional),
-            )
-
-            raw_qty = (
-                float(notional)
-                / float(order_price)
-            )
-
-            qty, qty_meta = (
-                self._normalize_order_qty(
-                    symbol=sym_u,
-                    raw_qty=raw_qty,
-                    price=float(order_price),
-                )
-            )
-
-            if qty <= 0.0:
-                return {
-                    "status": "skip",
-                    "reason": "bad_qty",
-                    "symbol": sym_u,
-                    "qty_meta": qty_meta,
-                }
-
-            leverage = self._set_symbol_leverage(
+            order_plan = self._prepare_short_open_order(
                 symbol=sym_u,
-                leverage=self.default_order_leverage,
+                fallback_price=meta0.get("price"),
+            )
+
+            if not order_plan.get("ok", False):
+                result = order_plan.get("result")
+
+                if isinstance(result, dict):
+                    return result
+
+                return {
+                    "status": "skip",
+                    "reason": "open_prepare_failed",
+                    "symbol": sym_u,
+                }
+
+            order_price = float(
+                order_plan["order_price"]
+            )
+
+            qty = float(
+                order_plan["qty"]
+            )
+
+            leverage = int(
+                order_plan["leverage"]
             )
 
             order = self._exchange_open_market(
@@ -2172,70 +2559,15 @@ class TradeExecutorShort:
                 qty=float(qty),
             )
 
-            pos = {
-                "symbol": sym_u,
-                "side": "short",
-                "qty": float(qty),
-                "entry_price": float(order_price),
-                "notional": (
-                    float(qty)
-                    * float(order_price)
-                ),
-                "interval": str(
-                    interval or self.entry_interval
-                ),
-                "leverage": int(leverage),
-                "created_ts": float(now_ts),
-                "best_roi_pct": 0.0,
-            }
-
-            self._set_position(
-                sym_u,
-                pos,
+            return self._finalize_short_open(
+                symbol=sym_u,
+                interval=interval,
+                qty=qty,
+                order_price=order_price,
+                leverage=leverage,
+                now_ts=now_ts,
+                order=order,
             )
-
-            try:
-                if self.redis is not None:
-                    self.redis.setex(
-                        f"bot:last_open_ts:{sym_u}",
-                        3600,
-                        str(now_ts),
-                    )
-            except Exception:
-                pass
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPENED] "
-                        "symbol=%s qty=%.10f "
-                        "price=%.8f notional=%.4f "
-                        "leverage=%s",
-                        sym_u,
-                        qty,
-                        order_price,
-                        pos["notional"],
-                        leverage,
-                    )
-            except Exception:
-                pass
-
-            return {
-                "status": (
-                    "dry_run"
-                    if self.dry_run
-                    else "opened"
-                ),
-                "symbol": sym_u,
-                "side": "short",
-                "qty": float(qty),
-                "price": float(order_price),
-                "notional": float(
-                    pos["notional"]
-                ),
-                "leverage": int(leverage),
-                "order": order,
-            }
 
         except Exception as exc:
             try:
@@ -2305,6 +2637,148 @@ class TradeExecutorShort:
 
         return fn(**payload)
 
+    def _validate_short_close_request(
+        self,
+        *,
+        symbol: str,
+    ) -> Dict[str, Any]:
+        """
+        SHORT close öncesi pozisyon doğrulaması.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        pos = self._get_position(sym_u)
+
+        if not isinstance(pos, dict):
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "position_not_found",
+                    "symbol": sym_u,
+                },
+            }
+
+        if str(pos.get("side") or "").lower() != "short":
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "not_short_position",
+                    "symbol": sym_u,
+                },
+            }
+
+        try:
+            qty = float(pos.get("qty") or 0.0)
+        except Exception:
+            qty = 0.0
+
+        if qty <= 0.0:
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "bad_qty",
+                    "symbol": sym_u,
+                },
+            }
+
+        return {
+            "ok": True,
+            "position": pos,
+            "qty": float(qty),
+        }
+
+    def _finalize_short_close(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+        qty: float,
+        exit_price: float,
+        reason: str,
+        interval: str,
+        order: Any,
+    ) -> Dict[str, Any]:
+        """
+        SHORT kapanış sonrası PnL/ROI hesabı ve yerel temizliği yapar.
+
+        Bu helper borsaya kapatma emri göndermez.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        entry_price = float(
+            position.get("entry_price")
+            or 0.0
+        )
+
+        pnl_pct = 0.0
+
+        if (
+            entry_price > 0.0
+            and float(exit_price) > 0.0
+        ):
+            pnl_pct = (
+                entry_price
+                - float(exit_price)
+            ) / entry_price
+
+        leverage = float(
+            position.get("leverage")
+            or self.default_order_leverage
+            or 1.0
+        )
+
+        roi_pct = pnl_pct * leverage
+
+        self._del_position(sym_u)
+
+        try:
+            if self.redis is not None:
+                self.redis.delete(
+                    f"fixed_roi_best:{sym_u}"
+                )
+        except Exception:
+            pass
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][CLOSED] "
+                    "symbol=%s reason=%s qty=%.10f "
+                    "entry=%.8f exit=%.8f "
+                    "pnl_pct=%.6f roi=%.6f "
+                    "interval=%s",
+                    sym_u,
+                    str(reason),
+                    qty,
+                    entry_price,
+                    float(exit_price),
+                    pnl_pct,
+                    roi_pct,
+                    str(interval or ""),
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": (
+                "dry_run"
+                if self.dry_run
+                else "closed"
+            ),
+            "symbol": sym_u,
+            "side": "short",
+            "qty": float(qty),
+            "entry_price": float(entry_price),
+            "exit_price": float(exit_price),
+            "pnl_pct": float(pnl_pct),
+            "roi_pct": float(roi_pct),
+            "reason": str(reason),
+            "order": order,
+        }
+
     def close_position(
         self,
         symbol: str,
@@ -2319,33 +2793,15 @@ class TradeExecutorShort:
 
         sym_u = str(symbol or "").upper().strip()
 
-        pos = self._get_position(sym_u)
+        validation = self._validate_short_close_request(
+            symbol=sym_u,
+        )
 
-        if not isinstance(pos, dict):
-            return {
-                "status": "skip",
-                "reason": "position_not_found",
-                "symbol": sym_u,
-            }
+        if not validation.get("ok", False):
+            return validation["result"]
 
-        if str(pos.get("side") or "").lower() != "short":
-            return {
-                "status": "skip",
-                "reason": "not_short_position",
-                "symbol": sym_u,
-            }
-
-        try:
-            qty = float(pos.get("qty") or 0.0)
-        except Exception:
-            qty = 0.0
-
-        if qty <= 0.0:
-            return {
-                "status": "skip",
-                "reason": "bad_qty",
-                "symbol": sym_u,
-            }
+        pos = validation["position"]
+        qty = float(validation["qty"])
 
         exit_price = self._resolve_price(
             symbol=sym_u,
@@ -2367,76 +2823,15 @@ class TradeExecutorShort:
                 qty=float(qty),
             )
 
-            entry_price = float(
-                pos.get("entry_price")
-                or 0.0
+            return self._finalize_short_close(
+                symbol=sym_u,
+                position=pos,
+                qty=qty,
+                exit_price=exit_price,
+                reason=reason,
+                interval=interval,
+                order=order,
             )
-
-            pnl_pct = 0.0
-
-            if (
-                entry_price > 0.0
-                and exit_price > 0.0
-            ):
-                pnl_pct = (
-                    entry_price
-                    - float(exit_price)
-                ) / entry_price
-
-            leverage = float(
-                pos.get("leverage")
-                or self.default_order_leverage
-                or 1.0
-            )
-
-            roi_pct = pnl_pct * leverage
-
-            self._del_position(sym_u)
-
-            try:
-                if self.redis is not None:
-                    self.redis.delete(
-                        f"fixed_roi_best:{sym_u}"
-                    )
-            except Exception:
-                pass
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][CLOSED] "
-                        "symbol=%s reason=%s qty=%.10f "
-                        "entry=%.8f exit=%.8f "
-                        "pnl_pct=%.6f roi=%.6f "
-                        "interval=%s",
-                        sym_u,
-                        str(reason),
-                        qty,
-                        entry_price,
-                        float(exit_price),
-                        pnl_pct,
-                        roi_pct,
-                        str(interval or ""),
-                    )
-            except Exception:
-                pass
-
-            return {
-                "status": (
-                    "dry_run"
-                    if self.dry_run
-                    else "closed"
-                ),
-                "symbol": sym_u,
-                "side": "short",
-                "qty": float(qty),
-                "entry_price": entry_price,
-                "exit_price": float(exit_price),
-                "pnl_pct": float(pnl_pct),
-                "roi_pct": float(roi_pct),
-                "reason": str(reason),
-                "order": order,
-            }
 
         except Exception as exc:
             try:
@@ -2658,16 +3053,328 @@ class TradeExecutorShort:
 
         return True
 
+    def _classify_short_pending_window(
+        self,
+        *,
+        created_candle_id: int,
+        current_candle_id: int,
+        progress: float,
+        max_pending_progress: float,
+    ):
+        """
+        Pending kaydının mevcut mum penceresindeki durumunu döndürür.
+
+        Sonuç:
+        - invalid
+        - wait_same_candle
+        - expired
+        - wait_window
+        - ready
+        """
+        created_id = int(created_candle_id or 0)
+        current_id = int(current_candle_id or 0)
+
+        if created_id <= 0:
+            return "invalid", 0
+
+        candle_age = current_id - created_id
+
+        if candle_age <= 0:
+            return "wait_same_candle", candle_age
+
+        if candle_age > 1:
+            return "expired", candle_age
+
+        if (
+            float(progress)
+            < float(self.sniper_entry_min_candle_progress)
+            or float(progress) > float(max_pending_progress)
+        ):
+            return "wait_window", candle_age
+
+        return "ready", candle_age
+
+    def _resolve_short_pending_price(
+        self,
+        symbol: str,
+        pending: Dict[str, Any],
+    ) -> Optional[float]:
+        """
+        Pending giriş için öncelikle canlı cache fiyatını çözer.
+
+        Cache boşsa pending kaydındaki fiyat fallback olarak kullanılır.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        pending_price = self._get_cached_mid_price(sym_u)
+
+        if pending_price is None or pending_price <= 0.0:
+            pending_price = self._resolve_price(
+                symbol=sym_u,
+                price=pending.get("price"),
+            )
+
+        if pending_price is None or pending_price <= 0.0:
+            return None
+
+        return float(pending_price)
+
+    def _handle_short_pending_open_result(
+        self,
+        *,
+        symbol: str,
+        result: Any,
+    ) -> None:
+        """
+        Pending open sonucuna göre kaydı temizler veya yeniden denemeye bırakır.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        result_status = (
+            str(result.get("status") or "").lower().strip()
+            if isinstance(result, dict)
+            else ""
+        )
+
+        result_reason = (
+            str(result.get("reason") or "").lower().strip()
+            if isinstance(result, dict)
+            else ""
+        )
+
+        opened_ok = result_status in (
+            "opened",
+            "dry_run",
+        )
+
+        retryable_pre_order_reasons = {
+            "open_lock",
+            "symbol_cooldown",
+            "max_open_positions",
+            "missing_price",
+        }
+
+        retry_pending = (
+            result_status == "skip"
+            and result_reason in retryable_pre_order_reasons
+        )
+
+        if opened_ok:
+            self._pop_short_pending(sym_u)
+
+        elif retry_pending:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-RETRY] "
+                        "symbol=%s status=%s reason=%s",
+                        sym_u,
+                        result_status,
+                        result_reason,
+                    )
+            except Exception:
+                pass
+
+        else:
+            # Bilinmeyen veya kalıcı sonuçlarda yeniden emir
+            # gönderme riskini önlemek için pending temizlenir.
+            self._pop_short_pending(sym_u)
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][PENDING-RESULT] "
+                    "symbol=%s status=%s reason=%s "
+                    "opened=%s retry=%s",
+                    sym_u,
+                    result_status or "unknown",
+                    result_reason,
+                    opened_ok,
+                    retry_pending,
+                )
+        except Exception:
+            pass
+
+    async def _process_single_short_pending_entry(
+        self,
+        *,
+        symbol: str,
+        pending: Dict[str, Any],
+        current_candle_id: int,
+        progress: float,
+        max_pending_progress: float,
+    ) -> None:
+        """
+        Tek bir SHORT pending kaydını değerlendirir.
+        """
+        sym_u = str(symbol or "").upper().strip()
+
+        created_candle_id = int(
+            pending.get("candle_id")
+            or 0
+        )
+
+        window_state, candle_age = (
+            self._classify_short_pending_window(
+                created_candle_id=created_candle_id,
+                current_candle_id=current_candle_id,
+                progress=progress,
+                max_pending_progress=max_pending_progress,
+            )
+        )
+
+        if window_state == "invalid":
+            self._pop_short_pending(sym_u)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-CANCEL] "
+                        "symbol=%s reason=invalid_candle_id",
+                        sym_u,
+                    )
+            except Exception:
+                pass
+
+            return
+
+        if window_state == "expired":
+            self._pop_short_pending(sym_u)
+
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-EXPIRE] "
+                        "symbol=%s created_candle=%s "
+                        "current_candle=%s age=%s",
+                        sym_u,
+                        created_candle_id,
+                        current_candle_id,
+                        candle_age,
+                    )
+            except Exception:
+                pass
+
+            return
+
+        if window_state != "ready":
+            return
+
+        pending_score = float(
+            pending.get("score")
+            or 0.0
+        )
+
+        pending_min_score = float(
+            pending.get("min_score")
+            or 0.0
+        )
+
+        pending_price = self._resolve_short_pending_price(
+            symbol=sym_u,
+            pending=pending,
+        )
+
+        if pending_price is None:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-WAIT] "
+                        "symbol=%s reason=missing_price",
+                        sym_u,
+                    )
+            except Exception:
+                pass
+
+            return
+
+        candidate = self._evaluate_short_candidate(
+            symbol=sym_u,
+            price=float(pending_price),
+            signal_score=pending_score,
+            final_min_score=pending_min_score,
+            allow_pending=False,
+        )
+
+        if not candidate.get("allow", False):
+            reason = str(
+                candidate.get("reason")
+                or "candidate_block"
+            ).strip().lower()
+
+            retryable = bool(
+                candidate.get("retryable", False)
+            )
+
+            if not retryable:
+                self._cancel_short_pending(
+                    symbol=sym_u,
+                    reason=reason,
+                    signal_score=pending_score,
+                    min_score=pending_min_score,
+                )
+
+            else:
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            "[EXEC-SHORT][PENDING-WAIT] "
+                            "symbol=%s reason=%s retryable=true",
+                            sym_u,
+                            reason,
+                        )
+                except Exception:
+                    pass
+
+            return
+
+        pending["price"] = float(pending_price)
+        pending["signal_score"] = float(pending_score)
+        pending["open_min_score"] = float(pending_min_score)
+        pending["entry_interval"] = str(self.entry_interval)
+        pending["pending_revalidated"] = True
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][PENDING-OPEN] "
+                    "symbol=%s progress=%.3f "
+                    "created_candle=%s "
+                    "current_candle=%s "
+                    "score=%.4f min=%.4f "
+                    "reason=%s",
+                    sym_u,
+                    progress,
+                    created_candle_id,
+                    current_candle_id,
+                    pending_score,
+                    pending_min_score,
+                    candidate.get("reason"),
+                )
+        except Exception:
+            pass
+
+        result = await asyncio.to_thread(
+            self.open_position_from_signal,
+            sym_u,
+            "short",
+            self.entry_interval,
+            pending,
+        )
+
+        self._handle_short_pending_open_result(
+            symbol=sym_u,
+            result=result,
+        )
+
     async def _process_short_pending_entries(
         self,
     ) -> None:
         """
         Bekleyen SHORT girişlerini mum kimliğine göre işler.
 
-        Akış:
-        - Oluşturulduğu mumda bekler.
-        - Yalnızca bir sonraki mumda açılmayı dener.
-        - Sonraki mum da kaçırılmışsa pending expire olur.
+        Pending oluşturulduğu mumda bekler ve yalnızca
+        bir sonraki mumun erken giriş penceresinde açılmayı dener.
         """
         current_candle_id = self._get_candle_id(
             self.sniper_entry_interval
@@ -2689,255 +3396,13 @@ class TradeExecutorShort:
                 self._pop_short_pending(psym)
                 continue
 
-            created_candle_id = int(
-                pending.get("candle_id")
-                or 0
-            )
-
-            if created_candle_id <= 0:
-                self._pop_short_pending(psym)
-
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][PENDING-CANCEL] "
-                            "symbol=%s reason=invalid_candle_id",
-                            psym,
-                        )
-                except Exception:
-                    pass
-
-                continue
-
-            candle_age = (
-                current_candle_id
-                - created_candle_id
-            )
-
-            # Pending oluşturulduğu mum içinde açılmaz.
-            if candle_age <= 0:
-                continue
-
-            # Yalnızca hemen sonraki mum geçerlidir.
-            if candle_age > 1:
-                self._pop_short_pending(psym)
-
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][PENDING-EXPIRE] "
-                            "symbol=%s created_candle=%s "
-                            "current_candle=%s age=%s",
-                            psym,
-                            created_candle_id,
-                            current_candle_id,
-                            candle_age,
-                        )
-                except Exception:
-                    pass
-
-                continue
-
-            # Sonraki mumun yalnızca erken giriş penceresi.
-            if (
-                progress
-                < self.sniper_entry_min_candle_progress
-                or progress > max_pending_progress
-            ):
-                continue
-
-            pending_score = float(
-                pending.get("score")
-                or 0.0
-            )
-
-            pending_min_score = float(
-                pending.get("min_score")
-                or 0.0
-            )
-
-            # Öncelikle güncel cache fiyatını kullan.
-            # Cache geçici olarak boşsa pending oluşturulurken
-            # kaydedilen fiyat yalnızca fallback olur.
-            pending_price = self._get_cached_mid_price(
-                psym
-            )
-
-            if (
-                pending_price is None
-                or pending_price <= 0.0
-            ):
-                pending_price = self._resolve_price(
-                    symbol=psym,
-                    price=pending.get("price"),
-                )
-
-            if (
-                pending_price is None
-                or pending_price <= 0.0
-            ):
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][PENDING-WAIT] "
-                            "symbol=%s reason=missing_price",
-                            psym,
-                        )
-                except Exception:
-                    pass
-
-                continue
-
-            candidate = self._evaluate_short_candidate(
+            await self._process_single_short_pending_entry(
                 symbol=psym,
-                price=float(pending_price),
-                signal_score=pending_score,
-                final_min_score=pending_min_score,
-                allow_pending=False,
+                pending=pending,
+                current_candle_id=current_candle_id,
+                progress=progress,
+                max_pending_progress=max_pending_progress,
             )
-
-            if not candidate.get("allow", False):
-                reason = str(
-                    candidate.get("reason")
-                    or "candidate_block"
-                ).strip().lower()
-
-                retryable = bool(
-                    candidate.get("retryable", False)
-                )
-
-                # Evaluator kararın tekrar denenebilir olup
-                # olmadığını doğrudan belirtir.
-                if not retryable:
-                    self._cancel_short_pending(
-                        symbol=psym,
-                        reason=reason,
-                        signal_score=pending_score,
-                        min_score=pending_min_score,
-                    )
-
-                else:
-                    try:
-                        if self.logger:
-                            self.logger.info(
-                                "[EXEC-SHORT][PENDING-WAIT] "
-                                "symbol=%s reason=%s retryable=true",
-                                psym,
-                                reason,
-                            )
-                    except Exception:
-                        pass
-
-                continue
-
-            pending["price"] = float(pending_price)
-            pending["signal_score"] = float(
-                pending_score
-            )
-            pending["open_min_score"] = float(
-                pending_min_score
-            )
-            pending["entry_interval"] = str(
-                self.entry_interval
-            )
-            pending["pending_revalidated"] = True
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][PENDING-OPEN] "
-                        "symbol=%s progress=%.3f "
-                        "created_candle=%s "
-                        "current_candle=%s "
-                        "score=%.4f min=%.4f "
-                        "reason=%s",
-                        psym,
-                        progress,
-                        created_candle_id,
-                        current_candle_id,
-                        pending_score,
-                        pending_min_score,
-                        candidate.get("reason"),
-                    )
-            except Exception:
-                pass
-
-            result = await asyncio.to_thread(
-                self.open_position_from_signal,
-                psym,
-                "short",
-                self.entry_interval,
-                pending,
-            )
-
-            result_status = (
-                str(result.get("status") or "").lower().strip()
-                if isinstance(result, dict)
-                else ""
-            )
-
-            result_reason = (
-                str(result.get("reason") or "").lower().strip()
-                if isinstance(result, dict)
-                else ""
-            )
-
-            opened_ok = result_status in (
-                "opened",
-                "dry_run",
-            )
-
-            # Bu nedenler emir gönderilmeden önce oluşur.
-            # Erken pending penceresi devam ettiği sürece
-            # tekrar denenmeleri güvenlidir.
-            retryable_pre_order_reasons = {
-                "open_lock",
-                "symbol_cooldown",
-                "max_open_positions",
-                "missing_price",
-            }
-
-            retry_pending = (
-                result_status == "skip"
-                and result_reason
-                in retryable_pre_order_reasons
-            )
-
-            if opened_ok:
-                self._pop_short_pending(psym)
-
-            elif retry_pending:
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][PENDING-RETRY] "
-                            "symbol=%s status=%s reason=%s",
-                            psym,
-                            result_status,
-                            result_reason,
-                        )
-                except Exception:
-                    pass
-
-            else:
-                # Bilinmeyen veya kalıcı sonuçlarda tekrar emir
-                # gönderme riskini önlemek için pending temizlenir.
-                self._pop_short_pending(psym)
-
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][PENDING-RESULT] "
-                        "symbol=%s status=%s reason=%s "
-                        "opened=%s retry=%s",
-                        psym,
-                        result_status or "unknown",
-                        result_reason,
-                        opened_ok,
-                        retry_pending,
-                    )
-            except Exception:
-                pass
 
     def _make_short_entry_decision(
         self,
