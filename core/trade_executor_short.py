@@ -3578,6 +3578,166 @@ class TradeExecutorShort:
 
         return decision
 
+    def _evaluate_short_sniper_gate(
+        self,
+        *,
+        symbol: str,
+        signal_score: float,
+        final_min_score: float,
+        allow_pending: bool,
+    ):
+        """
+        SHORT girişinin sniper zaman penceresini
+        değerlendirir.
+
+        Dönüş:
+            progress, decision
+
+        decision=None ise sniper kapısı geçilmiştir.
+        """
+        progress = self._calc_candle_progress(
+            self.sniper_entry_interval
+        )
+
+        if (
+            progress
+            > self.sniper_entry_max_candle_progress
+        ):
+            if allow_pending:
+                return (
+                    progress,
+                    self._make_short_entry_decision(
+                        allow=False,
+                        action="pending",
+                        reason="sniper_window_passed",
+                        signal_score=signal_score,
+                        required_score=final_min_score,
+                        progress=progress,
+                        retryable=True,
+                    ),
+                )
+
+            return (
+                progress,
+                self._make_short_entry_decision(
+                    allow=False,
+                    action="block",
+                    reason="pending_window_passed",
+                    signal_score=signal_score,
+                    required_score=final_min_score,
+                    progress=progress,
+                    retryable=False,
+                ),
+            )
+
+        if not self._check_sniper_entry(
+            symbol=symbol,
+            signal_score=signal_score,
+            min_open_score=final_min_score,
+        ):
+            return (
+                progress,
+                self._make_short_entry_decision(
+                    allow=False,
+                    action="block",
+                    reason="sniper_window",
+                    signal_score=signal_score,
+                    required_score=final_min_score,
+                    progress=progress,
+                    retryable=True,
+                ),
+            )
+
+        return progress, None
+
+    def _evaluate_short_candidate_precheck(
+        self,
+        *,
+        symbol: str,
+        signal_score: float,
+        final_min_score: float,
+    ):
+        """
+        SHORT candidate için ucuz ve state-bağımsız
+        ön kontrolleri uygular.
+
+        Dönüş:
+            normalized_symbol, decision
+
+        decision=None ise precheck geçilmiştir.
+        """
+        sym_u = str(
+            symbol or ""
+        ).upper().strip()
+
+        if not sym_u:
+            return (
+                sym_u,
+                self._make_short_entry_decision(
+                    allow=False,
+                    action="block",
+                    reason="empty_symbol",
+                    retryable=False,
+                ),
+            )
+
+        if signal_score < final_min_score:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][OPEN-BLOCK]"
+                        "[LOW-SCORE] "
+                        "symbol=%s score=%.4f "
+                        "min=%.4f",
+                        sym_u,
+                        signal_score,
+                        final_min_score,
+                    )
+            except Exception:
+                pass
+
+            return (
+                sym_u,
+                self._make_short_entry_decision(
+                    allow=False,
+                    action="block",
+                    reason="low_score",
+                    signal_score=signal_score,
+                    required_score=final_min_score,
+                    retryable=False,
+                ),
+            )
+
+        if (
+            self.block_same_symbol_reentry
+            and self._get_position(sym_u)
+            is not None
+        ):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][OPEN-BLOCK]"
+                        "[POSITION-EXISTS] "
+                        "symbol=%s",
+                        sym_u,
+                    )
+            except Exception:
+                pass
+
+            return (
+                sym_u,
+                self._make_short_entry_decision(
+                    allow=False,
+                    action="block",
+                    reason="position_exists",
+                    signal_score=signal_score,
+                    required_score=final_min_score,
+                    retryable=False,
+                ),
+            )
+
+        return sym_u, None
+
     def _evaluate_short_candidate(
         self,
         symbol: str,
@@ -3606,101 +3766,30 @@ class TradeExecutorShort:
             pending -> sonraki uygun 1m pencere beklenecek
             open    -> giriş doğrulandı, emir açılabilir
         """
-        sym_u = str(symbol or "").upper().strip()
-
-        if not sym_u:
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="empty_symbol",
-                retryable=False,
-            )
-
-        if signal_score < final_min_score:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK][LOW-SCORE] "
-                        "symbol=%s score=%.4f min=%.4f",
-                        sym_u,
-                        signal_score,
-                        final_min_score,
-                    )
-            except Exception:
-                pass
-
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="low_score",
-                signal_score=signal_score,
-                required_score=final_min_score,
-                retryable=False,
-            )
-
-        if (
-            self.block_same_symbol_reentry
-            and self._get_position(sym_u) is not None
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK]"
-                        "[POSITION-EXISTS] symbol=%s",
-                        sym_u,
-                    )
-            except Exception:
-                pass
-
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="position_exists",
-                signal_score=signal_score,
-                required_score=final_min_score,
-                retryable=False,
-            )
-
-        progress = self._calc_candle_progress(
-            self.sniper_entry_interval
+        (
+            sym_u,
+            precheck_decision,
+        ) = self._evaluate_short_candidate_precheck(
+            symbol=symbol,
+            signal_score=signal_score,
+            final_min_score=final_min_score,
         )
 
-        if progress > self.sniper_entry_max_candle_progress:
-            if allow_pending:
-                return self._make_short_entry_decision(
-                    allow=False,
-                    action="pending",
-                    reason="sniper_window_passed",
-                    signal_score=signal_score,
-                    required_score=final_min_score,
-                    progress=progress,
-                    retryable=True,
-                )
+        if precheck_decision is not None:
+            return precheck_decision
 
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="pending_window_passed",
-                signal_score=signal_score,
-                required_score=final_min_score,
-                progress=progress,
-                retryable=False,
-            )
-
-        if not self._check_sniper_entry(
+        (
+            progress,
+            sniper_decision,
+        ) = self._evaluate_short_sniper_gate(
             symbol=sym_u,
             signal_score=signal_score,
-            min_open_score=final_min_score,
-        ):
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="sniper_window",
-                signal_score=signal_score,
-                required_score=final_min_score,
-                progress=progress,
-                retryable=True,
-            )
+            final_min_score=final_min_score,
+            allow_pending=allow_pending,
+        )
+
+        if sniper_decision is not None:
+            return sniper_decision
 
         if not self._check_short_entry_pattern(
             symbol=sym_u,
