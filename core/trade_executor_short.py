@@ -4103,6 +4103,127 @@ class TradeExecutorShort:
             return 0.0
         return ((entry - float(price)) / entry) * lev
 
+    def _resolve_short_lifecycle_position_state(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+    ):
+        """
+        Lifecycle kontrolü için geçerli fiyatı
+        ve SHORT ROI değerini hazırlar.
+        """
+        price = self._resolve_order_price(
+            symbol,
+            position.get("mark_price"),
+        )
+
+        if price is None or price <= 0:
+            return None
+
+        roi = self._calc_short_roi(
+            position,
+            float(price),
+        )
+
+        return (
+            float(price),
+            float(roi),
+        )
+
+    def _update_short_best_roi(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+        roi: float,
+    ):
+        """
+        SHORT pozisyonun en iyi ROI değerini
+        günceller ve eski/yeni değeri döndürür.
+        """
+        old_best_roi = float(
+            position.get("best_roi_pct")
+            or 0.0
+        )
+
+        best_roi = max(
+            old_best_roi,
+            float(roi),
+        )
+
+        if best_roi > old_best_roi:
+            position["best_roi_pct"] = float(
+                best_roi
+            )
+            self._set_position(
+                symbol,
+                position,
+            )
+
+        return (
+            old_best_roi,
+            best_roi,
+        )
+
+    def _resolve_short_fixed_roi_tp_state(
+        self,
+        *,
+        old_best_roi: float,
+        best_roi: float,
+    ):
+        """
+        Fixed ROI TP için arm, giveback ve
+        trigger durumunu hazırlar.
+        """
+        if (
+            not self.fixed_roi_tp_enable
+            or float(best_roi)
+            < float(self.fixed_roi_tp_pct)
+        ):
+            return None
+
+        giveback = max(
+            0.0,
+            float(self.fixed_roi_tp_giveback),
+        )
+
+        trigger_roi = (
+            float(best_roi)
+            - giveback
+        )
+
+        armed_now = (
+            float(old_best_roi)
+            < float(self.fixed_roi_tp_pct)
+            <= float(best_roi)
+        )
+
+        return {
+            "armed_now": bool(armed_now),
+            "giveback": float(giveback),
+            "trigger_roi": float(trigger_roi),
+        }
+
+    async def _close_short_from_lifecycle(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        reason: str,
+    ):
+        """
+        Lifecycle kaynaklı SHORT kapanışını
+        executor thread'inde gerçekleştirir.
+        """
+        await asyncio.to_thread(
+            self.close_position,
+            symbol,
+            float(price),
+            reason,
+            "lifecycle",
+        )
+
     async def _position_lifecycle_loop(self) -> None:
         while True:
             try:
@@ -4110,53 +4231,52 @@ class TradeExecutorShort:
                     await self._process_short_pending_entries()
 
                     for sym, pos in self._get_all_local_positions().items():
-                        price = self._resolve_order_price(
-                            sym,
-                            pos.get("mark_price"),
+                        lifecycle_state = (
+                            self._resolve_short_lifecycle_position_state(
+                                symbol=sym,
+                                position=pos,
+                            )
                         )
-                        if price is None or price <= 0:
+
+                        if lifecycle_state is None:
                             continue
 
-                        roi = self._calc_short_roi(pos, float(price))
+                        price, roi = lifecycle_state
 
                         if roi <= self.roi_hard_stop_pct:
-                            await asyncio.to_thread(
-                                self.close_position,
-                                sym,
-                                float(price),
-                                "roi_hard_stop",
-                                "lifecycle",
+                            await self._close_short_from_lifecycle(
+                                symbol=sym,
+                                price=price,
+                                reason="roi_hard_stop",
                             )
                             continue
 
-                        old_best_roi = float(
-                            pos.get("best_roi_pct") or 0.0
-                        )
-                        best_roi = max(
+                        (
                             old_best_roi,
-                            float(roi),
+                            best_roi,
+                        ) = self._update_short_best_roi(
+                            symbol=sym,
+                            position=pos,
+                            roi=roi,
                         )
 
-                        if best_roi > old_best_roi:
-                            pos["best_roi_pct"] = float(best_roi)
-                            self._set_position(sym, pos)
-
-                        if (
-                            self.fixed_roi_tp_enable
-                            and best_roi >= self.fixed_roi_tp_pct
-                        ):
-                            giveback = max(
-                                0.0,
-                                float(self.fixed_roi_tp_giveback),
+                        tp_state = (
+                            self._resolve_short_fixed_roi_tp_state(
+                                old_best_roi=old_best_roi,
+                                best_roi=best_roi,
                             )
-                            trigger_roi = (
-                                float(best_roi) - giveback
+                        )
+
+                        if tp_state is not None:
+                            giveback = float(
+                                tp_state["giveback"]
+                            )
+                            trigger_roi = float(
+                                tp_state["trigger_roi"]
                             )
 
                             if (
-                                old_best_roi
-                                < self.fixed_roi_tp_pct
-                                <= best_roi
+                                tp_state["armed_now"]
                                 and self.logger
                             ):
                                 self.logger.info(
@@ -4187,12 +4307,10 @@ class TradeExecutorShort:
                                         trigger_roi,
                                     )
 
-                                await asyncio.to_thread(
-                                    self.close_position,
-                                    sym,
-                                    float(price),
-                                    "fixed_roi_tp_giveback",
-                                    "lifecycle",
+                                await self._close_short_from_lifecycle(
+                                    symbol=sym,
+                                    price=price,
+                                    reason="fixed_roi_tp_giveback",
                                 )
                                 continue
 
