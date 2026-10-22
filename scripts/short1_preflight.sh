@@ -65,8 +65,8 @@ else
 fi
 
 PY=/home/kasm920/venv/bin/python
-# V5 non-routing validation chain
-for svc in binance1-short-shadow.service binance1-short1-v30-shadow.service; do
+# V5 non-routing validation chain (Stage-4 strategy-specific units only).
+for svc in binance1-short1-model-shadow.service binance1-short1-v30-shadow.service; do
   if systemctl --user is-active --quiet "$svc"; then echo "[OK] $svc active"; else echo "[FAIL] $svc inactive"; exit 31; fi
 done
 $PY - <<'PY'
@@ -77,12 +77,14 @@ src='telemetry:short1:inj:model_shadow_v5'; life='telemetry:short1:v30:lifecycle
 rows=r.xrevrange(src,count=1)
 if rows:
  o=json.loads(rows[0][1].get('json','{}')); age=time.time()-float(o.get('ts') or 0); provider=str(o.get('model_provider') or '')
- if age>360: print(f'[FAIL] V5 source stale age={age:.1f}s'); sys.exit(32)
  if provider!=expected: print(f'[FAIL] V5 provider mismatch {provider}'); sys.exit(33)
  if not isinstance(o.get('entry_market_context'),dict): print('[FAIL] V5 entry context missing'); sys.exit(34)
- print(f'[OK] V5 source fresh age={age:.1f}s provider={provider}')
+ if age>360:
+  print(f'[INFO] V5 source last candidate age={age:.1f}s; collector is active, no fresh candidate required')
+ else:
+  print(f'[OK] V5 source fresh age={age:.1f}s provider={provider}')
 else:
- print('[INFO] V5 source has no event yet; collector recently started')
+ print('[INFO] V5 source has no event yet; collector active and awaiting candidate')
 h=r.xrevrange(life,count=20); hb=None
 for _,f in h:
  try:

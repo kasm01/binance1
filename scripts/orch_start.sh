@@ -3,8 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source ./scripts/orch_lib.sh
-# Load secrets from GCP
-bash scripts/load_secrets_from_gcp.sh || true
+# Runtime secrets are already loaded by systemd EnvironmentFile. Refresh from
+# GCP only when explicitly requested or when the local runtime file is missing.
+if [[ "${GCP_SECRETS_REFRESH_ON_START:-0}" == "1" || ! -s .runtime_secrets.env ]]; then
+  echo "[SECRETS] refreshing runtime secrets from GCP"
+  bash scripts/load_secrets_from_gcp.sh || true
+else
+  echo "[SECRETS] using existing .runtime_secrets.env"
+fi
 # -----------------------------
 # Load .env into THIS shell (export to children) WITHOUT overriding existing env
 # CLI/env vars should win over .env

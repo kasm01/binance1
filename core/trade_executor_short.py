@@ -9,6 +9,11 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from core.binance_futures_v3 import (
+    account as _futures_v3_account,
+    balance as _futures_v3_balance,
+    position_risk as _futures_v3_position_risk,
+)
 from core.short_entry_candle_service import ShortEntryCandleService
 from orchestration.context.entry_context_snapshot import build_entry_context_from_rows
 from orchestration.risk.risk_master import (
@@ -1112,6 +1117,13 @@ class TradeExecutorShort:
                             return max(0.0, float(row.get("balance") or 0.0))
         except Exception:
             pass
+        try:
+            rows = _futures_v3_balance()
+            for row in rows:
+                if str(row.get("asset") or "").upper() == "USDT":
+                    return max(0.0, float(row.get("balance") or 0.0))
+        except Exception:
+            pass
         return 0.0
 
     def _get_short_available_balance_usdt_sync(self) -> float:
@@ -1124,6 +1136,11 @@ class TradeExecutorShort:
                 acc = fn()
                 if isinstance(acc, dict):
                     return max(0.0, float(acc.get("availableBalance") or 0.0))
+        except Exception:
+            pass
+        try:
+            acc = _futures_v3_account()
+            return max(0.0, float(acc.get("availableBalance") or 0.0))
         except Exception:
             pass
         return 0.0
@@ -3353,7 +3370,13 @@ class TradeExecutorShort:
 
     def _get_exchange_short_positions(self):
         out = {}
-        rows = self.client.futures_position_information()
+        rows = None
+        try:
+            rows = self.client.futures_position_information()
+        except Exception:
+            rows = None
+        if rows is None:
+            rows = _futures_v3_position_risk()
         for row in rows or []:
             try:
                 amt = float(row.get("positionAmt") or 0.0)

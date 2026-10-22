@@ -73,42 +73,42 @@ def _patch_session_request_drop_version(client: Any, log: logging.Logger) -> Any
     return client
 
 
-def _patch_futures_v2_read_methods(client: Any, log: logging.Logger) -> Any:
+def _patch_futures_v3_read_methods(client: Any, log: logging.Logger) -> Any:
     """
-    python-binance 1.0.16 içinde futures_account / futures_position_information /
-    futures_account_balance varsayılan olarak FUTURES_API_VERSION üzerinden gider.
-    Bu kurulumda v1 -> 404 verdiği için sadece read endpoint'lerini v2'ye zorluyoruz.
+    python-binance futures account read methods may target deprecated API versions.
+    Binance USD-M current account/balance/positionRisk read endpoints are v3,
+    so only these signed read methods are pinned to v3.
 
     order/leverage/marginType vb endpoint'lere dokunmuyoruz.
     """
 
     try:
-        if getattr(client, "_b1_futures_v2_patch_applied", False):
-            log.info("[BINANCE_CLIENT] futures v2 read patch already active")
+        if getattr(client, "_b1_futures_v3_patch_applied", False):
+            log.info("[BINANCE_CLIENT] futures v3 read patch already active")
             return client
 
-        def _futures_request_v2(method: str, path: str, signed: bool = False, **kwargs):
+        def _futures_request_v3(method: str, path: str, signed: bool = False, **kwargs):
             base = client.FUTURES_TESTNET_URL if getattr(client, "testnet", False) else client.FUTURES_URL
-            uri = f"{base}/v2/{path}"
+            uri = f"{base}/v3/{path}"
             return client._request(method, uri, signed, True, **kwargs)
 
-        def _futures_account_v2(**params):
-            return _futures_request_v2("get", "account", True, data=params)
+        def _futures_account_v3(**params):
+            return _futures_request_v3("get", "account", True, data=params)
 
-        def _futures_account_balance_v2(**params):
-            return _futures_request_v2("get", "balance", True, data=params)
+        def _futures_account_balance_v3(**params):
+            return _futures_request_v3("get", "balance", True, data=params)
 
-        def _futures_position_information_v2(**params):
-            return _futures_request_v2("get", "positionRisk", True, data=params)
+        def _futures_position_information_v3(**params):
+            return _futures_request_v3("get", "positionRisk", True, data=params)
 
-        setattr(client, "futures_account", _futures_account_v2)
-        setattr(client, "futures_account_balance", _futures_account_balance_v2)
-        setattr(client, "futures_position_information", _futures_position_information_v2)
-        setattr(client, "_b1_futures_v2_patch_applied", True)
+        setattr(client, "futures_account", _futures_account_v3)
+        setattr(client, "futures_account_balance", _futures_account_balance_v3)
+        setattr(client, "futures_position_information", _futures_position_information_v3)
+        setattr(client, "_b1_futures_v3_patch_applied", True)
 
-        log.info("[BINANCE_CLIENT] patched futures read methods -> v2 endpoints")
+        log.info("[BINANCE_CLIENT] patched futures read methods -> v3 endpoints")
     except Exception as e:
-        log.warning("[BINANCE_CLIENT] futures v2 read patch failed: %s", e)
+        log.warning("[BINANCE_CLIENT] futures v3 read patch failed: %s", e)
 
     return client
 
@@ -148,7 +148,7 @@ def create_binance_client(
 
     client = _attach_close(client, log)
     client = _patch_session_request_drop_version(client, log)
-    client = _patch_futures_v2_read_methods(client, log)
+    client = _patch_futures_v3_read_methods(client, log)
 
     try:
         log.info(
