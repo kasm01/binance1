@@ -54,7 +54,7 @@ write_atomic "$D/ps_all_${TS_EPOCH}.txt" \
 write_atomic "$D/ps_orch_${TS_EPOCH}.txt" \
   /bin/bash -lc '
     /usr/bin/ps -eo pid,ppid,etimes,stat,cmd --sort=-etimes | /bin/egrep -i \
-      "orchestration/(selector/top_selector|aggregator/run_aggregator|executor/master_executor|executor/intent_bridge|scanners/worker_stub)\.py" \
+      "orchestration/(selector/top_selector|aggregator/run_aggregator|executor/master_executor|executor/intent_bridge|scanners/model_worker)\.py" \
       || true
   '
 

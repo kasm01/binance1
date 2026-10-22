@@ -1,0 +1,33 @@
+SHORT1 Entry Hazard Shadow V42 - non-routing manifest
+
+Runtime code:
+- orchestration/telemetry/short1_entry_hazard_shadow_v1.py
+- orchestration/telemetry/short1_entry_hazard_outcome_ws_v1.py
+
+Analysis/status:
+- research/short/analyze_short1_entry_hazard_policy_live_v41.py
+- research/short/analyze_short1_entry_hazard_policy_ws_v42.py
+- scripts/short1_entry_hazard_status.sh
+
+Systemd:
+- ~/.config/systemd/user/binance1-short1-entry-hazard-shadow.service
+- ~/.config/systemd/user/binance1-short1-entry-hazard-outcome-ws.service
+- ~/.config/systemd/user/binance1-short1-entry-hazard-policy-analyzer.service
+- ~/.config/systemd/user/binance1-short1-entry-hazard-policy-analyzer.timer
+
+Redis:
+- policy: telemetry:short1:inj:entry_hazard_policy_v1
+- WS outcome: telemetry:short1:inj:entry_hazard_policy_v1_outcomes_ws
+- done set: telemetry:short1:inj:entry_hazard_policy_v1:outcomes_ws_done
+
+Research-only policy contract:
+- 20s hazard: flow20 <= -0.60 and flow_delta_5_20 <= -0.30 after SHORT confirmation -> PENDING
+- 30s revalidation: price continues down -> READY_AFTER_REVALIDATION
+- 30s revalidation: price rebounds -> REJECT_CANDIDATE
+- otherwise NORMAL / NOT_APPLICABLE
+- no order/routing effect
+
+Safety:
+- production orch/supervisor remain inactive
+- ARMED=0
+- LIVE_KILL_SWITCH=1

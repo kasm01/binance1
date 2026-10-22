@@ -35,7 +35,7 @@ cleanup_pidfiles () {
 
     expect="${EXPECTED[$name]:-}"
     if [[ -z "$expect" && "$name" =~ ^scanner_w[0-9]+$ ]]; then
-      expect="orchestration/scanners/worker_stub.py"
+      expect="orchestration/scanners/model_worker.py"
     fi
 
     if [[ -n "$expect" ]]; then
@@ -66,13 +66,13 @@ ls -1 "${RUNDIR}"/*.pid 2>/dev/null || echo "(none)"
 echo
 echo "=== Running orchestration processes (ps) ==="
 ps aux | egrep \
-  "orchestration/(scanners/worker_stub\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
+  "orchestration/(scanners/model_worker\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
   | grep -v grep || true
 
 echo
 echo "=== pgrep -af (orch) ==="
 pgrep -af \
-  "orchestration/(scanners/worker_stub\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
+  "orchestration/(scanners/model_worker\.py|aggregator/run_aggregator\.py|selector/top_selector\.py|executor/master_executor\.py|executor/intent_bridge\.py)" \
   || true
 
 echo

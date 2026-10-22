@@ -51,7 +51,7 @@ stop_from_pgrep() {
     "orchestration/selector/top_selector.py"
     "orchestration/aggregator/run_aggregator.py"
     "Aggregator\\(RedisBus\\(\\)\\)\\.run_forever"
-    "orchestration/scanners/worker_stub.py"
+    "orchestration/scanners/model_worker.py"
     "python -m orchestration\\.executor\\.intent_bridge"
     "python -m orchestration\\.executor\\.master_executor"
     "python -m orchestration\\.selector\\.top_selector"

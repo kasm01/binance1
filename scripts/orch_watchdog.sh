@@ -426,7 +426,7 @@ restart_target_for_label() {
 # -----------------------------
 expected_cmd() {
   case "$1" in
-    scanner_*) echo "orchestration/scanners/worker_stub.py" ;;
+    scanner_*) echo "orchestration/scanners/model_worker.py" ;;
     aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
     top_selector) echo "orchestration/selector/top_selector.py" ;;
     master_executor) echo "orchestration/executor/master_executor.py" ;;
@@ -491,7 +491,7 @@ fail_count=${FAIL_COUNT}/${FAIL_THRESHOLD}"
 # -----------------------------
 expected_cmd() {
   case "$1" in
-    scanner_*) echo "orchestration/scanners/worker_stub.py" ;;
+    scanner_*) echo "orchestration/scanners/model_worker.py" ;;
     aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
     top_selector) echo "orchestration/selector/top_selector.py" ;;
     master_executor) echo "orchestration/executor/master_executor.py" ;;

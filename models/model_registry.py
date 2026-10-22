@@ -13,7 +13,7 @@ class ModelRegistry:
         self.model_dir = model_dir or MODELS_DIR
         self.logger = logger or logging.getLogger("system")
 
-        self._hybrid_cache: Dict[str, HybridModel] = {}
+        self._hybrid_cache: Dict[Tuple[str, str], HybridModel] = {}
         self._online_cache: Dict[Tuple[str, str, int], OnlineLearner] = {}  # (interval, base, n_classes)
 
     def get_hybrid(
@@ -21,15 +21,18 @@ class ModelRegistry:
         interval: str,
         model_dir: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        symbol: Optional[str] = None,
     ) -> HybridModel:
         itv = str(interval)
-        if itv in self._hybrid_cache:
-            return self._hybrid_cache[itv]
+        sym = str(symbol or "").upper().strip()
+        key = (sym, itv)
+        if key in self._hybrid_cache:
+            return self._hybrid_cache[key]
 
         mdir = model_dir or self.model_dir
         lg = logger or self.logger
-        m = HybridModel(model_dir=mdir, interval=itv, logger=lg)
-        self._hybrid_cache[itv] = m
+        m = HybridModel(model_dir=mdir, interval=itv, symbol=sym or None, logger=lg)
+        self._hybrid_cache[key] = m
         return m
 
     def get_online(

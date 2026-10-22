@@ -15,14 +15,25 @@ from models.hybrid_mtf import HybridMTF
 from features.schema import normalize_to_schema
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-try:
-    from tensorflow.keras.models import load_model  # type: ignore
-    TENSORFLOW_AVAILABLE = True
-except Exception:
-    TENSORFLOW_AVAILABLE = False
+TENSORFLOW_AVAILABLE: Optional[bool] = None
+_KERAS_LOAD_MODEL = None
 
-    def load_model(*_args, **_kwargs):
-        raise RuntimeError("TensorFlow is not available; LSTM disabled.")
+def _get_keras_load_model():
+    """Lazy TensorFlow import; SGD-only inference must not pay TensorFlow startup cost."""
+    global TENSORFLOW_AVAILABLE, _KERAS_LOAD_MODEL
+    if TENSORFLOW_AVAILABLE is False:
+        return None
+    if _KERAS_LOAD_MODEL is not None:
+        return _KERAS_LOAD_MODEL
+    try:
+        from tensorflow.keras.models import load_model as keras_load_model  # type: ignore
+        _KERAS_LOAD_MODEL = keras_load_model
+        TENSORFLOW_AVAILABLE = True
+        return _KERAS_LOAD_MODEL
+    except Exception:
+        TENSORFLOW_AVAILABLE = False
+        _KERAS_LOAD_MODEL = None
+        return None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -66,6 +77,7 @@ class HybridModel:
         self,
         model_dir: Optional[str],
         interval: str,
+        symbol: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         startup_log_level: Optional[str] = None,
         disable_startup_log: Optional[bool] = None,
@@ -74,6 +86,7 @@ class HybridModel:
     ) -> None:
         self.model_dir = model_dir or MODELS_DIR
         self.interval = interval
+        self.symbol = str(symbol or "").upper().strip()
         self.logger = logger or logging.getLogger("system")
 
         # --- SGD helper (aux) ---
@@ -161,17 +174,37 @@ class HybridModel:
     # Loaders
     # --------------------------
     def _load_sgd_model(self) -> None:
-        path = os.path.join(self.model_dir, f"online_model_{self.interval}_best.joblib")
-        try:
-            self.sgd_model = load(path)
-            level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
-            self._log_startup(level, "[HYBRID] SGD model loaded from %s (interval=%s)", path, self.interval)
-        except Exception as e:
-            self._log_startup(logging.WARNING, "[HYBRID] Could not load SGD model from %s: %s", path, e)
-            self.sgd_model = None
+        candidates = []
+        if self.symbol:
+            candidates.append(os.path.join(self.model_dir, f"online_model_{self.symbol}_{self.interval}_best.joblib"))
+            if _env_bool("ALLOW_GENERIC_MODEL_FALLBACK", False):
+                candidates.append(os.path.join(self.model_dir, f"online_model_{self.interval}_best.joblib"))
+        else:
+            candidates.append(os.path.join(self.model_dir, f"online_model_{self.interval}_best.joblib"))
+
+        self.sgd_model = None
+        last_err = None
+        for path in candidates:
+            try:
+                self.sgd_model = load(path)
+                level = getattr(logging, self.hybrid_model_startup_log_level, logging.INFO)
+                self._log_startup(level, "[HYBRID] SGD model loaded from %s (symbol=%s interval=%s)", path, self.symbol or "GENERIC", self.interval)
+                return
+            except Exception as e:
+                last_err = e
+
+        self._log_startup(logging.WARNING, "[HYBRID] Could not load SGD model candidates=%s err=%s", candidates, last_err)
 
     def _load_meta(self) -> None:
-        path = os.path.join(self.model_dir, f"model_meta_{self.interval}.json")
+        candidates = []
+        if self.symbol:
+            candidates.append(os.path.join(self.model_dir, f"model_meta_{self.symbol}_{self.interval}.json"))
+            if _env_bool("ALLOW_GENERIC_MODEL_FALLBACK", False):
+                candidates.append(os.path.join(self.model_dir, f"model_meta_{self.interval}.json"))
+        else:
+            candidates.append(os.path.join(self.model_dir, f"model_meta_{self.interval}.json"))
+
+        path = next((x for x in candidates if os.path.exists(x)), candidates[0])
         try:
             with open(path, "r", encoding="utf-8") as f:
                 meta_file = json.load(f) or {}
@@ -214,7 +247,8 @@ class HybridModel:
         if not self.use_lstm_hybrid:
             return
 
-        if not TENSORFLOW_AVAILABLE:
+        keras_load_model = _get_keras_load_model()
+        if keras_load_model is None:
             self._log_startup(logging.WARNING, "[HYBRID] TensorFlow not available, LSTM disabled.")
             self.use_lstm_hybrid = False
             self.meta["use_lstm_hybrid"] = False
@@ -257,8 +291,8 @@ class HybridModel:
             return
 
         try:
-            self.lstm_long = load_model(long_path, compile=False)
-            self.lstm_short = load_model(short_path, compile=False)
+            self.lstm_long = keras_load_model(long_path, compile=False)
+            self.lstm_short = keras_load_model(short_path, compile=False)
             self.lstm_scaler = load(scaler_path)
 
             # input_shape mismatch -> log only

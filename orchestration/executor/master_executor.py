@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import redis
 
+from orchestration.context.market_context_contract import classify_confirmed_position_build
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -89,15 +91,6 @@ def _as_list(x: Any) -> List[Any]:
     return []
 
 
-def _meta_get(raw: Dict[str, Any], key: str, default: Any = None) -> Any:
-    try:
-        meta = raw.get("meta") or {}
-        if isinstance(meta, dict) and key in meta:
-            return meta.get(key)
-    except Exception:
-        pass
-    return default
-
 def _json_load_if_str(x: Any) -> Any:
     if isinstance(x, str):
         s = x.strip()
@@ -110,42 +103,6 @@ def _json_load_if_str(x: Any) -> Any:
     return x
 
 
-def _deep_dict_chain(x: Any, max_depth: int = 4) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    cur = _json_load_if_str(x)
-
-    for _ in range(max_depth):
-        if not isinstance(cur, dict):
-            break
-        out.append(cur)
-        nxt = cur.get("raw")
-        nxt = _json_load_if_str(nxt)
-        if not isinstance(nxt, dict):
-            break
-        cur = nxt
-
-    return out
-
-
-def _first_non_empty(*vals: Any, default: Any = None) -> Any:
-    for v in vals:
-        if v is None:
-            continue
-        if isinstance(v, str):
-            if v.strip() == "":
-                continue
-            return v
-        return v
-    return default
-def _deep_get(d: Dict[str, Any], path: List[str], default: Any = None) -> Any:
-    cur: Any = d
-    for p in path:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(p)
-    return default if cur is None else cur
-
-
 @dataclass
 class TradeIntent:
     intent_id: str
@@ -154,14 +111,11 @@ class TradeIntent:
     interval: str
     side: str
     price: float
-    score: float
-    recommended_leverage: int
-    recommended_notional_pct: float
+    score: float              # canonical MODEL score
+    ranking_score: float      # context/ranking score; never a model hard gate
     reasons: List[str]
     risk_tags: List[str]
     raw: Dict[str, Any]
-    trail_pct: float = 0.0
-    stall_ttl_sec: int = 0
 
 
 class MasterExecutor:
@@ -172,8 +126,6 @@ class MasterExecutor:
     Final decision layer:
       - score gate
       - whale alignment / contra / veto
-      - max open position gate
-      - same-symbol dedup gate
       - leverage / notional sizing refinement
     """
 
@@ -210,80 +162,37 @@ class MasterExecutor:
         self.read_block_ms = _env_int("MASTER_READ_BLOCK_MS", 2000)
         self.batch_count = _env_int("MASTER_BATCH_COUNT", 50)
 
-        self.topn = _env_int("MASTER_TOPN", _env_int("BRIDGE_MAX_OPEN", 3))
-        self.max_pos = _env_int(
-            "MASTER_MAX_POS",
-            _env_int("MAX_OPEN_POSITIONS", _env_int("MAX_OPEN_TRADES", 3)),
-        )
+        self.topn = _env_int("MASTER_TOPN", 3)
 
-        self.dedup_symbol_open = _env_bool("DEDUP_SYMBOL_OPEN", True)
-        self.state_key = os.getenv("BRIDGE_STATE_KEY", "open_positions_state")
-
-        self.publish_cooldown_sec = _env_int("MASTER_PUBLISH_COOLDOWN_SEC", 2)
-        self._last_publish_ts = 0.0
         self._last_published_source_id: Optional[str] = None
 
-        self.min_trade_score = _env_float(
-            "MASTER_MIN_TRADE_SCORE",
-            _env_float("MIN_SCORE", 0.10),
+        self.min_trade_score = _env_float("MASTER_MIN_TRADE_SCORE", 0.501)
+        # SHORT soft-score band is a provisional MODEL SCORE state, not a pass.
+        # When disabled, production behavior is identical to the hard threshold.
+        self.short_soft_score_enable = _env_bool("MASTER_SHORT_SOFT_SCORE_ENABLE", False)
+        self.short_soft_score_min = _clamp(
+            _env_float("MASTER_SHORT_SOFT_SCORE_MIN", 0.530),
+            0.0,
+            float(self.min_trade_score),
         )
-        self.w_min = _env_float("MASTER_W_MIN", _env_float("W_MIN", 0.0))
-        self.require_price = _env_bool("MASTER_REQUIRE_PRICE", True)
-
-        self.trail_pct = _env_float("TRAIL_PCT", 0.05)
-        self.stall_ttl_sec = _env_int("STALL_TTL_SEC", 0)
-
-        self.w_w = _env_float("MASTER_W_SCORE_WHALE", 0.60)
-        self.w_mtf = _env_float("MASTER_W_SCORE_MTF", 0.25)
-        self.w_micro = _env_float("MASTER_W_SCORE_MICRO", 0.15)
-
-        self.lev_min = _env_int("LEV_MIN", 3)
-        self.lev_max = _env_int("LEV_MAX", 30)
-        self.notional_min_pct = _env_float("NOTIONAL_MIN_PCT", 0.02)
-        self.notional_max_pct = _env_float("NOTIONAL_MAX_PCT", 0.25)
+        self.w_min = _env_float("MASTER_W_MIN", 0.0)
+        self.short_money_flow_enable = _env_bool("MASTER_SHORT_MONEY_FLOW_ENABLE", True)
+        self.short_money_flow_exhaustion_60m = _env_float("MASTER_SHORT_MONEY_FLOW_EXHAUSTION_60M", -0.20)
+        # MARKET CONTEXT owns only OI regime classification. Risk sizing policy
+        # belongs to the central Risk Master contract. Disabled by default.
+        self.oi_context_enable = _env_bool(
+            "MASTER_OI_CONTEXT_ENABLE",
+            False,
+        )
+        self.oi_context_max_age_sec = max(60, _env_int("MASTER_OI_CONTEXT_MAX_AGE_SEC", 900))
 
         self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
-        self.whale_lev_boost = _env_float("MASTER_WHALE_LEV_BOOST", 1.35)
-        self.whale_npct_boost = _env_float("MASTER_WHALE_NPCT_BOOST", 1.20)
-        self.whale_lev_floor = _env_int("MASTER_WHALE_LEV_FLOOR", 8)
-        self.whale_npct_floor = _env_float("MASTER_WHALE_NPCT_FLOOR", 0.04)
-
-        self.high_vol_tag = os.getenv("HIGH_VOL_TAG", "high_vol")
-        self.high_vol_npct_mult = _env_float("HIGH_VOL_NPCT_MULT", 0.80)
-        self.high_vol_lev_mult = _env_float("HIGH_VOL_LEV_MULT", 0.85)
-
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
 
         self.whale_use_final_decision = _env_bool("MASTER_WHALE_USE_FINAL_DECISION", True)
         self.whale_hard_block_actions = set(
             _as_list(_env_str("MASTER_WHALE_HARD_BLOCK_ACTIONS", "block_open,hard_block"))
         )
-        self.whale_soft_block_actions = set(
-            _as_list(_env_str("MASTER_WHALE_SOFT_BLOCK_ACTIONS", "avoid_open"))
-        )
-        self.whale_boost_actions = set(
-            _as_list(_env_str("MASTER_WHALE_BOOST_ACTIONS", "confirm,strong_confirm,boost_open"))
-        )
-        self.whale_reduce_actions = set(
-            _as_list(_env_str("MASTER_WHALE_REDUCE_ACTIONS", "reduce_size,tighten_risk"))
-        )
-        self.whale_force_exit_actions = set(
-            _as_list(_env_str("MASTER_WHALE_FORCE_EXIT_ACTIONS", "force_exit"))
-        )
-
-        self.whale_soft_block_score_cap = _env_float("MASTER_WHALE_SOFT_BLOCK_SCORE_CAP", 0.55)
-        self.whale_reduce_npct_mult = _env_float("MASTER_WHALE_REDUCE_NPCT_MULT", 0.70)
-        self.whale_reduce_lev_mult = _env_float("MASTER_WHALE_REDUCE_LEV_MULT", 0.80)
-        self.whale_confirm_score_bonus = _env_float("MASTER_WHALE_CONFIRM_SCORE_BONUS", 0.08)
-        self.whale_strong_confirm_score_bonus = _env_float(
-            "MASTER_WHALE_STRONG_CONFIRM_SCORE_BONUS",
-            0.15,
-        )
-
-        self.heavy_enable = _env_bool("MASTER_HEAVY_ENABLE", False)
-        self.heavy_topk = _env_int("MASTER_HEAVY_TOPK", 5)
-        self.heavy_discard_below = _env_float("MASTER_HEAVY_DISCARD_BELOW", 0.70)
-        self._warned_heavy_stub = False
 
         self.dry_run_env = _env_bool("DRY_RUN", True)
         self.armed = _env_bool("ARMED", False)
@@ -295,18 +204,16 @@ class MasterExecutor:
             )
         )
 
-        self._warned_missing_price: set[str] = set()
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
         print(
             f"[MasterExecutor] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"topn={self.topn} max_pos={self.max_pos} dedup_symbol_open={self.dedup_symbol_open} "
+            f"topn={self.topn} "
             f"min_trade_score={self.min_trade_score:.3f} w_min={self.w_min:.3f} "
             f"whale_final_decision={self.whale_use_final_decision} "
-            f"trail_pct={self.trail_pct:.4f} stall_ttl_sec={self.stall_ttl_sec} "
             f"publish_allowed={self.publish_allowed} dry_run={self.dry_run_env} "
-            f"state_key={self.state_key} redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
+            f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
 
     def _ensure_group(self, stream: str, group: str, start_id: str = "$") -> None:
@@ -371,27 +278,8 @@ class MasterExecutor:
         return out
 
     # ---------- OPEN STATE ----------
-    def _get_open_state(self) -> Dict[str, Any]:
-        try:
-            s = self.r.get(self.state_key)
-            if not s:
-                return {}
-            obj = json.loads(s)
-            return obj if isinstance(obj, dict) else {}
-        except Exception:
-            return {}
 
-    def _open_count(self, st: Dict[str, Any]) -> int:
-        try:
-            return len([1 for _k, v in (st or {}).items() if isinstance(v, dict)])
-        except Exception:
-            return 0
 
-    def _is_symbol_open(self, st: Dict[str, Any], symbol: str) -> bool:
-        try:
-            return isinstance((st or {}).get(symbol), dict)
-        except Exception:
-            return False
 
     # ---------- SCORING / WHALE ----------
     def _normalize_side(self, side: Any) -> str:
@@ -402,313 +290,143 @@ class MasterExecutor:
             return "short"
         return s or "long"
 
-    def _candidate_score(self, c: Dict[str, Any]) -> float:
-        return _safe_float(
-            c.get("_score_total_final", c.get("_score_selected", c.get("score_total", 0.0))),
-            0.0,
-        )
-
-    def _get_raw_evt(self, c: Dict[str, Any]) -> Dict[str, Any]:
-        raw_evt = c.get("raw")
-        raw_evt = _json_load_if_str(raw_evt)
-        if isinstance(raw_evt, dict):
-            return raw_evt
-        return {}
-
-    def _extract_whale_context(self, raw_evt: Dict[str, Any]) -> Dict[str, Any]:
-        chain = _deep_dict_chain(raw_evt, max_depth=4)
-        metas: List[Dict[str, Any]] = []
-
-        for d in chain:
-            meta = d.get("meta")
-            if isinstance(meta, dict):
-                metas.append(meta)
-
-        whale_decision: Dict[str, Any] = {}
-        for d in chain:
-            wd = d.get("whale_final_decision")
-            if isinstance(wd, dict):
-                whale_decision = wd
-                break
-        if not whale_decision:
-            for m in metas:
-                wd = m.get("whale_final_decision")
-                if isinstance(wd, dict):
-                    whale_decision = wd
-                    break
-
-        whale_dir = _first_non_empty(
-            raw_evt.get("whale_dir"),
-            *[d.get("whale_dir") for d in chain],
-            *[m.get("whale_dir") for m in metas],
-            whale_decision.get("direction"),
-            default="none",
-        )
-
-        whale_score = _first_non_empty(
-            raw_evt.get("whale_score"),
-            *[d.get("whale_score") for d in chain],
-            *[m.get("whale_score") for m in metas],
-            whale_decision.get("score"),
-            whale_decision.get("confidence"),
-            default=0.0,
-        )
-
-        whale_action = _first_non_empty(
-            raw_evt.get("whale_action"),
-            raw_evt.get("whale_decision"),
-            raw_evt.get("whale_policy"),
-            *[d.get("whale_action") for d in chain],
-            *[d.get("whale_decision") for d in chain],
-            *[m.get("whale_action") for m in metas],
-            whale_decision.get("action"),
-            default="",
-        )
-
-        try:
-            whale_dir = str(whale_dir or "none").strip().lower()
-        except Exception:
-            whale_dir = "none"
-
-        try:
-            whale_score = float(whale_score or 0.0)
-        except Exception:
-            whale_score = 0.0
-
-        try:
-            whale_action = str(whale_action or "").strip().lower()
-        except Exception:
-            whale_action = ""
-
-        return {
-            "whale_dir": whale_dir,
-            "whale_score": float(_clamp(whale_score, 0.0, 1.0)),
-            "whale_action": whale_action,
-            "whale_final_decision": whale_decision if isinstance(whale_decision, dict) else {},
-            "raw_chain": chain,
-            "meta_chain": metas,
+    def _load_oi_context(self, symbol: str) -> Dict[str, Any]:
+        """Read the centrally collected OI snapshot. Missing/stale data is neutral."""
+        sym = str(symbol or "").upper().strip()
+        out: Dict[str, Any] = {
+            "available": False, "fresh": False, "source": "",
+            "source_ts_ms": 0, "age_sec": None,
+            "sum_open_interest": 0.0, "oi_delta_5m": 0.0, "oi_delta_15m": 0.0,
+            "previous_source_ts_ms": 0, "previous_sum_open_interest": 0.0,
+            "previous_oi_delta_5m": 0.0, "previous_oi_delta_15m": 0.0,
         }
-
-    def _get_whale_decision(self, raw_evt: Dict[str, Any]) -> Dict[str, Any]:
-        return self._extract_whale_context(raw_evt).get("whale_final_decision", {}) or {}
-
-    def _get_whale_action(self, raw_evt: Dict[str, Any]) -> str:
-        ctx = self._extract_whale_context(raw_evt)
-        return _safe_str(ctx.get("whale_action", ""), "").strip().lower()
-
-    def _get_whale_confidence(self, raw_evt: Dict[str, Any]) -> float:
-        ctx = self._extract_whale_context(raw_evt)
-        return float(_clamp(_safe_float(ctx.get("whale_score", 0.0), 0.0), 0.0, 1.0))
-
-    def _get_whale_direction(self, raw_evt: Dict[str, Any]) -> str:
-        ctx = self._extract_whale_context(raw_evt)
-        return _safe_str(ctx.get("whale_dir", "none"), "none").strip().lower()
-    def _is_whale_contra(self, side: str, raw_evt: Dict[str, Any]) -> bool:
-        whale_dir = self._get_whale_direction(raw_evt)
-        whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
-        whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
-        return (whale_is_buy and side == "short") or (whale_is_sell and side == "long")
-
-    def _compute_final_score(self, c: Dict[str, Any]) -> float:
-        raw_evt = self._get_raw_evt(c)
-        ctx = self._extract_whale_context(raw_evt)
-
-        whale = _safe_float(ctx.get("whale_score", c.get("whale_score", 0.0)), 0.0)
-
-        micro = _safe_float(
-            _first_non_empty(
-                raw_evt.get("micro_score"),
-                *[_meta_get(d, "micro_score", None) for d in ctx.get("raw_chain", []) if isinstance(d, dict)],
-                c.get("micro_score", 0.0),
-                0.0,
-            ),
-            0.0,
-        )
-
-        mtf = _safe_float(
-            _first_non_empty(
-                _meta_get(raw_evt, "fast_model_score", None),
-                _meta_get(raw_evt, "p_used", None),
-                raw_evt.get("fast_model_score"),
-                raw_evt.get("p_used"),
-                c.get("score_total", 0.0),
-                0.0,
-            ),
-            0.0,
-        )
-
-        whale = _clamp(whale, 0.0, 1.0)
-        micro = _clamp(micro, 0.0, 1.0)
-        mtf = _clamp(mtf, 0.0, 1.0)
-
-        score = (self.w_w * whale) + (self.w_mtf * mtf) + (self.w_micro * micro)
-
-        if self.whale_use_final_decision:
-            action = _safe_str(ctx.get("whale_action", ""), "").strip().lower()
-            wconf = float(_clamp(_safe_float(ctx.get("whale_score", 0.0), 0.0), 0.0, 1.0))
-
-            if action in self.whale_boost_actions:
-                bonus = self.whale_confirm_score_bonus
-                if action in ("strong_confirm", "boost_open"):
-                    bonus = self.whale_strong_confirm_score_bonus
-                score += float(bonus) * float(wconf)
-
-            if action in self.whale_soft_block_actions:
-                score = min(score, self.whale_soft_block_score_cap)
-
-            if action in self.whale_hard_block_actions:
-                score = 0.0
-
-        score = _clamp(score, 0.0, 1.0)
-
-        if self.heavy_enable and not self._warned_heavy_stub:
-            print("[MasterExecutor][HEAVY] enabled but using stub heavy stage (no external model call).")
-            self._warned_heavy_stub = True
-
-        return float(score)
-    def _warn_missing_price_once(self, symbol: str, interval: str, side: str) -> None:
+        if not sym:
+            return out
         try:
-            key = f"{symbol}|{interval}|{side}"
-            if key in self._warned_missing_price:
-                return
-            self._warned_missing_price.add(key)
-            print(f"[MasterExecutor][WARN] missing/invalid price -> dropping | {key}")
+            raw = self.r.get(f"context:oi:{sym}")
+            if not raw:
+                return out
+            obj = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(obj, dict):
+                return out
+            source_ts_ms = int(_safe_float(obj.get("source_ts_ms", 0), 0.0))
+            age_sec = max(0.0, (time.time() * 1000.0 - float(source_ts_ms)) / 1000.0) if source_ts_ms > 0 else None
+            fresh = bool(age_sec is not None and age_sec <= float(self.oi_context_max_age_sec))
+            out.update({
+                "available": True, "fresh": fresh, "source": str(obj.get("source") or ""),
+                "source_ts_ms": source_ts_ms, "age_sec": age_sec,
+                "sum_open_interest": _safe_float(obj.get("sum_open_interest", 0.0), 0.0),
+                "oi_delta_5m": _safe_float(obj.get("oi_delta_5m", 0.0), 0.0),
+                "oi_delta_15m": _safe_float(obj.get("oi_delta_15m", 0.0), 0.0),
+                "previous_source_ts_ms": int(_safe_float(obj.get("previous_source_ts_ms", 0), 0.0)),
+                "previous_sum_open_interest": _safe_float(obj.get("previous_sum_open_interest", 0.0), 0.0),
+                "previous_oi_delta_5m": _safe_float(obj.get("previous_oi_delta_5m", 0.0), 0.0),
+                "previous_oi_delta_15m": _safe_float(obj.get("previous_oi_delta_15m", 0.0), 0.0),
+            })
         except Exception:
-            pass
-
-    def _extract_price(self, c: Dict[str, Any], raw_evt: Dict[str, Any]) -> float:
-
-        ctx = self._extract_whale_context(raw_evt)
-
-        candidates = [
-            _deep_get(raw_evt, ["raw", "price"]),
-            _deep_get(raw_evt, ["raw", "raw", "price"]),
-            _deep_get(raw_evt, ["raw", "raw", "raw", "price"]),
-            raw_evt.get("price"),
-        ]
-
-        for d in ctx.get("raw_chain", []):
-            if isinstance(d, dict):
-                candidates.append(d.get("price"))
-
-        for v in candidates:
-            pv = _safe_float(v, 0.0)
-
-            if pv > 10:
-                return float(pv)
-
-        return 0.0
-    def _heavy_score_one(self, c: Dict[str, Any]) -> Tuple[float, List[str]]:
-        base = float(_clamp(self._candidate_score(c), 0.0, 1.0))
-        return base, ["heavy_passthrough"]
-
-    def _apply_heavy_stage(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not self.heavy_enable:
-            return items
-
-        k = max(0, int(self.heavy_topk))
-        thr = float(self.heavy_discard_below)
-        if k <= 0:
-            return items
-
-        out: List[Dict[str, Any]] = []
-        for i, c in enumerate(items):
-            if not isinstance(c, dict):
-                continue
-
-            c2 = dict(c)
-            fast = float(_clamp(self._candidate_score(c2), 0.0, 1.0))
-
-            if i < k:
-                t0 = time.time()
-                hs, hreas = self._heavy_score_one(c2)
-                ms = int(round((time.time() - t0) * 1000.0))
-                hs = float(_clamp(float(hs), 0.0, 1.0))
-                sym = _safe_str(c2.get("symbol", "")).upper()
-
-                print(f"[MasterExecutor][HEAVY][LAT] {sym} {ms}ms heavy={hs:.3f} fast={fast:.3f}")
-
-                c2["_score_heavy"] = float(hs)
-                final = float(max(fast, hs))
-                c2["_score_total_final"] = final
-
-                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))]
-                if not reasons:
-                    reasons = [str(x) for x in _as_list(c2.get("reasons"))]
-                c2["_reasons_final"] = reasons + list(hreas or [])
-
-                if final < thr:
-                    continue
-            else:
-                c2["_score_total_final"] = fast
-                reasons = [str(x) for x in _as_list(c2.get("reason_codes"))]
-                if not reasons:
-                    reasons = [str(x) for x in _as_list(c2.get("reasons"))]
-                c2["_reasons_final"] = reasons
-
-            out.append(c2)
-
-        out.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
+            return out
         return out
 
-    def _reject_by_whale_policy(
-        self,
-        symbol: str,
-        interval: str,
-        side: str,
-        raw_evt: Dict[str, Any],
-        score: float,
-    ) -> bool:
-        action = self._get_whale_action(raw_evt)
-        whale_score = self._get_whale_confidence(raw_evt)
-        whale_contra = self._is_whale_contra(side, raw_evt)
+    def _evaluate_market_context_stage(
+        self, *, candidate: Dict[str, Any], symbol: str, interval: str, side: str, ranking_score: float,
+    ) -> Dict[str, Any]:
+        """Single MARKET CONTEXT authority with canonical market_context.v1 output."""
+        whale_score = float(_clamp(_safe_float(candidate.get("whale_score", 0.0), 0.0), 0.0, 1.0))
+        whale_dir = _safe_str(candidate.get("whale_dir", "none"), "none").strip().lower()
+        whale_action = _safe_str(candidate.get("whale_action", ""), "").strip().lower()
+        spread_pct = max(0.0, _safe_float(candidate.get("spread_pct", 0.0), 0.0))
+        atr_pct = max(0.0, _safe_float(candidate.get("atr_pct", 0.0), 0.0))
+        liq_score = float(_clamp(_safe_float(candidate.get("liq_score", 0.0), 0.0), 0.0, 1.0))
+        money_flow_15m = max(-1.0, min(1.0, _safe_float(candidate.get("money_flow_15m", 0.0), 0.0)))
+        money_flow_60m = max(-1.0, min(1.0, _safe_float(candidate.get("money_flow_60m", 0.0), 0.0)))
+        price_return_15m = _safe_float(candidate.get("price_return_15m", 0.0), 0.0)
+        oi = self._load_oi_context(symbol)
 
-        if float(self.w_min) > 0.0 and float(whale_score) < float(self.w_min):
-            print(
-                f"[MasterExecutor][WHALE][DROP] {symbol} {interval} {side} "
-                f"reason=w_min whale={whale_score:.3f} need={self.w_min:.3f}"
-            )
-            return True
-
-        if self.whale_use_final_decision and action in self.whale_hard_block_actions:
-            print(
-                f"[MasterExecutor][WHALE][DROP] {symbol} {interval} {side} "
-                f"reason=hard_block action={action} whale={whale_score:.3f}"
-            )
-            return True
-
+        whale_is_buy = whale_dir in ("buy", "long", "in", "inflow")
+        whale_is_sell = whale_dir in ("sell", "short", "out", "outflow")
+        whale_contra = (whale_is_buy and side == "short") or (whale_is_sell and side == "long")
+        money_flow_exhaustion = bool(side == "short" and self.short_money_flow_enable and money_flow_60m <= float(self.short_money_flow_exhaustion_60m))
+        oi_regime = classify_confirmed_position_build(
+            oi_delta_15m=(oi.get("oi_delta_15m", 0.0) if self.oi_context_enable and oi.get("fresh", False) else 0.0),
+            price_return_15m=price_return_15m,
+            money_flow_15m=money_flow_15m,
+        )
+        confirmed_build = bool(oi_regime["confirmed_build"])
+        build_direction = str(oi_regime["build_direction"])
+        context = {
+            "schema_version": "market_context.v1", "symbol": str(symbol or "").upper(),
+            "interval": str(interval or ""), "side": str(side or "").lower(),
+            "whale_dir": whale_dir, "whale_score": whale_score, "whale_action": whale_action,
+            "spread_pct": spread_pct, "atr_pct": atr_pct, "liq_score": liq_score,
+            "money_flow_15m": float(money_flow_15m), "money_flow_60m": float(money_flow_60m),
+            "price_return_15m": float(price_return_15m),
+            "money_flow_state": "short_exhaustion" if money_flow_exhaustion else "normal",
+            "oi_state": "confirmed_build" if confirmed_build else "normal",
+            "price_response": {"return_15m": float(price_return_15m), "direction": "up" if price_return_15m > 0 else "down" if price_return_15m < 0 else "flat"},
+            "money_flow": {"flow_15m": float(money_flow_15m), "flow_60m": float(money_flow_60m), "state": "short_exhaustion" if money_flow_exhaustion else "normal"},
+            "open_interest": dict(oi),
+            "regime": {"name": "confirmed_build" if confirmed_build else "normal", "build_direction": build_direction},
+        }
+        if money_flow_exhaustion:
+            return {"state": "REJECT", "reason": "short_money_flow_exhaustion", "context": context}
+        if float(self.w_min) > 0.0 and whale_dir != "none" and whale_score < float(self.w_min):
+            return {"state": "REJECT", "reason": "whale_min", "context": context}
+        if self.whale_use_final_decision and whale_action in self.whale_hard_block_actions:
+            return {"state": "REJECT", "reason": "whale_hard_block", "context": context}
         if self.drop_if_whale_contra and whale_contra and whale_score >= float(self.whale_boost_thr):
-            print(
-                f"[MasterExecutor][WHALE][DROP] {symbol} {interval} {side} "
-                f"reason=contra whale_dir={self._get_whale_direction(raw_evt)} "
-                f"whale={whale_score:.3f} score={score:.3f}"
-            )
-            return True
+            return {"state": "REJECT", "reason": "whale_contra", "context": context}
+        return {"state": "READY", "reason": "market_context_pass", "context": context, "ranking_score": float(ranking_score), "symbol": symbol, "interval": interval, "side": side}
 
-        return False
+    def _evaluate_model_score_gate_stage(self, *, model_score: float, side: str = "") -> Dict[str, Any]:
+        """Single MODEL SCORE GATE authority.
+
+        SHORT may expose a research-validated provisional band as PENDING_CONTEXT.
+        PENDING_CONTEXT is never equivalent to a hard pass; downstream must confirm
+        the exact entry-time market context before an order can be eligible.
+        """
+        score = float(_clamp(model_score, 0.0, 1.0))
+        threshold = float(self.min_trade_score)
+        side_norm = self._normalize_side(side)
+
+        if score >= threshold:
+            state = "READY"
+            reason = "model_score_pass"
+        elif (
+            side_norm == "short"
+            and bool(self.short_soft_score_enable)
+            and score >= float(self.short_soft_score_min)
+        ):
+            state = "PENDING_CONTEXT"
+            reason = "short_soft_score_pending_context"
+        else:
+            state = "REJECT"
+            reason = "model_score_low"
+
+        return {
+            "state": state,
+            "reason": reason,
+            "model_score": score,
+            "threshold": threshold,
+            "soft_threshold": float(self.short_soft_score_min),
+        }
+
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
-        raw_evt = self._get_raw_evt(c)
+        price = max(0.0, _safe_float(c.get("price", 0.0), 0.0))
+        ranking_score = float(_clamp(_safe_float(c.get("ranking_score", c.get("model_score", 0.0)), 0.0), 0.0, 1.0))
+        model_score = float(_clamp(_safe_float(c.get("model_score", 0.0), 0.0), 0.0, 1.0))
 
-        price = self._extract_price(c, raw_evt)
-
-        score = _safe_float(c.get("_score_total_final", None), -1.0)
-        if score < 0:
-            score = self._compute_final_score(c)
-
-        score = float(_clamp(score, 0.0, 1.0))
-
-        side = self._normalize_side(_safe_str(c.get("side", raw_evt.get("side_candidate", ""))))
+        side = self._normalize_side(_safe_str(c.get("side", "")))
         symbol0 = _safe_str(c.get("symbol", "")).upper()
         interval0 = _safe_str(c.get("interval", ""), "5m")
 
-        if self.require_price and price <= 0.0:
-            self._warn_missing_price_once(symbol0, interval0, side)
+        market_context = self._evaluate_market_context_stage(
+            candidate=c, symbol=symbol0, interval=interval0, side=side, ranking_score=ranking_score,
+        )
+        if market_context["state"] != "READY":
             return None
 
-        if score < float(self.min_trade_score):
-            return None
-
-        if self._reject_by_whale_policy(symbol0, interval0, side, raw_evt, score):
+        score_gate = self._evaluate_model_score_gate_stage(model_score=model_score, side=side)
+        if score_gate["state"] not in ("READY", "PENDING_CONTEXT"):
             return None
 
         reasons = [str(x) for x in _as_list(c.get("reason_codes"))]
@@ -717,53 +435,15 @@ class MasterExecutor:
 
         risk_tags = [str(x) for x in _as_list(c.get("risk_tags"))]
 
-        whale_score = self._get_whale_confidence(raw_evt)
-        whale_action = self._get_whale_action(raw_evt)
-        whale_aligned = whale_action in self.whale_boost_actions
-
-        base_lev = int(_safe_float(c.get("recommended_leverage", 5), 5))
-        base_npct = float(_safe_float(c.get("recommended_notional_pct", 0.05), 0.05))
-
-        conf = _safe_float(raw_evt.get("confidence", c.get("confidence", 0.5)), 0.5)
-        atr_pct = _safe_float(raw_evt.get("atr_pct", c.get("atr_pct", 0.01)), 0.01)
-        spread_pct = _safe_float(raw_evt.get("spread_pct", c.get("spread_pct", 0.0003)), 0.0003)
-
-        conf_adj = _clamp(0.7 + conf, 0.7, 1.7)
-        atr_adj = _clamp(0.015 / max(atr_pct, 1e-6), 0.4, 1.2)
-        spr_adj = _clamp(0.0004 / max(spread_pct, 1e-9), 0.4, 1.2)
-
-        whale_mult_lev = 1.0
-        whale_mult_npct = 1.0
-
-        if whale_aligned and whale_score >= float(self.whale_boost_thr):
-            whale_mult_lev = float(self.whale_lev_boost)
-            whale_mult_npct = float(self.whale_npct_boost)
-            reasons.append("master_whale_boost")
-
-        lev = int(round(base_lev * conf_adj * atr_adj * spr_adj * whale_mult_lev))
-        lev = int(_clamp(lev, self.lev_min, self.lev_max))
-
-        npct = base_npct * conf_adj * _clamp(atr_adj, 0.6, 1.1) * _clamp(spr_adj, 0.6, 1.1) * whale_mult_npct
-        npct = float(_clamp(npct, self.notional_min_pct, self.notional_max_pct))
-
-        if whale_action in self.whale_reduce_actions:
-            lev = int(_clamp(lev * self.whale_reduce_lev_mult, self.lev_min, self.lev_max))
-            npct = float(_clamp(npct * self.whale_reduce_npct_mult, self.notional_min_pct, self.notional_max_pct))
-            reasons.append("master_whale_reduce")
-
-        if self.high_vol_tag in (risk_tags or []):
-            lev = int(_clamp(round(lev * self.high_vol_lev_mult), self.lev_min, self.lev_max))
-            npct = float(_clamp(npct * self.high_vol_npct_mult, self.notional_min_pct, self.notional_max_pct))
-            reasons.append("master_high_vol_clamp")
-
-        if whale_aligned and whale_score >= float(self.whale_boost_thr):
-            lev = max(lev, int(self.whale_lev_floor))
-            npct = max(npct, float(self.whale_npct_floor))
-
         c2 = dict(c)
-        c2["_score_total_final"] = float(score)
-        c2["trail_pct"] = float(self.trail_pct)
-        c2["stall_ttl_sec"] = int(self.stall_ttl_sec)
+        c2["ranking_score"] = float(ranking_score)
+        c2["model_score"] = float(model_score)
+        c2["market_context"] = dict(market_context.get("context") or {})
+        c2["model_score_gate_state"] = str(score_gate.get("state") or "REJECT")
+        c2["model_score_gate_passed"] = bool(score_gate.get("state") == "READY")
+        c2["model_score_gate_threshold"] = float(score_gate.get("threshold") or self.min_trade_score)
+        c2["model_score_gate_soft_threshold"] = float(score_gate.get("soft_threshold") or self.short_soft_score_min)
+        c2["soft_context_required"] = bool(score_gate.get("state") == "PENDING_CONTEXT")
         c2["w_min"] = float(self.w_min)
         c2["price"] = float(price)
 
@@ -796,14 +476,11 @@ class MasterExecutor:
             interval=interval0,
             side=side,
             price=float(price),
-            score=float(score),
-            recommended_leverage=int(lev),
-            recommended_notional_pct=float(npct),
+            score=float(model_score),
+            ranking_score=float(ranking_score),
             reasons=reasons,
             risk_tags=risk_tags,
             raw=dict(c2),
-            trail_pct=float(self.trail_pct),
-            stall_ttl_sec=int(self.stall_ttl_sec),
         )
 
     def _select_top_unique(self, items: List[Dict[str, Any]]) -> List[TradeIntent]:
@@ -812,19 +489,9 @@ class MasterExecutor:
         for c in items:
             if not isinstance(c, dict):
                 continue
-            c2 = dict(c)
-            if c2.get("_score_total_final") is None:
-                c2["_score_total_final"] = self._compute_final_score(c2)
-            scored.append(c2)
+            scored.append(dict(c))
 
-        scored.sort(key=lambda x: float(x.get("_score_total_final", 0.0)), reverse=True)
-
-        st = self._get_open_state()
-        open_count = self._open_count(st)
-        slots = max(0, int(self.max_pos) - int(open_count))
-
-        if slots <= 0:
-            return []
+        scored.sort(key=lambda x: float(x.get("ranking_score", x.get("model_score", 0.0)) or 0.0), reverse=True)
 
         best_by_symbol: Dict[str, Dict[str, Any]] = {}
 
@@ -833,13 +500,10 @@ class MasterExecutor:
             if not sym:
                 continue
 
-            if self.dedup_symbol_open and self._is_symbol_open(st, sym):
-                continue
-
-            sc = _safe_float(c.get("_score_total_final", 0.0), 0.0)
+            sc = _safe_float(c.get("ranking_score", c.get("model_score", 0.0)), 0.0)
             prev = best_by_symbol.get(sym)
 
-            if (prev is None) or (sc > _safe_float(prev.get("_score_total_final", 0.0), 0.0)):
+            if (prev is None) or (sc > _safe_float(prev.get("ranking_score", prev.get("model_score", 0.0)), 0.0)):
                 best_by_symbol[sym] = c
 
         intents: List[TradeIntent] = []
@@ -849,9 +513,8 @@ class MasterExecutor:
             if it:
                 intents.append(it)
 
-        intents.sort(key=lambda x: float(x.score), reverse=True)
+        intents.sort(key=lambda x: float(x.ranking_score), reverse=True)
         intents = intents[: max(0, int(self.topn))]
-        intents = intents[:slots]
 
         return intents
 
@@ -873,19 +536,10 @@ class MasterExecutor:
         if self._last_published_source_id == source_stream_id:
             return None
 
-        now = time.time()
-
-        if self.publish_cooldown_sec > 0 and (now - self._last_publish_ts) < self.publish_cooldown_sec:
-            return None
-
         items_out: List[Dict[str, Any]] = []
 
         for it in intents:
             p = float(self._intent_price_for_publish(it))
-
-            if self.require_price and p <= 0.0:
-                self._warn_missing_price_once(it.symbol, it.interval, it.side)
-                continue
 
             raw_copy = dict(it.raw) if isinstance(it.raw, dict) else {}
 
@@ -905,10 +559,16 @@ class MasterExecutor:
                     "side": it.side,
                     "price": float(p),
                     "score": float(it.score),
-                    "recommended_leverage": int(it.recommended_leverage),
-                    "recommended_notional_pct": float(it.recommended_notional_pct),
-                    "trail_pct": float(it.trail_pct or 0.0),
-                    "stall_ttl_sec": int(it.stall_ttl_sec or 0),
+                    "model_score": float(it.score),
+                    "ranking_score": float(it.ranking_score),
+                    "model_provider": str(raw_copy.get("model_provider") or ((raw_copy.get("raw") or {}).get("model_provider") if isinstance(raw_copy.get("raw"), dict) else "") or "hybrid_coin_specific"),
+                    "market_context_passed": True,
+                    "market_context": dict(raw_copy.get("market_context") or {}),
+                    "model_score_gate_state": str(raw_copy.get("model_score_gate_state") or "READY"),
+                    "model_score_gate_passed": bool(raw_copy.get("model_score_gate_passed", True)),
+                    "model_score_gate_threshold": float(raw_copy.get("model_score_gate_threshold") or self.min_trade_score),
+                    "model_score_gate_soft_threshold": float(raw_copy.get("model_score_gate_soft_threshold") or self.short_soft_score_min),
+                    "soft_context_required": bool(raw_copy.get("soft_context_required", False)),
                     "reasons": it.reasons,
                     "risk_tags": it.risk_tags,
                     "raw": raw_copy,
@@ -935,7 +595,6 @@ class MasterExecutor:
         except Exception:
             return None
 
-        self._last_publish_ts = time.time()
         self._last_published_source_id = source_stream_id
 
         return sid
@@ -954,15 +613,13 @@ class MasterExecutor:
                     if not isinstance(items, list) or not items:
                         continue
 
-                    items2 = self._apply_heavy_stage(items)
-                    intents = self._select_top_unique(items2)
+                    intents = self._select_top_unique(items)
                     out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
 
                     if out_id:
                         summary = ", ".join(
                             [
-                                f"{it.symbol}:{it.side}@L{it.recommended_leverage} "
-                                f"npct={it.recommended_notional_pct:.3f}"
+                                f"{it.symbol}:{it.side} model={it.score:.3f} rank={it.ranking_score:.3f}"
                                 for it in intents
                             ]
                         )
@@ -993,15 +650,13 @@ class MasterExecutor:
                 if not isinstance(items, list) or not items:
                     continue
 
-                items2 = self._apply_heavy_stage(items)
-                intents = self._select_top_unique(items2)
+                intents = self._select_top_unique(items)
                 out_id = self._publish_intents(source_stream_id=sid, intents=intents) if intents else None
 
                 if out_id:
                     summary = ", ".join(
                         [
-                            f"{it.symbol}:{it.side}@L{it.recommended_leverage} "
-                            f"npct={it.recommended_notional_pct:.3f}"
+                            f"{it.symbol}:{it.side} model={it.score:.3f} rank={it.ranking_score:.3f}"
                             for it in intents
                         ]
                     )

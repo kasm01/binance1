@@ -93,6 +93,7 @@ from wsfeeds.binance_depth_ws import BinanceDepthWS
 
 from core.prob_stabilizer import ProbStabilizer
 from features.schema import normalize_to_schema
+from features.runtime import build_runtime_features
 from app_paths import MODELS_DIR
 from utils.auc_history import seed_auc_history_if_missing, append_auc_used_once_per_hour
 
@@ -332,63 +333,8 @@ USE_MTF_ENS: bool = get_bool_env("USE_MTF_ENS", False)
 DRY_RUN: bool = get_bool_env("DRY_RUN", True)
 
 
-def build_features(raw_df: pd.DataFrame) -> pd.DataFrame:
-    df = raw_df.copy()
+build_features = build_runtime_features
 
-    raw_cols_12 = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
-    ]
-    for c in raw_cols_12:
-        if c not in df.columns:
-            df[c] = 0
-
-    for col in ["open_time", "close_time"]:
-        if col in df.columns:
-            try:
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    dt = pd.to_datetime(df[col], unit="ms", utc=True)
-                else:
-                    dt = pd.to_datetime(df[col], utc=True)
-                df[col] = (dt.astype("int64") / 1e9).astype(float)
-            except Exception:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
-
-    float_cols = [
-        "open", "high", "low", "close", "volume",
-        "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume",
-    ]
-    int_like = ["number_of_trades", "ignore"]
-
-    for c in float_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in int_like:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    if "ignore" not in df.columns:
-        df["ignore"] = 0.0
-
-    for c in ("open", "high", "low", "close", "volume"):
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
-
-    close = df["close"].astype(float)
-    df["hl_range"] = (df["high"] - df["low"]).astype(float)
-    df["oc_change"] = (df["close"] - df["open"]).astype(float)
-    df["return_1"] = close.pct_change(1)
-    df["return_3"] = close.pct_change(3)
-    df["return_5"] = close.pct_change(5)
-    df["ma_5"] = close.rolling(5).mean()
-    df["ma_10"] = close.rolling(10).mean()
-    df["ma_20"] = close.rolling(20).mean()
-    df["vol_10"] = df["volume"].astype(float).rolling(10).mean()
-
-    if "dummy_extra" not in df.columns:
-        df["dummy_extra"] = 0.0
-
-    df = df.replace([float("inf"), float("-inf")], pd.NA)
-    df = df.ffill().bfill().fillna(0.0)
-    return df
 def compute_atr_from_klines(df: pd.DataFrame, period: int = 14) -> float:
     if df is None or len(df) < period + 2:
         return 0.0
@@ -752,6 +698,106 @@ class ShutdownManager:
 
 _shutdown_mgr = ShutdownManager()
 
+def _wire_short_executor_runtime(trade_executor: Any) -> None:
+    """Initial exchange sync + periodic sync/lifecycle tasks for TradeExecutorShort."""
+    try:
+        if hasattr(trade_executor, "sync_positions_with_exchange"):
+            trade_executor.sync_positions_with_exchange()
+            if system_logger:
+                system_logger.info("[MAIN][SYNC] initial position sync completed")
+    except Exception:
+        if system_logger:
+            system_logger.exception("[MAIN][SYNC] initial position sync failed")
+
+    try:
+        if hasattr(trade_executor, "_position_sync_loop"):
+            asyncio.create_task(trade_executor._position_sync_loop(), name="short-position-sync")
+            if system_logger:
+                system_logger.info(
+                    "[MAIN][SYNC] periodic sync started interval_sec=%s",
+                    int(getattr(trade_executor, "position_sync_interval_sec", 300)),
+                )
+    except Exception:
+        if system_logger:
+            system_logger.exception("[MAIN][SYNC] failed to start periodic sync")
+
+    try:
+        if hasattr(trade_executor, "_position_lifecycle_loop"):
+            asyncio.create_task(trade_executor._position_lifecycle_loop(), name="short-position-lifecycle")
+            if system_logger:
+                system_logger.info(
+                    "[MAIN][LIFECYCLE] started interval_sec=%s",
+                    int(getattr(trade_executor, "position_lifecycle_interval_sec", 15)),
+                )
+    except Exception:
+        if system_logger:
+            system_logger.exception("[MAIN][LIFECYCLE] failed to start")
+
+
+def create_executor_only_objects(
+    price_cache: Optional[PriceCache] = None,
+    redis_price_cache: Optional[RedisPriceCache] = None,
+) -> Dict[str, Any]:
+    """Minimal orchestrated-production bootstrap: execution only, no local MODEL stack."""
+    global BINANCE_API_KEY, BINANCE_API_SECRET, USE_TESTNET
+
+    symbols = parse_symbols_env()
+    symbol = symbols[0] if symbols else (
+        os.getenv("SYMBOL") or getattr(Settings, "SYMBOL", None) or "BTCUSDT"
+    )
+    interval = os.getenv("INTERVAL") or getattr(Settings, "INTERVAL", None) or "5m"
+
+    key, secret, is_testnet = _select_binance_keys_for_mode()
+    BINANCE_API_KEY, BINANCE_API_SECRET = key, secret
+    USE_TESTNET = bool(is_testnet)
+
+    client = create_binance_client(
+        api_key=BINANCE_API_KEY,
+        api_secret=BINANCE_API_SECRET,
+        testnet=bool(USE_TESTNET),
+        logger=system_logger,
+        dry_run=bool(DRY_RUN),
+    )
+
+    if price_cache is None:
+        price_cache = PriceCache()
+    if redis_price_cache is None:
+        redis_price_cache = RedisPriceCache()
+
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    exec_redis = redis.Redis.from_url(redis_url, decode_responses=True)
+
+    trade_executor = TradeExecutor(
+        client=client,
+        redis_client=exec_redis,
+        logger=system_logger,
+        dry_run=bool(DRY_RUN),
+        base_order_notional=float(os.getenv("BASE_ORDER_NOTIONAL", "50") or 50),
+        max_position_notional=float(os.getenv("MAX_POSITION_NOTIONAL", "500") or 500),
+        max_leverage=float(os.getenv("MAX_LEVERAGE", "3") or 3),
+        price_cache=price_cache,
+        redis_price_cache=redis_price_cache,
+    )
+
+    _wire_short_executor_runtime(trade_executor)
+    _shutdown_mgr.register(client=client, trade_executor=trade_executor)
+
+    if system_logger:
+        system_logger.info(
+            "[MAIN][ORCH-ONLY] minimal executor bootstrap symbol=%s interval=%s",
+            symbol, interval,
+        )
+
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "client": client,
+        "trade_executor": trade_executor,
+        "price_cache": price_cache,
+        "redis_price_cache": redis_price_cache,
+    }
+
+
 def create_trading_objects(
     price_cache: Optional[PriceCache] = None,
     redis_price_cache: Optional[RedisPriceCache] = None,
@@ -919,7 +965,7 @@ def create_trading_objects(
         market_meta_builder = None
         if system_logger:
             system_logger.warning("[DEPTHWS] init failed: %s", e)
-    hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger)
+    hybrid_model = registry.get_hybrid(interval, model_dir=MODELS_DIR, logger=system_logger, symbol=symbol)
 
     mtf_ensemble = None
     models_by_interval: Dict[str, Any] = {}
@@ -1001,55 +1047,7 @@ def create_trading_objects(
         price_cache=price_cache,
         redis_price_cache=redis_price_cache,
     )
-    try:
-        system_logger.info("[MAIN][SYNC] wiring position sync hooks...")
-    except Exception:
-        pass
-
-    try:
-        if hasattr(trade_executor, "sync_positions_with_exchange"):
-            system_logger.info("[MAIN][SYNC] initial sync callable found.")
-            trade_executor.sync_positions_with_exchange()
-            system_logger.info("[MAIN][SYNC] initial sync_positions_with_exchange completed.")
-        else:
-            system_logger.warning("[MAIN][SYNC] sync_positions_with_exchange missing on TradeExecutor")
-    except Exception:
-        try:
-            if system_logger:
-                system_logger.exception("[MAIN][SYNC] initial sync_positions_with_exchange failed")
-        except Exception:
-            pass
-    try:
-        if hasattr(trade_executor, "_position_sync_loop"):
-            asyncio.create_task(trade_executor._position_sync_loop())
-            system_logger.info(
-                "[MAIN][SYNC] periodic position sync started interval_sec=%s",
-                int(getattr(trade_executor, "position_sync_interval_sec", 300)),
-            )
-        else:
-            system_logger.warning("[MAIN][SYNC] _position_sync_loop missing on TradeExecutor")
-    except Exception:
-        try:
-            if system_logger:
-                system_logger.exception("[MAIN][SYNC] failed to start periodic position sync loop")
-        except Exception:
-            pass
-
-    try:
-        if hasattr(trade_executor, "_position_lifecycle_loop"):
-            asyncio.create_task(trade_executor._position_lifecycle_loop())
-            system_logger.info(
-                "[MAIN][LIFECYCLE] periodic position lifecycle loop started interval_sec=%s",
-                int(getattr(trade_executor, "position_lifecycle_interval_sec", 15)),
-            )
-        else:
-            system_logger.warning("[MAIN][LIFECYCLE] _position_lifecycle_loop missing on TradeExecutor")
-    except Exception:
-        try:
-            if system_logger:
-                system_logger.exception("[MAIN][LIFECYCLE] failed to start lifecycle loop")
-        except Exception:
-            pass
+    _wire_short_executor_runtime(trade_executor)
 
     okx_ws = None
     try:
@@ -1133,6 +1131,7 @@ class HeavyEngine:
         self.client = objs["client"]
         self.trade_executor = objs["trade_executor"]
         self.hybrid_model = objs["hybrid_model"]
+        self.model_registry = objs.get("registry")
         self.mtf_ensemble = objs.get("mtf_ensemble")
         self.whale_detector = objs.get("whale_detector")
         self.tg_bot = objs.get("tg_bot")
@@ -1185,7 +1184,7 @@ class HeavyEngine:
         return None
 
     def _fallback_schema_from_model(self) -> Optional[List[str]]:
-        meta = getattr(self.hybrid_model, "meta", {}) or {}
+        meta = getattr(active_model, "meta", {}) or {}
         sch = meta.get("feature_schema")
         if isinstance(sch, list) and sch and all(isinstance(x, str) for x in sch):
             return sch
@@ -1229,6 +1228,12 @@ class HeavyEngine:
 
         interval = self.interval
         timer = _StepTimer()
+
+        active_model = self.hybrid_model
+        if self.model_registry is not None:
+            active_model = self.model_registry.get_hybrid(
+                interval, model_dir=MODELS_DIR, logger=system_logger, symbol=symbol
+            )
 
         # >>> REDIS-FIRST KLINE READ
         raw_df = None
@@ -1330,7 +1335,7 @@ class HeavyEngine:
 
         X_live = feat_df.tail(500)
 
-        p_arr_single, debug_single = self.hybrid_model.predict_proba(X_live)
+        p_arr_single, debug_single = active_model.predict_proba(X_live)
         p_single = float(p_arr_single[-1])
         timer.mark("predict_single")
 
@@ -1895,41 +1900,21 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
 
     decision_m = getattr(executor, "execute_decision", None)
     if not callable(decision_m):
-        decision_m = None
-
-    store_signal_m = getattr(executor, "_store_latest_signal", None)
-    if not callable(store_signal_m):
-        store_signal_m = None
-
-    open_m = getattr(executor, "open_position_from_signal", None)
-    if not callable(open_m):
-        open_m = getattr(executor, "open_position", None)
-    if not callable(open_m):
-        open_m = None
-
-    close_m = getattr(executor, "close_position", None)
-    if not callable(close_m):
-        close_m = getattr(executor, "close_position_from_signal", None)
-    if not callable(close_m):
-        close_m = None
-
-    try:
-        logger.info(
-            "[EXEC-EVENTS] methods resolved | decision=%s store_signal=%s open=%s close=%s",
-            getattr(decision_m, "__name__", None),
-            getattr(store_signal_m, "__name__", None),
-            getattr(open_m, "__name__", None),
-            getattr(close_m, "__name__", None),
-        )
-    except Exception:
-        pass
-
-    if decision_m is None and open_m is None and close_m is None:
         logger.error(
-            "[EXEC-EVENTS] TradeExecutor decision/open/close method not found | executor_type=%s",
+            "[EXEC-EVENTS] execute_decision is required for OPEN events | executor_type=%s",
             type(executor).__name__,
         )
         return
+
+    close_m = getattr(executor, "close_position", None)
+    if not callable(close_m):
+        close_m = None
+
+    logger.info(
+        "[EXEC-EVENTS] methods resolved | decision=%s close=%s",
+        getattr(decision_m, "__name__", None),
+        getattr(close_m, "__name__", None),
+    )
 
     def _heartbeat():
         try:
@@ -2003,14 +1988,7 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
             price = 0.0
 
         try:
-            score = float(
-                item.get("score")
-                or item.get("signal_score")
-                or item.get("_score_total_final")
-                or item.get("_score_selected")
-                or item.get("score_total")
-                or 0.0
-            )
+            score = float(item.get("model_score", item.get("score", 0.0)) or 0.0)
         except Exception:
             score = 0.0
 
@@ -2021,8 +1999,6 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
             "interval": interval,
             "price": price,
             "score": score,
-            "trail_pct": item.get("trail_pct"),
-            "stall_ttl_sec": item.get("stall_ttl_sec"),
             "raw": item,
         }
     async def _dispatch_long_short(data):
@@ -2034,229 +2010,54 @@ async def consume_exec_events_stream(logger, executor, *, redis_url: str):
         intent_id = data["intent_id"]
         raw = data["raw"]
 
-        if callable(store_signal_m):
-            try:
-                store_signal_m(
-                    symbol=symbol,
-                    side=side,
-                    interval=interval,
-                    score=score,
-                    payload=raw,
-                )
-            except TypeError:
-                try:
-                    store_signal_m(
-                        symbol=symbol,
-                        side=side,
-                        interval=interval,
-                        score=score,
-                        raw=raw,
-                    )
-                except TypeError:
-                    store_signal_m(symbol, side, interval, score, raw)
-
-            logger.info(
-                "[EXEC-EVENTS] latest signal stored | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                symbol,
-                side,
-                interval,
-                score,
-                intent_id,
-            )
-
-        handled = False
-
-        if callable(decision_m):
-            try:
-                logger.info(
-                    "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s score=%.4f intent=%s",
-                    symbol,
-                    side,
-                    interval,
-                    score,
-                    intent_id,
-                )
-
-                await _maybe_await(
-                    decision_m(
-                        signal=side,
-                        symbol=symbol,
-                        price=price,
-                        size=None,
-                        interval=interval,
-                        training_mode=False,
-                        hybrid_mode=True,
-                        probs={},
-                        extra=raw,
-                    )
-                )
-
-                logger.info(
-                    "[EXEC-EVENTS] decision dispatched | symbol=%s side=%s score=%.4f intent=%s",
-                    symbol,
-                    side,
-                    score,
-                    intent_id,
-                )
-                handled = True
-            except TypeError:
-                logger.exception(
-                    "[EXEC-EVENTS] execute_decision signature mismatch | item=%s",
-                    raw,
-                )
-            except Exception:
-                logger.exception(
-                    "[EXEC-EVENTS] execute_decision failed | item=%s",
-                    raw,
-                )
-
-        if handled or open_m is None:
-            if not handled and open_m is None:
-                logger.warning("[EXEC-EVENTS] open method missing; skip %s", intent_id)
-            return
-
         try:
-            if getattr(open_m, "__name__", "") in (
-                "open_position_from_signal",
-                "open_from_intent",
-            ):
-                await _maybe_await(
-                    open_m(
-                        symbol=symbol,
-                        side=side,
-                        interval=interval,
-                        meta={
-                            "price": price,
-                            "trail_pct": data["trail_pct"],
-                            "stall_ttl_sec": data["stall_ttl_sec"],
-                            "intent_id": intent_id,
-                            "score": score,
-                            "raw": raw,
-                        },
-                    )
-                )
-            else:
-                await _maybe_await(
-                    open_m(
-                        symbol=symbol,
-                        side=side,
-                        interval=interval,
-                        price=price,
-                        trail_pct=data["trail_pct"],
-                        stall_ttl_sec=data["stall_ttl_sec"],
-                        intent_id=intent_id,
-                        raw=raw,
-                    )
-                )
-
             logger.info(
-                "[EXEC-EVENTS] fallback open applied | symbol=%s side=%s score=%.4f intent=%s",
-                symbol,
-                side,
-                score,
-                intent_id,
+                "[EXEC-EVENTS] dispatch decision | symbol=%s side=%s interval=%s model_score=%.4f intent=%s",
+                symbol, side, interval, score, intent_id,
+            )
+            await _maybe_await(
+                decision_m(
+                    signal=side,
+                    symbol=symbol,
+                    price=price,
+                    size=None,
+                    interval=interval,
+                    training_mode=False,
+                    hybrid_mode=False,
+                    probs={},
+                    extra=raw,
+                )
             )
         except TypeError:
-            logger.exception("[EXEC-EVENTS] fallback open signature mismatch | item=%s", raw)
+            logger.exception("[EXEC-EVENTS] execute_decision signature mismatch | item=%s", raw)
         except Exception:
-            logger.exception("[EXEC-EVENTS] fallback open failed | item=%s", raw)
+            logger.exception("[EXEC-EVENTS] execute_decision failed | item=%s", raw)
 
     async def _dispatch_close_like(data):
         symbol = data["symbol"]
-        side = data["side"]
         interval = data["interval"]
         price = data["price"]
-        score = data["score"]
         intent_id = data["intent_id"]
         raw = data["raw"]
 
-        handled = False
-
-        if callable(decision_m):
-            try:
-                logger.info(
-                    "[EXEC-EVENTS] dispatch decision close | symbol=%s side=%s interval=%s intent=%s",
-                    symbol,
-                    side,
-                    interval,
-                    intent_id,
-                )
-
-                await _maybe_await(
-                    decision_m(
-                        signal="close",
-                        symbol=symbol,
-                        price=price,
-                        size=None,
-                        interval=interval,
-                        training_mode=False,
-                        hybrid_mode=True,
-                        probs={},
-                        extra={
-                            "intent_id": intent_id,
-                            "score": score,
-                            "raw": raw,
-                        },
-                    )
-                )
-
-                logger.info(
-                    "[EXEC-EVENTS] decision close dispatched | symbol=%s side=%s intent=%s",
-                    symbol,
-                    side,
-                    intent_id,
-                )
-                handled = True
-            except TypeError:
-                logger.exception(
-                    "[EXEC-EVENTS] execute_decision close signature mismatch | item=%s",
-                    raw,
-                )
-            except Exception:
-                logger.exception(
-                    "[EXEC-EVENTS] execute_decision close failed | item=%s",
-                    raw,
-                )
-
-        if handled or close_m is None:
-            if not handled and close_m is None:
-                logger.warning("[EXEC-EVENTS] close method missing; skip %s", intent_id)
+        if close_m is None:
+            logger.warning("[EXEC-EVENTS] close_position missing; skip intent=%s", intent_id)
             return
 
         try:
-            if getattr(close_m, "__name__", "") in (
-                "close_position_from_signal",
-                "close_from_intent",
-            ):
-                await _maybe_await(
-                    close_m(
-                        symbol=symbol,
-                        interval=interval,
-                        meta={"intent_id": intent_id, "raw": raw},
-                        price=price,
-                    )
+            await _maybe_await(
+                close_m(
+                    symbol=symbol,
+                    price=price,
+                    reason="external_close",
+                    interval=interval,
+                    intent_id=intent_id,
+                    raw=raw,
                 )
-            else:
-                await _maybe_await(
-                    close_m(
-                        symbol=symbol,
-                        interval=interval,
-                        intent_id=intent_id,
-                        raw=raw,
-                        price=price,
-                    )
-                )
-
-            logger.info(
-                "[EXEC-EVENTS] fallback close applied | symbol=%s side=%s intent=%s",
-                symbol,
-                side,
-                intent_id,
             )
-        except TypeError:
-            logger.exception("[EXEC-EVENTS] fallback close signature mismatch | item=%s", raw)
+            logger.info("[EXEC-EVENTS] close dispatched | symbol=%s intent=%s", symbol, intent_id)
         except Exception:
-            logger.exception("[EXEC-EVENTS] fallback close failed | item=%s", raw)
+            logger.exception("[EXEC-EVENTS] close_position failed | item=%s", raw)
 
     while True:
         try:
@@ -2404,7 +2205,10 @@ async def async_main() -> None:
             system_logger.info("[ENV][TG-COMPAT] %s", st)
         except Exception:
             pass
-    enable_ws = get_bool_env("ENABLE_WS", False)
+    orch_only_mode = get_bool_env("ORCH_ONLY_MODE", False)
+    exec_events_enable = get_bool_env("EXEC_EVENTS_ENABLE", True)
+
+    enable_ws = get_bool_env("ENABLE_WS", False) and not orch_only_mode
     binance_ws = None
     if enable_ws:
         sym = os.getenv("SYMBOL", getattr(Settings, "SYMBOL", "BTCUSDT"))
@@ -2412,24 +2216,28 @@ async def async_main() -> None:
         binance_ws.run_background()
         _shutdown_mgr.register(binance_ws=binance_ws)
         if system_logger:
-            system_logger.info("[WS] ENABLE_WS=true -> websocket started. symbol=%s", sym)
-    else:
-        if system_logger:
-            system_logger.info("[WS] ENABLE_WS=false -> websocket disabled.")
+            system_logger.info("[WS] local/debug websocket started symbol=%s", sym)
+    elif system_logger:
+        system_logger.info("[WS] local websocket disabled (orch_only=%s)", orch_only_mode)
+
     price_cache = PriceCache()
     redis_price_cache = RedisPriceCache()
-
     if system_logger:
         system_logger.info(
             "[PRICECACHE] initialized | memory_cache=%s redis_cache=%s",
-            True,
-            bool(getattr(redis_price_cache, "is_available", lambda: False)()),
+            True, bool(getattr(redis_price_cache, "is_available", lambda: False)()),
         )
-    trading_objects = create_trading_objects(
-        price_cache=price_cache,
-        redis_price_cache=redis_price_cache,
-    )
-    engine = HeavyEngine(trading_objects)
+
+    if orch_only_mode and exec_events_enable:
+        trading_objects = create_executor_only_objects(
+            price_cache=price_cache, redis_price_cache=redis_price_cache,
+        )
+        engine = None
+    else:
+        trading_objects = create_trading_objects(
+            price_cache=price_cache, redis_price_cache=redis_price_cache,
+        )
+        engine = HeavyEngine(trading_objects)
 
     try:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -2445,24 +2253,20 @@ async def async_main() -> None:
         if system_logger:
             system_logger.warning("[EXEC-EVENTS] failed to start consumer: %s", e)
 
-    scan_enable = get_bool_env("SCAN_ENABLE", False)
-    if scan_enable:
-        await scanner_loop(engine)
-        return
-
-    orch_only_mode = get_bool_env("ORCH_ONLY_MODE", False)
-    exec_events_enable = str(os.getenv("EXEC_EVENTS_ENABLE", "1")).strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-
+    # Single signal-source authority: orchestrated production mode must never
+    # run the local scanner/single-symbol model loop in parallel.
     if orch_only_mode and exec_events_enable:
         if system_logger:
             system_logger.info(
-                "[MAIN] ORCH_ONLY_MODE=true -> local single-symbol bot loop disabled; exec-events consumer only."
+                "[MAIN] signal_source=orchestrated -> local scanner and single-symbol loops disabled; exec-events consumer only."
             )
-
         while True:
             await asyncio.sleep(30)
+        return
+
+    scan_enable = get_bool_env("SCAN_ENABLE", False)
+    if scan_enable:
+        await scanner_loop(engine)
         return
 
     symbol = str(

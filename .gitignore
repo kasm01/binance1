@@ -147,3 +147,11 @@ __pycache__/
 !models/
 !models/online_model_5m_best.joblib
 binance1/
+
+# SHORT research bulk artifacts: keep source/decision files in Git, not datasets/results/models.
+# Keep these after !models/ so nested research model artifacts remain ignored.
+research/short/data/
+research/short/results/
+research/short/models/
+research/short/models_v5_shadow/
+research/short/backups/

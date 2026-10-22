@@ -7,52 +7,42 @@ import math
 from decimal import Decimal, ROUND_DOWN
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from core.redis_price_cache import read_kline_cache, write_kline_cache
-from core.short_continuation_engine import ShortContinuationEngine
 from core.short_entry_candle_service import ShortEntryCandleService
+from orchestration.context.entry_context_snapshot import build_entry_context_from_rows
+from orchestration.risk.risk_master import (
+    evaluate_position_risk,
+    resolve_market_context_multiplier,
+)
+from orchestration.telemetry.market_context_shadow import (
+    build_shadow_event,
+    publish_shadow_event,
+)
 
 
 class TradeExecutorShort:
     """
-    Clean SHORT-only futures executor.
+    SHORT-only futures executor with one authority per architecture stage.
 
-    Entry authority:
-        SHORT signal
-        -> score
-        -> coin min score
-        -> dynamic score
-        -> duplicate block
-        -> 1m sniper candle progress
-        -> 1m red candle direction
-        -> SELL MARKET
+    Decision flow:
+        MODEL
+        -> SIGNAL NORMALIZATION
+        -> MARKET CONTEXT
+        -> MODEL SCORE GATE
+        -> SNIPER
+        -> ENTRY CONFIRMATION (READY / PENDING / REJECT)
+        -> PENDING REVALIDATION
+        -> EXECUTION RISK
+        -> FINAL SAFETY
+        -> ORDER
+        -> POSITION LIFECYCLE
+        -> TELEMETRY / OUTCOME FEEDBACK
 
-    Exit authority:
-        lifecycle
-        -> fixed ROI TP
-        -> ROI hard stop
-        -> BUY reduce-only close
-
-    Intentionally excluded:
-        early entry
-        micro pullback
-        volume spike trigger
-        fake breakout
-        scalp boost
-        entry confirmation
-        whale veto
-        adaptive leverage
-        scalp exit
-        signal exit
-        dead trade
-        profit lock
-        trailing
-        TP runner
-        anti reversal
-        legacy SL/TP chain
+    Core rule:
+        A behavior is decided in one stage only. Helper functions may compute
+        data for a stage but must not introduce parallel veto authorities.
     """
-
     def __init__(
         self,
         client: Any = None,
@@ -75,26 +65,15 @@ class TradeExecutorShort:
         self.redis = redis_client
         self.logger = logger
         self.price_cache = price_cache
-        self.position_manager = position_manager
-        self.risk_manager = risk_manager
-
-        # main.py currently passes tg_bot instead of telegram_bot.
-        self.telegram_bot = (
-            telegram_bot
-            if telegram_bot is not None
-            else kwargs.get("tg_bot")
-        )
+        # position_manager / risk_manager / telegram_bot remain constructor-compatible
+        # but are intentionally not retained: SHORT execution owns no parallel managers.
+        del position_manager, risk_manager, telegram_bot
+        kwargs.pop("tg_bot", None)
 
         self.redis_price_cache = kwargs.get("redis_price_cache")
         self.hedge_mode_enabled = True
 
         # Binance Futures hedge mode compatibility.
-
-        # -----------------------------------------------------
-        # runtime compatibility fields used by main.py
-        # -----------------------------------------------------
-        self._last_exec_stream_hb_ts = 0.0
-        self._last_kline_close: Dict[str, Any] = {}
 
         # -----------------------------------------------------
         # base execution config
@@ -107,6 +86,42 @@ class TradeExecutorShort:
 
         self.max_position_notional = float(
             max_position_notional or 500.0
+        )
+
+        # -----------------------------------------------------
+        # order sizing authority
+        # -----------------------------------------------------
+        self.short_sizing_mode = str(
+            os.getenv("SHORT_SIZING_MODE", "fixed") or "fixed"
+        ).strip().lower()
+        if self.short_sizing_mode not in ("fixed", "balance_pct", "equity_single"):
+            self.short_sizing_mode = "fixed"
+
+        self.per_position_balance_pct = max(
+            0.01,
+            min(
+                1.0,
+                self._env_float("PER_POSITION_BALANCE_PCT", 0.30),
+            ),
+        )
+
+        self.use_available_balance_for_sizing = self._env_bool(
+            "USE_AVAILABLE_BALANCE_FOR_SIZING",
+            True,
+        )
+
+        # SHORT execution operational knobs: single .env authority.
+        self.short_min_order_notional_usdt = max(
+            0.0, self._env_float("SHORT_MIN_ORDER_NOTIONAL_USDT", 10.0)
+        )
+        self.short_price_cache_max_age_sec = max(
+            0.1, self._env_float("SHORT_PRICE_CACHE_MAX_AGE_SEC", 2.0)
+        )
+        self.short_open_lock_sec = max(
+            0.0, self._env_float("SHORT_OPEN_LOCK_SEC", 5.0)
+        )
+        self.short_pending_max_candle_age = max(
+            1, self._env_int("SHORT_PENDING_MAX_CANDLE_AGE", 1)
         )
 
         self.max_leverage = max(
@@ -128,71 +143,8 @@ class TradeExecutorShort:
         )
 
         # -----------------------------------------------------
-        # SHORT-only side authority
-        # -----------------------------------------------------
-        self.side_mode = "short"
-
-        self.side_mode_block_enable = self._env_bool(
-            "SIDE_MODE_BLOCK_ENABLE",
-            True,
-        )
-
-        # -----------------------------------------------------
-        # score config
-        # -----------------------------------------------------
-        self.min_score = self._env_float(
-            "MIN_SCORE",
-            0.495,
-        )
-
-        self.open_min_score = self._env_float(
-            "OPEN_MIN_SCORE",
-            self.min_score,
-        )
-
-        self.short_threshold = self._env_float(
-            "SHORT_THRESHOLD",
-            self.open_min_score,
-        )
-
-        self.model_short_threshold = self._env_float(
-            "MODEL_SHORT_THRESHOLD",
-            self.short_threshold,
-        )
-
-        self.dynamic_coin_score_enable = self._env_bool(
-            "DYNAMIC_COIN_SCORE_ENABLE",
-            False,
-        )
-
-        self.dynamic_score_min = self._env_float(
-            "DYNAMIC_SCORE_MIN",
-            self.open_min_score,
-        )
-
-        self.dynamic_score_max = self._env_float(
-            "DYNAMIC_SCORE_MAX",
-            0.56,
-        )
-
-        self.dynamic_score_spread_boost = self._env_float(
-            "DYNAMIC_SCORE_SPREAD_BOOST",
-            0.0,
-        )
-
-        self.dynamic_score_atr_boost = self._env_float(
-            "DYNAMIC_SCORE_ATR_BOOST",
-            0.0,
-        )
-
-        # -----------------------------------------------------
         # sniper entry timing
         # -----------------------------------------------------
-        self.sniper_entry_enable = self._env_bool(
-            "SNIPER_ENTRY_ENABLE",
-            True,
-        )
-
         self.entry_interval = str(
             os.getenv("ENTRY_INTERVAL", "1m") or "1m"
         ).strip()
@@ -218,11 +170,6 @@ class TradeExecutorShort:
         # -----------------------------------------------------
         # 1m candle direction
         # -----------------------------------------------------
-        self.entry_candle_dir_filter_enable = self._env_bool(
-            "ENTRY_CANDLE_DIR_FILTER_ENABLE",
-            True,
-        )
-
         self.entry_candle_dir_interval = str(
             os.getenv(
                 "ENTRY_CANDLE_DIR_INTERVAL",
@@ -231,9 +178,8 @@ class TradeExecutorShort:
             or "1m"
         ).strip()
 
-        self.entry_candle_dir_require_red_for_short = self._env_bool(
-            "ENTRY_CANDLE_DIR_REQUIRE_RED_FOR_SHORT",
-            True,
+        self.short_current_reversal_min_pct = max(
+            0.0, self._env_float("SHORT_CURRENT_REVERSAL_MIN_PCT", 0.0001)
         )
 
         # -----------------------------------------------------
@@ -244,17 +190,50 @@ class TradeExecutorShort:
             3,
         )
 
-        self.block_same_symbol_reentry = self._env_bool(
-            "BLOCK_SAME_SYMBOL_REENTRY",
-            True,
-        )
-
         self.same_symbol_open_cooldown_sec = self._env_float(
             "SAME_SYMBOL_OPEN_COOLDOWN_SEC",
             300.0,
         )
+        # Dedicated cooldown after a stop close. Separate from generic last-open
+        # cooldown so TP/manual exits keep their existing behavior. OFF by default.
+        self.short_stop_reentry_cooldown_sec = max(
+            0.0, self._env_float("SHORT_STOP_REENTRY_COOLDOWN_SEC", 0.0)
+        )
+
+        # single-position sizing + drawdown governor
+        # One SHORT engine owns at most one open position for its symbol.
+        self.short_normal_position_equity_pct = max(
+            0.0, min(1.0, self._env_float("SHORT_NORMAL_POSITION_EQUITY_PCT", 1.0))
+        )
+        self.short_reduced_position_equity_pct = max(
+            0.0, min(1.0, self._env_float("SHORT_REDUCED_POSITION_EQUITY_PCT", 0.50))
+        )
+        self.short_dd_reduce_trigger_pct = max(0.0, self._env_float("SHORT_DD_REDUCE_TRIGGER_PCT", 0.08))
+        self.short_dd_recover_trigger_pct = max(0.0, self._env_float("SHORT_DD_RECOVER_TRIGGER_PCT", 0.04))
+        self.risk_oi_confirmed_build_enable = self._env_bool(
+            "RISK_OI_CONFIRMED_BUILD_ENABLE", False
+        )
+        self.risk_oi_confirmed_build_multiplier = max(
+            0.0, min(1.0, self._env_float("RISK_OI_CONFIRMED_BUILD_MULTIPLIER", 0.50))
+        )
+        # Entry-time MARKET CONTEXT shadow telemetry. This never changes the
+        # order decision and is OFF by default. The snapshot is fetched only
+        # after the order attempt, using a frozen confirmation-minute cutoff.
+        self.short_entry_context_shadow_enable = self._env_bool(
+            "SHORT_ENTRY_CONTEXT_SHADOW_ENABLE", False
+        )
+        self.short_entry_context_shadow_stream = str(
+            os.getenv("SHORT_ENTRY_CONTEXT_SHADOW_STREAM", "telemetry:market_context_shadow")
+            or "telemetry:market_context_shadow"
+        ).strip()
+        self.short_entry_context_shadow_maxlen = max(
+            1000, self._env_int("SHORT_ENTRY_CONTEXT_SHADOW_MAXLEN", 20000)
+        )
+        self._short_equity_peak = 0.0
+        self._short_risk_mode = "NORMAL"
 
         self._symbol_open_locks: Dict[str, float] = {}
+        self._short_stop_reentry_until: Dict[str, float] = {}
         self._pending_short_entries: Dict[str, Dict[str, Any]] = {}
 
         # -----------------------------------------------------
@@ -284,11 +263,6 @@ class TradeExecutorShort:
         self.position_sync_interval_sec = self._env_int(
             "POSITION_SYNC_INTERVAL_SEC",
             300,
-        )
-
-        self.position_sync_remove_orphans = self._env_bool(
-            "POSITION_SYNC_REMOVE_ORPHANS",
-            True,
         )
 
         # -----------------------------------------------------
@@ -324,15 +298,45 @@ class TradeExecutorShort:
 
         self.roi_hard_stop_pct = self._env_float(
             "ROI_HARD_STOP_PCT",
-            -0.0060,
+            -0.0900,
         )
 
-        self.short_continuation_engine = (
-            ShortContinuationEngine(
-                client=self.client,
-                logger=self.logger,
-                env_float=self._env_float,
-            )
+        # -----------------------------------------------------
+        # SHORT dynamic-stop confirmation
+        # -----------------------------------------------------
+        self.short_dynamic_stop_enable = self._env_bool(
+            "SHORT_DYNAMIC_STOP_ENABLE",
+            True,
+        )
+        self.short_dynamic_stop_confirm_sec = max(
+            0.0,
+            self._env_float("SHORT_DYNAMIC_STOP_CONFIRM_SEC", 60.0),
+        )
+        self.short_dynamic_stop_catastrophic_pct = max(
+            0.0,
+            self._env_float("SHORT_DYNAMIC_STOP_CATASTROPHIC_PCT", 0.045),
+        )
+
+        # -----------------------------------------------------
+        # telemetry / outcome feedback
+        # -----------------------------------------------------
+        self.short_outcome_feedback_enable = self._env_bool(
+            "SHORT_OUTCOME_FEEDBACK_ENABLE",
+            True,
+        )
+        self.short_outcome_feedback_stream = str(
+            os.getenv("SHORT_OUTCOME_FEEDBACK_STREAM", "telemetry:short_outcomes")
+            or "telemetry:short_outcomes"
+        ).strip()
+        self.short_outcome_feedback_maxlen = max(100, self._env_int(
+            "SHORT_OUTCOME_FEEDBACK_MAXLEN",
+            5000,
+        ))
+        # Telemetry-only fee estimate. Lifecycle decisions remain gross until
+        # fee-aware exit behavior is explicitly validated offline.
+        self.short_estimated_round_trip_fee_pct = max(
+            0.0,
+            self._env_float("SHORT_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008),
         )
 
         self.short_entry_candle_service = (
@@ -422,27 +426,26 @@ class TradeExecutorShort:
                 self.logger.info(
                     "[EXEC-SHORT][INIT] "
                     "side=short dry_run=%s "
+                    "sizing=%s pct=%.4f "
                     "base_notional=%.4f max_notional=%.4f "
                     "max_leverage=%.2f default_leverage=%s "
-                    "min_score=%.4f open_min=%.4f short_thr=%.4f "
-                    "sniper=%s sniper_interval=%s sniper_window=%.3f..%.3f "
-                    "candle_dir=%s candle_interval=%s "
+                    "model_gate=upstream_master_only "
+                    "sniper_interval=%s sniper_window=%.3f..%.3f "
+                    "confirmation_interval=%s reversal_min=%.6f "
                     "fixed_roi=%s tp=%.6f giveback=%.6f "
                     "hard_stop=%.6f",
                     self.dry_run,
+                    self.short_sizing_mode,
+                    self.per_position_balance_pct,
                     self.base_order_notional,
                     self.max_position_notional,
                     self.max_leverage,
                     self.default_order_leverage,
-                    self.min_score,
-                    self.open_min_score,
-                    self.short_threshold,
-                    self.sniper_entry_enable,
                     self.sniper_entry_interval,
                     self.sniper_entry_min_candle_progress,
                     self.sniper_entry_max_candle_progress,
-                    self.entry_candle_dir_filter_enable,
                     self.entry_candle_dir_interval,
+                    self.short_current_reversal_min_pct,
                     self.fixed_roi_tp_enable,
                     self.fixed_roi_tp_pct,
                     self.fixed_roi_tp_giveback,
@@ -498,333 +501,15 @@ class TradeExecutorShort:
         }
 
     # =========================================================
-    # SHORT SCORE HELPERS
-    # =========================================================
-
-    def _get_coin_side_min_open_score(
-        self,
-        symbol: str,
-        side: str,
-        default_score: float,
-    ) -> float:
-        sym_u = str(symbol or "").upper().strip()
-        side_u = str(side or "").lower().strip()
-
-        if side_u != "short":
-            return float(default_score)
-
-        if not self._env_bool(
-            "COIN_SIDE_MIN_SCORE_ENABLE",
-            False,
-        ):
-            return float(default_score)
-
-        key = f"COIN_SHORT_MIN_SCORE_{sym_u}"
-        raw = os.getenv(key, "")
-
-        if not str(raw or "").strip():
-            return float(default_score)
-
-        try:
-            return float(raw)
-        except Exception:
-            return float(default_score)
-
-    def _resolve_signal_score_for_open(
-        self,
-        side: str,
-        extra: Optional[Dict[str, Any]] = None,
-        probs: Optional[Dict[str, Any]] = None,
-    ) -> float:
-        extra0 = extra if isinstance(extra, dict) else {}
-        probs0 = probs if isinstance(probs, dict) else {}
-        side_u = str(side or "").lower().strip()
-
-        def _f(value: Any) -> float:
-            try:
-                return float(value)
-            except Exception:
-                return 0.0
-
-        raw0 = extra0.get("raw") or {}
-
-        if isinstance(raw0, str):
-            try:
-                raw0 = json.loads(raw0)
-            except Exception:
-                raw0 = {}
-
-        if not isinstance(raw0, dict):
-            raw0 = {}
-
-        score = max(
-            _f(extra0.get("signal_score")),
-            _f(extra0.get("score")),
-            _f(extra0.get("_score_total_final")),
-            _f(extra0.get("_score_selected")),
-            _f(extra0.get("score_total")),
-            _f(raw0.get("signal_score")),
-            _f(raw0.get("score")),
-            _f(raw0.get("_score_total_final")),
-            _f(raw0.get("_score_selected")),
-            _f(raw0.get("score_total")),
-        )
-
-        if score > 0.0:
-            return float(score)
-
-        p_buy = max(
-            _f(extra0.get("p_buy_ema")),
-            _f(extra0.get("p_buy_raw")),
-            _f(probs0.get("p_buy")),
-        )
-
-        if 0.0 < p_buy <= 1.0:
-            if side_u == "short":
-                return float(1.0 - p_buy)
-
-            if side_u == "long":
-                return float(p_buy)
-
-        mcf = _f(
-            extra0.get("model_confidence_factor")
-        )
-
-        return float(mcf) if mcf > 0.0 else 0.0
-
-    def _resolve_dynamic_open_score(
-        self,
-        base_score: float,
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> float:
-        score = float(base_score)
-
-        if not self.dynamic_coin_score_enable:
-            return score
-
-        extra0 = extra if isinstance(extra, dict) else {}
-
-        atr_v = self._clip_float(
-            extra0.get("atr")
-            or extra0.get("atr_pct"),
-            0.0,
-        ) or 0.0
-
-        spread_v = self._clip_float(
-            extra0.get("spread_pct")
-            or extra0.get("spread"),
-            0.0,
-        ) or 0.0
-
-        if atr_v > 0.0:
-            score += self.dynamic_score_atr_boost
-
-        if spread_v > 0.0:
-            score += self.dynamic_score_spread_boost
-
-        return max(
-            self.dynamic_score_min,
-            min(self.dynamic_score_max, score),
-        )
-
-    # =========================================================
-    def _refresh_entry_1m_cache(self, symbol):
-        try:
-            rows = self.client.futures_klines(symbol=symbol, interval="1m", limit=3)
-            if rows:
-                write_kline_cache(symbol, "1m", rows, 90)
-                return True
-        except Exception as exc:
-            if self.logger:
-                self.logger.warning("[EXEC-SHORT][1M-REFRESH][WARN] symbol=%s err=%s", symbol, str(exc)[:200])
-        return False
-
 
     # FAST ENTRY KLINE
     # =========================================================
 
-    def _get_entry_kline(
-        self,
-        symbol: str,
-        interval: str,
-    ) -> Optional[Tuple[float, float]]:
-        sym_u = str(symbol or "").upper().strip()
-        interval_s = str(interval or "1m").strip()
 
-        if not sym_u:
-            return None
 
-        try:
-            rows = read_kline_cache(
-                sym_u,
-                interval_s,
-                max_age_sec=10.0,
-            )
-        except Exception:
-            rows = None
 
-        # Cache yoksa veya eskiyse, 1m veriyi Binance'ten
-        # anında yenile ve bir kez daha oku.
-        if (
-            (not isinstance(rows, list) or not rows)
-            and interval_s == "1m"
-        ):
-            refreshed = self._refresh_entry_1m_cache(sym_u)
 
-            if refreshed:
-                try:
-                    rows = read_kline_cache(
-                        sym_u,
-                        interval_s,
-                        max_age_sec=10.0,
-                    )
-                except Exception:
-                    rows = None
 
-                try:
-                    if self.logger:
-                        self.logger.info(
-                            "[EXEC-SHORT][1M-REFRESH] "
-                            "symbol=%s success=%s",
-                            sym_u,
-                            bool(
-                                isinstance(rows, list)
-                                and rows
-                            ),
-                        )
-                except Exception:
-                    pass
-
-        if not isinstance(rows, list) or not rows:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK][KLINE-CACHE] "
-                        "symbol=%s interval=%s reason=missing_after_refresh",
-                        sym_u,
-                        interval_s,
-                    )
-            except Exception:
-                pass
-
-            return None
-
-        row = rows[-1]
-
-        try:
-            if isinstance(row, (list, tuple)):
-                open_px = float(row[1])
-                close_px = float(row[4])
-
-            elif isinstance(row, dict):
-                open_px = float(
-                    row.get("open")
-                    or row.get("o")
-                    or 0.0
-                )
-
-                close_px = float(
-                    row.get("close")
-                    or row.get("c")
-                    or 0.0
-                )
-
-            else:
-                return None
-
-        except Exception:
-            return None
-
-        if open_px <= 0.0 or close_px <= 0.0:
-            return None
-
-        return float(open_px), float(close_px)
-
-    def _read_entry_kline_rows(
-        self,
-        symbol: str,
-        interval: str,
-    ):
-        return (
-            self.short_entry_candle_service
-            ._read_rows(
-                symbol,
-                interval,
-            )
-        )
-
-    def _entry_candle_open_time_ms(
-        self,
-        row: Any,
-    ) -> Optional[int]:
-        return (
-            self.short_entry_candle_service
-            ._open_time_ms(
-                row,
-            )
-        )
-
-    def _extract_entry_open_close(
-        self,
-        row: Any,
-    ) -> Optional[Tuple[float, float]]:
-        return (
-            self.short_entry_candle_service
-            ._extract_open_close(
-                row,
-            )
-        )
-
-    def _refresh_entry_1m_rows(
-        self,
-        *,
-        symbol: str,
-        interval: str,
-        rows: Any,
-        cache_has_current_candle: bool,
-        last_open_ms: Optional[int],
-        expected_current_open_ms: int,
-    ):
-        return (
-            self.short_entry_candle_service
-            ._refresh_1m_rows(
-                symbol=symbol,
-                interval=interval,
-                rows=rows,
-                cache_has_current_candle=(
-                    cache_has_current_candle
-                ),
-                last_open_ms=last_open_ms,
-                expected_current_open_ms=(
-                    expected_current_open_ms
-                ),
-            )
-        )
-
-    def _validate_entry_candle_rows(
-        self,
-        *,
-        symbol: str,
-        interval: str,
-        rows: Any,
-        expected_current_open_ms: int,
-    ) -> Optional[
-        Tuple[
-            Tuple[float, float],
-            Tuple[float, float],
-        ]
-    ]:
-        return (
-            self.short_entry_candle_service
-            ._validate_rows(
-                symbol=symbol,
-                interval=interval,
-                rows=rows,
-                expected_current_open_ms=(
-                    expected_current_open_ms
-                ),
-            )
-        )
 
     def _get_entry_candle_pair(
         self,
@@ -861,81 +546,6 @@ class TradeExecutorShort:
             time.time() % interval_sec
         ) / interval_sec
 
-    def _check_sniper_entry(
-        self,
-        symbol: str,
-        signal_score: float,
-        min_open_score: float,
-    ) -> bool:
-        if not self.sniper_entry_enable:
-            return True
-
-        progress = self._calc_candle_progress(
-            self.sniper_entry_interval
-        )
-
-        min_progress = float(
-            self.sniper_entry_min_candle_progress
-        )
-
-        max_progress = float(
-            self.sniper_entry_max_candle_progress
-        )
-
-        if progress < min_progress:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK][SNIPER-EARLY] "
-                        "symbol=%s progress=%.3f min=%.3f "
-                        "score=%.4f min_open=%.4f",
-                        symbol,
-                        progress,
-                        min_progress,
-                        signal_score,
-                        min_open_score,
-                    )
-            except Exception:
-                pass
-
-            return False
-
-        if progress > max_progress:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK][SNIPER-LATE] "
-                        "symbol=%s progress=%.3f max=%.3f "
-                        "score=%.4f min_open=%.4f",
-                        symbol,
-                        progress,
-                        max_progress,
-                        signal_score,
-                        min_open_score,
-                    )
-            except Exception:
-                pass
-
-            return False
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC-SHORT][SNIPER-ENTRY] "
-                    "symbol=%s progress=%.3f min=%.3f max=%.3f "
-                    "score=%.4f min_open=%.4f",
-                    symbol,
-                    progress,
-                    min_progress,
-                    max_progress,
-                    signal_score,
-                    min_open_score,
-                )
-        except Exception:
-            pass
-
-        return True
-
     # =========================================================
     # SHORT 1M CANDLE DIRECTION
     # =========================================================
@@ -952,9 +562,6 @@ class TradeExecutorShort:
         3. Mevcut mum aşağı dönüş göstermeli.
         4. Aşağı dönüş minimum yüzdeyi aşmalı.
         """
-        if not self.entry_candle_dir_filter_enable:
-            return True
-
         candles = self._get_entry_candle_pair(
             symbol=symbol,
             interval=self.entry_candle_dir_interval,
@@ -1012,10 +619,7 @@ class TradeExecutorShort:
             / curr_open
         )
 
-        min_reversal_pct = self._env_float(
-            "SHORT_CURRENT_REVERSAL_MIN_PCT",
-            0.0001,
-        )
+        min_reversal_pct = float(self.short_current_reversal_min_pct)
 
         if reversal_pct < min_reversal_pct:
             try:
@@ -1058,113 +662,6 @@ class TradeExecutorShort:
         return True
 
     # =========================================================
-    # SHORT CONTINUATION ENTRY
-    # =========================================================
-
-    def _prepare_short_continuation_candles(
-        self,
-        *,
-        symbol: str,
-    ) -> Dict[str, Any]:
-        return (
-            self.short_continuation_engine
-            ._prepare_candles(
-                symbol=symbol,
-            )
-        )
-
-    def _get_short_continuation_config(
-        self,
-    ) -> Dict[str, Any]:
-        return (
-            self.short_continuation_engine
-            ._get_config()
-        )
-
-    def _evaluate_short_continuation_rules(
-        self,
-        *,
-        symbol: str,
-        completed: list,
-        current: Dict[str, Any],
-        config: Dict[str, Any],
-    ) -> bool:
-        return (
-            self.short_continuation_engine
-            ._evaluate_rules(
-                symbol=symbol,
-                completed=completed,
-                current=current,
-                config=config,
-            )
-        )
-
-    def _check_short_continuation(
-        self,
-        symbol: str,
-    ) -> bool:
-        return (
-            self.short_continuation_engine
-            .check(
-                symbol=symbol,
-            )
-        )
-
-
-    def _check_short_entry_pattern(
-        self,
-        symbol: str,
-    ) -> bool:
-        """
-        SHORT giriş modelleri birbirinin alternatifidir.
-
-        Öncelik:
-        1. Reversal
-        2. Continuation
-        """
-        if self._check_short_candle_direction(
-            symbol=symbol,
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][ENTRY-MODE] "
-                        "symbol=%s mode=reversal",
-                        symbol,
-                    )
-            except Exception:
-                pass
-
-            return True
-
-        if self._check_short_continuation(
-            symbol=symbol,
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][ENTRY-MODE] "
-                        "symbol=%s mode=continuation",
-                        symbol,
-                    )
-            except Exception:
-                pass
-
-            return True
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC-SHORT][OPEN-BLOCK]"
-                    "[NO-ENTRY-PATTERN] symbol=%s",
-                    symbol,
-                )
-        except Exception:
-            pass
-
-        return False
-
-    # =========================================================
     # PRICE
     # =========================================================
 
@@ -1183,7 +680,7 @@ class TradeExecutorShort:
             ):
                 px = pc.get_mid(
                     sym_u,
-                    max_age_sec=2.0,
+                    max_age_sec=float(self.short_price_cache_max_age_sec),
                 )
 
                 px_f = self._clip_float(px, None)
@@ -1203,7 +700,7 @@ class TradeExecutorShort:
             ):
                 px = rpc.get_mid(
                     sym_u,
-                    max_age_sec=2.0,
+                    max_age_sec=float(self.short_price_cache_max_age_sec),
                 )
 
                 px_f = self._clip_float(px, None)
@@ -1238,32 +735,25 @@ class TradeExecutorShort:
     ) -> Optional[float]:
         sym_u = str(symbol or "").upper().strip()
 
-        try:
-            fn = getattr(
-                self.client,
-                "futures_mark_price",
-                None,
-            )
+        # Prefer the shared live price caches. This avoids a Binance REST call on
+        # every lifecycle tick when the central market-data path is healthy.
+        cached = self._get_cached_mid_price(sym_u)
+        if cached is not None and cached > 0.0:
+            return float(cached)
 
+        try:
+            fn = getattr(self.client, "futures_mark_price", None)
             if callable(fn):
                 out = fn(symbol=sym_u)
-
                 if isinstance(out, dict):
-                    px = self._clip_float(
-                        out.get("markPrice"),
-                        None,
-                    )
-
+                    px = self._clip_float(out.get("markPrice"), None)
                     if px is not None and px > 0.0:
                         return float(px)
-
         except Exception:
             pass
 
-        return self._resolve_price(
-            symbol=sym_u,
-            price=fallback_price,
-        )
+        px = self._clip_float(fallback_price, None)
+        return float(px) if px is not None and px > 0.0 else None
 
     # =========================================================
     # EXCHANGE INFO
@@ -1373,57 +863,40 @@ class TradeExecutorShort:
         min_notional = 0.0
 
         filters = info.get("filters")
+        market_lot = None
+        lot = None
 
         if isinstance(filters, list):
             for item in filters:
                 if not isinstance(item, dict):
                     continue
 
-                ftype = str(
-                    item.get("filterType") or ""
-                ).upper()
-
-                if ftype in (
-                    "LOT_SIZE",
-                    "MARKET_LOT_SIZE",
-                ):
-                    try:
-                        step = max(
-                            step,
-                            float(
-                                item.get("stepSize")
-                                or 0.0
-                            ),
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        min_qty = max(
-                            min_qty,
-                            float(
-                                item.get("minQty")
-                                or 0.0
-                            ),
-                        )
-                    except Exception:
-                        pass
-
-                if ftype in (
-                    "MIN_NOTIONAL",
-                    "NOTIONAL",
-                ):
+                ftype = str(item.get("filterType") or "").upper()
+                if ftype == "MARKET_LOT_SIZE":
+                    market_lot = item
+                elif ftype == "LOT_SIZE":
+                    lot = item
+                elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
                     try:
                         min_notional = max(
                             min_notional,
-                            float(
-                                item.get("notional")
-                                or item.get("minNotional")
-                                or 0.0
-                            ),
+                            float(item.get("notional") or item.get("minNotional") or 0.0),
                         )
                     except Exception:
                         pass
+
+        # MARKET orders use MARKET_LOT_SIZE when Binance provides it;
+        # LOT_SIZE is only the fallback. Never merge two distinct filters.
+        qty_filter = market_lot if isinstance(market_lot, dict) else lot
+        if isinstance(qty_filter, dict):
+            try:
+                step = float(qty_filter.get("stepSize") or 0.0)
+            except Exception:
+                step = 0.0
+            try:
+                min_qty = float(qty_filter.get("minQty") or 0.0)
+            except Exception:
+                min_qty = 0.0
 
         qty = self._floor_to_step(
             float(raw_qty),
@@ -1564,72 +1037,199 @@ class TradeExecutorShort:
     # REAL SHORT OPEN
     # =========================================================
 
-    def _validate_short_open_request(
-        self,
-        *,
-        symbol: str,
-        now_ts: float,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        SHORT pozisyon açılmadan önce yerel giriş engellerini kontrol eder.
+    def _set_short_stop_reentry_lock(self, *, symbol: str, now_ts: Optional[float] = None) -> float:
+        """Arm stop-only same-symbol re-entry lock; return expiry epoch."""
+        sym_u = str(symbol or "").upper().strip()
+        sec = max(0.0, float(self.short_stop_reentry_cooldown_sec or 0.0))
+        if not sym_u or sec <= 0.0:
+            return 0.0
+        now_f = float(now_ts if now_ts is not None else time.time())
+        until = now_f + sec
+        self._short_stop_reentry_until[sym_u] = until
+        try:
+            if self.redis is not None:
+                ttl = max(60, int(sec) + 60)
+                self.redis.setex(f"risk:short:stop_reentry_until:{sym_u}", ttl, str(until))
+        except Exception:
+            pass
+        return until
 
-        Open lock bu helper dışında yönetilir. Böylece lock her durumda
-        open_position_from_signal() içindeki finally bloğunda temizlenir.
-        """
+    def _get_short_stop_reentry_until(self, symbol: str) -> float:
+        sym_u = str(symbol or "").upper().strip()
+        local = float(self._short_stop_reentry_until.get(sym_u) or 0.0)
+        remote = 0.0
+        try:
+            if self.redis is not None:
+                remote = float(self.redis.get(f"risk:short:stop_reentry_until:{sym_u}") or 0.0)
+        except Exception:
+            remote = 0.0
+        return max(local, remote)
+
+    def _resolve_short_open_risk_state(self, *, symbol: str, now_ts: float, signal_score: float = 0.0, model_threshold: float = 0.0) -> Optional[Dict[str, Any]]:
+        del signal_score
+        del model_threshold
         sym_u = str(symbol or "").upper().strip()
 
-        if (
-            self.block_same_symbol_reentry
-            and self._get_position(sym_u) is not None
-        ):
+        # Single-position authority: never add to an already-open symbol.
+        # A new entry is allowed only after the previous position is fully closed.
+        existing = self._get_position(sym_u)
+        if isinstance(existing, dict):
+            return {"status": "skip", "reason": "position_exists", "symbol": sym_u}
+
+        stop_reentry_until = self._get_short_stop_reentry_until(sym_u)
+        if stop_reentry_until > float(now_ts):
             return {
                 "status": "skip",
-                "reason": "position_exists",
+                "reason": "stop_reentry_cooldown",
                 "symbol": sym_u,
+                "retry_after_sec": max(0.0, stop_reentry_until - float(now_ts)),
             }
 
         last_open_ts = 0.0
-
         try:
             if self.redis is not None:
-                raw = self.redis.get(
-                    f"bot:last_open_ts:{sym_u}"
-                )
-
-                last_open_ts = float(raw or 0.0)
-
+                last_open_ts = float(self.redis.get(f"bot:last_open_ts:{sym_u}") or 0.0)
         except Exception:
             last_open_ts = 0.0
+        if last_open_ts > 0.0 and (float(now_ts) - last_open_ts) < self.same_symbol_open_cooldown_sec:
+            return {"status": "skip", "reason": "symbol_cooldown", "symbol": sym_u}
 
-        if (
-            last_open_ts > 0.0
-            and (
-                float(now_ts) - last_open_ts
-            ) < self.same_symbol_open_cooldown_sec
-        ):
-            return {
-                "status": "skip",
-                "reason": "symbol_cooldown",
-                "symbol": sym_u,
-            }
-
-        if (
-            self._count_open_positions()
-            >= self.max_open_positions
-        ):
-            return {
-                "status": "skip",
-                "reason": "max_open_positions",
-                "symbol": sym_u,
-            }
-
+        if self._count_open_positions() >= self.max_open_positions:
+            return {"status": "skip", "reason": "max_open_positions", "symbol": sym_u}
         return None
+
+    def _get_short_equity_usdt_sync(self) -> float:
+        client = getattr(self, "client", None)
+        if client is None:
+            return 0.0
+        try:
+            fn = getattr(client, "futures_account_balance", None)
+            if callable(fn):
+                rows = fn()
+                if isinstance(rows, list):
+                    for row in rows:
+                        if str(row.get("asset") or "").upper() == "USDT":
+                            return max(0.0, float(row.get("balance") or 0.0))
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_short_available_balance_usdt_sync(self) -> float:
+        client = getattr(self, "client", None)
+        if client is None:
+            return 0.0
+        try:
+            fn = getattr(client, "futures_account", None)
+            if callable(fn):
+                acc = fn()
+                if isinstance(acc, dict):
+                    return max(0.0, float(acc.get("availableBalance") or 0.0))
+        except Exception:
+            pass
+        return 0.0
+
+    def _resolve_short_drawdown_mode(self, equity: float) -> Dict[str, Any]:
+        equity=max(0.0,float(equity))
+        peak=max(float(self._short_equity_peak or 0.0),equity)
+        mode=str(self._short_risk_mode or "NORMAL").upper()
+        try:
+            if self.redis is not None:
+                peak=max(peak,float(self.redis.get("risk:short:equity_peak") or 0.0))
+                raw=self.redis.get("risk:short:dd_mode")
+                if raw is not None:
+                    m=raw.decode() if isinstance(raw,(bytes,bytearray)) else str(raw)
+                    if m.upper() in ("NORMAL","REDUCED"): mode=m.upper()
+        except Exception:
+            pass
+        dd=max(0.0,(peak-equity)/peak) if peak>0 else 0.0
+        if mode=="NORMAL" and dd>=self.short_dd_reduce_trigger_pct: mode="REDUCED"
+        elif mode=="REDUCED" and dd<=self.short_dd_recover_trigger_pct: mode="NORMAL"
+        self._short_equity_peak=peak; self._short_risk_mode=mode
+        try:
+            if self.redis is not None:
+                self.redis.set("risk:short:equity_peak",str(peak)); self.redis.set("risk:short:dd_mode",mode)
+        except Exception: pass
+        return {"mode":mode,"peak":peak,"dd_pct":dd}
+
+    def _resolve_short_position_risk(
+        self,
+        *,
+        equity: float,
+        market_context_multiplier: float,
+    ) -> Dict[str, Any]:
+        """Resolve SHORT position risk through the shared Risk Master contract.
+
+        Drawdown state is still locally sourced during the current migration phase,
+        but the combination rule is centralized in risk_decision.v1.
+        """
+        gov = self._resolve_short_drawdown_mode(float(equity))
+        decision = evaluate_position_risk(
+            market_context_multiplier=market_context_multiplier,
+            base_mode=str(gov.get("mode") or "NORMAL"),
+            normal_multiplier=self.short_normal_position_equity_pct,
+            reduced_multiplier=self.short_reduced_position_equity_pct,
+        ).to_dict()
+        decision["drawdown_pct"] = float(gov.get("dd_pct") or 0.0)
+        decision["equity_peak"] = float(gov.get("peak") or 0.0)
+        return decision
+
+    def _resolve_short_order_notional(
+        self,
+        *,
+        symbol: str,
+        risk_multiplier: float = 1.0,
+    ) -> Optional[float]:
+        del symbol
+        min_n = float(self.short_min_order_notional_usdt)
+        try:
+            market_mult = max(0.0, min(1.0, float(risk_multiplier)))
+        except Exception:
+            market_mult = 1.0
+        if market_mult <= 0.0:
+            return None
+
+        if self.short_sizing_mode != "equity_single":
+            max_n = float(self.max_position_notional)
+            if max_n < min_n:
+                return None
+            if self.short_sizing_mode == "fixed":
+                base_notional = max(min_n, min(float(self.base_order_notional), max_n))
+            else:
+                available = self._get_short_available_balance_usdt_sync()
+                equity = self._get_short_equity_usdt_sync()
+                base = available if self.use_available_balance_for_sizing and available > 0 else equity
+                if base <= 0:
+                    return None
+                base_notional = max(min_n, min(base * self.per_position_balance_pct, max_n))
+            decision = evaluate_position_risk(
+                market_context_multiplier=market_mult,
+                base_mode="NORMAL",
+                normal_multiplier=1.0,
+                reduced_multiplier=1.0,
+            )
+            notional = float(base_notional) * float(decision.final_size_multiplier)
+            return None if notional < min_n else float(notional)
+
+        equity = self._get_short_equity_usdt_sync()
+        if equity <= 0:
+            return None
+        decision = self._resolve_short_position_risk(
+            equity=equity,
+            market_context_multiplier=market_mult,
+        )
+        if str(decision.get("state") or "") != "READY":
+            return None
+        notional = float(equity) * float(decision.get("final_size_multiplier") or 0.0)
+        if notional < min_n:
+            return None
+        return float(notional)
 
     def _prepare_short_open_order(
         self,
         *,
         symbol: str,
         fallback_price: Any = None,
+        risk_multiplier: float = 1.0,
     ) -> Dict[str, Any]:
         """
         SHORT market emri için fiyat, miktar ve leverage hazırlar.
@@ -1653,15 +1253,17 @@ class TradeExecutorShort:
                 },
             }
 
-        notional = min(
-            float(self.base_order_notional),
-            float(self.max_position_notional),
-        )
+        notional = self._resolve_short_order_notional(symbol=sym_u, risk_multiplier=risk_multiplier)
 
-        notional = max(
-            10.0,
-            float(notional),
-        )
+        if notional is None or float(notional) <= 0.0:
+            return {
+                "ok": False,
+                "result": {
+                    "status": "skip",
+                    "reason": "sizing_unavailable",
+                    "symbol": sym_u,
+                },
+            }
 
         raw_qty = (
             float(notional)
@@ -1700,6 +1302,7 @@ class TradeExecutorShort:
                 * float(order_price)
             ),
             "leverage": int(leverage),
+            "risk_multiplier": max(0.0, min(1.0, float(risk_multiplier))),
             "qty_meta": qty_meta,
         }
 
@@ -1713,6 +1316,7 @@ class TradeExecutorShort:
         leverage: int,
         now_ts: float,
         order: Any,
+        entry_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Açılan SHORT pozisyonu yerel store ve Redis'e kaydeder.
@@ -1721,22 +1325,27 @@ class TradeExecutorShort:
         """
         sym_u = str(symbol or "").upper().strip()
 
+        meta0 = dict(entry_meta) if isinstance(entry_meta, dict) else {}
+        existing = self._get_position(sym_u)
+        if isinstance(existing, dict):
+            # Final-safety should prevent this path. Never merge/average positions.
+            raise RuntimeError(f"single_position_violation:{sym_u}")
+
         pos = {
             "symbol": sym_u,
             "side": "short",
             "qty": float(qty),
             "entry_price": float(order_price),
-            "notional": (
-                float(qty)
-                * float(order_price)
-            ),
-            "interval": str(
-                interval or self.entry_interval
-            ),
+            "notional": float(qty) * float(order_price),
+            "interval": str(interval or self.entry_interval),
             "leverage": int(leverage),
             "created_ts": float(now_ts),
             "best_roi_pct": 0.0,
+            "position_mode": "single",
         }
+        pos["model_provider"] = str(meta0.get("model_provider") or "short_coin_specific")
+        pos["signal_score"] = float(self._clip_float(meta0.get("signal_score"), 0.0) or 0.0)
+        pos["open_min_score"] = float(self._clip_float(meta0.get("open_min_score"), 0.0) or 0.0)
 
         self._set_position(
             sym_u,
@@ -1745,9 +1354,10 @@ class TradeExecutorShort:
 
         try:
             if self.redis is not None:
+                cooldown_ttl = max(3600, int(self.same_symbol_open_cooldown_sec) + 60)
                 self.redis.setex(
                     f"bot:last_open_ts:{sym_u}",
-                    3600,
+                    cooldown_ttl,
                     str(now_ts),
                 )
         except Exception:
@@ -1783,6 +1393,7 @@ class TradeExecutorShort:
                 pos["notional"]
             ),
             "leverage": int(leverage),
+            "position_mode": "single",
             "order": order,
         }
 
@@ -1818,7 +1429,7 @@ class TradeExecutorShort:
             or 0.0
         )
 
-        if now_ts - lock_ts < 5.0:
+        if now_ts - lock_ts < float(self.short_open_lock_sec):
             return {
                 "status": "skip",
                 "reason": "open_lock",
@@ -1828,17 +1439,36 @@ class TradeExecutorShort:
         self._symbol_open_locks[sym_u] = now_ts
 
         try:
-            guard_result = self._validate_short_open_request(
+            final_safety = self._evaluate_short_final_safety_stage(
                 symbol=sym_u,
                 now_ts=now_ts,
+                signal_score=float(meta0.get("signal_score") or 0.0),
+                model_threshold=float(meta0.get("open_min_score") or meta0.get("model_score_gate_threshold") or 0.0),
             )
+            if final_safety["state"] != "READY":
+                result = final_safety.get("result")
+                if isinstance(result, dict):
+                    return result
+                return {
+                    "status": "skip",
+                    "reason": str(final_safety.get("reason") or "final_safety"),
+                    "symbol": sym_u,
+                }
 
-            if guard_result is not None:
-                return guard_result
+            market_context0, risk_context_source = self._select_short_risk_market_context(meta0)
+            meta0["risk_context_source"] = str(risk_context_source)
+            market_risk_multiplier, market_risk_reasons = resolve_market_context_multiplier(
+                market_context=market_context0,
+                oi_confirmed_build_enable=self.risk_oi_confirmed_build_enable,
+                oi_confirmed_build_multiplier=self.risk_oi_confirmed_build_multiplier,
+            )
+            meta0["market_risk_multiplier"] = float(market_risk_multiplier)
+            meta0["market_risk_reasons"] = list(market_risk_reasons)
 
             order_plan = self._prepare_short_open_order(
                 symbol=sym_u,
                 fallback_price=meta0.get("price"),
+                risk_multiplier=float(market_risk_multiplier),
             )
 
             if not order_plan.get("ok", False):
@@ -1878,6 +1508,7 @@ class TradeExecutorShort:
                 leverage=leverage,
                 now_ts=now_ts,
                 order=order,
+                entry_meta=meta0,
             )
 
         except Exception as exc:
@@ -2001,6 +1632,78 @@ class TradeExecutorShort:
             "qty": float(qty),
         }
 
+    def _emit_short_outcome_feedback(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+        exit_price: float,
+        pnl_pct: float,
+        roi_pct: float,
+        reason: str,
+    ) -> None:
+        """Bounded structured outcome record for later analysis/retraining."""
+        if not self.short_outcome_feedback_enable:
+            return
+
+        now_ts = time.time()
+        created_ts = self._clip_float(position.get("created_ts"), now_ts) or now_ts
+        fee_pct = max(0.0, float(self.short_estimated_round_trip_fee_pct))
+        leverage = max(1.0, float(self._clip_float(position.get("leverage"), self.default_order_leverage) or 1.0))
+        estimated_net_pnl_pct = float(pnl_pct) - fee_pct
+        estimated_net_roi_pct = float(roi_pct) - (fee_pct * leverage)
+        record = {
+            "ts": float(now_ts),
+            "symbol": str(symbol or "").upper().strip(),
+            "side": "short",
+            "model_provider": str(position.get("model_provider") or "hybrid_coin_specific"),
+            "signal_score": float(self._clip_float(position.get("signal_score"), 0.0) or 0.0),
+            "open_min_score": float(self._clip_float(position.get("open_min_score"), 0.0) or 0.0),
+            "entry_price": float(self._clip_float(position.get("entry_price"), 0.0) or 0.0),
+            "exit_price": float(exit_price),
+            # Backward-compatible gross fields.
+            "pnl_pct": float(pnl_pct),
+            "roi_pct": float(roi_pct),
+            "gross_pnl_pct": float(pnl_pct),
+            "gross_roi_pct": float(roi_pct),
+            "estimated_round_trip_fee_pct": float(fee_pct),
+            "estimated_net_pnl_pct": float(estimated_net_pnl_pct),
+            "estimated_net_roi_pct": float(estimated_net_roi_pct),
+            "estimated_net_pnl_bps": float(estimated_net_pnl_pct * 10000.0),
+            "duration_sec": max(0.0, float(now_ts) - float(created_ts)),
+            "reason": str(reason or "unknown"),
+        }
+
+        try:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][OUTCOME] %s",
+                    json.dumps(record, separators=(",", ":"), sort_keys=True),
+                )
+        except Exception:
+            pass
+
+        try:
+            if self.redis is not None and self.short_outcome_feedback_stream:
+                self.redis.xadd(
+                    self.short_outcome_feedback_stream,
+                    {
+                        "symbol": record["symbol"],
+                        "json": json.dumps(record, separators=(",", ":"), sort_keys=True),
+                    },
+                    maxlen=int(self.short_outcome_feedback_maxlen),
+                    approximate=True,
+                )
+        except Exception as exc:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC-SHORT][OUTCOME][WARN] symbol=%s err=%s",
+                        record["symbol"], str(exc)[:160],
+                    )
+            except Exception:
+                pass
+
     def _finalize_short_close(
         self,
         *,
@@ -2043,15 +1746,23 @@ class TradeExecutorShort:
 
         roi_pct = pnl_pct * leverage
 
+        self._emit_short_outcome_feedback(
+            symbol=sym_u,
+            position=position,
+            exit_price=float(exit_price),
+            pnl_pct=float(pnl_pct),
+            roi_pct=float(roi_pct),
+            reason=str(reason),
+        )
+
         self._del_position(sym_u)
 
-        try:
-            if self.redis is not None:
-                self.redis.delete(
-                    f"fixed_roi_best:{sym_u}"
-                )
-        except Exception:
-            pass
+        if str(reason or "").strip().lower() in {
+            "dynamic_stop_confirmed",
+            "dynamic_stop_catastrophic",
+            "roi_hard_stop",
+        }:
+            self._set_short_stop_reentry_lock(symbol=sym_u)
 
         try:
             if self.logger:
@@ -2118,15 +1829,17 @@ class TradeExecutorShort:
             symbol=sym_u,
             price=price,
         )
-
-        if (
-            exit_price is None
-            or exit_price <= 0.0
-        ):
-            exit_price = float(
-                pos.get("entry_price")
-                or 0.0
+        if exit_price is None or exit_price <= 0.0:
+            exit_price = self._resolve_order_price(
+                symbol=sym_u,
+                fallback_price=pos.get("mark_price"),
             )
+        if exit_price is None or exit_price <= 0.0:
+            return {
+                "status": "skip",
+                "reason": "missing_close_price",
+                "symbol": sym_u,
+            }
 
         try:
             order = self._exchange_close_market(
@@ -2234,21 +1947,6 @@ class TradeExecutorShort:
 
         return int(ts // interval_sec)
 
-    def _get_short_pending(
-        self,
-        symbol: str,
-    ) -> Optional[Dict[str, Any]]:
-        sym_u = str(symbol or "").upper().strip()
-
-        if not sym_u:
-            return None
-
-        pending = self._pending_short_entries.get(sym_u)
-
-        if not isinstance(pending, dict):
-            return None
-
-        return pending
 
     def _pop_short_pending(
         self,
@@ -2275,6 +1973,7 @@ class TradeExecutorShort:
         signal_score: float,
         min_score: float,
         price: float,
+        market_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         SHORT pending kaydını mevcut mum kimliğiyle oluşturur.
@@ -2304,6 +2003,7 @@ class TradeExecutorShort:
             "score": float(signal_score),
             "min_score": float(min_score),
             "price": float(price or 0.0),
+            "market_context": dict(market_context) if isinstance(market_context, dict) else {},
         }
 
         self._pending_short_entries[sym_u] = pending
@@ -2323,6 +2023,29 @@ class TradeExecutorShort:
             pass
 
         return pending
+
+    def _store_short_pending_from_stage(
+        self,
+        *,
+        symbol: str,
+        signal_score: float,
+        min_score: float,
+        price: float,
+        market_context: Dict[str, Any],
+        extra: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Single pending-write path for SNIPER and ENTRY CONFIRMATION."""
+        return self._create_short_pending(
+            symbol=symbol,
+            signal_score=signal_score,
+            min_score=min_score,
+            price=price,
+            market_context={
+                "provider": market_context.get("provider"),
+                "probs": dict(market_context.get("probs") or {}),
+                "extra": dict(extra or {}),
+            },
+        )
 
     def _cancel_short_pending(
         self,
@@ -2393,7 +2116,7 @@ class TradeExecutorShort:
         if candle_age <= 0:
             return "wait_same_candle", candle_age
 
-        if candle_age > 1:
+        if candle_age > int(self.short_pending_max_candle_age):
             return "expired", candle_age
 
         if (
@@ -2461,6 +2184,7 @@ class TradeExecutorShort:
         retryable_pre_order_reasons = {
             "open_lock",
             "symbol_cooldown",
+            "stop_reentry_cooldown",
             "max_open_positions",
             "missing_price",
         }
@@ -2626,55 +2350,122 @@ class TradeExecutorShort:
         symbol: str,
         pending: Dict[str, Any],
     ):
-        """
-        Pending SHORT kaydı için fiyat, skor ve
-        canlı candidate değerlendirmesini hazırlar.
-        """
-        pending_score = float(
-            pending.get("score")
-            or 0.0
+        """Revalidate one pending SHORT through the same active gate authorities."""
+        pending_score = float(pending.get("score") or 0.0)
+        pending_min_score = float(pending.get("min_score") or 0.0)
+        stored_context = pending.get("market_context") if isinstance(pending.get("market_context"), dict) else {}
+        provider = str(stored_context.get("provider") or "hybrid_coin_specific").strip().lower()
+        stored_extra = dict(stored_context.get("extra") or {})
+        stored_extra.setdefault("model_provider", provider)
+        revalidated_context = self._build_short_market_context_stage(
+            probs=stored_context.get("probs") if isinstance(stored_context.get("probs"), dict) else {},
+            extra=stored_extra,
         )
-
-        pending_min_score = float(
-            pending.get("min_score")
-            or 0.0
-        )
-
-        pending_price = (
-            self._resolve_short_pending_price(
-                symbol=symbol,
-                pending=pending,
+        if revalidated_context["state"] != "READY":
+            candidate = self._make_short_entry_decision(
+                allow=False, action="block",
+                reason=str(revalidated_context.get("reason") or "market_context"),
+                signal_score=pending_score, required_score=pending_min_score, retryable=False,
             )
-        )
+            return float(pending.get("price") or 0.0), pending_score, pending_min_score, candidate
 
+        pending_price = self._resolve_short_pending_price(
+            symbol=symbol,
+            pending=pending,
+        )
         if pending_price is None:
             try:
                 if self.logger:
                     self.logger.info(
-                        "[EXEC-SHORT][PENDING-WAIT] "
-                        "symbol=%s "
-                        "reason=missing_price",
+                        "[EXEC-SHORT][PENDING-WAIT] symbol=%s reason=missing_price",
                         symbol,
                     )
             except Exception:
                 pass
-
             return None
 
-        candidate = self._evaluate_short_candidate(
+        score_gate = self._evaluate_short_model_score_gate_stage(
             symbol=symbol,
-            price=float(pending_price),
+            market_context=revalidated_context,
+        )
+        pending_score = float(score_gate.get("signal_score") or 0.0)
+        pending_min_score = float(score_gate.get("final_min_score") or 0.0)
+        if score_gate["state"] not in ("READY", "PENDING_CONTEXT"):
+            candidate = self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason=str(score_gate.get("reason") or "model_score_gate"),
+                signal_score=pending_score,
+                required_score=pending_min_score,
+                retryable=False,
+            )
+            return float(pending_price), pending_score, pending_min_score, candidate
+
+        sniper = self._evaluate_short_sniper_stage(
+            symbol=symbol,
             signal_score=pending_score,
             final_min_score=pending_min_score,
             allow_pending=False,
         )
+        if sniper["state"] != "READY":
+            candidate = sniper.get("decision") or self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason=str(sniper.get("reason") or "pending_sniper"),
+                signal_score=pending_score,
+                required_score=pending_min_score,
+                progress=sniper.get("progress"),
+                retryable=False,
+            )
+            return float(pending_price), pending_score, pending_min_score, candidate
 
-        return (
-            float(pending_price),
-            pending_score,
-            pending_min_score,
-            candidate,
+        confirmation = self._evaluate_short_entry_confirmation_stage(
+            symbol=symbol,
+            signal_score=pending_score,
+            final_min_score=pending_min_score,
+            progress=float(sniper["progress"]),
         )
+        if confirmation["state"] != "READY":
+            candidate = confirmation.get("decision") or self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason=str(confirmation.get("reason") or "entry_confirmation"),
+                signal_score=pending_score,
+                required_score=pending_min_score,
+                progress=float(sniper["progress"]),
+                retryable=True,
+            )
+            return float(pending_price), pending_score, pending_min_score, candidate
+
+        risk = self._evaluate_short_execution_risk_stage(
+            symbol=symbol,
+            signal_score=pending_score,
+            model_threshold=pending_min_score,
+        )
+        if risk["state"] != "READY":
+            reason = str(risk.get("reason") or "execution_risk")
+            retryable = reason in {"symbol_cooldown", "stop_reentry_cooldown", "max_open_positions", "open_lock"}
+            candidate = self._make_short_entry_decision(
+                allow=False,
+                action="block",
+                reason=reason,
+                signal_score=pending_score,
+                required_score=pending_min_score,
+                progress=float(sniper["progress"]),
+                retryable=retryable,
+            )
+            return float(pending_price), pending_score, pending_min_score, candidate
+
+        candidate = self._make_short_entry_decision(
+            allow=True,
+            action="open",
+            reason="pending_revalidated",
+            signal_score=pending_score,
+            required_score=pending_min_score,
+            progress=float(sniper["progress"]),
+            retryable=False,
+        )
+        return float(pending_price), pending_score, pending_min_score, candidate
 
     def _prepare_short_pending_open_payload(
         self,
@@ -2737,12 +2528,24 @@ class TradeExecutorShort:
         SHORT pending kaydını worker thread içinde
         açar ve sonucu pending yöneticisine iletir.
         """
+        shadow_kline_rows = self.short_entry_candle_service.get_last_rows(
+            symbol, self.entry_candle_dir_interval
+        )
+
         result = await asyncio.to_thread(
             self.open_position_from_signal,
             symbol,
             "short",
             self.entry_interval,
             pending,
+        )
+
+        self._schedule_short_context_shadow(
+            symbol=symbol,
+            payload=pending,
+            confirmation_open_ms=int(pending.get("shadow_confirmation_open_ms") or self._short_confirmation_open_ms()),
+            entry_path="pending_revalidated",
+            kline_rows=shadow_kline_rows,
         )
 
         self._handle_short_pending_open_result(
@@ -2798,6 +2601,32 @@ class TradeExecutorShort:
         ):
             return
 
+        pending["shadow_confirmation_open_ms"] = self._short_confirmation_open_ms()
+        pending_rows = self.short_entry_candle_service.get_last_rows(
+            sym_u, self.entry_candle_dir_interval
+        )
+        pending["entry_market_context"] = self._build_short_entry_market_context(
+            symbol=sym_u,
+            confirmation_open_ms=int(pending["shadow_confirmation_open_ms"]),
+            kline_rows=pending_rows,
+        )
+        soft_context_gate = self._evaluate_short_soft_context_revalidation_stage(
+            payload=pending,
+            entry_market_context=pending.get("entry_market_context"),
+        )
+        if soft_context_gate["state"] != "READY":
+            self._cancel_short_pending(
+                symbol=sym_u,
+                reason=str(soft_context_gate.get("reason") or "soft_context"),
+                signal_score=pending_score,
+                min_score=pending_min_score,
+            )
+            return
+        score_contract = self._extract_short_score_contract(pending)
+        if str(score_contract.get("model_score_gate_state") or "").strip().upper() == "PENDING_CONTEXT":
+            pending["model_score_gate_promoted"] = True
+            pending["model_score_gate_promotion_reason"] = str(soft_context_gate.get("reason") or "")
+
         self._prepare_short_pending_open_payload(
             symbol=sym_u,
             pending=pending,
@@ -2835,10 +2664,8 @@ class TradeExecutorShort:
             self.sniper_entry_interval
         )
 
-        max_pending_progress = min(
-            self.sniper_entry_max_candle_progress,
-            0.20,
-        )
+        # PENDING revalidation uses the same SNIPER window authority as direct entry.
+        max_pending_progress = float(self.sniper_entry_max_candle_progress)
 
         for psym, pending in list(
             self._pending_short_entries.items()
@@ -2889,388 +2716,7 @@ class TradeExecutorShort:
 
         return decision
 
-    def _evaluate_short_sniper_gate(
-        self,
-        *,
-        symbol: str,
-        signal_score: float,
-        final_min_score: float,
-        allow_pending: bool,
-    ):
-        """
-        SHORT girişinin sniper zaman penceresini
-        değerlendirir.
 
-        Dönüş:
-            progress, decision
-
-        decision=None ise sniper kapısı geçilmiştir.
-        """
-        progress = self._calc_candle_progress(
-            self.sniper_entry_interval
-        )
-
-        if (
-            progress
-            > self.sniper_entry_max_candle_progress
-        ):
-            if allow_pending:
-                return (
-                    progress,
-                    self._make_short_entry_decision(
-                        allow=False,
-                        action="pending",
-                        reason="sniper_window_passed",
-                        signal_score=signal_score,
-                        required_score=final_min_score,
-                        progress=progress,
-                        retryable=True,
-                    ),
-                )
-
-            return (
-                progress,
-                self._make_short_entry_decision(
-                    allow=False,
-                    action="block",
-                    reason="pending_window_passed",
-                    signal_score=signal_score,
-                    required_score=final_min_score,
-                    progress=progress,
-                    retryable=False,
-                ),
-            )
-
-        if not self._check_sniper_entry(
-            symbol=symbol,
-            signal_score=signal_score,
-            min_open_score=final_min_score,
-        ):
-            return (
-                progress,
-                self._make_short_entry_decision(
-                    allow=False,
-                    action="block",
-                    reason="sniper_window",
-                    signal_score=signal_score,
-                    required_score=final_min_score,
-                    progress=progress,
-                    retryable=True,
-                ),
-            )
-
-        return progress, None
-
-    def _evaluate_short_candidate_precheck(
-        self,
-        *,
-        symbol: str,
-        signal_score: float,
-        final_min_score: float,
-    ):
-        """
-        SHORT candidate için ucuz ve state-bağımsız
-        ön kontrolleri uygular.
-
-        Dönüş:
-            normalized_symbol, decision
-
-        decision=None ise precheck geçilmiştir.
-        """
-        sym_u = str(
-            symbol or ""
-        ).upper().strip()
-
-        if not sym_u:
-            return (
-                sym_u,
-                self._make_short_entry_decision(
-                    allow=False,
-                    action="block",
-                    reason="empty_symbol",
-                    retryable=False,
-                ),
-            )
-
-        if signal_score < final_min_score:
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK]"
-                        "[LOW-SCORE] "
-                        "symbol=%s score=%.4f "
-                        "min=%.4f",
-                        sym_u,
-                        signal_score,
-                        final_min_score,
-                    )
-            except Exception:
-                pass
-
-            return (
-                sym_u,
-                self._make_short_entry_decision(
-                    allow=False,
-                    action="block",
-                    reason="low_score",
-                    signal_score=signal_score,
-                    required_score=final_min_score,
-                    retryable=False,
-                ),
-            )
-
-        if (
-            self.block_same_symbol_reentry
-            and self._get_position(sym_u)
-            is not None
-        ):
-            try:
-                if self.logger:
-                    self.logger.info(
-                        "[EXEC-SHORT][OPEN-BLOCK]"
-                        "[POSITION-EXISTS] "
-                        "symbol=%s",
-                        sym_u,
-                    )
-            except Exception:
-                pass
-
-            return (
-                sym_u,
-                self._make_short_entry_decision(
-                    allow=False,
-                    action="block",
-                    reason="position_exists",
-                    signal_score=signal_score,
-                    required_score=final_min_score,
-                    retryable=False,
-                ),
-            )
-
-        return sym_u, None
-
-    def _evaluate_short_candidate(
-        self,
-        symbol: str,
-        price: float,
-        signal_score: float,
-        final_min_score: float,
-        allow_pending: bool = True,
-    ) -> Dict[str, Any]:
-        """
-        SHORT adayının emir aşamasına geçip geçemeyeceğini değerlendirir.
-
-        Bu fonksiyon emir açmaz ve pending state değiştirmez.
-
-        allow_pending=True:
-            Geç kalınmış sniper penceresinde action="pending"
-            kararı döndürebilir.
-
-        allow_pending=False:
-            Pending yöneticisi tarafından yapılan yeniden
-            değerlendirmede yeni pending kararı üretmez.
-
-        Kararın uygulanması çağıran katmanın sorumluluğundadır.
-
-        action:
-            block   -> giriş reddedildi
-            pending -> sonraki uygun 1m pencere beklenecek
-            open    -> giriş doğrulandı, emir açılabilir
-        """
-        (
-            sym_u,
-            precheck_decision,
-        ) = self._evaluate_short_candidate_precheck(
-            symbol=symbol,
-            signal_score=signal_score,
-            final_min_score=final_min_score,
-        )
-
-        if precheck_decision is not None:
-            return precheck_decision
-
-        (
-            progress,
-            sniper_decision,
-        ) = self._evaluate_short_sniper_gate(
-            symbol=sym_u,
-            signal_score=signal_score,
-            final_min_score=final_min_score,
-            allow_pending=allow_pending,
-        )
-
-        if sniper_decision is not None:
-            return sniper_decision
-
-        if not self._check_short_entry_pattern(
-            symbol=sym_u,
-        ):
-            return self._make_short_entry_decision(
-                allow=False,
-                action="block",
-                reason="entry_pattern",
-                signal_score=signal_score,
-                required_score=final_min_score,
-                progress=progress,
-                retryable=True,
-            )
-
-        return self._make_short_entry_decision(
-            allow=True,
-            action="open",
-            reason="entry_confirmed",
-            signal_score=signal_score,
-            required_score=final_min_score,
-            progress=progress,
-            retryable=False,
-        )
-
-    def _resolve_short_open_context(
-        self,
-        *,
-        symbol: str,
-        probs: Optional[Dict[str, float]],
-        extra: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        SHORT giriş değerlendirmesinde kullanılacak skor bağlamını
-        hazırlar.
-
-        Bu helper:
-            - signal score hesaplar
-            - coin minimum score çözer
-            - dynamic minimum score hesaplar
-            - kopyalanmış extra sözlüğünü döndürür
-
-        Pending oluşturmaz ve emir açmaz.
-        """
-        sym_u = str(symbol or "").upper().strip()
-
-        extra0: Dict[str, Any] = dict(
-            extra
-            if isinstance(extra, dict)
-            else {}
-        )
-
-        probs0: Dict[str, float] = (
-            probs
-            if isinstance(probs, dict)
-            else {}
-        )
-
-        side_norm = "short"
-
-        signal_score = (
-            self._resolve_signal_score_for_open(
-                side=side_norm,
-                extra=extra0,
-                probs=probs0,
-            )
-        )
-
-        coin_min_score = (
-            self._get_coin_side_min_open_score(
-                symbol=sym_u,
-                side=side_norm,
-                default_score=self.open_min_score,
-            )
-        )
-
-        final_min_score = (
-            self._resolve_dynamic_open_score(
-                base_score=coin_min_score,
-                extra=extra0,
-            )
-        )
-
-        try:
-            if self.logger:
-                self.logger.info(
-                    "[EXEC-SHORT][DECISION] "
-                    "symbol=%s score=%.4f "
-                    "coin_min=%.4f final_min=%.4f",
-                    sym_u,
-                    signal_score,
-                    coin_min_score,
-                    final_min_score,
-                )
-        except Exception:
-            pass
-
-        return {
-            "extra": extra0,
-            "signal_score": float(signal_score),
-            "coin_min_score": float(coin_min_score),
-            "final_min_score": float(final_min_score),
-        }
-
-    def _apply_short_candidate_decision(
-        self,
-        candidate: Optional[Dict[str, Any]],
-        *,
-        symbol: str,
-        price: float,
-        signal_score: float,
-        final_min_score: float,
-    ) -> bool:
-        """
-        SHORT evaluator kararını uygular.
-
-        True:
-            Emir açma akışı devam edebilir.
-
-        False:
-            Karar pending veya block olduğu için akış durmalıdır.
-
-        Evaluator state değiştirmez; pending state değişiklikleri
-        yalnızca bu uygulama katmanında yapılır.
-        """
-        decision = (
-            candidate
-            if isinstance(candidate, dict)
-            else {}
-        )
-
-        sym_u = str(symbol or "").upper().strip()
-
-        action = str(
-            decision.get("action")
-            or "block"
-        ).strip().lower()
-
-        reason = str(
-            decision.get("reason")
-            or "candidate_block"
-        ).strip().lower()
-
-        allow = bool(
-            decision.get("allow", False)
-        )
-
-        if allow and action == "open":
-            return True
-
-        if action == "pending":
-            self._create_short_pending(
-                symbol=sym_u,
-                signal_score=signal_score,
-                min_score=final_min_score,
-                price=price,
-            )
-            return False
-
-        if reason == "low_score":
-            self._cancel_short_pending(
-                symbol=sym_u,
-                reason=reason,
-                signal_score=signal_score,
-                min_score=final_min_score,
-            )
-
-        elif reason == "position_exists":
-            self._pop_short_pending(sym_u)
-
-        return False
 
     def _prepare_short_open_payload(
         self,
@@ -3304,6 +2750,424 @@ class TradeExecutorShort:
 
         return payload
 
+    # =========================================================
+    # TARGET SHORT ENTRY PIPELINE
+    # MODEL -> SIGNAL NORMALIZATION -> MARKET CONTEXT
+    # -> MODEL SCORE GATE -> SNIPER -> ENTRY CONFIRMATION
+    # -> EXECUTION RISK -> FINAL SAFETY -> ORDER
+    # =========================================================
+
+    def _normalize_short_signal_stage(
+        self,
+        *,
+        symbol: str,
+        signal: str,
+    ) -> Dict[str, Any]:
+        """Normalize incoming signal into the SHORT-only execution domain."""
+        sym_u = str(symbol or "").upper().strip()
+        signal_u = str(signal or "").lower().strip()
+
+        if not sym_u:
+            return {
+                "state": "REJECT",
+                "reason": "empty_symbol",
+                "symbol": "",
+                "side": "",
+            }
+
+        if signal_u not in ("short", "sell", "bear", "down"):
+            return {
+                "state": "REJECT",
+                "reason": "not_short_signal",
+                "symbol": sym_u,
+                "side": signal_u,
+            }
+
+        return {
+            "state": "READY",
+            "reason": "short_signal",
+            "symbol": sym_u,
+            "side": "short",
+        }
+
+    def _build_short_market_context_stage(
+        self,
+        *,
+        probs: Optional[Dict[str, float]],
+        extra: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Carry the canonical MARKET CONTEXT contract into execution.
+
+        In orchestrated production, the hard MARKET CONTEXT decision belongs to
+        MasterExecutor. This stage does not invent a second context veto.
+        """
+        extra0 = dict(extra) if isinstance(extra, dict) else {}
+        provider = str(extra0.get("model_provider") or "hybrid_coin_specific").strip().lower()
+        source = str(extra0.get("execution_source") or "local").strip().lower()
+        if source == "orchestrated" and not bool(extra0.get("market_context_passed", False)):
+            return {
+                "state": "REJECT",
+                "reason": "upstream_market_context_gate_missing",
+                "provider": provider,
+                "probs": dict(probs) if isinstance(probs, dict) else {},
+                "extra": extra0,
+            }
+        return {
+            "state": "READY",
+            "reason": "upstream_market_context_pass" if source == "orchestrated" else "local_context_pass",
+            "provider": provider,
+            "probs": dict(probs) if isinstance(probs, dict) else {},
+            "extra": extra0,
+        }
+
+    def _evaluate_short_model_score_gate_stage(
+        self,
+        *,
+        symbol: str,
+        market_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Consume the upstream MODEL SCORE GATE without creating a second threshold.
+
+        READY is a normal hard-score pass. PENDING_CONTEXT is an explicit
+        upstream provisional SHORT band that must be revalidated with the exact
+        entry_market_context.v1 after ENTRY CONFIRMATION.
+        """
+        del symbol
+        provider = str(market_context.get("provider") or "hybrid_coin_specific").strip().lower()
+        extra0 = dict(market_context.get("extra") or {})
+        execution_source = str(extra0.get("execution_source") or "local").strip().lower()
+
+        try:
+            signal_score = float(extra0.get("model_score"))
+        except Exception:
+            signal_score = 0.0
+        try:
+            threshold = float(extra0.get("model_score_gate_threshold") or 0.0)
+        except Exception:
+            threshold = 0.0
+        try:
+            soft_threshold = float(extra0.get("model_score_gate_soft_threshold") or 0.0)
+        except Exception:
+            soft_threshold = 0.0
+        gate_state = str(extra0.get("model_score_gate_state") or "").strip().upper()
+        if not gate_state:
+            gate_state = "READY" if bool(extra0.get("model_score_gate_passed", False)) else "REJECT"
+
+        base = {
+            "provider": provider,
+            "extra": extra0,
+            "signal_score": signal_score,
+            "coin_min_score": threshold,
+            "final_min_score": threshold,
+            "soft_min_score": soft_threshold,
+        }
+
+        if execution_source != "orchestrated":
+            return {"state": "REJECT", "reason": "upstream_model_score_gate_required", **base}
+
+        if not (0.0 <= signal_score <= 1.0):
+            return {"state": "REJECT", "reason": "invalid_upstream_model_score", **base}
+
+        if gate_state == "PENDING_CONTEXT" and bool(extra0.get("soft_context_required", False)):
+            if soft_threshold <= 0.0 or not (soft_threshold <= signal_score < threshold):
+                return {"state": "REJECT", "reason": "invalid_soft_score_contract", **base}
+            base["final_min_score"] = soft_threshold
+            return {
+                "state": "PENDING_CONTEXT",
+                "reason": "upstream_soft_score_pending_context",
+                **base,
+            }
+
+        if gate_state != "READY" or not bool(extra0.get("model_score_gate_passed", False)):
+            return {"state": "REJECT", "reason": "upstream_model_score_gate_missing", **base}
+
+        return {
+            "state": "READY",
+            "reason": "upstream_model_score_gate_pass",
+            **base,
+        }
+
+    def _extract_short_score_contract(self, payload: Any) -> Dict[str, Any]:
+        """Return score-gate metadata from direct or pending payload shapes."""
+        obj = payload if isinstance(payload, dict) else {}
+        if "model_score_gate_state" in obj or "soft_context_required" in obj:
+            return obj
+        wrapper = obj.get("market_context") if isinstance(obj.get("market_context"), dict) else {}
+        extra = wrapper.get("extra") if isinstance(wrapper.get("extra"), dict) else {}
+        return extra
+
+    def _evaluate_short_soft_context_revalidation_stage(
+        self,
+        *,
+        payload: Any,
+        entry_market_context: Any,
+    ) -> Dict[str, Any]:
+        """Promote only an upstream PENDING_CONTEXT whose entry context is SHORT build."""
+        score_contract = self._extract_short_score_contract(payload)
+        gate_state = str(score_contract.get("model_score_gate_state") or "READY").strip().upper()
+        soft_required = bool(score_contract.get("soft_context_required", False))
+
+        if gate_state != "PENDING_CONTEXT" and not soft_required:
+            return {"state": "READY", "reason": "hard_score_context_not_required"}
+        if gate_state != "PENDING_CONTEXT" or not soft_required:
+            return {"state": "REJECT", "reason": "invalid_soft_score_state"}
+
+        ctx = entry_market_context if isinstance(entry_market_context, dict) else {}
+        if not bool(ctx.get("available", False)):
+            return {"state": "REJECT", "reason": "soft_entry_context_unavailable"}
+        regime = ctx.get("regime") if isinstance(ctx.get("regime"), dict) else {}
+        if (
+            str(regime.get("name") or "").strip().lower() == "confirmed_build"
+            and str(regime.get("build_direction") or "").strip().lower() == "short"
+        ):
+            return {"state": "READY", "reason": "soft_short_build_confirmed"}
+        return {"state": "REJECT", "reason": "soft_short_build_not_confirmed"}
+
+    def _evaluate_short_sniper_stage(
+        self,
+        *,
+        symbol: str,
+        signal_score: float,
+        final_min_score: float,
+        allow_pending: bool = True,
+    ) -> Dict[str, Any]:
+        """Single SNIPER authority; maps timing directly to READY/PENDING/REJECT."""
+        progress = self._calc_candle_progress(self.sniper_entry_interval)
+
+        if progress > self.sniper_entry_max_candle_progress:
+            action = "pending" if allow_pending else "block"
+            reason = "sniper_window_passed" if allow_pending else "pending_window_passed"
+            decision = self._make_short_entry_decision(
+                allow=False, action=action, reason=reason,
+                signal_score=signal_score, required_score=final_min_score,
+                progress=progress, retryable=bool(allow_pending),
+            )
+            return {
+                "state": "PENDING" if allow_pending else "REJECT",
+                "reason": reason, "progress": float(progress),
+                "decision": decision,
+            }
+
+        if progress < float(self.sniper_entry_min_candle_progress):
+            decision = self._make_short_entry_decision(
+                allow=False, action="block", reason="sniper_window_early",
+                signal_score=signal_score, required_score=final_min_score,
+                progress=progress, retryable=True,
+            )
+            return {
+                "state": "REJECT", "reason": "sniper_window_early",
+                "progress": float(progress), "decision": decision,
+            }
+
+        return {"state": "READY", "reason": "sniper_ready", "progress": float(progress)}
+
+    def _evaluate_short_entry_confirmation_stage(
+        self,
+        *,
+        symbol: str,
+        signal_score: float,
+        final_min_score: float,
+        progress: float,
+    ) -> Dict[str, Any]:
+        """Single ENTRY CONFIRMATION authority for the SHORT reversal candle."""
+        if self._check_short_candle_direction(symbol=symbol):
+            return {
+                "state": "READY",
+                "reason": "entry_confirmed",
+                "progress": float(progress),
+            }
+
+        return {
+            "state": "PENDING",
+            "reason": "entry_confirmation_wait",
+            "progress": float(progress),
+            "decision": self._make_short_entry_decision(
+                allow=False,
+                action="pending",
+                reason="entry_confirmation_wait",
+                signal_score=signal_score,
+                required_score=final_min_score,
+                progress=progress,
+                retryable=True,
+            ),
+        }
+
+    def _build_short_entry_market_context(
+        self,
+        *,
+        symbol: str,
+        confirmation_open_ms: int,
+        kline_rows: Any,
+    ) -> Dict[str, Any]:
+        """Build entry-time context from confirmation rows; no Binance I/O."""
+        try:
+            return build_entry_context_from_rows(
+                redis_client=self.redis,
+                symbol=symbol,
+                rows=kline_rows,
+                confirmation_open_ms=int(confirmation_open_ms),
+            )
+        except Exception as exc:
+            return {
+                "available": False,
+                "schema_version": "entry_market_context.v1",
+                "reason": "entry_context_exception",
+                "error": str(exc)[:200],
+                "symbol": str(symbol or "").upper().strip(),
+            }
+
+    def _extract_short_canonical_market_context(self, payload: Any) -> Dict[str, Any]:
+        """Extract Master market_context.v1 from direct or pending payload shapes."""
+        obj = payload if isinstance(payload, dict) else {}
+        direct = obj.get("market_context")
+        if isinstance(direct, dict) and str(direct.get("schema_version") or "").startswith("market_context."):
+            return dict(direct)
+        wrapper = obj.get("market_context") if isinstance(obj.get("market_context"), dict) else {}
+        extra = wrapper.get("extra") if isinstance(wrapper.get("extra"), dict) else {}
+        nested = extra.get("market_context")
+        if isinstance(nested, dict):
+            return dict(nested)
+        return {}
+
+    def _select_short_risk_market_context(
+        self, payload: Any
+    ) -> Tuple[Dict[str, Any], str]:
+        """Prefer entry_market_context.v1; fall back to canonical Master context."""
+        obj = payload if isinstance(payload, dict) else {}
+        entry = obj.get("entry_market_context") if isinstance(obj.get("entry_market_context"), dict) else {}
+        if bool(entry.get("available")):
+            return dict(entry), "entry"
+        return self._extract_short_canonical_market_context(obj), "master_fallback"
+
+    def _short_confirmation_open_ms(self) -> int:
+        interval = str(self.entry_candle_dir_interval or "1m")
+        sec = max(1, int(self._interval_to_seconds(interval)))
+        return int(self._get_candle_id(interval) * sec * 1000)
+
+    def _run_short_context_shadow_sync(
+        self,
+        *,
+        symbol: str,
+        payload: Dict[str, Any],
+        confirmation_open_ms: int,
+        entry_path: str,
+        kline_rows: Any = None,
+    ) -> None:
+        if not self.short_entry_context_shadow_enable:
+            return
+        try:
+            master_context = self._extract_short_canonical_market_context(payload)
+            event = build_shadow_event(
+                client=self.client,
+                redis_client=self.redis,
+                symbol=symbol,
+                master_context=master_context,
+                confirmation_open_ms=int(confirmation_open_ms),
+                model_score=float(payload.get("model_score", payload.get("signal_score", 0.0)) or 0.0),
+                intent_id=str(payload.get("intent_id") or ""),
+                entry_path=str(entry_path or "direct"),
+                oi_policy_multiplier=float(self.risk_oi_confirmed_build_multiplier),
+                kline_rows=kline_rows,
+                entry_context_override=(payload.get("entry_market_context") if isinstance(payload.get("entry_market_context"), dict) else None),
+            )
+            sid = publish_shadow_event(
+                redis_client=self.redis,
+                event=event,
+                stream=self.short_entry_context_shadow_stream,
+                maxlen=self.short_entry_context_shadow_maxlen,
+            )
+            try:
+                if self.logger:
+                    cmp0 = event.get("comparison") if isinstance(event.get("comparison"), dict) else {}
+                    self.logger.info(
+                        "[EXEC-SHORT][CTX-SHADOW] symbol=%s path=%s transition=%s changed=%s stream_id=%s",
+                        symbol, entry_path, cmp0.get("transition"), cmp0.get("changed"), sid,
+                    )
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC-SHORT][CTX-SHADOW][WARN] symbol=%s err=%s",
+                        symbol, str(exc)[:220],
+                    )
+            except Exception:
+                pass
+
+    def _schedule_short_context_shadow(
+        self,
+        *,
+        symbol: str,
+        payload: Dict[str, Any],
+        confirmation_open_ms: int,
+        entry_path: str,
+        kline_rows: Any = None,
+    ) -> None:
+        """Fire-and-forget telemetry only; must never delay or veto ORDER."""
+        if not self.short_entry_context_shadow_enable:
+            return
+        try:
+            asyncio.create_task(
+                asyncio.to_thread(
+                    self._run_short_context_shadow_sync,
+                    symbol=symbol,
+                    payload=dict(payload or {}),
+                    confirmation_open_ms=int(confirmation_open_ms),
+                    entry_path=str(entry_path or "direct"),
+                    kline_rows=list(kline_rows) if isinstance(kline_rows, list) else None,
+                )
+            )
+        except Exception:
+            return
+
+    def _evaluate_short_execution_risk_stage(
+        self,
+        *,
+        symbol: str,
+        signal_score: float = 0.0,
+        model_threshold: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Pre-order risk authority. Final safety rechecks atomically at order time."""
+        result = self._resolve_short_open_risk_state(
+            symbol=symbol,
+            now_ts=time.time(),
+            signal_score=signal_score,
+            model_threshold=model_threshold,
+        )
+        if result is None:
+            return {"state": "READY", "reason": "execution_risk_pass"}
+
+        reason = str(result.get("reason") or "execution_risk")
+        return {
+            "state": "REJECT",
+            "reason": reason,
+            "result": result,
+        }
+
+    def _evaluate_short_final_safety_stage(
+        self,
+        *,
+        symbol: str,
+        now_ts: Optional[float] = None,
+        signal_score: float = 0.0,
+        model_threshold: float = 0.0,
+    ) -> Dict[str, Any]:
+        """FINAL SAFETY recheck immediately before ORDER submission."""
+        result = self._resolve_short_open_risk_state(
+            symbol=symbol,
+            now_ts=float(time.time() if now_ts is None else now_ts),
+            signal_score=signal_score,
+            model_threshold=model_threshold,
+        )
+        if result is None:
+            return {"state": "READY", "reason": "final_safety_pass"}
+        return {
+            "state": "REJECT",
+            "reason": str(result.get("reason") or "final_safety"),
+            "result": result,
+        }
+
     async def execute_decision(
         self,
         signal: str,
@@ -3323,63 +3187,127 @@ class TradeExecutorShort:
 
         started_ts = time.perf_counter()
 
-        sym_u = str(symbol or "").upper().strip()
-        signal_u = str(signal or "").lower().strip()
+        normalized = self._normalize_short_signal_stage(
+            symbol=symbol,
+            signal=signal,
+        )
+        if normalized["state"] != "READY":
+            return
+
+        sym_u = str(normalized["symbol"])
 
         try:
             if self.logger:
                 self.logger.info(
                     "[EXEC-SHORT][ENTER] symbol=%s signal=%s",
-                    symbol,
+                    sym_u,
                     signal,
                 )
         except Exception:
             pass
 
-        if not sym_u:
-            return
-
-        # SHORT-only executor.
-        if signal_u not in (
-            "short",
-            "sell",
-            "bear",
-            "down",
-        ):
-            return
-
-        open_context = self._resolve_short_open_context(
-            symbol=sym_u,
+        market_context = self._build_short_market_context_stage(
             probs=probs,
             extra=extra,
         )
 
-        extra0 = open_context["extra"]
-        signal_score = float(
-            open_context["signal_score"]
-        )
-        final_min_score = float(
-            open_context["final_min_score"]
-        )
+        if market_context.get("state") != "READY":
+            self._pop_short_pending(sym_u)
+            return
 
-        candidate = self._evaluate_short_candidate(
+        score_gate = self._evaluate_short_model_score_gate_stage(
             symbol=sym_u,
-            price=price,
+            market_context=market_context,
+        )
+        if score_gate["state"] not in ("READY", "PENDING_CONTEXT"):
+            self._cancel_short_pending(
+                symbol=sym_u,
+                reason=str(score_gate.get("reason") or "model_score_gate"),
+                signal_score=score_gate["signal_score"],
+                min_score=score_gate["final_min_score"],
+            )
+            return
+
+        signal_score = float(score_gate["signal_score"])
+        final_min_score = float(score_gate["final_min_score"])
+        extra0 = score_gate["extra"]
+
+        sniper = self._evaluate_short_sniper_stage(
+            symbol=sym_u,
             signal_score=signal_score,
             final_min_score=final_min_score,
+            allow_pending=True,
         )
 
-        continue_open = (
-            self._apply_short_candidate_decision(
-                candidate=candidate,
+        if sniper["state"] == "PENDING":
+            self._store_short_pending_from_stage(
                 symbol=sym_u,
-                price=price,
                 signal_score=signal_score,
-                final_min_score=final_min_score,
+                min_score=final_min_score,
+                price=price,
+                market_context=market_context,
+                extra=extra0,
             )
-        )
+            return
 
-        if not continue_open:
+        if sniper["state"] != "READY":
+            return
+
+        confirmation = self._evaluate_short_entry_confirmation_stage(
+            symbol=sym_u,
+            signal_score=signal_score,
+            final_min_score=final_min_score,
+            progress=float(sniper["progress"]),
+        )
+        if confirmation["state"] == "PENDING":
+            self._store_short_pending_from_stage(
+                symbol=sym_u,
+                signal_score=signal_score,
+                min_score=final_min_score,
+                price=price,
+                market_context=market_context,
+                extra=extra0,
+            )
+            return
+
+        if confirmation["state"] != "READY":
+            return
+
+        shadow_confirmation_open_ms = self._short_confirmation_open_ms()
+        shadow_kline_rows = self.short_entry_candle_service.get_last_rows(
+            sym_u, self.entry_candle_dir_interval
+        )
+        entry_market_context = self._build_short_entry_market_context(
+            symbol=sym_u,
+            confirmation_open_ms=shadow_confirmation_open_ms,
+            kline_rows=shadow_kline_rows,
+        )
+        extra0["entry_market_context"] = dict(entry_market_context)
+
+        soft_context_gate = self._evaluate_short_soft_context_revalidation_stage(
+            payload=extra0,
+            entry_market_context=entry_market_context,
+        )
+        if soft_context_gate["state"] != "READY":
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][SOFT-CONTEXT-REJECT] symbol=%s reason=%s",
+                        sym_u, str(soft_context_gate.get("reason") or "soft_context"),
+                    )
+            except Exception:
+                pass
+            return
+        if str(score_gate.get("state") or "") == "PENDING_CONTEXT":
+            extra0["model_score_gate_promoted"] = True
+            extra0["model_score_gate_promotion_reason"] = str(soft_context_gate.get("reason") or "")
+
+        execution_risk = self._evaluate_short_execution_risk_stage(
+            symbol=sym_u,
+            signal_score=signal_score,
+            model_threshold=final_min_score,
+        )
+        if execution_risk["state"] != "READY":
             return
 
         extra0 = self._prepare_short_open_payload(
@@ -3389,9 +3317,7 @@ class TradeExecutorShort:
             final_min_score=final_min_score,
         )
 
-        decision_ms = (
-            time.perf_counter() - started_ts
-        ) * 1000.0
+        decision_ms = (time.perf_counter() - started_ts) * 1000.0
 
         try:
             if self.logger:
@@ -3407,12 +3333,21 @@ class TradeExecutorShort:
         except Exception:
             pass
 
+        # FINAL SAFETY is intentionally rechecked inside
+        # open_position_from_signal() immediately before ORDER.
         await asyncio.to_thread(
             self.open_position_from_signal,
             sym_u,
             "short",
             self.entry_interval,
             extra0,
+        )
+        self._schedule_short_context_shadow(
+            symbol=sym_u,
+            payload=extra0,
+            confirmation_open_ms=shadow_confirmation_open_ms,
+            entry_path="direct",
+            kline_rows=shadow_kline_rows,
         )
 
 
@@ -3448,6 +3383,13 @@ class TradeExecutorShort:
         for sym, pos in ex.items():
             cur = local.get(sym)
             if cur is None:
+                # Exchange can provide aggregate qty/entry but cannot reconstruct
+                # our virtual layer history after a process restart. Until layer
+                # state is persisted in the Stage-4 isolated state store, adopt
+                # fail-closed and block further scale-ins for this position.
+                pos["position_mode"] = "single"
+                pos["adopted_from_exchange"] = True
+                pos["layer_state"] = "exchange_adopted_unknown"
                 self._set_position(sym, pos)
                 added.append(sym)
                 continue
@@ -3605,6 +3547,142 @@ class TradeExecutorShort:
             "trigger_roi": float(trigger_roi),
         }
 
+    def _evaluate_short_dynamic_stop_state(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+        price: float,
+        roi: float,
+    ) -> Optional[Dict[str, Any]]:
+        """LONG-style confirmed stop adapted for SHORT direction.
+
+        ROI_HARD_STOP_PCT is the soft trigger. Once breached, the position must
+        remain beyond the trigger for SHORT_DYNAMIC_STOP_CONFIRM_SEC before
+        closing. A larger adverse price move closes immediately via the
+        catastrophic guard. Recovery above the soft trigger clears pending state.
+        """
+        sym_u = str(symbol or "").upper().strip()
+        trigger = float(self.roi_hard_stop_pct)
+        pending_ts = float(position.get("dynamic_stop_pending_ts") or 0.0)
+
+        if float(roi) > trigger:
+            if pending_ts > 0.0:
+                position["dynamic_stop_pending_ts"] = 0.0
+                position["dynamic_stop_pending_price"] = 0.0
+                self._set_position(sym_u, position)
+            return None
+
+        if not self.short_dynamic_stop_enable:
+            return {
+                "state": "CLOSE",
+                "reason": "roi_hard_stop",
+                "price": float(price),
+                "roi": float(roi),
+            }
+
+        entry = float(position.get("entry_price") or 0.0)
+        adverse_price_pct = (float(price) - entry) / entry if entry > 0.0 else 0.0
+        catastrophic = float(self.short_dynamic_stop_catastrophic_pct)
+        if catastrophic > 0.0 and adverse_price_pct >= catastrophic:
+            return {
+                "state": "CLOSE",
+                "reason": "dynamic_stop_catastrophic",
+                "price": float(price),
+                "roi": float(roi),
+                "adverse_price_pct": float(adverse_price_pct),
+            }
+
+        now_ts = time.time()
+        if pending_ts <= 0.0:
+            position["dynamic_stop_pending_ts"] = float(now_ts)
+            position["dynamic_stop_pending_price"] = float(price)
+            self._set_position(sym_u, position)
+            return {
+                "state": "HOLD",
+                "reason": "dynamic_stop_pending",
+                "price": float(price),
+                "roi": float(roi),
+            }
+
+        if (now_ts - pending_ts) >= float(self.short_dynamic_stop_confirm_sec):
+            return {
+                "state": "CLOSE",
+                "reason": "dynamic_stop_confirmed",
+                "price": float(price),
+                "roi": float(roi),
+            }
+
+        return {
+            "state": "HOLD",
+            "reason": "dynamic_stop_pending",
+            "price": float(price),
+            "roi": float(roi),
+        }
+
+    def _evaluate_short_position_lifecycle_stage(
+        self,
+        *,
+        symbol: str,
+        position: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Single POSITION LIFECYCLE decision authority for an open SHORT."""
+        lifecycle_state = self._resolve_short_lifecycle_position_state(
+            symbol=symbol, position=position,
+        )
+        if lifecycle_state is None:
+            return {"state": "HOLD", "reason": "missing_price"}
+
+        price, roi = lifecycle_state
+        stop_state = self._evaluate_short_dynamic_stop_state(
+            symbol=symbol,
+            position=position,
+            price=float(price),
+            roi=float(roi),
+        )
+        if isinstance(stop_state, dict):
+            return stop_state
+
+        old_best_roi, best_roi = self._update_short_best_roi(
+            symbol=symbol, position=position, roi=roi,
+        )
+        tp_state = self._resolve_short_fixed_roi_tp_state(
+            old_best_roi=old_best_roi, best_roi=best_roi,
+        )
+
+        if tp_state is None:
+            return {
+                "state": "HOLD", "reason": "lifecycle_hold",
+                "price": float(price), "roi": float(roi),
+                "best_roi": float(best_roi),
+            }
+
+        giveback = float(tp_state["giveback"])
+        trigger_roi = float(tp_state["trigger_roi"])
+        if tp_state["armed_now"] and self.logger:
+            self.logger.info(
+                "[EXEC-SHORT][TP-ARMED] symbol=%s roi=%.6f best_roi=%.6f target=%.6f giveback=%.6f trigger=%.6f",
+                symbol, roi, best_roi, self.fixed_roi_tp_pct, giveback, trigger_roi,
+            )
+
+        if roi <= trigger_roi:
+            if self.logger:
+                self.logger.info(
+                    "[EXEC-SHORT][TP-GIVEBACK] symbol=%s roi=%.6f best_roi=%.6f giveback=%.6f trigger=%.6f",
+                    symbol, roi, best_roi, giveback, trigger_roi,
+                )
+            return {
+                "state": "CLOSE", "reason": "fixed_roi_tp_giveback",
+                "price": float(price), "roi": float(roi),
+                "best_roi": float(best_roi),
+            }
+
+        return {
+            "state": "HOLD", "reason": "tp_armed_hold",
+            "price": float(price), "roi": float(roi),
+            "best_roi": float(best_roi),
+        }
+
     async def _close_short_from_lifecycle(
         self,
         *,
@@ -3627,92 +3705,23 @@ class TradeExecutorShort:
     async def _position_lifecycle_loop(self) -> None:
         while True:
             try:
+                # PENDING REVALIDATION is an independent architecture stage.
+                await self._process_short_pending_entries()
+
                 if self.position_lifecycle_enabled:
-                    await self._process_short_pending_entries()
-
                     for sym, pos in self._get_all_local_positions().items():
-                        lifecycle_state = (
-                            self._resolve_short_lifecycle_position_state(
-                                symbol=sym,
-                                position=pos,
-                            )
-                        )
-
-                        if lifecycle_state is None:
-                            continue
-
-                        price, roi = lifecycle_state
-
-                        if roi <= self.roi_hard_stop_pct:
-                            await self._close_short_from_lifecycle(
-                                symbol=sym,
-                                price=price,
-                                reason="roi_hard_stop",
-                            )
-                            continue
-
-                        (
-                            old_best_roi,
-                            best_roi,
-                        ) = self._update_short_best_roi(
+                        decision = self._evaluate_short_position_lifecycle_stage(
                             symbol=sym,
                             position=pos,
-                            roi=roi,
                         )
+                        if decision.get("state") != "CLOSE":
+                            continue
 
-                        tp_state = (
-                            self._resolve_short_fixed_roi_tp_state(
-                                old_best_roi=old_best_roi,
-                                best_roi=best_roi,
-                            )
+                        await self._close_short_from_lifecycle(
+                            symbol=sym,
+                            price=float(decision.get("price") or 0.0),
+                            reason=str(decision.get("reason") or "lifecycle_close"),
                         )
-
-                        if tp_state is not None:
-                            giveback = float(
-                                tp_state["giveback"]
-                            )
-                            trigger_roi = float(
-                                tp_state["trigger_roi"]
-                            )
-
-                            if (
-                                tp_state["armed_now"]
-                                and self.logger
-                            ):
-                                self.logger.info(
-                                    "[EXEC-SHORT][TP-ARMED] "
-                                    "symbol=%s roi=%.6f "
-                                    "best_roi=%.6f target=%.6f "
-                                    "giveback=%.6f trigger=%.6f",
-                                    sym,
-                                    roi,
-                                    best_roi,
-                                    self.fixed_roi_tp_pct,
-                                    giveback,
-                                    trigger_roi,
-                                )
-
-                            if roi <= trigger_roi:
-                                if self.logger:
-                                    self.logger.info(
-                                        "[EXEC-SHORT][TP-GIVEBACK] "
-                                        "symbol=%s roi=%.6f "
-                                        "best_roi=%.6f "
-                                        "giveback=%.6f "
-                                        "trigger=%.6f",
-                                        sym,
-                                        roi,
-                                        best_roi,
-                                        giveback,
-                                        trigger_roi,
-                                    )
-
-                                await self._close_short_from_lifecycle(
-                                    symbol=sym,
-                                    price=price,
-                                    reason="fixed_roi_tp_giveback",
-                                )
-                                continue
 
             except asyncio.CancelledError:
                 raise

@@ -31,13 +31,66 @@ loge() { echo "[$(_ts)] [ERR ] $*" >&2; }
 expected_cmd() {
   local name="${1:-}"
   case "$name" in
-    scanner_*)      echo "orchestration/scanners/worker_stub.py" ;;
+    scanner_*)      echo "orchestration/scanners/model_worker.py" ;;
     aggregator)     echo "orchestration/aggregator/run_aggregator.py" ;;
     top_selector)   echo "orchestration/selector/top_selector.py" ;;
     master_executor)echo "orchestration/executor/master_executor.py" ;;
     intent_bridge)  echo "orchestration/executor/intent_bridge.py" ;;
     *)              echo "" ;;
   esac
+}
+
+# ---------------------------------------------------------
+# Project-scoped process ownership
+# ---------------------------------------------------------
+pid_matches_project_process() {
+  local pid="$1"
+  local name="$2"
+  local expect="$3"
+
+  [[ -n "${pid:-}" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+
+  local cwd cmd
+  cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+  [[ "$cwd" == "$ROOT_DIR" ]] || return 1
+
+  cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  [[ -n "${cmd:-}" ]] || return 1
+
+  if [[ -n "${expect:-}" ]]; then
+    echo "$cmd" | grep -Fq "$expect" || return 1
+  fi
+
+  # scanner_wN ownership: cwd + script + WORKER_ID must match.
+  if [[ "$name" =~ ^scanner_(w[1-8])$ ]]; then
+    local wid="${BASH_REMATCH[1]}"
+    [[ -r "/proc/${pid}/environ" ]] || return 1
+
+    tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null \
+      | grep -Fxq "WORKER_ID=${wid}" \
+      || return 1
+  fi
+
+  return 0
+}
+
+find_project_pid() {
+  local name="$1"
+  local expect="$2"
+  local p
+
+  [[ -n "${expect:-}" ]] || return 0
+
+  while IFS= read -r p; do
+    [[ -n "${p:-}" ]] || continue
+    if pid_matches_project_process "$p" "$name" "$expect"; then
+      echo "$p"
+      return 0
+    fi
+  done < <(pgrep -f "$expect" 2>/dev/null || true)
+
+  return 0
 }
 
 # Returns:
@@ -49,69 +102,29 @@ heal_pidfile_if_needed() {
 
   [[ -f "$pidfile" ]] || return 0
 
-  local pid expect cmd newpid
+  local pid expect newpid
   pid="$(cat "$pidfile" 2>/dev/null || true)"
   expect="$(expected_cmd "$name")"
 
-  # If pid missing/empty -> try heal by pgrep, else remove
-  if [[ -z "${pid:-}" ]]; then
-    if [[ -n "${expect:-}" ]]; then
-      newpid="$(pgrep -f "$expect" | head -n1 || true)"
-      if [[ -n "${newpid:-}" ]]; then
-        echo "$newpid" > "$pidfile"
-        logw "[HEAL] $name pidfile empty -> healed (new=${newpid})"
-        echo "[SKIP] $name already running (pid=$newpid)"
-        return 1
-      fi
-    fi
-    rm -f "$pidfile" || true
-    logw "[CLEAN] $name pidfile empty -> removed"
-    return 0
+  if [[ -n "${pid:-}" ]] \
+     && pid_matches_project_process "$pid" "$name" "$expect"; then
+    echo "[SKIP] $name already running (pid=$pid)"
+    return 1
   fi
 
-  # If pid dead -> try heal by pgrep, else remove
-  if ! kill -0 "$pid" 2>/dev/null; then
-    if [[ -n "${expect:-}" ]]; then
-      newpid="$(pgrep -f "$expect" | head -n1 || true)"
-      if [[ -n "${newpid:-}" ]]; then
-        echo "$newpid" > "$pidfile"
-        logw "[HEAL] $name pidfile dead -> healed (old=${pid} new=${newpid})"
-        echo "[SKIP] $name already running (pid=$newpid)"
-        return 1
-      fi
-    fi
-    rm -f "$pidfile" || true
-    logw "[CLEAN] $name pidfile dead -> removed (old=${pid})"
-    return 0
-  fi
-
-  # pid alive: verify command matches expected (if we have expected)
   if [[ -n "${expect:-}" ]]; then
-    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-    if [[ -n "${cmd:-}" ]] && echo "$cmd" | grep -Fq "$expect"; then
-      echo "[SKIP] $name already running (pid=$pid)"
-      return 1
-    fi
-
-    # mismatch: try heal by pgrep to find correct process, else remove pidfile
-    newpid="$(pgrep -f "$expect" | head -n1 || true)"
+    newpid="$(find_project_pid "$name" "$expect")"
     if [[ -n "${newpid:-}" ]]; then
       echo "$newpid" > "$pidfile"
-      logw "[HEAL] $name pidfile cmd mismatch -> healed (old=${pid} new=${newpid})"
+      logw "[HEAL] $name pidfile -> project-owned pid=${newpid}"
       echo "[SKIP] $name already running (pid=$newpid)"
       return 1
     fi
-
-    logw "[CLEAN] $name pidfile cmd mismatch -> removed (pid=$pid)"
-    logw "        expected: $expect"
-    logw "        actual:   ${cmd:-na}"
-    rm -f "$pidfile" || true
-    return 0
   fi
 
-  # No expected pattern: if pid alive, accept as running
-  echo "[SKIP] $name already running (pid=$pid)"
-  return 1
+  rm -f "$pidfile" || true
+  logw "[CLEAN] $name stale/cross-project pidfile removed (old=${pid:-na})"
+  return 0
 }
 
 start_one() {
@@ -143,14 +156,19 @@ start_one() {
 
 any_orch_running() {
   shopt -s nullglob
-  local f p
+  local f p name expect
+
   for f in "$RUNDIR"/*.pid; do
+    name="$(basename "$f" .pid)"
     p="$(cat "$f" 2>/dev/null || true)"
-    if [[ -n "${p:-}" ]] && kill -0 "$p" 2>/dev/null; then
+    expect="$(expected_cmd "$name")"
+
+    if pid_matches_project_process "$p" "$name" "$expect"; then
       shopt -u nullglob
       return 0
     fi
   done
+
   shopt -u nullglob
   return 1
 }

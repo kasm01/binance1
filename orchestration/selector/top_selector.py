@@ -100,18 +100,10 @@ class TopSelector:
     """
     candidates_stream -> top5_stream
 
-    Buffers incoming candidates for WINDOW seconds, then selects best TOPK in that window,
-    de-dupes by dedup_key, applies cooldown, then publishes ONE batch event:
-
-      {"ts_utc": "...", "topk": N, "items": [candidate,...]}
-
-    Notes:
-      - MIN_SCORE fallback supported for min_score
-      - W_MIN / TOPSEL_W_MIN whale gate: candidate must have whale_score >= threshold (if threshold > 0)
-      - price alanını korur (top-level + raw içinde)
-      - Redis bağlantı sorunlarında retry / reconnect yapar
-      - cooldown cache aşırı büyürse prune eder
-      - log spam azaltılmıştır
+    Ranking-only layer. It buffers canonical candidates for a short window,
+    de-duplicates by `dedup_key`, ranks by canonical `model_score`, and publishes
+    the best TOPK batch. It never applies MODEL SCORE, MARKET CONTEXT, cooldown,
+    position, or execution-risk hard vetoes.
     """
 
     def __init__(self) -> None:
@@ -148,23 +140,6 @@ class TopSelector:
         self.read_block_ms = _env_int("TOPSEL_BLOCK_MS", 2000)
         self.batch_count = _env_int("TOPSEL_BATCH", 200)
 
-        # Selector cooldown'u scalp için daha kısa ama spam'i engelleyecek düzeyde tut
-        # eski fallback TG_DUPLICATE_SIGNAL_COOLDOWN_SEC -> 20 idi; burada 90 öncelikli
-        self.cooldown_sec = _env_int(
-            "TOPSEL_COOLDOWN_SEC",
-            _env_int("TG_DUPLICATE_SIGNAL_COOLDOWN_SEC", 90),
-        )
-
-        self.min_score = _env_float(
-            "TOPSEL_MIN_SCORE",
-            _env_float("MIN_TOPSEL_SCORE", _env_float("MIN_SCORE", 0.10)),
-        )
-
-        self.w_min = _env_float("TOPSEL_W_MIN", _env_float("W_MIN", 0.0))
-
-        self.penalty_wide_spread = _env_float("TOPSEL_PENALTY_WIDE_SPREAD", 0.15)
-        self.penalty_high_vol = _env_float("TOPSEL_PENALTY_HIGH_VOL", 0.05)
-
         self.require_fields = _env_bool("TOPSEL_REQUIRE_FIELDS", True)
 
         self.out_maxlen = _env_int("TOPSEL_OUT_MAXLEN", 5000)
@@ -175,8 +150,6 @@ class TopSelector:
         # runtime / health tuning
         self.loop_sleep_sec = _env_float("TOPSEL_LOOP_SLEEP_SEC", 0.05)
         self.idle_log_sec = _env_int("TOPSEL_IDLE_LOG_SEC", 300)
-        self.cooldown_cache_max = _env_int("TOPSEL_COOLDOWN_CACHE_MAX", 50000)
-        self.cooldown_prune_every = _env_int("TOPSEL_COOLDOWN_PRUNE_EVERY", 200)
         self.redis_retries = _env_int("TOPSEL_REDIS_RETRIES", 10)
         self.redis_retry_base_sleep = _env_float("TOPSEL_REDIS_RETRY_BASE_SLEEP", 1.0)
         self.redis_retry_max_sleep = _env_float("TOPSEL_REDIS_RETRY_MAX_SLEEP", 15.0)
@@ -185,7 +158,6 @@ class TopSelector:
         self._ensure_redis_ready()
         self._ensure_group(self.in_stream, self.group, start_id=self.group_start_id)
 
-        self.last_sent: Dict[str, float] = {}
 
         self._buf: List[Tuple[str, Dict[str, Any]]] = []
         self._buf_ids: List[str] = []
@@ -197,8 +169,8 @@ class TopSelector:
         print(
             f"[TopSelector] init ok. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} "
-            f"topk={self.topk} window={self.window_sec}s cooldown={self.cooldown_sec}s "
-            f"min_score={self.min_score} w_min={self.w_min} "
+            f"topk={self.topk} window={self.window_sec}s selector_cooldown=executor "
+            f"model_score_gate=master market_context_gate=master "
             f"ack_immediate={self.ack_immediate}",
             flush=True,
         )
@@ -299,17 +271,12 @@ class TopSelector:
                 ws = raw.get("whale_score", None)
         if ws is not None:
             d["whale_score"] = _clamp(_safe_float(ws, 0.0), 0.0, 1.0)
-        st = d.get("score_total", None)
-        if st is None:
-            st = d.get("_score_total", None)
-        if st is None:
-            st = d.get("_score_selected", None)
+        st = d.get("model_score", None)
         if st is None:
             raw = d.get("raw") or {}
             if isinstance(raw, dict):
-                st = raw.get("score_total", None)
-        if st is not None:
-            d["score_total"] = _clamp(_safe_float(st, 0.0), 0.0, 1.0)
+                st = raw.get("model_score", None)
+        d["model_score"] = _clamp(_safe_float(st, 0.0), 0.0, 1.0)
 
         try:
             raw = d.get("raw")
@@ -330,55 +297,12 @@ class TopSelector:
             return False
         return True
 
-    def _extract_whale_score(self, c: Dict[str, Any]) -> float:
-        ws = _safe_float(c.get("whale_score", 0.0), 0.0)
-        if ws > 0:
-            return float(ws)
-        raw = c.get("raw") or {}
-        if isinstance(raw, dict):
-            return float(_safe_float(raw.get("whale_score", 0.0), 0.0))
-        return 0.0
-
-    def _score(self, c: Dict[str, Any]) -> float:
-        s = _clamp(float(c.get("score_total", 0.0) or 0.0), 0.0, 1.0)
-        tags = c.get("risk_tags") or []
-        if "wide_spread" in tags:
-            s -= float(self.penalty_wide_spread)
-        if "high_vol" in tags:
-            s -= float(self.penalty_high_vol)
-        return _clamp(s, 0.0, 1.0)
-
-    def _cooldown_key(self, c: Dict[str, Any]) -> str:
-        dk = c.get("dedup_key")
+    def _dedup_key(self, c: Dict[str, Any]) -> str:
+        dk = str(c.get("dedup_key") or "").strip()
         if dk:
-            return str(dk)
-        raw = c.get("raw") or {}
-        if isinstance(raw, dict):
-            ck = raw.get("cooldown_key")
-            if ck:
-                return str(ck)
+            return dk
         return f"{c.get('symbol', '')}|{c.get('interval', '')}|{c.get('side', '')}"
 
-    def _prune_last_sent(self) -> None:
-        if not self.last_sent:
-            return
-
-        if len(self.last_sent) <= int(self.cooldown_cache_max):
-            cutoff = time.time() - max(float(self.cooldown_sec) * 3.0, 600.0)
-            stale = [k for k, ts in self.last_sent.items() if float(ts) < cutoff]
-            if stale:
-                for k in stale:
-                    self.last_sent.pop(k, None)
-            return
-
-        cutoff = time.time() - max(float(self.cooldown_sec) * 2.0, 300.0)
-        stale = [k for k, ts in self.last_sent.items() if float(ts) < cutoff]
-        for k in stale:
-            self.last_sent.pop(k, None)
-
-        if len(self.last_sent) > int(self.cooldown_cache_max):
-            items = sorted(self.last_sent.items(), key=lambda kv: kv[1], reverse=True)
-            self.last_sent = dict(items[: int(self.cooldown_cache_max)])
 
     def _xreadgroup(self, start_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
@@ -441,241 +365,10 @@ class TopSelector:
         except Exception as e:
             print(f"[TopSelector] xack error: {e}", flush=True)
 
-    def _acp_float(self, value, default=0.0):
-        try:
-            return float(value)
-        except Exception:
-            return float(default)
-
-    def _acp_get_raw_meta(self, item):
+    def _ranking_score(self, item: Dict[str, Any]) -> float:
+        """TopSelector ranking only: canonical MODEL score, no hidden boosts/penalties."""
         item0 = item if isinstance(item, dict) else {}
-        raw0 = item0.get("raw") or {}
-
-        if isinstance(raw0, str):
-            try:
-                raw0 = json.loads(raw0)
-            except Exception:
-                raw0 = {}
-
-        if not isinstance(raw0, dict):
-            raw0 = {}
-
-        meta0 = raw0.get("meta") if isinstance(raw0.get("meta"), dict) else {}
-        return raw0, meta0
-
-    def _acp_env_bool(self, name: str, default: bool = False) -> bool:
-        try:
-            v = os.getenv(name)
-            if v is None:
-                return bool(default)
-            s = str(v).strip().lower()
-            return s in ("1", "true", "t", "yes", "y", "on")
-        except Exception:
-            return bool(default)
-
-    def _acp_limit_score(
-        self,
-        base_score: float,
-        final_score: float,
-    ) -> Tuple[float, Dict[str, Any]]:
-        """
-        ACP şişirmesini sınırlar.
-
-        Kurallar:
-          - base_score, hard floor altındaysa aday reddedilir
-          - ACP boost en fazla belirli bir miktar olabilir
-          - selected/final score için üst tavan uygulanır
-        """
-        try:
-            limiter_enabled = self._acp_env_bool("ACP_LIMITER_ENABLE", True)
-        except Exception:
-            limiter_enabled = True
-
-        base0 = _clamp(self._acp_float(base_score, 0.0), 0.0, 1.0)
-        final0 = _clamp(self._acp_float(final_score, 0.0), 0.0, 1.0)
-
-        if not limiter_enabled:
-            return final0, {
-                "limiter_enabled": False,
-                "base_score": base0,
-                "input_final_score": final0,
-                "limited_score": final0,
-                "blocked": False,
-                "reason": "disabled",
-            }
-
-        try:
-            hard_floor = float(os.getenv("ACP_LIMITER_HARD_FLOOR", "0.60") or 0.60)
-        except Exception:
-            hard_floor = 0.60
-
-        try:
-            max_boost = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
-        except Exception:
-            max_boost = 0.08
-
-        try:
-            hard_cap = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
-        except Exception:
-            hard_cap = 0.92
-
-        if base0 < hard_floor:
-            return 0.0, {
-                "limiter_enabled": True,
-                "base_score": base0,
-                "input_final_score": final0,
-                "limited_score": 0.0,
-                "blocked": True,
-                "reason": f"base_below_floor<{hard_floor:.3f}",
-                "hard_floor": float(hard_floor),
-                "max_boost": float(max_boost),
-                "hard_cap": float(hard_cap),
-            }
-
-        limited = min(final0, base0 + max_boost, hard_cap)
-        limited = _clamp(limited, 0.0, 1.0)
-
-        return limited, {
-            "limiter_enabled": True,
-            "base_score": base0,
-            "input_final_score": final0,
-            "limited_score": float(limited),
-            "blocked": False,
-            "reason": "ok",
-            "hard_floor": float(hard_floor),
-            "max_boost": float(max_boost),
-            "hard_cap": float(hard_cap),
-        }
-
-    def _adaptive_coin_priority_score(self, item):
-        try:
-            enabled = bool(int(os.getenv("ACP_ENABLE", "1") or 1))
-        except Exception:
-            enabled = True
-
-        item0 = item if isinstance(item, dict) else {}
-        base_score = self._acp_float(
-            item0.get("_score_selected"),
-            self._acp_float(item0.get("score_total"), 0.0),
-        )
-
-        if not enabled:
-            return base_score, {"base_score": base_score}
-
-        raw0, meta0 = self._acp_get_raw_meta(item0)
-
-        whale_score = self._acp_float(item0.get("whale_score"), 0.0)
-        whale_dir = str(item0.get("whale_dir") or "").strip().lower()
-        side = str(item0.get("side") or "").strip().lower()
-
-        liq_score = self._acp_float(
-            item0.get("liq_score"),
-            self._acp_float(raw0.get("liq_score"), self._acp_float(meta0.get("liq_score"), 0.0)),
-        )
-        micro_score = self._acp_float(
-            item0.get("micro_score"),
-            self._acp_float(raw0.get("micro_score"), self._acp_float(meta0.get("micro_score"), 0.0)),
-        )
-        spread_pct = self._acp_float(
-            item0.get("spread_pct"),
-            self._acp_float(raw0.get("spread_pct"), self._acp_float(meta0.get("spread_pct"), 0.0)),
-        )
-        atr_pct = self._acp_float(
-            item0.get("atr_pct"),
-            self._acp_float(raw0.get("atr_pct"), self._acp_float(meta0.get("atr_pct"), 0.0)),
-        )
-
-        try:
-            w_score = float(os.getenv("ACP_W_SCORE", "1.00") or 1.00)
-            w_whale = float(os.getenv("ACP_W_WHALE", "0.22") or 0.22)
-            w_liq = float(os.getenv("ACP_W_LIQ", "0.14") or 0.14)
-            w_micro = float(os.getenv("ACP_W_MICRO", "0.12") or 0.12)
-            w_spread = float(os.getenv("ACP_W_SPREAD", "0.12") or 0.12)
-            w_atr = float(os.getenv("ACP_W_ATR", "0.10") or 0.10)
-
-            min_whale = float(os.getenv("ACP_MIN_WHALE_SCORE", "0.50") or 0.50)
-            min_liq = float(os.getenv("ACP_MIN_LIQ_SCORE", "0.18") or 0.18)
-            max_spread = float(os.getenv("ACP_MAX_SPREAD_PCT", "0.0012") or 0.0012)
-            max_atr = float(os.getenv("ACP_MAX_ATR_PCT", "0.028") or 0.028)
-
-            whale_align_bonus = float(os.getenv("ACP_WHALE_ALIGN_BONUS", "1.10") or 1.10)
-            whale_strong_bonus = float(os.getenv("ACP_WHALE_STRONG_BONUS", "1.08") or 1.08)
-            liq_strong_bonus = float(os.getenv("ACP_LIQ_STRONG_BONUS", "1.06") or 1.06)
-            micro_strong_bonus = float(os.getenv("ACP_MICRO_STRONG_BONUS", "1.05") or 1.05)
-
-            spread_soft_penalty = float(os.getenv("ACP_SPREAD_SOFT_PENALTY", "0.92") or 0.92)
-            spread_hard_penalty = float(os.getenv("ACP_SPREAD_HARD_PENALTY", "0.78") or 0.78)
-            atr_soft_penalty = float(os.getenv("ACP_ATR_SOFT_PENALTY", "0.90") or 0.90)
-            atr_hard_penalty = float(os.getenv("ACP_ATR_HARD_PENALTY", "0.75") or 0.75)
-            counter_whale_penalty = float(os.getenv("ACP_COUNTER_WHALE_PENALTY", "0.82") or 0.82)
-        except Exception:
-            w_score, w_whale, w_liq, w_micro, w_spread, w_atr = 1.0, 0.22, 0.14, 0.12, 0.12, 0.10
-            min_whale, min_liq, max_spread, max_atr = 0.50, 0.18, 0.0012, 0.028
-            whale_align_bonus, whale_strong_bonus = 1.10, 1.08
-            liq_strong_bonus, micro_strong_bonus = 1.06, 1.05
-            spread_soft_penalty, spread_hard_penalty = 0.92, 0.78
-            atr_soft_penalty, atr_hard_penalty = 0.90, 0.75
-            counter_whale_penalty = 0.82
-
-        total = base_score * w_score
-        total += whale_score * w_whale
-        total += liq_score * w_liq
-        total += micro_score * w_micro
-        total -= spread_pct * 100.0 * w_spread
-        total -= atr_pct * 10.0 * w_atr
-
-        mult = 1.0
-
-        if whale_dir in ("long", "short") and side in ("long", "short"):
-            if whale_dir == side:
-                mult *= whale_align_bonus
-                if whale_score >= min_whale:
-                    mult *= whale_strong_bonus
-            else:
-                mult *= counter_whale_penalty
-
-        if liq_score >= max(min_liq, 0.35):
-            mult *= liq_strong_bonus
-
-        if micro_score >= 0.75:
-            mult *= micro_strong_bonus
-
-        if spread_pct > 0:
-            if spread_pct >= max_spread:
-                mult *= spread_hard_penalty
-            elif spread_pct >= (max_spread * 0.6):
-                mult *= spread_soft_penalty
-
-        if atr_pct > 0:
-            if atr_pct >= max_atr:
-                mult *= atr_hard_penalty
-            elif atr_pct >= (max_atr * 0.6):
-                mult *= atr_soft_penalty
-
-        final_score = float(total * mult)
-
-        if final_score > 1.0:
-            final_score = 1.0
-        elif final_score < 0.0:
-            final_score = 0.0
-
-        limited_score, limiter_meta = self._acp_limit_score(
-            base_score=base_score,
-            final_score=final_score,
-        )
-
-        return limited_score, {
-            "base_score": base_score,
-            "whale_score": whale_score,
-            "liq_score": liq_score,
-            "micro_score": micro_score,
-            "spread_pct": spread_pct,
-            "atr_pct": atr_pct,
-            "mult": mult,
-            "final_score": final_score,
-            "limited_score": float(limited_score),
-            "acp_limiter": limiter_meta,
-        }
+        return float(_clamp(_safe_float(item0.get("model_score", 0.0), 0.0), 0.0, 1.0))
 
     def _select_topk(self, items: List[Tuple[str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         if not items:
@@ -697,46 +390,7 @@ class TopSelector:
             if not self._required_ok(c2):
                 continue
 
-            if float(self.w_min) > 0.0:
-                ws = self._extract_whale_score(c2)
-                if ws < float(self.w_min):
-                    continue
-
-            try:
-                acp_score, acp_meta = self._adaptive_coin_priority_score(c2)
-                c2["_acp_score"] = float(acp_score)
-                c2["_acp_meta"] = acp_meta if isinstance(acp_meta, dict) else {}
-
-                if float(c2.get("_acp_score", 0.0) or 0.0) <= 0.0:
-                    try:
-                        if bool(int(os.getenv("ACP_LIMITER_LOG_BLOCKS", "1") or 1)):
-                            limiter_meta = ((c2.get("_acp_meta") or {}).get("acp_limiter") or {})
-                            print(
-                                f"[TopSelector][ACP-LIMITER][BLOCK] "
-                                f"symbol={c2.get('symbol')} side={c2.get('side')} "
-                                f"base={float((c2.get('score_total') or 0.0)):.3f} "
-                                f"acp={float(c2.get('_acp_score', 0.0)):.3f} "
-                                f"reason={limiter_meta.get('reason', 'blocked')}",
-                                flush=True,
-                            )
-                    except Exception:
-                        pass
-                    continue
-
-            except Exception as e:
-                try:
-                    print(f"[TopSelector][ACP-ERROR] {e}", flush=True)
-                except Exception:
-                    pass
-
-                try:
-                    c2["_acp_score"] = float(
-                        c2.get("_score_selected", c2.get("score_total", 0.0)) or 0.0
-                    )
-                except Exception:
-                    c2["_acp_score"] = 0.0
-
-                c2["_acp_meta"] = {}
+            c2["ranking_score"] = self._ranking_score(c2)
 
             windowed.append((sid, c2))
 
@@ -745,114 +399,28 @@ class TopSelector:
 
         best_by_key: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
         for sid, c in windowed:
-            ck = self._cooldown_key(c)
-            base_sc = self._score(c)
+            dk = self._dedup_key(c)
+            ranking_score = float(c.get("ranking_score", c.get("model_score", 0.0)) or 0.0)
+            prev = best_by_key.get(dk)
+            if (prev is None) or (ranking_score > prev[0]):
+                best_by_key[dk] = (ranking_score, sid, c)
 
-            try:
-                acp_sc = float(
-                    c.get("_acp_score", c.get("_score_selected", c.get("score_total", base_sc))) or base_sc
-                )
-            except Exception:
-                acp_sc = float(base_sc)
-
-            prev = best_by_key.get(ck)
-            if (prev is None) or (acp_sc > prev[0]):
-                best_by_key[ck] = (acp_sc, sid, c)
-
-        filtered: List[Tuple[float, str, Dict[str, Any]]] = []
-
-        for ck, (sc, sid, c) in best_by_key.items():
-
-            try:
-                base_score = float(
-                    c.get("score_total", c.get("score", 0.0)) or 0.0
-                )
-            except Exception:
-                base_score = 0.0
-
-            # ===== BASE SCORE FILTER =====
-            try:
-                base_floor = float(os.getenv("ACP_FILTER_BASE_FLOOR", "0.60") or 0.60)
-            except Exception:
-                base_floor = 0.60
-
-            if base_score < float(base_floor):
-                try:
-                    if bool(int(os.getenv("ACP_LIMITER_LOG_BLOCKS", "1") or 1)):
-                        print(
-                            f"[TopSelector][FILTER-BLOCK] "
-                            f"symbol={c.get('symbol')} side={c.get('side')} "
-                            f"base={float(base_score):.3f} "
-                            f"reason=base_below_floor<{float(base_floor):.3f}",
-                            flush=True,
-                        )
-                except Exception:
-                    pass
-                continue
-
-            if base_score < float(self.min_score):
-                continue
-
-            last = self.last_sent.get(ck, 0.0)
-
-            if float(self.cooldown_sec) > 0 and (now_sec - last) < float(self.cooldown_sec):
-                continue
-
-            # ===== ACP LIMITER =====
-            try:
-                hard_cap1 = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
-            except Exception:
-                hard_cap1 = 0.92
-
-            try:
-                max_boost1 = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
-            except Exception:
-                max_boost1 = 0.08
-
-            sc_limited = min(float(sc), float(base_score + max_boost1), float(hard_cap1))
-
-            filtered.append((float(_clamp(sc_limited, 0.0, 1.0)), sid, c))
-
-        if not filtered:
-            return []
-        filtered.sort(key=lambda t: t[0], reverse=True)
+        ranked = sorted(best_by_key.values(), key=lambda t: t[0], reverse=True)
 
         out: List[Dict[str, Any]] = []
-        for sc, sid, c in filtered[: max(1, int(self.topk))]:
-            try:
-                base_sc0 = float(c.get("score_total", c.get("score", 0.0)) or 0.0)
-            except Exception:
-                base_sc0 = 0.0
-
-            try:
-                hard_cap0 = float(os.getenv("ACP_LIMITER_HARD_CAP", "0.92") or 0.92)
-            except Exception:
-                hard_cap0 = 0.92
-
-            try:
-                max_boost0 = float(os.getenv("ACP_LIMITER_MAX_BOOST", "0.08") or 0.08)
-            except Exception:
-                max_boost0 = 0.08
-
-            selected_sc = min(float(sc), float(base_sc0 + max_boost0), float(hard_cap0))
-            c["_score_selected"] = float(_clamp(selected_sc, 0.0, 1.0))
+        for ranking_score, sid, c in ranked[: max(1, int(self.topk))]:
+            c["ranking_score"] = float(_clamp(ranking_score, 0.0, 1.0))
             c["_source_stream_id"] = sid
             out.append(c)
 
-        try:
-            log_topk = bool(int(os.getenv("ACP_LOG_TOPK", "1") or 1))
-        except Exception:
-            log_topk = True
-
-        if log_topk and out:
+        if out:
             try:
                 print(
-                    "[TopSelector][ACP] topk="
+                    "[TopSelector][RANK] topk="
                     + ", ".join(
                         [
                             f"{x.get('symbol')}:{x.get('side')} "
-                            f"acp={float(x.get('_acp_score', 0.0)):.3f} "
-                            f"sel={float(x.get('_score_selected', 0.0)):.3f}"
+                            f"model={float(x.get('model_score', 0.0)):.3f}"
                             for x in out
                         ]
                     ),
@@ -873,8 +441,6 @@ class TopSelector:
             items=top,
             window_sec=int(self.window_sec),
             selector_id=str(self.consumer),
-            min_score=float(self.min_score),
-            w_min=float(self.w_min),
         ).to_dict()
 
         try:
@@ -897,8 +463,7 @@ class TopSelector:
 
         now_sec = time.time()
         for c in top:
-            ck = self._cooldown_key(c)
-            self.last_sent[ck] = now_sec
+            ck = self._dedup_key(c)
 
         return sid
 
@@ -950,8 +515,8 @@ class TopSelector:
         print(
             f"[TopSelector] started. in={self.in_stream} out={self.out_stream} "
             f"group={self.group} consumer={self.consumer} drain_pending={self.drain_pending} "
-            f"window={self.window_sec}s topk={self.topk} cooldown={self.cooldown_sec}s "
-            f"min_score={self.min_score} w_min={self.w_min} "
+            f"window={self.window_sec}s topk={self.topk} selector_cooldown=executor "
+            f"model_score_gate=master market_context_gate=master "
             f"redis={self.redis_host}:{self.redis_port}/{self.redis_db}",
             flush=True,
         )
@@ -968,7 +533,7 @@ class TopSelector:
                 if out_id:
                     syms = ", ".join(
                         [
-                            f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})"
+                            f"{x.get('symbol')}:{x.get('side')}(model={float(x.get('model_score',0.0)):.3f},rank={float(x.get('ranking_score',0.0)):.3f})"
                             for x in top
                         ]
                     )
@@ -1024,7 +589,7 @@ class TopSelector:
                     out_id, top = res
                     syms = ", ".join(
                         [
-                            f"{x.get('symbol')}:{x.get('side')}({x.get('_score_selected', x.get('score_total')):.3f})"
+                            f"{x.get('symbol')}:{x.get('side')}(model={float(x.get('model_score',0.0)):.3f},rank={float(x.get('ranking_score',0.0)):.3f})"
                             for x in top
                         ]
                     )
@@ -1033,8 +598,6 @@ class TopSelector:
                         flush=True,
                     )
 
-            if self.cooldown_prune_every > 0 and (self._loops % int(self.cooldown_prune_every) == 0):
-                self._prune_last_sent()
 
             time.sleep(max(0.01, float(self.loop_sleep_sec)))
 

@@ -120,25 +120,31 @@ bootstrap_redis() {
 bootstrap_redis
 
 # -----------------------------
-# Helpers: pidfile heal / cleanup
+# Helpers: project-scoped process health / pidfile heal
 # -----------------------------
 heal_pidfile() {
-  local name="$1" pat="$2"
+  local name="$1"
+  local pat="$2"
   local pidfile="run/${name}.pid"
+  local pid newpid
+
   [[ -f "$pidfile" ]] || return 0
 
-  local pid
   pid="$(cat "$pidfile" 2>/dev/null || true)"
-  if [[ -z "${pid:-}" ]] || ! kill -0 "$pid" 2>/dev/null; then
-    local newpid
-    newpid="$(pgrep -f "$pat" | head -n1 || true)"
-    if [[ -n "${newpid:-}" ]]; then
-      echo "$newpid" > "$pidfile"
-      echo "[START][WARN] ${name} pidfile stale -> healed (old=${pid:-na} new=${newpid})"
-    else
-      rm -f "$pidfile" || true
-      echo "[START][WARN] ${name} pidfile stale -> cleaned (old=${pid:-na})"
-    fi
+
+  if [[ -n "${pid:-}" ]] \
+     && pid_matches_project_process "$pid" "$name" "$pat"; then
+    return 0
+  fi
+
+  newpid="$(find_project_pid "$name" "$pat")"
+
+  if [[ -n "${newpid:-}" ]]; then
+    echo "$newpid" > "$pidfile"
+    echo "[START][WARN] ${name} pidfile healed -> project pid=${newpid}"
+  else
+    rm -f "$pidfile" || true
+    echo "[START][WARN] ${name} stale/cross-project pidfile cleaned"
   fi
 }
 
@@ -148,59 +154,74 @@ heal_pidfile() {
 proc_pattern() {
   local name="$1"
   case "$name" in
-    scanner_w1) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w1|w1')" ;;
-    scanner_w2) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w2|w2')" ;;
-    scanner_w3) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w3|w3')" ;;
-    scanner_w4) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w4|w4')" ;;
-    scanner_w5) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w5|w5')" ;;
-    scanner_w6) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w6|w6')" ;;
-    scanner_w7) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w7|w7')" ;;
-    scanner_w8) echo "orchestration/scanners/worker_stub.py.*WORKER_ID.?=.?(w8|w8')" ;;
-    aggregator) echo "orchestration/aggregator/run_aggregator.py" ;;
-    top_selector) echo "orchestration/selector/top_selector.py" ;;
-    master_executor) echo "orchestration/executor/master_executor.py" ;;
-    intent_bridge) echo "orchestration/executor/intent_bridge.py" ;;
-    *) echo "$name" ;;
+    scanner_w1|scanner_w2|scanner_w3|scanner_w4|scanner_w5|scanner_w6|scanner_w7|scanner_w8)
+      echo "orchestration/scanners/model_worker.py"
+      ;;
+    aggregator)
+      echo "orchestration/aggregator/run_aggregator.py"
+      ;;
+    top_selector)
+      echo "orchestration/selector/top_selector.py"
+      ;;
+    master_executor)
+      echo "orchestration/executor/master_executor.py"
+      ;;
+    intent_bridge)
+      echo "orchestration/executor/intent_bridge.py"
+      ;;
+    *)
+      echo "$name"
+      ;;
   esac
 }
 
 is_proc_alive() {
-  local pat="$1"
-  pgrep -f "$pat" >/dev/null 2>&1
+  local name="$1"
+  local pat="$2"
+  local pid
+
+  pid="$(find_project_pid "$name" "$pat")"
+  [[ -n "${pid:-}" ]]
 }
 
 wait_proc_alive() {
-  local pat="$1"
-  local seconds_total="${2:-8}"
-  local sleep_step="${3:-1}"
+  local name="$1"
+  local pat="$2"
+  local seconds_total="${3:-8}"
+  local sleep_step="${4:-1}"
   local elapsed=0
 
   while (( elapsed < seconds_total )); do
-    if is_proc_alive "$pat"; then
+    if is_proc_alive "$name" "$pat"; then
       return 0
     fi
     sleep "$sleep_step"
     elapsed=$((elapsed + sleep_step))
   done
+
   return 1
 }
 
 assert_proc_running() {
   local name="$1"
-  local pat
+  local pat pid
+
   pat="$(proc_pattern "$name")"
-  if wait_proc_alive "$pat" 8 1; then
-    local pid
-    pid="$(pgrep -f "$pat" | head -n1 || true)"
+
+  if wait_proc_alive "$name" "$pat" 8 1; then
+    pid="$(find_project_pid "$name" "$pat")"
+
     [[ -n "${pid:-}" ]] && echo "$pid" > "run/${name}.pid"
-    echo "[OK] ${name} running pid=${pid:-na}"
+
+    echo "[OK] ${name} running pid=${pid:-na} cwd=$ROOT_DIR"
     return 0
   fi
 
-  echo "[FAIL] ${name} is not running (pattern=${pat})"
+  echo "[FAIL] ${name} is not running in project=$ROOT_DIR (pattern=${pat})"
   echo "[FAIL] Check log: logs/orch/${name}.log"
   return 1
 }
+
 # -----------------------------
 # Backpressure Guard
 # -----------------------------
@@ -387,17 +408,8 @@ fi
 # -----------------------------
 SYMBOLS_24="${SYMBOLS_24:-${SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,LINKUSDT,AVAXUSDT,ADAUSDT,DOGEUSDT,TRXUSDT,OPUSDT,ARBUSDT,NEARUSDT,HBARUSDT,INJUSDT}}"
 WORKER_INTERVAL="${WORKER_INTERVAL:-5m}"
-SCANNER_MODE="${SCANNER_MODE:-fast}"
 
-WORKER_MAX_SPREAD_PCT="${WORKER_MAX_SPREAD_PCT:-0.0010}"
-WORKER_MAX_ATR_PCT="${WORKER_MAX_ATR_PCT:-0.0300}"
-WORKER_MIN_CONF="${WORKER_MIN_CONF:-0.45}"
 
-WORKER_THROTTLE_KEY="${WORKER_THROTTLE_KEY:-$BP_THROTTLE_KEY}"
-WORKER_THROTTLE_MIN="${WORKER_THROTTLE_MIN:-1}"
-WORKER_THROTTLE_MAX="${WORKER_THROTTLE_MAX:-20}"
-WORKER_THROTTLE_POLL_EVERY="${WORKER_THROTTLE_POLL_EVERY:-10}"
-WORKER_THROTTLE_JITTER="${WORKER_THROTTLE_JITTER:-0.02}"
 
 IFS=',' read -r -a symarr <<<"$SYMBOLS_24"
 
@@ -439,17 +451,7 @@ for n in 1 2 3 4 5 6 7 8; do
     WORKER_ID="$wid" \
     WORKER_SYMBOLS="$syms" \
     WORKER_INTERVAL="$WORKER_INTERVAL" \
-    SCANNER_MODE="$SCANNER_MODE" \
-    WORKER_PUBLISH_HOLD=0 \
-    WORKER_MAX_SPREAD_PCT="$WORKER_MAX_SPREAD_PCT" \
-    WORKER_MAX_ATR_PCT="$WORKER_MAX_ATR_PCT" \
-    WORKER_MIN_CONF="$WORKER_MIN_CONF" \
-    WORKER_THROTTLE_KEY="$WORKER_THROTTLE_KEY" \
-    WORKER_THROTTLE_MIN="$WORKER_THROTTLE_MIN" \
-    WORKER_THROTTLE_MAX="$WORKER_THROTTLE_MAX" \
-    WORKER_THROTTLE_POLL_EVERY="$WORKER_THROTTLE_POLL_EVERY" \
-    WORKER_THROTTLE_JITTER="$WORKER_THROTTLE_JITTER" \
-    "$PY" -u ./orchestration/scanners/worker_stub.py
+    "$PY" -u ./orchestration/scanners/model_worker.py
 done
 # -----------------------------
 # Downstream singletons

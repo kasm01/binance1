@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Optional, Tuple
 
@@ -23,6 +24,15 @@ class ShortEntryCandleService:
     ) -> None:
         self._client = client
         self._logger = logger
+        self._cache_max_age_sec = max(0.1, float(os.getenv("SHORT_ENTRY_CANDLE_CACHE_MAX_AGE_SEC", "10") or 10))
+        self._refresh_retries = max(1, int(float(os.getenv("SHORT_ENTRY_CANDLE_REFRESH_RETRIES", "3") or 3)))
+        self._refresh_sleep_sec = max(0.0, float(os.getenv("SHORT_ENTRY_CANDLE_REFRESH_SLEEP_SEC", "0.35") or 0.35))
+        self._fetch_limit = max(20, int(float(os.getenv("SHORT_ENTRY_CANDLE_FETCH_LIMIT", "20") or 20)))
+        self._cache_ttl_sec = max(1, int(float(os.getenv("SHORT_ENTRY_CANDLE_CACHE_TTL_SEC", "90") or 90)))
+        # Exact rows used by the latest confirmation check. Keeping them in
+        # memory lets entry-time MARKET CONTEXT reuse the same snapshot without
+        # adding a second Binance request.
+        self._last_rows = {}
 
     def _read_rows(
         self,
@@ -33,7 +43,7 @@ class ShortEntryCandleService:
             return read_kline_cache(
                 symbol,
                 interval,
-                max_age_sec=10.0,
+                max_age_sec=float(self._cache_max_age_sec),
             )
         except Exception:
             return None
@@ -138,12 +148,12 @@ class ShortEntryCandleService:
         try:
             direct_rows = None
 
-            for attempt in range(1, 4):
+            for attempt in range(1, self._refresh_retries + 1):
                 direct_rows = (
                     self._client.futures_klines(
                         symbol=symbol,
                         interval="1m",
-                        limit=3,
+                        limit=int(self._fetch_limit),
                     )
                 )
 
@@ -180,8 +190,8 @@ class ShortEntryCandleService:
                 ):
                     break
 
-                if attempt < 3:
-                    time.sleep(0.35)
+                if attempt < self._refresh_retries:
+                    time.sleep(float(self._refresh_sleep_sec))
 
             if (
                 isinstance(direct_rows, list)
@@ -194,7 +204,7 @@ class ShortEntryCandleService:
                         symbol,
                         "1m",
                         direct_rows,
-                        90,
+                        int(self._cache_ttl_sec),
                     )
                 except Exception:
                     pass
@@ -433,6 +443,9 @@ class ShortEntryCandleService:
             ),
         )
 
+        if isinstance(rows, list):
+            self._last_rows[(sym_u, interval_s)] = list(rows)
+
         return self._validate_rows(
             symbol=sym_u,
             interval=interval_s,
@@ -441,3 +454,10 @@ class ShortEntryCandleService:
                 expected_current_open_ms
             ),
         )
+
+    def get_last_rows(self, symbol: str, interval: str = "1m"):
+        """Return the exact rows last used by get_pair(), with no I/O."""
+        sym_u = str(symbol or "").upper().strip()
+        interval_s = str(interval or "1m").strip()
+        rows = self._last_rows.get((sym_u, interval_s))
+        return list(rows) if isinstance(rows, list) else None
