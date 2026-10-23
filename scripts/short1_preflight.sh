@@ -49,6 +49,24 @@ if grep -nE '^[[:space:]]*(SHORT_SCALE_IN_ENABLE|SHORT_MAX_ENTRY_LAYERS)=' .env 
 fi
 ok "layers OFF / single-position config"
 
+if [[ "${DRY_RUN:-1}" == "0" && "${ARMED:-0}" == "1" && "${LIVE_KILL_SWITCH:-1}" == "0" ]]; then
+  /home/kasm920/venv/bin/python - <<'PYMODEL' || fail "promoted production INJUSDT 3m SHORT model missing/invalid"
+from models.short_model_registry import ShortModelRegistry
+m=ShortModelRegistry().get('INJUSDT','3m',require_promoted=True,require_execution_contract=True)
+print('[OK] production SHORT model',m.meta.get('provider'),m.meta.get('promoted'))
+PYMODEL
+else
+  if /home/kasm920/venv/bin/python - <<'PYMODEL' >/dev/null 2>&1
+from models.short_model_registry import ShortModelRegistry
+ShortModelRegistry().get('INJUSDT','3m',require_promoted=True,require_execution_contract=True)
+PYMODEL
+  then
+    ok "production SHORT model present"
+  else
+    echo "[INFO] production SHORT model not promoted; live startup guard will remain fail-closed"
+  fi
+fi
+
 oi_state="$(systemctl --user is-active binance1-oi-context.service || true)"
 [[ "$oi_state" == active ]] || fail "OI collector state=$oi_state"
 ok "OI collector active"

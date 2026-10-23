@@ -105,6 +105,35 @@ load_env() {
   set +a
 }
 
+live_model_guard() {
+  # Fast fail-closed check before orchestration/main startup when real SHORT trading is armed.
+  # Full model/feature contract validation remains in model_worker + short1_preflight.
+  [[ "${DRY_RUN:-1}" == "0" && "${ARMED:-0}" == "1" && "${LIVE_KILL_SWITCH:-1}" == "0" ]] || return 0
+  if ! python3 - <<'PYMODEL' >/dev/null 2>&1
+import json
+from pathlib import Path
+model=Path('models/short_model_INJUSDT_3m_best.joblib')
+meta=Path('models/short_model_meta_INJUSDT_3m.json')
+if not model.is_file() or not meta.is_file():
+    raise SystemExit(1)
+o=json.loads(meta.read_text())
+checks=(
+    bool(o.get('promoted')) is True,
+    str(o.get('symbol') or '').upper() == 'INJUSDT',
+    str(o.get('side') or '').lower() == 'short',
+    str(o.get('interval') or '') == '3m',
+    str(o.get('score_semantics') or '') == 'short_economic_probability',
+)
+if not all(checks):
+    raise SystemExit(2)
+PYMODEL
+  then
+    log "ERROR LIVE_MODEL_GUARD blocked startup: promoted INJUSDT 3m SHORT artifact/meta missing or invalid"
+    return 1
+  fi
+  log "INFO LIVE_MODEL_GUARD passed: INJUSDT 3m promoted artifact/meta verified"
+}
+
 rotate_log() {
   local f="$1"
   [[ -f "$f" ]] || return 0
@@ -473,6 +502,7 @@ main_loop() {
 
   [[ -x "$VENV_PY" ]] || { log "ERROR venv python missing: $VENV_PY"; exit 1; }
   log "INFO supervisor started base=$BASE_DIR dry_run=$DRY_RUN armed=$ARMED kill=$LIVE_KILL_SWITCH manage_orch=$MANAGE_ORCH_SERVICE"
+  live_model_guard || { log "ERROR supervisor fail-closed before startup"; exit 78; }
 
   ensure_orch_service
   run_reconcile_apply
