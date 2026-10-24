@@ -17,6 +17,11 @@ eqv MASTER_MIN_TRADE_SCORE 0.540
 eqv MASTER_SHORT_SOFT_SCORE_ENABLE 1
 eqv MASTER_SHORT_SOFT_SCORE_MIN 0.530
 eqv MAX_OPEN_POSITIONS 1
+eqv SHORT_MARGIN_TYPE ISOLATED
+eqv SHORT_REQUIRE_HEDGE_MODE 1
+eqv SHORT_NATIVE_STOP_ENABLE 1
+eqv SHORT_NATIVE_STOP_WORKING_TYPE MARK_PRICE
+eqv SHORT_NATIVE_STOP_PRICE_PROTECT 0
 eqv ROI_HARD_STOP_PCT -0.1200
 eqv SHORT_DYNAMIC_STOP_ENABLE 1
 eqv SHORT_DYNAMIC_STOP_CONFIRM_SEC 30
@@ -40,9 +45,21 @@ ok "OI context ttl=${ttl}s"
   orchestration/context/market_context_contract.py \
   orchestration/context/entry_context_snapshot.py \
   orchestration/risk/risk_master.py \
+  orchestration/risk/central_risk_master.py \
+  orchestration/risk/central_risk_shadow_profile.py \
   core/short_entry_candle_service.py \
   core/trade_executor_short.py
 ok "core compile"
+
+/home/kasm920/venv/bin/python - <<'PYCENTRAL' || fail "Central Risk shadow contract invalid"
+from orchestration.risk.central_risk_shadow_profile import describe_profile
+p=describe_profile()
+if p.get('stage') != 'SHADOW_RESEARCH':
+    raise SystemExit('unexpected central risk stage')
+if p.get('production_ready') is not False:
+    raise SystemExit('central risk shadow profile unexpectedly production-ready')
+print(f"[OK] Central Risk profile={p.get('profile_id')} stage={p.get('stage')} production_ready={p.get('production_ready')}")
+PYCENTRAL
 
 if grep -nE '^[[:space:]]*(SHORT_SCALE_IN_ENABLE|SHORT_MAX_ENTRY_LAYERS)=' .env >/dev/null; then
   fail "legacy layer env is active"

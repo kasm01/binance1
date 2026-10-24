@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from core.binance_futures_v3 import (
@@ -77,6 +78,9 @@ class TradeExecutorShort:
 
         self.redis_price_cache = kwargs.get("redis_price_cache")
         self.hedge_mode_enabled = True
+        self.short_require_hedge_mode = self._env_bool(
+            "SHORT_REQUIRE_HEDGE_MODE", True
+        )
 
         # Binance Futures hedge mode compatibility.
 
@@ -146,6 +150,11 @@ class TradeExecutorShort:
                 )
             ),
         )
+        self.short_margin_type = str(
+            os.getenv("SHORT_MARGIN_TYPE", "ISOLATED") or "ISOLATED"
+        ).strip().upper()
+        if self.short_margin_type not in {"ISOLATED", "CROSSED"}:
+            self.short_margin_type = "ISOLATED"
 
         # -----------------------------------------------------
         # sniper entry timing
@@ -305,6 +314,21 @@ class TradeExecutorShort:
             "ROI_HARD_STOP_PCT",
             -0.0900,
         )
+        # Exchange-native fail-safe. This mirrors the existing ROI hard-stop
+        # authority so loss protection survives process/VM outages.
+        self.short_native_stop_enable = self._env_bool(
+            "SHORT_NATIVE_STOP_ENABLE",
+            True,
+        )
+        self.short_native_stop_working_type = str(
+            os.getenv("SHORT_NATIVE_STOP_WORKING_TYPE", "MARK_PRICE") or "MARK_PRICE"
+        ).strip().upper()
+        if self.short_native_stop_working_type not in {"MARK_PRICE", "CONTRACT_PRICE"}:
+            self.short_native_stop_working_type = "MARK_PRICE"
+        self.short_native_stop_price_protect = self._env_bool(
+            "SHORT_NATIVE_STOP_PRICE_PROTECT",
+            False,
+        )
 
         # -----------------------------------------------------
         # SHORT dynamic-stop confirmation
@@ -405,6 +429,79 @@ class TradeExecutorShort:
             )
         except Exception:
             return int(default)
+
+    def _runtime_live_guard(self) -> Dict[str, Any]:
+        """Fail-closed live permission check evaluated immediately before ORDER.
+
+        The process environment is immutable after startup, so a kill-switch change
+        written to .env would otherwise not be visible to a running executor.
+        DRY_RUN remains allowed because exchange order helpers are no-op in that mode.
+        """
+        if self.dry_run:
+            return {"state": "READY", "reason": "dry_run"}
+
+        env_path = Path(
+            os.getenv(
+                "SHORT_RUNTIME_ENV_FILE",
+                str(Path(__file__).resolve().parents[1] / ".env"),
+            )
+        )
+        try:
+            values: Dict[str, str] = {}
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in {"DRY_RUN", "ARMED", "LIVE_KILL_SWITCH", "ARM_TOKEN"}:
+                    values[key] = value.strip().strip("\"'")
+        except Exception as exc:
+            return {
+                "state": "REJECT",
+                "reason": "live_guard_env_unreadable",
+                "detail": str(exc)[:120],
+            }
+
+        dry_run_now = self._env_bool_value(values.get("DRY_RUN", "1"))
+        armed_now = self._env_bool_value(values.get("ARMED", "0"))
+        kill_now = self._env_bool_value(values.get("LIVE_KILL_SWITCH", "1"))
+        token_ok = len(str(values.get("ARM_TOKEN", "")).strip()) >= 16
+
+        if dry_run_now:
+            return {"state": "REJECT", "reason": "runtime_dry_run_enabled"}
+        if not armed_now:
+            return {"state": "REJECT", "reason": "runtime_disarmed"}
+        if kill_now:
+            return {"state": "REJECT", "reason": "runtime_kill_switch"}
+        if not token_ok:
+            return {"state": "REJECT", "reason": "runtime_arm_token_invalid"}
+        return {"state": "READY", "reason": "runtime_live_guard_pass"}
+
+    def _validate_short_position_mode(self) -> Dict[str, Any]:
+        """Require Binance hedge mode before any live SHORT order."""
+        if self.dry_run or not self.short_require_hedge_mode:
+            return {"state": "READY", "reason": "position_mode_not_required"}
+
+        fn = getattr(self.client, "futures_get_position_mode", None)
+        if not callable(fn):
+            return {"state": "REJECT", "reason": "position_mode_check_unavailable"}
+        try:
+            out = fn()
+        except Exception as exc:
+            return {
+                "state": "REJECT",
+                "reason": "position_mode_check_failed",
+                "detail": str(exc)[:120],
+            }
+        dual = out.get("dualSidePosition") if isinstance(out, dict) else None
+        if isinstance(dual, str):
+            dual = dual.strip().lower() == "true"
+        if dual is not True:
+            return {"state": "REJECT", "reason": "hedge_mode_required"}
+        return {"state": "READY", "reason": "hedge_mode_verified"}
 
     @staticmethod
     def _clip_float(
@@ -855,6 +952,36 @@ class TradeExecutorShort:
             ) * step_d
         )
 
+    @staticmethod
+    def _ceil_to_step(value: float, step: float) -> float:
+        if step <= 0.0:
+            return float(value)
+        value_d = Decimal(str(value))
+        step_d = Decimal(str(step))
+        return float(
+            (value_d / step_d).to_integral_value(rounding=ROUND_CEILING) * step_d
+        )
+
+    def _normalize_short_stop_price(self, symbol: str, trigger_price: float) -> float:
+        info = self._get_symbol_info(symbol)
+        tick = 0.0
+        filters = info.get("filters") if isinstance(info, dict) else None
+        if isinstance(filters, list):
+            for item in filters:
+                if isinstance(item, dict) and str(item.get("filterType") or "").upper() == "PRICE_FILTER":
+                    try:
+                        tick = float(item.get("tickSize") or 0.0)
+                    except Exception:
+                        tick = 0.0
+                    break
+        price = self._ceil_to_step(float(trigger_price), float(tick))
+        try:
+            pp = int(info.get("pricePrecision") or 8)
+            price = round(float(price), pp)
+        except Exception:
+            pass
+        return float(price)
+
     def _normalize_order_qty(
         self,
         symbol: str,
@@ -949,6 +1076,27 @@ class TradeExecutorShort:
 
     def _count_open_positions(self) -> int:
         return len(self._get_all_local_positions())
+
+    def _set_symbol_margin_type(self, symbol: str) -> str:
+        margin_type = str(self.short_margin_type or "ISOLATED").upper()
+        if self.dry_run:
+            return margin_type
+
+        fn = getattr(self.client, "futures_change_margin_type", None)
+        if not callable(fn):
+            raise RuntimeError("futures_change_margin_type unavailable")
+
+        try:
+            out = fn(symbol=str(symbol).upper(), marginType=margin_type)
+            if isinstance(out, dict):
+                return margin_type
+            return margin_type
+        except Exception as exc:
+            msg = str(exc)
+            # Binance code -4046: requested margin type is already set.
+            if "-4046" in msg or "No need to change margin type" in msg:
+                return margin_type
+            raise
 
     def _set_symbol_leverage(
         self,
@@ -1304,6 +1452,7 @@ class TradeExecutorShort:
                 },
             }
 
+        margin_type = self._set_symbol_margin_type(sym_u)
         leverage = self._set_symbol_leverage(
             symbol=sym_u,
             leverage=self.default_order_leverage,
@@ -1319,6 +1468,7 @@ class TradeExecutorShort:
                 * float(order_price)
             ),
             "leverage": int(leverage),
+            "margin_type": str(margin_type),
             "risk_multiplier": max(0.0, min(1.0, float(risk_multiplier))),
             "qty_meta": qty_meta,
         }
@@ -1331,8 +1481,10 @@ class TradeExecutorShort:
         qty: float,
         order_price: float,
         leverage: int,
+        margin_type: str,
         now_ts: float,
         order: Any,
+        native_stop: Optional[Dict[str, Any]] = None,
         entry_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1356,10 +1508,17 @@ class TradeExecutorShort:
             "notional": float(qty) * float(order_price),
             "interval": str(interval or self.entry_interval),
             "leverage": int(leverage),
+            "margin_type": str(margin_type or self.short_margin_type),
             "created_ts": float(now_ts),
             "best_roi_pct": 0.0,
             "position_mode": "single",
         }
+        native_stop0 = dict(native_stop) if isinstance(native_stop, dict) else {}
+        native_order = native_stop0.get("order") if isinstance(native_stop0.get("order"), dict) else {}
+        pos["native_stop_price"] = float(self._clip_float(native_stop0.get("stop_price"), 0.0) or 0.0)
+        pos["native_stop_status"] = str(native_stop0.get("status") or "")
+        pos["native_stop_order_id"] = native_order.get("orderId")
+        pos["native_stop_client_order_id"] = native_order.get("clientOrderId")
         pos["model_provider"] = str(meta0.get("model_provider") or "short_coin_specific")
         pos["signal_score"] = float(self._clip_float(meta0.get("signal_score"), 0.0) or 0.0)
         pos["open_min_score"] = float(self._clip_float(meta0.get("open_min_score"), 0.0) or 0.0)
@@ -1410,6 +1569,10 @@ class TradeExecutorShort:
                 pos["notional"]
             ),
             "leverage": int(leverage),
+            "margin_type": str(margin_type or self.short_margin_type),
+            "native_stop_price": float(pos.get("native_stop_price") or 0.0),
+            "native_stop_status": str(pos.get("native_stop_status") or ""),
+            "native_stop_order_id": pos.get("native_stop_order_id"),
             "position_mode": "single",
             "order": order,
         }
@@ -1511,11 +1674,52 @@ class TradeExecutorShort:
             leverage = int(
                 order_plan["leverage"]
             )
+            margin_type = str(
+                order_plan.get("margin_type") or self.short_margin_type
+            )
 
             order = self._exchange_open_market(
                 symbol=sym_u,
                 qty=float(qty),
             )
+
+            try:
+                native_stop = self._place_native_short_stop(
+                    symbol=sym_u,
+                    entry_price=order_price,
+                    leverage=leverage,
+                )
+            except Exception as native_exc:
+                if self.dry_run:
+                    raise
+                try:
+                    rollback = self._exchange_close_market(
+                        symbol=sym_u,
+                        qty=float(qty),
+                    )
+                    try:
+                        if self.logger:
+                            self.logger.error(
+                                "[EXEC-SHORT][NATIVE-STOP][ROLLBACK] symbol=%s err=%s rollback=%s",
+                                sym_u, str(native_exc)[:220], str(rollback)[:220],
+                            )
+                    except Exception:
+                        pass
+                    return {
+                        "status": "skip",
+                        "reason": "native_stop_failed_position_closed",
+                        "symbol": sym_u,
+                    }
+                except Exception as rollback_exc:
+                    try:
+                        if self.logger:
+                            self.logger.critical(
+                                "[EXEC-SHORT][NATIVE-STOP][CRITICAL] symbol=%s stop_err=%s rollback_err=%s",
+                                sym_u, str(native_exc)[:220], str(rollback_exc)[:220],
+                            )
+                    except Exception:
+                        pass
+                    raise RuntimeError("native_stop_failed_rollback_failed") from rollback_exc
 
             return self._finalize_short_open(
                 symbol=sym_u,
@@ -1523,8 +1727,10 @@ class TradeExecutorShort:
                 qty=qty,
                 order_price=order_price,
                 leverage=leverage,
+                margin_type=margin_type,
                 now_ts=now_ts,
                 order=order,
+                native_stop=native_stop,
                 entry_meta=meta0,
             )
 
@@ -1555,6 +1761,86 @@ class TradeExecutorShort:
     # =========================================================
     # SHORT CLOSE
     # =========================================================
+
+    def _place_native_short_stop(
+        self,
+        *,
+        symbol: str,
+        entry_price: float,
+        leverage: int,
+    ) -> Dict[str, Any]:
+        sym_u = str(symbol or "").upper().strip()
+        if not self.short_native_stop_enable:
+            return {"status": "disabled", "symbol": sym_u}
+
+        lev = max(1.0, float(leverage or 1.0))
+        stop_roi = abs(min(0.0, float(self.roi_hard_stop_pct)))
+        if stop_roi <= 0.0 or float(entry_price) <= 0.0:
+            raise RuntimeError("native_stop_invalid_threshold")
+
+        entry_d = Decimal(str(entry_price))
+        stop_roi_d = Decimal(str(stop_roi))
+        lev_d = Decimal(str(lev))
+        trigger_raw = float(entry_d * (Decimal("1") + (stop_roi_d / lev_d)))
+        stop_price = self._normalize_short_stop_price(sym_u, trigger_raw)
+        if stop_price <= float(entry_price):
+            raise RuntimeError("native_stop_invalid_price")
+
+        payload: Dict[str, Any] = {
+            "symbol": sym_u,
+            "side": "BUY",
+            "type": "STOP_MARKET",
+            "stopPrice": float(stop_price),
+            "closePosition": True,
+            "workingType": self.short_native_stop_working_type,
+            "priceProtect": "TRUE" if self.short_native_stop_price_protect else "FALSE",
+        }
+        if self.hedge_mode_enabled:
+            payload["positionSide"] = "SHORT"
+
+        if self.dry_run:
+            return {
+                "status": "dry_run",
+                "symbol": sym_u,
+                "stop_price": float(stop_price),
+                "payload": payload,
+            }
+
+        fn = getattr(self.client, "futures_create_order", None)
+        if not callable(fn):
+            raise RuntimeError("futures_create_order unavailable for native stop")
+        out = fn(**payload)
+        return {
+            "status": "placed",
+            "symbol": sym_u,
+            "stop_price": float(stop_price),
+            "order": out,
+            "payload": payload,
+        }
+
+    def _cancel_native_short_stop(self, *, symbol: str, position: Dict[str, Any]) -> None:
+        if self.dry_run or not isinstance(position, dict):
+            return
+        order_id = position.get("native_stop_order_id")
+        if order_id in (None, ""):
+            return
+        fn = getattr(self.client, "futures_cancel_order", None)
+        if not callable(fn):
+            return
+        try:
+            fn(symbol=str(symbol or "").upper().strip(), orderId=order_id)
+        except Exception as exc:
+            msg = str(exc)
+            if "-2011" in msg or "Unknown order" in msg or "already" in msg.lower():
+                return
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC-SHORT][NATIVE-STOP][CANCEL-WARN] symbol=%s order_id=%s err=%s",
+                        symbol, order_id, msg[:180],
+                    )
+            except Exception:
+                pass
 
     def _exchange_close_market(
         self,
@@ -1862,6 +2148,10 @@ class TradeExecutorShort:
             order = self._exchange_close_market(
                 symbol=sym_u,
                 qty=float(qty),
+            )
+            self._cancel_native_short_stop(
+                symbol=sym_u,
+                position=pos,
             )
 
             return self._finalize_short_close(
@@ -3171,6 +3461,30 @@ class TradeExecutorShort:
         model_threshold: float = 0.0,
     ) -> Dict[str, Any]:
         """FINAL SAFETY recheck immediately before ORDER submission."""
+        live_guard = self._runtime_live_guard()
+        if live_guard.get("state") != "READY":
+            return {
+                "state": "REJECT",
+                "reason": str(live_guard.get("reason") or "runtime_live_guard"),
+                "result": {
+                    "status": "skip",
+                    "reason": str(live_guard.get("reason") or "runtime_live_guard"),
+                    "symbol": str(symbol or "").upper().strip(),
+                },
+            }
+
+        position_mode = self._validate_short_position_mode()
+        if position_mode.get("state") != "READY":
+            return {
+                "state": "REJECT",
+                "reason": str(position_mode.get("reason") or "position_mode"),
+                "result": {
+                    "status": "skip",
+                    "reason": str(position_mode.get("reason") or "position_mode"),
+                    "symbol": str(symbol or "").upper().strip(),
+                },
+            }
+
         result = self._resolve_short_open_risk_state(
             symbol=symbol,
             now_ts=float(time.time() if now_ts is None else now_ts),
