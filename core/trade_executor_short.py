@@ -21,6 +21,7 @@ from orchestration.risk.risk_master import (
     evaluate_position_risk,
     resolve_market_context_multiplier,
 )
+from orchestration.risk.central_risk_client import CentralRiskClient
 from orchestration.telemetry.market_context_shadow import (
     build_shadow_event,
     publish_shadow_event,
@@ -88,6 +89,8 @@ class TradeExecutorShort:
         # base execution config
         # -----------------------------------------------------
         self.dry_run = self._env_bool_value(dry_run)
+        self.strategy_id = str(os.getenv("STRATEGY_ID", "SHORT1") or "SHORT1").upper().strip()
+        self.central_risk_client = CentralRiskClient(redis_client=self.redis)
 
         self.base_order_notional = float(
             base_order_notional or 120.0
@@ -1395,6 +1398,7 @@ class TradeExecutorShort:
         symbol: str,
         fallback_price: Any = None,
         risk_multiplier: float = 1.0,
+        notional_override: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         SHORT market emri için fiyat, miktar ve leverage hazırlar.
@@ -1418,7 +1422,13 @@ class TradeExecutorShort:
                 },
             }
 
-        notional = self._resolve_short_order_notional(symbol=sym_u, risk_multiplier=risk_multiplier)
+        if notional_override is not None:
+            try:
+                notional = float(notional_override)
+            except Exception:
+                notional = None
+        else:
+            notional = self._resolve_short_order_notional(symbol=sym_u, risk_multiplier=risk_multiplier)
 
         if notional is None or float(notional) <= 0.0:
             return {
@@ -1617,6 +1627,8 @@ class TradeExecutorShort:
             }
 
         self._symbol_open_locks[sym_u] = now_ts
+        central_reserved = False
+        central_committed = False
 
         try:
             final_safety = self._evaluate_short_final_safety_stage(
@@ -1645,10 +1657,39 @@ class TradeExecutorShort:
             meta0["market_risk_multiplier"] = float(market_risk_multiplier)
             meta0["market_risk_reasons"] = list(market_risk_reasons)
 
+            central_notional: Optional[float] = None
+            if self.dry_run and self.central_risk_client.enabled:
+                central = self.central_risk_client.evaluate_open(
+                    strategy_id=self.strategy_id,
+                    symbol=sym_u,
+                    side="short",
+                    market_context_multiplier=float(market_risk_multiplier),
+                    reserve=True,
+                )
+                meta0["central_risk_response"] = dict(central) if isinstance(central, dict) else {}
+                if str((central or {}).get("state") or "").upper() != "READY":
+                    return {
+                        "status": "skip",
+                        "reason": str((central or {}).get("reason") or "central_risk_reject"),
+                        "symbol": sym_u,
+                    }
+                central_decision = (central or {}).get("decision") if isinstance((central or {}).get("decision"), dict) else {}
+                central_notional = float(central_decision.get("allowed_notional") or 0.0)
+                if central_notional <= 0.0:
+                    return {
+                        "status": "skip",
+                        "reason": "central_risk_zero_notional",
+                        "symbol": sym_u,
+                    }
+                central_reserved = True
+                meta0["central_risk_allowed_notional"] = float(central_notional)
+                meta0["central_risk_profile_id"] = str((central or {}).get("profile_id") or "")
+
             order_plan = self._prepare_short_open_order(
                 symbol=sym_u,
                 fallback_price=meta0.get("price"),
                 risk_multiplier=float(market_risk_multiplier),
+                notional_override=central_notional,
             )
 
             if not order_plan.get("ok", False):
@@ -1721,7 +1762,7 @@ class TradeExecutorShort:
                         pass
                     raise RuntimeError("native_stop_failed_rollback_failed") from rollback_exc
 
-            return self._finalize_short_open(
+            result = self._finalize_short_open(
                 symbol=sym_u,
                 interval=interval,
                 qty=qty,
@@ -1733,6 +1774,8 @@ class TradeExecutorShort:
                 native_stop=native_stop,
                 entry_meta=meta0,
             )
+            central_committed = True
+            return result
 
         except Exception as exc:
             try:
@@ -1753,6 +1796,11 @@ class TradeExecutorShort:
             }
 
         finally:
+            if central_reserved and not central_committed:
+                try:
+                    self.central_risk_client.release(strategy_id=self.strategy_id)
+                except Exception:
+                    pass
             self._symbol_open_locks.pop(
                 sym_u,
                 None,
@@ -2154,7 +2202,7 @@ class TradeExecutorShort:
                 position=pos,
             )
 
-            return self._finalize_short_close(
+            result = self._finalize_short_close(
                 symbol=sym_u,
                 position=pos,
                 qty=qty,
@@ -2163,6 +2211,12 @@ class TradeExecutorShort:
                 interval=interval,
                 order=order,
             )
+            if self.dry_run and self.central_risk_client.enabled:
+                try:
+                    self.central_risk_client.release(strategy_id=self.strategy_id)
+                except Exception:
+                    pass
+            return result
 
         except Exception as exc:
             try:

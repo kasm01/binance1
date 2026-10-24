@@ -22,6 +22,8 @@ eqv SHORT_REQUIRE_HEDGE_MODE 1
 eqv SHORT_NATIVE_STOP_ENABLE 1
 eqv SHORT_NATIVE_STOP_WORKING_TYPE MARK_PRICE
 eqv SHORT_NATIVE_STOP_PRICE_PROTECT 0
+eqv STRATEGY_ID SHORT1
+eqv CENTRAL_RISK_ENFORCE_DRY_RUN 1
 eqv ROI_HARD_STOP_PCT -0.1200
 eqv SHORT_DYNAMIC_STOP_ENABLE 1
 eqv SHORT_DYNAMIC_STOP_CONFIRM_SEC 30
@@ -34,6 +36,24 @@ eqv MASTER_SHORT_MONEY_FLOW_EXHAUSTION_60M -0.20
 
 redis-cli PING | grep -qx PONG || fail "Redis down"
 ok "Redis PONG"
+
+central_gate_state="$(systemctl --user is-active binance1-central-risk-enforce-dry.service || true)"
+[[ "$central_gate_state" == active ]] || fail "Central Risk enforce-dry gate state=$central_gate_state"
+ok "Central Risk enforce-dry gate active"
+
+/home/kasm920/venv/bin/python - <<'PYCENTRALPING' || fail "Central Risk enforce-dry profile mismatch/unreachable"
+from orchestration.risk.central_risk_client import CentralRiskClient
+p=CentralRiskClient().ping()
+if str(p.get('state') or '').upper()!='READY': raise SystemExit(p)
+profile=p.get('profile') if isinstance(p.get('profile'),dict) else {}
+if profile.get('profile_id')!='central_risk_enforce_dry.v1_h046_dd12_r06': raise SystemExit(profile)
+if profile.get('stage')!='ENFORCE_DRY_RUN': raise SystemExit(profile)
+if profile.get('production_ready') is not False: raise SystemExit(profile)
+cfg=profile.get('config') if isinstance(profile.get('config'),dict) else {}
+if abs(float(cfg.get('operational_headroom_multiplier') or 0)-0.92)>1e-12: raise SystemExit(cfg)
+if int(cfg.get('max_open_positions') or 0)!=2: raise SystemExit(cfg)
+print(f"[OK] Central Risk gate profile={profile.get('profile_id')} stage={profile.get('stage')} headroom={cfg.get('operational_headroom_multiplier')} max_open={cfg.get('max_open_positions')}")
+PYCENTRALPING
 
 /home/kasm920/venv/bin/python - <<'PYCENTRALSNAP' || fail "Central Risk shared snapshot missing/stale/breached"
 import json, os, time, redis
@@ -63,6 +83,7 @@ ok "OI context ttl=${ttl}s"
   orchestration/risk/risk_master.py \
   orchestration/risk/central_risk_master.py \
   orchestration/risk/central_risk_shadow_profile.py \
+  orchestration/risk/central_risk_client.py \
   core/short_entry_candle_service.py \
   core/trade_executor_short.py
 ok "core compile"
