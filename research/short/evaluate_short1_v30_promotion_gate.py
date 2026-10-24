@@ -6,6 +6,7 @@ from collections import Counter
 import redis
 ROOT=Path(__file__).resolve().parents[2]; RES=ROOT/'research/short/results'; RES.mkdir(parents=True,exist_ok=True)
 OUT=RES/'SHORT1_V30_LIVE_PROMOTION_GATE.json'
+MODEL_QUALITY=RES/'SHORT1_INJ_SHADOW_PROMOTION.json'
 r=redis.Redis(host=os.getenv('REDIS_HOST','localhost'),port=int(os.getenv('REDIS_PORT','6379')),db=int(os.getenv('REDIS_DB','0')),decode_responses=True)
 stream=os.getenv('SHORT1_V30_SHADOW_STREAM','telemetry:short1:v30:lifecycle_shadow_v5'); expected=os.getenv('SHORT1_V30_EXPECTED_PROVIDER','short_entry_quality_fresh_logistic_v5')
 objs=[]
@@ -29,17 +30,55 @@ eq=start_eq; peak=eq; maxdd=0.0
 for p in pnls:
  eq+=p; peak=max(peak,eq); maxdd=min(maxdd,(eq/peak-1)*100.0)
 latest_hb=hbs[-1] if hbs else {}; hb_age=(time.time()-float(latest_hb.get('ts') or 0)) if latest_hb else None
+# Independent model-discrimination evidence. A few lucky lifecycle closes must
+# never be enough to promote a model whose live shadow ranking has collapsed.
+model_quality={}
+try:
+ model_quality=json.loads(MODEL_QUALITY.read_text()) if MODEL_QUALITY.exists() else {}
+except Exception:
+ model_quality={}
+quality_status=str(model_quality.get('promotion_status') or 'MISSING').upper()
+quality_provider=str(model_quality.get('model_provider') or '')
+quality_entry=model_quality.get('entry_quality') if isinstance(model_quality.get('entry_quality'),dict) else {}
+quality_selected_n=int(quality_entry.get('selected_n') or 0)
+quality_selected_days=int(quality_entry.get('selected_days') or 0)
+quality_lift=quality_entry.get('selected_lift')
+try: quality_lift=float(quality_lift) if quality_lift is not None else None
+except Exception: quality_lift=None
+quality_provider_ok=(quality_provider==expected)
+quality_candidate=quality_status in {'CANDIDATE','CANDIDATE_REVIEW'} and quality_provider_ok and quality_selected_n>=100 and quality_selected_days>=10 and quality_lift is not None and quality_lift>=0.02
+
 reasons=[]; status='OBSERVE'
-# Never auto-promote. Reject only after non-trivial sample; before then OBSERVE even if negative.
 if not provider_ok:
  reasons.append('provider_not_verified')
+if not model_quality:
+ reasons.append('model_quality_report_missing')
+elif not quality_provider_ok:
+ reasons.append('model_quality_provider_mismatch')
+elif quality_status=='REJECT':
+ reasons.append('model_quality_reject')
+elif not quality_candidate:
+ reasons.append('model_quality_not_candidate')
+
+hard_quality_fail=any(x in reasons for x in {
+ 'provider_not_verified','model_quality_report_missing',
+ 'model_quality_provider_mismatch','model_quality_reject'
+})
+if hard_quality_fail:
+ status='REJECT'
 elif len(closes)<15 or len(days)<10:
  reasons.append('insufficient_live_sample')
+ status='OBSERVE'
 else:
- if realized_return<=0: reasons.append('realized_return_nonpositive')
- if pf is None or pf<=1.0: reasons.append('pf_not_above_1')
- if maxdd<=-15.0: reasons.append('drawdown_below_limit')
- if reasons: status='REJECT'
+ lifecycle_reasons=[]
+ if realized_return<=0: lifecycle_reasons.append('realized_return_nonpositive')
+ if pf is None or pf<=1.0: lifecycle_reasons.append('pf_not_above_1')
+ if maxdd<=-15.0: lifecycle_reasons.append('drawdown_below_limit')
+ reasons.extend(lifecycle_reasons)
+ if lifecycle_reasons:
+  status='REJECT'
+ elif not quality_candidate:
+  status='OBSERVE'
  else:
   status='CANDIDATE'
   if len(closes)>=40 and len(days)>=20 and pf>1.15 and maxdd>-15.0:
@@ -49,6 +88,16 @@ report={
  'expected_provider':expected,'providers':dict(providers),'provider_ok':provider_ok,'source_decisions':len(src),'opens':len(opens),'closed':len(closes),'wins':wins,'losses':losses,
  'observed_days':len(days),'close_days':len(close_days),'realized_pnl':net,'realized_return_pct':realized_return,'pf':pf,'realized_maxdd_pct':maxdd,
  'heartbeat_age_sec':hb_age,'promotion_status':status,'reasons':reasons,
- 'criteria':{'minimum_reject_sample_closed':15,'minimum_reject_days':10,'candidate_pf_gt':1.0,'production_closed_gte':40,'production_days_gte':20,'production_pf_gt':1.15,'maxdd_gt_pct':-15.0}
+ 'model_quality':{
+  'report_status':quality_status,'provider':quality_provider,'provider_ok':quality_provider_ok,
+  'selected_n':quality_selected_n,'selected_days':quality_selected_days,'selected_lift':quality_lift,
+  'candidate_ok':quality_candidate,
+ },
+ 'criteria':{
+  'minimum_reject_sample_closed':15,'minimum_reject_days':10,'candidate_pf_gt':1.0,
+  'production_closed_gte':40,'production_days_gte':20,'production_pf_gt':1.15,'maxdd_gt_pct':-15.0,
+  'model_quality_status_in':['CANDIDATE','CANDIDATE_REVIEW'],'model_quality_selected_n_gte':100,
+  'model_quality_selected_days_gte':10,'model_quality_selected_lift_gte':0.02,
+ }
 }
 OUT.write_text(json.dumps(report,indent=2,allow_nan=False)); print(json.dumps(report,indent=2,allow_nan=False))

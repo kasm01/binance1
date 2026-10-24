@@ -12,13 +12,20 @@ DST_META=models/short_model_meta_INJUSDT_3m.json
 ARMED_VAL="$(grep -E '^ARMED=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
 KILL_VAL="$(grep -E '^LIVE_KILL_SWITCH=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
 [[ "$ARMED_VAL" == "0" && "$KILL_VAL" == "1" ]] || { echo "[FAIL] system must be DISARMED (ARMED=0 KILL=1), got ARMED=$ARMED_VAL KILL=$KILL_VAL"; exit 3; }
-STATUS="$($PY - <<'PY'
+readarray -t GATE_CHECK < <($PY - <<'PY'
 import json
 p=json.load(open('research/short/results/SHORT1_V30_LIVE_PROMOTION_GATE.json'))
+q=p.get('model_quality') if isinstance(p.get('model_quality'),dict) else {}
 print(p.get('promotion_status',''))
+print('1' if q.get('candidate_ok') is True else '0')
+print(q.get('report_status',''))
 PY
-)"
+)
+STATUS="${GATE_CHECK[0]:-}"
+MODEL_QUALITY_OK="${GATE_CHECK[1]:-0}"
+MODEL_QUALITY_STATUS="${GATE_CHECK[2]:-}"
 [[ "$STATUS" == "PRODUCTION_ELIGIBLE" ]] || { echo "[FAIL] gate=$STATUS; promotion refused"; exit 4; }
+[[ "$MODEL_QUALITY_OK" == "1" ]] || { echo "[FAIL] model_quality=$MODEL_QUALITY_STATUS; promotion refused"; exit 5; }
 mkdir -p models research/short/promotion_backups
 TS="$(date -u +%Y%m%d_%H%M%S)"
 [[ ! -f "$DST_MODEL" ]] || cp "$DST_MODEL" "research/short/promotion_backups/short_model_INJUSDT_3m_best.joblib.$TS"
