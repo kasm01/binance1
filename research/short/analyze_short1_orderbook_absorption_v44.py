@@ -145,4 +145,12 @@ def main():
         out['feature_quantiles']=fq
     DEST.parent.mkdir(parents=True,exist_ok=True); DEST.write_text(json.dumps(out,indent=2,sort_keys=True))
     print(json.dumps(out,indent=2,sort_keys=False)); print('SAVED',DEST)
+    # Redis-only incremental lifecycle check. It never changes routing and is
+    # deliberately fail-open so a research report cannot break V44 telemetry.
+    try:
+        from analyze_short1_depth20_incremental_v1 import main as depth20_main
+        d20=depth20_main(print_report=False)
+        print('DEPTH20_INCREMENTAL',json.dumps(d20.get('research_gate') or {},sort_keys=True))
+    except Exception as exc:
+        print('DEPTH20_INCREMENTAL_WARN',str(exc)[:180])
 if __name__=='__main__':main()
