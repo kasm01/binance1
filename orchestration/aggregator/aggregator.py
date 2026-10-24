@@ -46,6 +46,31 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return default
+
+
+def _event_age_sec(evt: Dict[str, Any]) -> float | None:
+    """Best-effort wall-clock age used only as a replay/freshness safety guard."""
+    ts = str(evt.get("ts_utc") or "").strip()
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            pass
+    mid = str(evt.get("_source_stream_id") or "").strip()
+    try:
+        ms = int(mid.split("-", 1)[0])
+        return max(0.0, time.time() - (ms / 1000.0))
+    except Exception:
+        return None
+
 
 def _norm_side_candidate(x: Any) -> str:
     s = str(x or "").strip().lower()
@@ -98,6 +123,8 @@ class Aggregator:
         self.read_count = int(_env_int("AGG_READ_COUNT", 300))
         self.block_ms = int(_env_int("AGG_BLOCK_MS", 1000))
         self.debug_drops = _env_bool("AGG_DEBUG_DROPS", False)
+        # Safety-only replay guard: delayed signals must never become fresh candidates.
+        self.max_signal_age_sec = max(0.0, _env_float("AGG_MAX_SIGNAL_AGE_SEC", 180.0))
 
         self.require_price = _env_bool("AGG_REQUIRE_PRICE", True)
 
@@ -205,7 +232,7 @@ class Aggregator:
         print(
             f"[Aggregator] started. reading {self.bus.signals_stream} -> {self.bus.candidates_stream} "
             f"group={self.group} consumer={self.consumer} mode=normalize_only "
-            f"include_raw={self.include_raw} "
+            f"include_raw={self.include_raw} max_signal_age_sec={self.max_signal_age_sec:.1f} "
             f"require_price={self.require_price} debug_drops={self.debug_drops}",
             flush=True,
         )
@@ -238,6 +265,15 @@ class Aggregator:
 
                 evt = SignalEvent.normalize(evt)
                 e = self._normalize_event(mid, evt)
+
+                age_sec = _event_age_sec(e)
+                if self.max_signal_age_sec > 0 and age_sec is not None and age_sec > self.max_signal_age_sec:
+                    print(
+                        f"[Aggregator][DROP] stale_signal age_sec={age_sec:.1f} "
+                        f"max={self.max_signal_age_sec:.1f} symbol={e.get('symbol')} mid={mid}",
+                        flush=True,
+                    )
+                    continue
 
                 if e.get("side_candidate") not in ("long", "short"):
                     if self.debug_drops:

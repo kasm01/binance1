@@ -115,12 +115,14 @@ redis_xgroup_create() {
 }
 
 bootstrap_redis() {
+  # Create the real signal stream/group without injecting synthetic ping events.
+  # Synthetic records can become stuck in the aggregator PEL because they are not SignalEvent JSON.
+  redis_xgroup_create "$SIGNALS_STREAM" "${AGG_GROUP:-agg_group}" "${AGG_GROUP_START_ID:-$}"
   redis_xgroup_create "$CANDIDATES_STREAM" "$TOPSEL_GROUP" "$TOPSEL_GROUP_START_ID"
   redis_xgroup_create "$TOP5_STREAM" "$MASTER_GROUP" "$MASTER_GROUP_START_ID"
   redis_xgroup_create "$TRADE_INTENTS_STREAM" "$BRIDGE_GROUP" "$BRIDGE_GROUP_START_ID"
 
   need redis-cli || return 0
-  redis-cli -n "$REDIS_DB" XADD "$SIGNALS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
   redis-cli -n "$REDIS_DB" XADD "$EXEC_EVENTS_STREAM" "*" ping "1" >/dev/null 2>&1 || true
 }
 bootstrap_redis
