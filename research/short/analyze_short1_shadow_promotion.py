@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 ROOT=Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 import numpy as np, pandas as pd
+from sklearn.metrics import roc_auc_score
 from orchestration.event_bus.redis_bus import RedisBus
 
 SRC=os.getenv('SHORT1_SHADOW_STREAM') or os.getenv('SHORT_SHADOW_STREAM') or 'telemetry:short1:inj:model_shadow'
@@ -103,11 +104,19 @@ def main():
         except Exception: pass
 
     thresholds=[]
+    ref_selection={}
     if len(c):
         ref=float(pd.to_numeric(c.reference_threshold,errors='coerce').median())
         for th in sorted(set([ref,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90])):
             g=c[c.economic_probability>=th]; thresholds.append({'threshold':float(th),**metrics(g.net_return_pct)})
+        rg=c[c.economic_probability>=ref].copy()
+        ref_selection={
+            'threshold':float(ref),
+            'days':int(rg['date'].nunique()) if len(rg) else 0,
+            **metrics(rg.net_return_pct),
+        }
     report['thresholds']=thresholds
+    report['reference_selection_lifecycle']=ref_selection
 
     quality_status = None
     if 'entry_quality_hit' in o.columns:
@@ -119,6 +128,17 @@ def main():
             selected = q[q.economic_probability >= pd.to_numeric(q.reference_threshold,errors='coerce')].copy()
             sel_hit = float(selected.entry_quality_hit_num.mean()) if len(selected) else None
             sel_days = int(selected['date'].nunique()) if len(selected) else 0
+            auc = None
+            try:
+                if q.entry_quality_hit_num.nunique() >= 2:
+                    auc = float(roc_auc_score(q.entry_quality_hit_num, q.economic_probability))
+            except Exception:
+                auc = None
+            lifecycle_corr = None
+            try:
+                lifecycle_corr = float(q[['economic_probability','net_return_pct']].corr().iloc[0,1])
+            except Exception:
+                lifecycle_corr = None
             report['entry_quality'] = {
                 'confirm_n': int(len(q)),
                 'confirm_hit_rate': base_hit,
@@ -127,6 +147,8 @@ def main():
                 'selected_lift': (float(sel_hit-base_hit) if sel_hit is not None else None),
                 'selected_days': sel_days,
                 'observation_min': int(pd.to_numeric(q.get('entry_quality_observation_min'),errors='coerce').median()) if 'entry_quality_observation_min' in q.columns else 60,
+                'score_auc': auc,
+                'score_lifecycle_return_corr': lifecycle_corr,
             }
             quality_status = classify_entry_quality(int(len(selected)), sel_hit, base_hit, sel_days)
     report['promotion_status']=quality_status or classify(cm,days,posdays)

@@ -40,13 +40,27 @@ except Exception:
 quality_status=str(model_quality.get('promotion_status') or 'MISSING').upper()
 quality_provider=str(model_quality.get('model_provider') or '')
 quality_entry=model_quality.get('entry_quality') if isinstance(model_quality.get('entry_quality'),dict) else {}
+quality_ref=model_quality.get('reference_selection_lifecycle') if isinstance(model_quality.get('reference_selection_lifecycle'),dict) else {}
 quality_selected_n=int(quality_entry.get('selected_n') or 0)
 quality_selected_days=int(quality_entry.get('selected_days') or 0)
 quality_lift=quality_entry.get('selected_lift')
 try: quality_lift=float(quality_lift) if quality_lift is not None else None
 except Exception: quality_lift=None
+quality_ref_n=int(quality_ref.get('n') or 0)
+quality_ref_days=int(quality_ref.get('days') or 0)
+quality_ref_net=quality_ref.get('net_bps')
+quality_ref_pf=quality_ref.get('pf')
+try: quality_ref_net=float(quality_ref_net) if quality_ref_net is not None else None
+except Exception: quality_ref_net=None
+try: quality_ref_pf=float(quality_ref_pf) if quality_ref_pf is not None else None
+except Exception: quality_ref_pf=None
 quality_provider_ok=(quality_provider==expected)
-quality_candidate=quality_status in {'CANDIDATE','CANDIDATE_REVIEW'} and quality_provider_ok and quality_selected_n>=100 and quality_selected_days>=10 and quality_lift is not None and quality_lift>=0.02
+quality_candidate=(
+ quality_status in {'CANDIDATE','CANDIDATE_REVIEW'} and quality_provider_ok
+ and quality_selected_n>=100 and quality_selected_days>=10 and quality_lift is not None and quality_lift>=0.02
+ and quality_ref_n>=100 and quality_ref_days>=10 and quality_ref_net is not None and quality_ref_net>0.0
+ and quality_ref_pf is not None and quality_ref_pf>1.10
+)
 
 reasons=[]; status='OBSERVE'
 if not provider_ok:
@@ -91,6 +105,8 @@ report={
  'model_quality':{
   'report_status':quality_status,'provider':quality_provider,'provider_ok':quality_provider_ok,
   'selected_n':quality_selected_n,'selected_days':quality_selected_days,'selected_lift':quality_lift,
+  'reference_lifecycle_n':quality_ref_n,'reference_lifecycle_days':quality_ref_days,
+  'reference_lifecycle_net_bps':quality_ref_net,'reference_lifecycle_pf':quality_ref_pf,
   'candidate_ok':quality_candidate,
  },
  'criteria':{
@@ -98,6 +114,8 @@ report={
   'production_closed_gte':40,'production_days_gte':20,'production_pf_gt':1.15,'maxdd_gt_pct':-15.0,
   'model_quality_status_in':['CANDIDATE','CANDIDATE_REVIEW'],'model_quality_selected_n_gte':100,
   'model_quality_selected_days_gte':10,'model_quality_selected_lift_gte':0.02,
+  'model_quality_reference_lifecycle_n_gte':100,'model_quality_reference_lifecycle_days_gte':10,
+  'model_quality_reference_lifecycle_net_bps_gt':0.0,'model_quality_reference_lifecycle_pf_gt':1.10,
  }
 }
 OUT.write_text(json.dumps(report,indent=2,allow_nan=False)); print(json.dumps(report,indent=2,allow_nan=False))
