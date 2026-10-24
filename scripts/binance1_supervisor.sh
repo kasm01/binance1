@@ -134,6 +134,33 @@ PYMODEL
   log "INFO LIVE_MODEL_GUARD passed: INJUSDT 3m promoted artifact/meta verified"
 }
 
+live_central_risk_guard() {
+  # Production must never bypass the shared portfolio-risk authority.
+  [[ "${DRY_RUN:-1}" == "0" && "${ARMED:-0}" == "1" && "${LIVE_KILL_SWITCH:-1}" == "0" ]] || return 0
+  if ! "$VENV_PY" - <<'PYCENTRAL' >/dev/null 2>&1
+import json, os, time, redis
+r=redis.Redis(host=os.getenv('REDIS_HOST','localhost'),port=int(os.getenv('REDIS_PORT','6379')),db=int(os.getenv('REDIS_DB','0')),decode_responses=True,socket_timeout=1.0)
+key=os.getenv('CENTRAL_RISK_CURRENT_KEY','telemetry:central_risk:shadow:current')
+max_age=float(os.getenv('CENTRAL_RISK_MAX_AGE_SEC','420') or 420)
+raw=r.get(key)
+if not raw: raise SystemExit(1)
+o=json.loads(raw)
+age=max(0.0,time.time()-float(o.get('ts') or 0.0))
+health=o.get('exposure_health') if isinstance(o.get('exposure_health'),dict) else {}
+if age>max_age: raise SystemExit(2)
+if str(health.get('status') or '').upper()=='BREACH' or bool(health.get('freeze_new_entries')): raise SystemExit(3)
+# Current shared observer is deliberately SHADOW_ONLY. Live remains blocked until
+# a production-authorized central runtime replaces/extends this contract.
+if bool(o.get('production_ready')) is not True: raise SystemExit(4)
+if str(o.get('authority') or '').upper() in {'','SHADOW_ONLY'}: raise SystemExit(5)
+PYCENTRAL
+  then
+    log "ERROR LIVE_CENTRAL_RISK_GUARD blocked startup: shared central risk is stale/breached or not production-authorized"
+    return 1
+  fi
+  log "INFO LIVE_CENTRAL_RISK_GUARD passed"
+}
+
 rotate_log() {
   local f="$1"
   [[ -f "$f" ]] || return 0
@@ -502,7 +529,8 @@ main_loop() {
 
   [[ -x "$VENV_PY" ]] || { log "ERROR venv python missing: $VENV_PY"; exit 1; }
   log "INFO supervisor started base=$BASE_DIR dry_run=$DRY_RUN armed=$ARMED kill=$LIVE_KILL_SWITCH manage_orch=$MANAGE_ORCH_SERVICE"
-  live_model_guard || { log "ERROR supervisor fail-closed before startup"; exit 78; }
+  live_model_guard || { log "ERROR supervisor fail-closed before startup (model guard)"; exit 78; }
+  live_central_risk_guard || { log "ERROR supervisor fail-closed before startup (central risk guard)"; exit 79; }
 
   ensure_orch_service
   run_reconcile_apply

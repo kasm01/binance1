@@ -105,6 +105,7 @@ docker-cache/
 *.sqlite3
 *.sqlite
 *.pid
+run/*.state
 
 # ============================================================
 # TEST OUTPUT

@@ -35,6 +35,22 @@ eqv MASTER_SHORT_MONEY_FLOW_EXHAUSTION_60M -0.20
 redis-cli PING | grep -qx PONG || fail "Redis down"
 ok "Redis PONG"
 
+/home/kasm920/venv/bin/python - <<'PYCENTRALSNAP' || fail "Central Risk shared snapshot missing/stale/breached"
+import json, os, time, redis
+r=redis.Redis(host=os.getenv('REDIS_HOST','localhost'),port=int(os.getenv('REDIS_PORT','6379')),db=int(os.getenv('REDIS_DB','0')),decode_responses=True)
+key=os.getenv('CENTRAL_RISK_CURRENT_KEY','telemetry:central_risk:shadow:current')
+max_age=float(os.getenv('CENTRAL_RISK_MAX_AGE_SEC','420') or 420)
+raw=r.get(key)
+if not raw: raise SystemExit('missing central risk snapshot')
+o=json.loads(raw)
+age=max(0.0,time.time()-float(o.get('ts') or 0.0))
+health=o.get('exposure_health') if isinstance(o.get('exposure_health'),dict) else {}
+status=str(health.get('status') or 'UNKNOWN').upper()
+if age>max_age: raise SystemExit(f'central risk stale age={age:.1f}s max={max_age:.1f}s')
+if status=='BREACH' or bool(health.get('freeze_new_entries')): raise SystemExit(f'central risk breach status={status}')
+print(f"[OK] Central Risk shared snapshot age={age:.1f}s status={status} authority={o.get('authority')} production_ready={o.get('production_ready')}")
+PYCENTRALSNAP
+
 key="context:oi:INJUSDT"
 ttl="$(redis-cli TTL "$key")"
 [[ "$ttl" =~ ^[0-9]+$ ]] && (( ttl > 0 )) || fail "OI context missing/stale ttl=$ttl"
