@@ -63,8 +63,15 @@ stop_from_pgrep() {
     local pids=($(pgrep -af "${pat}" | awk '{print $1}' | sort -u || true))
     [[ "${#pids[@]}" -gt 0 ]] || continue
 
-    local pid
+    local pid cwd
     for pid in "${pids[@]}"; do
+      # Critical isolation: LONG and SHORT repos run workers with identical
+      # script names. Never kill a matching process owned by the other repo.
+      cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+      if [[ "$cwd" != "$ROOT_DIR" ]]; then
+        [[ "${QUIET_STOP:-0}" == "1" ]] || msg "${LOGTAG} skip foreign pid=${pid} cwd=${cwd:-na} pattern=${pat}"
+        continue
+      fi
       stop_pid "pgrep:${pat}" "${pid}"
     done
   done
