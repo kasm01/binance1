@@ -175,6 +175,11 @@ class MasterExecutor:
             0.0,
             float(self.min_trade_score),
         )
+        # Soft-band SHORT entries require explicit bearish confirmation; a generic
+        # MARKET CONTEXT pass is not enough. Hard-score entries keep normal routing.
+        self.short_soft_max_price_return_15m = _env_float("MASTER_SHORT_SOFT_MAX_PRICE_RETURN_15M", 0.002)
+        self.short_soft_max_money_flow_15m = _env_float("MASTER_SHORT_SOFT_MAX_MONEY_FLOW_15M", 0.05)
+        self.short_soft_require_bearish_confirm = _env_bool("MASTER_SHORT_SOFT_REQUIRE_BEARISH_CONFIRM", True)
         self.w_min = _env_float("MASTER_W_MIN", 0.0)
         self.short_money_flow_enable = _env_bool("MASTER_SHORT_MONEY_FLOW_ENABLE", True)
         self.short_money_flow_exhaustion_60m = _env_float("MASTER_SHORT_MONEY_FLOW_EXHAUSTION_60M", -0.20)
@@ -424,6 +429,27 @@ class MasterExecutor:
             "soft_threshold": float(self.short_soft_score_min),
         }
 
+    def _evaluate_short_soft_confirmation(self, *, score_gate: Dict[str, Any], market_context: Dict[str, Any], side: str) -> Dict[str, Any]:
+        if str(score_gate.get("state") or "") != "PENDING_CONTEXT" or self._normalize_side(side) != "short":
+            return {"state": "READY", "reason": "soft_confirmation_not_required"}
+        if not self.short_soft_require_bearish_confirm:
+            return {"state": "READY", "reason": "soft_confirmation_disabled"}
+        ctx = dict(market_context.get("context") or {})
+        regime = dict(ctx.get("regime") or {})
+        price_ret = _safe_float(ctx.get("price_return_15m", 0.0), 0.0)
+        flow15 = _safe_float(ctx.get("money_flow_15m", 0.0), 0.0)
+        aligned_short_build = str(regime.get("build_direction") or "none") == "short"
+        bearish_price = price_ret <= float(self.short_soft_max_price_return_15m)
+        bearish_flow = flow15 <= float(self.short_soft_max_money_flow_15m)
+        passed = bool(bearish_flow and (bearish_price or aligned_short_build))
+        return {
+            "state": "READY" if passed else "REJECT",
+            "reason": "short_soft_context_confirmed" if passed else "short_soft_context_unconfirmed",
+            "bearish_price": bearish_price, "bearish_flow": bearish_flow,
+            "aligned_short_build": aligned_short_build,
+            "price_return_15m": price_ret, "money_flow_15m": flow15,
+        }
+
     def _emit_funnel_telemetry(self, *, candidate: Dict[str, Any], score_gate: Dict[str, Any], market_context: Dict[str, Any], final_decision: str, final_reason: str) -> None:
         if not self.funnel_telemetry_enable:
             return
@@ -496,6 +522,16 @@ class MasterExecutor:
             self._emit_funnel_telemetry(
                 candidate=c, score_gate=score_gate, market_context=market_context,
                 final_decision="REJECT", final_reason=str(score_gate.get("reason") or "model_score_reject"),
+            )
+            return None
+
+        soft_confirmation = self._evaluate_short_soft_confirmation(
+            score_gate=score_gate, market_context=market_context, side=side,
+        )
+        if soft_confirmation["state"] != "READY":
+            self._emit_funnel_telemetry(
+                candidate=c, score_gate=score_gate, market_context=market_context,
+                final_decision="REJECT", final_reason=str(soft_confirmation.get("reason") or "short_soft_context_unconfirmed"),
             )
             return None
 
