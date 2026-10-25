@@ -188,6 +188,9 @@ class MasterExecutor:
         # Directional OI/price build is a MARKET CONTEXT veto when it is
         # explicitly opposite the candidate side. Fail-safe for soft-score entries.
         self.context_contra_build_reject = _env_bool("MASTER_CONTEXT_CONTRA_BUILD_REJECT", True)
+        self.funnel_telemetry_enable = _env_bool("MASTER_FUNNEL_TELEMETRY_ENABLE", True)
+        self.funnel_telemetry_stream = _env_str("MASTER_FUNNEL_TELEMETRY_STREAM", "telemetry:short1:decision_funnel:v1")
+        self.funnel_telemetry_maxlen = max(1000, _env_int("MASTER_FUNNEL_TELEMETRY_MAXLEN", 20000))
 
         self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
@@ -421,6 +424,53 @@ class MasterExecutor:
             "soft_threshold": float(self.short_soft_score_min),
         }
 
+    def _emit_funnel_telemetry(self, *, candidate: Dict[str, Any], score_gate: Dict[str, Any], market_context: Dict[str, Any], final_decision: str, final_reason: str) -> None:
+        if not self.funnel_telemetry_enable:
+            return
+        try:
+            ctx = dict(market_context.get("context") or {})
+            regime = dict(ctx.get("regime") or {})
+            oi = dict(ctx.get("open_interest") or {})
+            payload = {
+                "schema_version": "short1_decision_funnel.v1",
+                "ts_utc": _now_utc_iso(),
+                "symbol": _safe_str(candidate.get("symbol", "")).upper(),
+                "interval": _safe_str(candidate.get("interval", "")),
+                "side": self._normalize_side(candidate.get("side", "")),
+                "price": _safe_float(candidate.get("price", 0.0), 0.0),
+                "model_score": _safe_float(candidate.get("model_score", 0.0), 0.0),
+                "ranking_score": _safe_float(candidate.get("ranking_score", candidate.get("model_score", 0.0)), 0.0),
+                "model_score_gate_state": str(score_gate.get("state") or "REJECT"),
+                "model_score_gate_reason": str(score_gate.get("reason") or ""),
+                "model_score_threshold": _safe_float(score_gate.get("threshold", self.min_trade_score), self.min_trade_score),
+                "model_score_soft_threshold": _safe_float(score_gate.get("soft_threshold", self.short_soft_score_min), self.short_soft_score_min),
+                "market_context_state": str(market_context.get("state") or "REJECT"),
+                "market_context_reason": str(market_context.get("reason") or ""),
+                "oi_state": str(ctx.get("oi_state") or ""),
+                "build_direction": str(regime.get("build_direction") or "none"),
+                "contra_candidate": bool(regime.get("contra_candidate", False)),
+                "oi_delta_5m": _safe_float(oi.get("oi_delta_5m", 0.0), 0.0),
+                "oi_delta_15m": _safe_float(oi.get("oi_delta_15m", 0.0), 0.0),
+                "money_flow_15m": _safe_float(ctx.get("money_flow_15m", candidate.get("money_flow_15m", 0.0)), 0.0),
+                "money_flow_60m": _safe_float(ctx.get("money_flow_60m", candidate.get("money_flow_60m", 0.0)), 0.0),
+                "price_return_15m": _safe_float(ctx.get("price_return_15m", candidate.get("price_return_15m", 0.0)), 0.0),
+                "final_decision": str(final_decision),
+                "final_reason": str(final_reason),
+                "candidate_id": str(candidate.get("candidate_id") or candidate.get("_source_stream_id") or ""),
+                "dedup_key": str(candidate.get("dedup_key") or ""),
+            }
+            self.r.xadd(
+                self.funnel_telemetry_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=int(self.funnel_telemetry_maxlen),
+                approximate=True,
+            )
+        except Exception as exc:
+            try:
+                print(f"[MasterExecutor][FUNNEL-WARN] {str(exc)[:180]}", flush=True)
+            except Exception:
+                pass
+
     def _make_intent(self, c: Dict[str, Any]) -> Optional[TradeIntent]:
         price = max(0.0, _safe_float(c.get("price", 0.0), 0.0))
         ranking_score = float(_clamp(_safe_float(c.get("ranking_score", c.get("model_score", 0.0)), 0.0), 0.0, 1.0))
@@ -433,11 +483,20 @@ class MasterExecutor:
         market_context = self._evaluate_market_context_stage(
             candidate=c, symbol=symbol0, interval=interval0, side=side, ranking_score=ranking_score,
         )
+        score_gate = self._evaluate_model_score_gate_stage(model_score=model_score, side=side)
+
         if market_context["state"] != "READY":
+            self._emit_funnel_telemetry(
+                candidate=c, score_gate=score_gate, market_context=market_context,
+                final_decision="REJECT", final_reason=str(market_context.get("reason") or "market_context_reject"),
+            )
             return None
 
-        score_gate = self._evaluate_model_score_gate_stage(model_score=model_score, side=side)
         if score_gate["state"] not in ("READY", "PENDING_CONTEXT"):
+            self._emit_funnel_telemetry(
+                candidate=c, score_gate=score_gate, market_context=market_context,
+                final_decision="REJECT", final_reason=str(score_gate.get("reason") or "model_score_reject"),
+            )
             return None
 
         reasons = [str(x) for x in _as_list(c.get("reason_codes"))]
@@ -480,6 +539,10 @@ class MasterExecutor:
                 c2["raw"] = raw0
         except Exception:
             pass
+        self._emit_funnel_telemetry(
+            candidate=c2, score_gate=score_gate, market_context=market_context,
+            final_decision="INTENT", final_reason="eligible",
+        )
         return TradeIntent(
             intent_id=str(uuid.uuid4()),
             ts_utc=_now_utc_iso(),
