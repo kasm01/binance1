@@ -103,6 +103,9 @@ def main() -> None:
     out = os.getenv("SHORT_SHADOW_OUTCOME_STREAM", "telemetry:short_model_shadow_outcomes")
     done_key = os.getenv("SHORT_SHADOW_FINALIZED_SET", "telemetry:short_model_shadow:finalized")
     horizon = max(30, _ei("SHORT_SHADOW_OUTCOME_HORIZON_MIN", 180))
+    quality_obs = max(1, _ei("SHORT_SHADOW_ENTRY_QUALITY_OBS_MIN", 60))
+    quality_fav = max(0.0, _ef("SHORT_SHADOW_ENTRY_QUALITY_FAV_PCT", 0.006))
+    quality_adv = max(0.0, _ef("SHORT_SHADOW_ENTRY_QUALITY_ADV_PCT", 0.0075))
     lev = max(1.0, _ef("SHORT_SHADOW_LEVERAGE", 2.0))
     tp = max(0.0, _ef("FIXED_ROI_TP_PCT", 0.0055)); gb = max(0.0, _ef("FIXED_ROI_TP_GIVEBACK", 0.0008))
     hard = min(0.0, _ef("ROI_HARD_STOP_PCT", -0.0060)); fee = max(0.0, _ef("SHORT_ESTIMATED_ROUND_TRIP_FEE_PCT", 0.0008))
@@ -141,7 +144,7 @@ def main() -> None:
             si = int(np.searchsorted(opens, minute_ms+60_000, side="left"))
             if si >= len(d): continue
             net, outcome, mins, best = _sim(d, si, entry, lev, tp, gb, hard, fee, horizon)
-            quality = _entry_quality(d, si, entry, obs_min=60, fav=0.006, adv=0.0075)
+            quality = _entry_quality(d, si, entry, obs_min=quality_obs, fav=quality_fav, adv=quality_adv)
             hazard_labels = _entry_hazard_labels(d, si, entry)
             result = {"event_id":str(obj.get("event_id") or ""),"source_stream_id":source_id,"source_ts":float(obj.get("ts") or 0.0),"finalized_ts":float(time.time()),"symbol":symbol,"model_provider":str(obj.get("model_provider") or ""),"model_target":str(obj.get("model_target") or ""),"model_feature_hash":str(obj.get("model_feature_hash") or ""),"economic_probability":float(obj.get("economic_probability") or 0.0),"reference_threshold":float(obj.get("reference_threshold") or 0.0),"confirmation_state":str(obj.get("confirmation_state") or ""),"entry_price":entry,"net_return_pct":float(net),"net_return_bps":float(net*10000.0),"outcome":outcome,"exit_minutes":int(mins),"best_roi":float(best),"fee_pct":float(fee),"lifecycle_proxy":{"leverage":lev,"tp_roi":tp,"giveback_roi":gb,"hard_stop_roi":hard,"horizon_min":horizon},"entry_hazard_snapshot":obj.get("entry_hazard_snapshot") or {},"entry_hazard_labels":hazard_labels,**quality}
             out_id = bus.xadd_json(out, result, maxlen=maxlen)
