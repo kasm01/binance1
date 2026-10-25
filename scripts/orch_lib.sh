@@ -51,9 +51,20 @@ pid_matches_project_process() {
   [[ -n "${pid:-}" ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
 
-  local cwd cmd
+  local cwd cmd exe exebase
   cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
   [[ "$cwd" == "$ROOT_DIR" ]] || return 1
+
+  # All managed orchestration workers are Python processes. Requiring the
+  # executable itself to be Python prevents pgrep -f from mistaking an
+  # inspection shell whose command text mentions a worker script for that worker.
+  case "$name" in
+    scanner_*|aggregator|top_selector|master_executor|intent_bridge)
+      exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+      exebase="$(basename "${exe:-}")"
+      [[ "$exebase" == python* ]] || return 1
+      ;;
+  esac
 
   cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
   [[ -n "${cmd:-}" ]] || return 1
