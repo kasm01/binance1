@@ -11,7 +11,7 @@ from sklearn.metrics import roc_auc_score
 from orchestration.event_bus.redis_bus import RedisBus
 
 SRC=os.getenv('SHORT1_SHADOW_STREAM') or os.getenv('SHORT_SHADOW_STREAM') or 'telemetry:short1:inj:model_shadow'
-OUTCOME=os.getenv('SHORT1_SHADOW_OUTCOME_STREAM') or os.getenv('SHORT_SHADOW_OUTCOME_STREAM') or 'telemetry:short1:inj:model_shadow_outcomes'
+OUTCOME=os.getenv('SHORT1_SHADOW_OUTCOME_STREAM') or os.getenv('SHORT_SHADOW_OUTCOME_STREAM') or 'telemetry:short1:inj:model_shadow_v5_outcomes'
 RES=ROOT/'research/short/results'; RES.mkdir(parents=True,exist_ok=True)
 REPORT=RES/'SHORT1_INJ_SHADOW_PROMOTION.json'
 BUCKETS=RES/'SHORT1_INJ_SHADOW_SCORE_BUCKETS.csv'
