@@ -163,14 +163,21 @@ def main() -> None:
     if not bus.ping():
         raise SystemExit("MODEL_WORKER: Redis unavailable")
 
-    registry = ShortModelRegistry(model_dir=MODELS_DIR)
+    dry_run_env = str(os.getenv("DRY_RUN", "1")).strip().lower() in ("1","true","yes","on")
+    armed_env = str(os.getenv("ARMED", "0")).strip().lower() in ("1","true","yes","on")
+    kill_env = str(os.getenv("LIVE_KILL_SWITCH", "1")).strip().lower() in ("1","true","yes","on")
+    research_enable = str(os.getenv("SHORT_DRYRUN_RESEARCH_MODEL_ENABLE", "0")).strip().lower() in ("1","true","yes","on")
+    research_dir = Path(os.getenv("SHORT_DRYRUN_RESEARCH_MODEL_DIR", ROOT / "research/short/models_v5_shadow"))
+    research_mode = bool(research_enable and dry_run_env and (not armed_env) and kill_env)
+    registry = ShortModelRegistry(model_dir=(research_dir if research_mode else MODELS_DIR))
+    require_promoted_model = not research_mode
     session = requests.Session()
     last_completed_close: Dict[str, int] = {}
     warned_missing_model: set[str] = set()
 
     print(
         f"[ModelWorker] started id={worker_id} interval={interval} symbols={symbols} "
-        f"poll={poll_sec}s provider=short_economic_coin promoted_required=1",
+        f"poll={poll_sec}s provider=short_economic_coin promoted_required={int(require_promoted_model)} research_mode={int(research_mode)} model_dir={registry.model_dir}",
         flush=True,
     )
 
@@ -190,7 +197,7 @@ def main() -> None:
             try:
                 # Validate the promoted coin-specific artifact before any market-data HTTP call.
                 try:
-                    model = registry.get(symbol, interval, require_promoted=True)
+                    model = registry.get(symbol, interval, require_promoted=require_promoted_model, require_execution_contract=(not research_mode))
                 except (FileNotFoundError, PermissionError, ValueError) as exc:
                     if symbol not in warned_missing_model:
                         warned_missing_model.add(symbol)
