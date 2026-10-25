@@ -2,11 +2,11 @@
 from __future__ import annotations
 import json, os, time, sys
 from pathlib import Path
+ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from orchestration.event_bus.redis_bus import RedisBus
-ROOT=Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 OUT=ROOT/'research/short/results/SHORT1_INJ_V6_SHADOW_REPORT.json'
 STREAM=os.getenv('SHORT1_V6_SHADOW_OUTCOME_STREAM','telemetry:short1:inj:model_shadow_v6_outcomes')
 EXPECTED=os.getenv('SHORT1_V6_EXPECTED_PROVIDER','short_arm_quality_logistic_v6')
