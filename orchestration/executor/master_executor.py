@@ -185,6 +185,9 @@ class MasterExecutor:
             False,
         )
         self.oi_context_max_age_sec = max(60, _env_int("MASTER_OI_CONTEXT_MAX_AGE_SEC", 900))
+        # Directional OI/price build is a MARKET CONTEXT veto when it is
+        # explicitly opposite the candidate side. Fail-safe for soft-score entries.
+        self.context_contra_build_reject = _env_bool("MASTER_CONTEXT_CONTRA_BUILD_REJECT", True)
 
         self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
@@ -367,6 +370,14 @@ class MasterExecutor:
             "open_interest": dict(oi),
             "regime": {"name": "confirmed_build" if confirmed_build else "normal", "build_direction": build_direction},
         }
+        contra_build = bool(
+            confirmed_build
+            and ((side == "short" and build_direction == "long")
+                 or (side == "long" and build_direction == "short"))
+        )
+        context["regime"]["contra_candidate"] = contra_build
+        if self.context_contra_build_reject and contra_build:
+            return {"state": "REJECT", "reason": "contra_confirmed_build", "context": context}
         if money_flow_exhaustion:
             return {"state": "REJECT", "reason": "short_money_flow_exhaustion", "context": context}
         if float(self.w_min) > 0.0 and whale_dir != "none" and whale_score < float(self.w_min):
