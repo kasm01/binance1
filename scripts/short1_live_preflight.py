@@ -44,6 +44,35 @@ soft_enable=b(env.get('MASTER_SHORT_SOFT_SCORE_ENABLE'),False)
 checks.append(result('Hard score gate', hard>=0.555, f'hard={hard:.3f}'))
 checks.append(result('Soft band live policy', not soft_enable, f'MASTER_SHORT_SOFT_SCORE_ENABLE={int(soft_enable)} (target live=0)'))
 checks.append(result('Contra build veto', b(env.get('MASTER_CONTEXT_CONTRA_BUILD_REJECT'),False), f"value={env.get('MASTER_CONTEXT_CONTRA_BUILD_REJECT')}"))
+
+# Hard-entry quality readiness (research-only evidence promoted into preflight)
+quality_script=ROOT/'research/short/report_short1_hard_entry_quality.py'
+try:
+    cp=subprocess.run([str(ROOT/'venv/bin/python'), str(quality_script)], capture_output=True, text=True, timeout=30)
+    qout=cp.stdout or ''
+except Exception as exc:
+    qout=f'ERROR {exc}'
+
+def _metric(pattern, default=None):
+    m=re.search(pattern, qout, re.M)
+    return m.group(1) if m else default
+
+episodes=int(_metric(r'^EPISODES=(\d+)', '0') or 0)
+strong_n=int(_metric(r'^ STRONG: n=(\d+)', '0') or 0)
+strong_win=float(_metric(r'^ STRONG: n=\d+ win60=([0-9.]+)%', '0') or 0.0)
+watch_win=_metric(r'^ WATCH: n=\d+ win60=([0-9.]+)%', None)
+weak_win=_metric(r'^ WEAK: n=\d+ win60=([0-9.]+)%', None)
+quality_sample_ok = episodes >= 10 and strong_n >= 6
+checks.append(result('Hard-entry quality sample', quality_sample_ok, f'episodes={episodes}/10 strong_episodes={strong_n}/6'))
+quality_perf_ok = strong_n >= 6 and strong_win >= 65.0
+checks.append(result('Hard-entry STRONG 60m quality', quality_perf_ok, f'strong_win60={strong_win:.1f}% target>=65%'))
+if watch_win is not None or weak_win is not None:
+    other_vals=[float(x) for x in (watch_win,weak_win) if x is not None]
+    sep_ok = bool(other_vals) and strong_win > max(other_vals)
+    checks.append(result('Hard-entry grade separation', sep_ok, f'strong={strong_win:.1f}% other_max={max(other_vals):.1f}%' if other_vals else 'insufficient comparison', blocking=False))
+else:
+    checks.append(result('Hard-entry grade separation', False, 'insufficient comparison', blocking=False))
+
 # Central risk profile
 rp=LONG/'orchestration/risk/central_risk_enforce_dry_profile.py'
 txt=rp.read_text() if rp.exists() else ''
