@@ -196,6 +196,11 @@ class MasterExecutor:
         self.funnel_telemetry_enable = _env_bool("MASTER_FUNNEL_TELEMETRY_ENABLE", True)
         self.funnel_telemetry_stream = _env_str("MASTER_FUNNEL_TELEMETRY_STREAM", "telemetry:short1:decision_funnel:v1")
         self.funnel_telemetry_maxlen = max(1000, _env_int("MASTER_FUNNEL_TELEMETRY_MAXLEN", 20000))
+        # Research-only hard-band entry-quality telemetry. Reuses already available
+        # candidate/context data: zero extra REST/WebSocket/API calls and no routing effect.
+        self.hard_quality_telemetry_enable = _env_bool("MASTER_HARD_QUALITY_TELEMETRY_ENABLE", True)
+        self.hard_quality_telemetry_stream = _env_str("MASTER_HARD_QUALITY_TELEMETRY_STREAM", "telemetry:short1:hard_entry_quality:v1")
+        self.hard_quality_telemetry_maxlen = max(1000, _env_int("MASTER_HARD_QUALITY_TELEMETRY_MAXLEN", 20000))
 
         self.whale_boost_thr = _env_float("MASTER_WHALE_BOOST_THR", 0.20)
         self.drop_if_whale_contra = _env_bool("MASTER_DROP_WHALE_CONTRA", True)
@@ -491,6 +496,58 @@ class MasterExecutor:
                 maxlen=int(self.funnel_telemetry_maxlen),
                 approximate=True,
             )
+
+            # Hard-score SHORT research telemetry. This intentionally does not
+            # participate in routing or execution policy. It only makes the
+            # quality of >= hard-threshold entries measurable without new API calls.
+            if (
+                self.hard_quality_telemetry_enable
+                and payload["side"] == "short"
+                and float(payload["model_score"]) >= float(payload["model_score_threshold"])
+            ):
+                score_margin = max(0.0, float(payload["model_score"]) - float(payload["model_score_threshold"]))
+                flow15 = float(payload["money_flow_15m"])
+                flow60 = float(payload["money_flow_60m"])
+                pr15 = float(payload["price_return_15m"])
+                build_dir = str(payload["build_direction"] or "none")
+                quality_payload = {
+                    "schema_version": "short1_hard_entry_quality.v1",
+                    "research_only": True,
+                    "ts_utc": payload["ts_utc"],
+                    "symbol": payload["symbol"],
+                    "interval": payload["interval"],
+                    "side": payload["side"],
+                    "price": payload["price"],
+                    "candidate_id": payload["candidate_id"],
+                    "dedup_key": payload["dedup_key"],
+                    "model_score": payload["model_score"],
+                    "hard_threshold": payload["model_score_threshold"],
+                    "score_margin": score_margin,
+                    "atr_pct": _safe_float(ctx.get("atr_pct", candidate.get("atr_pct", 0.0)), 0.0),
+                    "money_flow_15m": flow15,
+                    "money_flow_60m": flow60,
+                    "price_return_15m": pr15,
+                    "oi_delta_5m": payload["oi_delta_5m"],
+                    "oi_delta_15m": payload["oi_delta_15m"],
+                    "oi_state": payload["oi_state"],
+                    "build_direction": build_dir,
+                    "contra_candidate": payload["contra_candidate"],
+                    "short_build_aligned": bool(build_dir == "short"),
+                    "flow15_short_support": bool(flow15 < 0.0),
+                    "flow60_short_support": bool(flow60 < 0.0),
+                    "price15_short_support": bool(pr15 < 0.0),
+                    "exhaustion_distance_60m": float(flow60 - float(self.short_money_flow_exhaustion_60m)),
+                    "market_context_state": payload["market_context_state"],
+                    "market_context_reason": payload["market_context_reason"],
+                    "final_decision": payload["final_decision"],
+                    "final_reason": payload["final_reason"],
+                }
+                self.r.xadd(
+                    self.hard_quality_telemetry_stream,
+                    {"json": json.dumps(quality_payload, ensure_ascii=False)},
+                    maxlen=int(self.hard_quality_telemetry_maxlen),
+                    approximate=True,
+                )
         except Exception as exc:
             try:
                 print(f"[MasterExecutor][FUNNEL-WARN] {str(exc)[:180]}", flush=True)
