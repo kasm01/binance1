@@ -18,6 +18,7 @@ import requests
 
 from app_paths import MODELS_DIR
 from models.short_model_registry import ShortModelRegistry
+from core.whale_detector import WhaleDetector
 from orchestration.event_bus.redis_bus import RedisBus
 
 KLINE_COLUMNS = [
@@ -170,6 +171,10 @@ def main() -> None:
     research_dir = Path(os.getenv("SHORT_DRYRUN_RESEARCH_MODEL_DIR", ROOT / "research/short/models_v5_shadow"))
     research_mode = bool(research_enable and dry_run_env and (not armed_env) and kill_env)
     registry = ShortModelRegistry(model_dir=(research_dir if research_mode else MODELS_DIR))
+    whale_shadow_enable = str(os.getenv("SHORT_WHALE_SHADOW_ENABLE", "0")).strip().lower() in ("1","true","yes","on")
+    whale_shadow_stream = str(os.getenv("SHORT_WHALE_SHADOW_STREAM", "telemetry:short1:whale_shadow:v1") or "telemetry:short1:whale_shadow:v1")
+    whale_shadow_maxlen = max(1000, _env_int("SHORT_WHALE_SHADOW_MAXLEN", 20000))
+    whale_detector = WhaleDetector() if whale_shadow_enable else None
     require_promoted_model = not research_mode
     session = requests.Session()
     last_completed_close: Dict[str, int] = {}
@@ -233,6 +238,45 @@ def main() -> None:
                 money_flow = _money_flow_metrics(raw)
                 price_response = _price_response_metrics(raw)
                 meta = dict(model.meta or {})
+
+                whale_shadow = None
+                if whale_detector is not None:
+                    try:
+                        ws = whale_detector.from_klines(raw.tail(data_limit))
+                        wd = whale_detector.final_whale_vote(ws, trade_side="short")
+                        whale_shadow = {
+                            "schema_version": "short1_whale_shadow.v1",
+                            "ts": time.time(),
+                            "symbol": symbol,
+                            "interval": interval,
+                            "source_close_time": close_id,
+                            "direction": str(ws.direction or "none"),
+                            "score": float(ws.score or 0.0),
+                            "reason": str(ws.reason or ""),
+                            "regime": str(wd.regime or "ignore"),
+                            "action": str(wd.action or "ignore"),
+                            "confidence": float(wd.confidence or 0.0),
+                            "routing": "OFF",
+                            "policy_effect": "TELEMETRY_ONLY",
+                            "meta": dict(wd.meta or {}),
+                        }
+                    except Exception as exc:
+                        whale_shadow = {
+                            "schema_version": "short1_whale_shadow.v1",
+                            "ts": time.time(),
+                            "symbol": symbol,
+                            "interval": interval,
+                            "source_close_time": close_id,
+                            "direction": "none",
+                            "score": 0.0,
+                            "regime": "error",
+                            "action": "ignore",
+                            "confidence": 0.0,
+                            "routing": "OFF",
+                            "policy_effect": "TELEMETRY_ONLY",
+                            "error": str(exc)[:240],
+                        }
+
                 evt: Dict[str, Any] = {
                     "event_id": str(uuid.uuid4()),
                     "producer_id": worker_id,
@@ -267,6 +311,13 @@ def main() -> None:
                     },
                 }
                 sid = bus.publish_signal(evt)
+                if whale_shadow is not None:
+                    whale_shadow["signal_stream_id"] = str(sid or "")
+                    whale_shadow["signal_event_id"] = str(evt.get("event_id") or "")
+                    try:
+                        bus.xadd_json(whale_shadow_stream, whale_shadow, maxlen=whale_shadow_maxlen)
+                    except Exception as exc:
+                        print(f"[ModelWorker][WHALE-SHADOW-WARN] symbol={symbol} err={str(exc)[:180]}", flush=True)
                 if sid:
                     print(
                         f"[ModelWorker][SIGNAL] id={worker_id} symbol={symbol} "
