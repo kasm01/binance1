@@ -145,6 +145,25 @@ class IntentBridge:
         self.dryrun_call_executor = _env_bool("BRIDGE_DRYRUN_CALL_EXECUTOR", True)
         self.dryrun_write_state = _env_bool("BRIDGE_DRYRUN_WRITE_STATE", False)
 
+        # SHORT1 entry-confirmation micro exhaustion gate.
+        # Reuses V44 public websocket telemetry; zero extra exchange API calls.
+        # Default is OFF and dry-run-only. Missing telemetry fails open but is recorded.
+        self.short_micro_gate_enable = _env_bool("BRIDGE_SHORT_MICRO_GATE_ENABLE", False)
+        self.short_micro_gate_dryrun_only = _env_bool("BRIDGE_SHORT_MICRO_GATE_DRYRUN_ONLY", True)
+        self.short_micro_gate_fail_open = _env_bool("BRIDGE_SHORT_MICRO_GATE_FAIL_OPEN", True)
+        self.short_micro_policy_stream = _env_str(
+            "BRIDGE_SHORT_MICRO_POLICY_STREAM",
+            "telemetry:short1:inj:entry_hazard_orderbook_v44_shadow",
+        )
+        self.short_micro_telemetry_stream = _env_str(
+            "BRIDGE_SHORT_MICRO_TELEMETRY_STREAM",
+            "telemetry:short1:micro_entry_gate:v1",
+        )
+        self.short_micro_flow5_max = _safe_float(os.getenv("BRIDGE_SHORT_MICRO_FLOW5_MAX", "-0.40"), -0.40)
+        self.short_micro_delta_min = _safe_float(os.getenv("BRIDGE_SHORT_MICRO_DELTA_5_20_MIN", "0.20"), 0.20)
+        self.short_micro_wait_sec = max(0.0, _safe_float(os.getenv("BRIDGE_SHORT_MICRO_WAIT_SEC", "22"), 22.0))
+        self.short_micro_maxlen = max(1000, _env_int("BRIDGE_SHORT_MICRO_TELEMETRY_MAXLEN", 20000))
+
         # LIVE safety (publish gate)
         self.armed = _env_bool("ARMED", False)
         self.kill_switch = _env_bool("LIVE_KILL_SWITCH", False)
@@ -219,6 +238,110 @@ class IntentBridge:
     def _price_of(self, item: Dict[str, Any]) -> float:
         p = _safe_float(item.get("price", 0.0), 0.0)
         return float(p) if p > 0 else 0.0
+
+    def _candidate_minute_ms(self, item: Dict[str, Any]) -> int:
+        raw = _safe_dict(item.get("raw"))
+        ts = _safe_str(raw.get("ts_utc", ""), "").strip() or _safe_str(item.get("ts_utc", ""), "").strip()
+        if not ts:
+            return 0
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000) // 60000 * 60000
+        except Exception:
+            return 0
+
+    def _emit_short_micro_gate(self, payload: Dict[str, Any]) -> None:
+        try:
+            self.r.xadd(
+                self.short_micro_telemetry_stream,
+                {"json": json.dumps(payload, ensure_ascii=False)},
+                maxlen=int(self.short_micro_maxlen),
+                approximate=True,
+            )
+        except Exception:
+            pass
+
+    def _short_micro_entry_gate(self, item: Dict[str, Any]) -> Tuple[bool, str]:
+        if not self.short_micro_gate_enable:
+            return True, "micro_gate_disabled"
+        if self.short_micro_gate_dryrun_only and not self.dry_run_env:
+            return True, "micro_gate_dryrun_only"
+        if self._norm_side(item) != "short":
+            return True, "micro_gate_not_short"
+
+        minute_ms = self._candidate_minute_ms(item)
+        base = {
+            "schema_version": "short1_micro_entry_gate.v1",
+            "ts_utc": _now_utc_iso(),
+            "intent_id": _safe_str(item.get("intent_id", "")),
+            "symbol": _safe_str(item.get("symbol", "")).upper(),
+            "candidate_minute_ms": int(minute_ms),
+            "flow5_max": float(self.short_micro_flow5_max),
+            "delta_5_20_min": float(self.short_micro_delta_min),
+            "dry_run": bool(self.dry_run_env),
+        }
+        if minute_ms <= 0:
+            base.update({"decision": "MISSING", "reason": "candidate_minute_missing"})
+            self._emit_short_micro_gate(base)
+            return bool(self.short_micro_gate_fail_open), "micro_candidate_minute_missing"
+
+        # V44 emits the 20S_HAZARD record around second 20. Wait only when the
+        # intent arrives earlier in the same minute; no exchange calls are made.
+        target = minute_ms / 1000.0 + 20.20
+        now = time.time()
+        if now < target:
+            time.sleep(min(self.short_micro_wait_sec, max(0.0, target - now)))
+
+        lo = f"{minute_ms + 19000}-0"
+        hi = f"{minute_ms + 29999}-999999"
+        matched = None
+        for _ in range(3):
+            try:
+                rows = self.r.xrevrange(self.short_micro_policy_stream, max=hi, min=lo, count=12)
+            except Exception:
+                rows = []
+            for sid, fields in rows:
+                try:
+                    obj = json.loads(fields.get("json") or "{}")
+                except Exception:
+                    continue
+                if str(obj.get("stage") or "") != "20S_HAZARD":
+                    continue
+                if int(_safe_float(obj.get("minute_ms"), 0.0)) != int(minute_ms):
+                    continue
+                if _safe_str(obj.get("symbol", "")).upper() != _safe_str(item.get("symbol", "")).upper():
+                    continue
+                matched = (sid, obj)
+                break
+            if matched is not None:
+                break
+            time.sleep(0.35)
+
+        if matched is None:
+            base.update({"decision": "MISSING", "reason": "v44_20s_missing"})
+            self._emit_short_micro_gate(base)
+            return bool(self.short_micro_gate_fail_open), "micro_v44_missing"
+
+        sid, obj = matched
+        s5 = _safe_dict(obj.get("snapshot_5s"))
+        dec = _safe_dict(obj.get("decision"))
+        f5 = _safe_float(s5.get("flow"), _safe_float(dec.get("flow_5s"), 0.0))
+        f20 = _safe_float(dec.get("flow_20s"), 0.0)
+        delta = _safe_float(dec.get("flow_delta_5_20"), f20 - f5)
+        reject = bool(f5 <= float(self.short_micro_flow5_max) and delta >= float(self.short_micro_delta_min))
+        base.update({
+            "v44_stream_id": str(sid),
+            "v44_event_id": _safe_str(obj.get("event_id", "")),
+            "flow_5s": float(f5),
+            "flow_20s": float(f20),
+            "flow_delta_5_20": float(delta),
+            "decision": "REJECT" if reject else "READY",
+            "reason": "sell_exhaustion_rebound" if reject else "micro_pass",
+        })
+        self._emit_short_micro_gate(base)
+        return (not reject), str(base["reason"])
 
     def _publish_exec(
         self,
@@ -343,6 +466,14 @@ class IntentBridge:
                     continue
 
                 tag = "(PEL) " if is_pel else ""
+                micro_ok, micro_reason = self._short_micro_entry_gate(it)
+                if not micro_ok:
+                    print(
+                        f"[IntentBridge][MICRO][REJECT] source={sid} "
+                        f"symbol={_safe_str(it.get('symbol', '')).upper()} reason={micro_reason}",
+                        flush=True,
+                    )
+                    continue
                 out_id = self._publish_exec(source_stream_id=sid, item=it, reason_hint="transported")
                 if out_id:
                     print(
