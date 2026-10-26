@@ -537,6 +537,30 @@ class MasterExecutor:
                     "flow60_short_support": bool(flow60 < 0.0),
                     "price15_short_support": bool(pr15 < 0.0),
                     "exhaustion_distance_60m": float(flow60 - float(self.short_money_flow_exhaustion_60m)),
+                    # Research-only quality grade. Do NOT use for routing yet;
+                    # independent episode sample is still too small.
+                    "quality_support_count": int(
+                        (score_margin >= 0.006)
+                        + (flow15 < 0.0)
+                        + (flow60 < 0.0)
+                        + (not bool(payload["contra_candidate"]))
+                    ),
+                    "quality_shadow_grade": (
+                        "STRONG" if int(
+                            (score_margin >= 0.006)
+                            + (flow15 < 0.0)
+                            + (flow60 < 0.0)
+                            + (not bool(payload["contra_candidate"]))
+                        ) >= 3
+                        else "WATCH" if int(
+                            (score_margin >= 0.006)
+                            + (flow15 < 0.0)
+                            + (flow60 < 0.0)
+                            + (not bool(payload["contra_candidate"]))
+                        ) == 2
+                        else "WEAK"
+                    ),
+                    "quality_shadow_policy": "research_only_no_routing",
                     "market_context_state": payload["market_context_state"],
                     "market_context_reason": payload["market_context_reason"],
                     "final_decision": payload["final_decision"],
