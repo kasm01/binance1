@@ -149,7 +149,12 @@ start_one() {
   fi
 
   echo "[START] $name -> $logfile"
-  nohup env PYTHONPATH="$ROOT_DIR" "$@" >>"$logfile" 2>&1 &
+  # orch_start.sh owns fd 9 for its flock. Close it in the child before exec so
+  # long-lived workers do not keep run/orch_start.lock permanently held.
+  (
+    exec 9>&-
+    exec nohup env PYTHONPATH="$ROOT_DIR" "$@" >>"$logfile" 2>&1
+  ) &
   local newpid="$!"
   echo "$newpid" > "$pidfile"
 
