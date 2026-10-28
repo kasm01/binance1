@@ -3330,28 +3330,145 @@ class TradeExecutorShort:
         final_min_score: float,
         progress: float,
     ) -> Dict[str, Any]:
-        """Single ENTRY CONFIRMATION authority for the SHORT reversal candle."""
-        if self._check_short_candle_direction(symbol=symbol):
-            return {
-                "state": "READY",
-                "reason": "entry_confirmed",
-                "progress": float(progress),
-            }
+        """SHORT ENTRY CONFIRMATION: READY / PENDING / REJECT.
 
-        return {
-            "state": "PENDING",
-            "reason": "entry_confirmation_wait",
-            "progress": float(progress),
-            "decision": self._make_short_entry_decision(
-                allow=False,
-                action="pending",
-                reason="entry_confirmation_wait",
+        Reuses the exact 1m candle snapshot already loaded by
+        ShortEntryCandleService. No additional exchange request is added.
+        """
+        try:
+            min_body_ratio = float(os.getenv("SHORT_ENTRY_CONFIRM_MIN_BODY_RATIO", "0.15") or 0.15)
+            max_retrace_ratio = float(os.getenv("SHORT_ENTRY_CONFIRM_MAX_RETRACE_RATIO", "0.50") or 0.50)
+            reject_retrace_ratio = float(os.getenv("SHORT_ENTRY_CONFIRM_REJECT_RETRACE_RATIO", "0.75") or 0.75)
+            min_quality = float(os.getenv("SHORT_ENTRY_CONFIRM_MIN_QUALITY", "0.52") or 0.52)
+        except Exception:
+            min_body_ratio, max_retrace_ratio, reject_retrace_ratio, min_quality = 0.15, 0.50, 0.75, 0.52
+
+        if not (
+            0.0 <= min_body_ratio <= 1.0
+            and 0.0 <= max_retrace_ratio < reject_retrace_ratio <= 1.0
+            and 0.0 <= min_quality <= 1.0
+        ):
+            raise RuntimeError(
+                "invalid SHORT_ENTRY_CONFIRM configuration: "
+                f"min_body={min_body_ratio} max_retrace={max_retrace_ratio} "
+                f"reject_retrace={reject_retrace_ratio} min_quality={min_quality}"
+            )
+
+        candles = self._get_entry_candle_pair(
+            symbol=symbol,
+            interval=self.entry_candle_dir_interval,
+        )
+        rows = self.short_entry_candle_service.get_last_rows(
+            symbol, self.entry_candle_dir_interval
+        )
+
+        def _decision(state: str, reason: str, *, retryable: bool, details: Optional[Dict[str, Any]] = None):
+            action = "open" if state == "READY" else ("pending" if state == "PENDING" else "block")
+            decision = self._make_short_entry_decision(
+                allow=(state == "READY"),
+                action=action,
+                reason=reason,
                 signal_score=signal_score,
                 required_score=final_min_score,
                 progress=progress,
-                retryable=True,
-            ),
+                retryable=retryable,
+            )
+            if isinstance(details, dict):
+                decision.update(details)
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][ENTRY-CONFIRM] state=%s reason=%s score=%.6f required=%.6f "
+                        "quality=%s body=%s retrace=%s support=%s span=%s prev_green=%s progress=%.3f",
+                        state, reason, float(signal_score), float(final_min_score),
+                        details.get("entry_quality") if isinstance(details, dict) else None,
+                        details.get("body_ratio") if isinstance(details, dict) else None,
+                        details.get("retrace_ratio") if isinstance(details, dict) else None,
+                        details.get("direction_support") if isinstance(details, dict) else None,
+                        details.get("directional_span") if isinstance(details, dict) else None,
+                        details.get("previous_green") if isinstance(details, dict) else None,
+                        float(progress),
+                    )
+            except Exception:
+                pass
+            return {"state": state, "reason": reason, "progress": float(progress), "decision": decision, **(details or {})}
+
+        if candles is None or not isinstance(rows, list) or len(rows) < 2:
+            return _decision("PENDING", "entry_confirmation_limited_data", retryable=True)
+
+        previous, current = candles
+        prev_open, prev_close = previous
+        curr_open, curr_close = current
+        previous_green = bool(prev_close > prev_open)
+
+        row = rows[-1]
+        try:
+            if isinstance(row, (list, tuple)):
+                op, hi, lo, px = float(row[1]), float(row[2]), float(row[3]), float(row[4])
+            elif isinstance(row, dict):
+                op = float(row.get("open") or row.get("o") or 0.0)
+                hi = float(row.get("high") or row.get("h") or 0.0)
+                lo = float(row.get("low") or row.get("l") or 0.0)
+                px = float(row.get("close") or row.get("c") or 0.0)
+            else:
+                op = hi = lo = px = 0.0
+        except Exception:
+            op = hi = lo = px = 0.0
+
+        has_ohlc = px > 0.0 and op > 0.0 and hi > lo > 0.0 and lo <= op <= hi
+        if not has_ohlc:
+            return _decision("PENDING", "entry_confirmation_limited_data", retryable=True, details={"previous_green": previous_green})
+
+        candle_range = hi - lo
+        body_ratio = abs(px - op) / candle_range
+        direction_support = px <= op
+        reversal_abs = max(0.0, px - lo)
+        directional_span = max(0.0, op - lo)
+        has_directional_span = directional_span > 0.0
+        retrace_ratio = min(1.0, reversal_abs / directional_span) if has_directional_span else 0.0
+        location_ratio = (hi - px) / candle_range
+
+        body_quality = min(1.0, body_ratio / max(min_body_ratio, 1e-9))
+        retrace_quality = max(0.0, 1.0 - retrace_ratio)
+        direction_quality = 1.0 if direction_support else 0.0
+        location_quality = max(0.0, min(1.0, location_ratio))
+        entry_quality = (
+            0.30 * direction_quality
+            + 0.25 * body_quality
+            + 0.25 * retrace_quality
+            + 0.20 * location_quality
+        )
+        reversal_pct = max(0.0, (op - px) / op)
+
+        details = {
+            "entry_quality": round(entry_quality, 6),
+            "body_ratio": round(body_ratio, 6),
+            "retrace_ratio": round(retrace_ratio, 6),
+            "location_ratio": round(location_ratio, 6),
+            "direction_support": bool(direction_support),
+            "directional_span": round(directional_span, 12),
+            "has_directional_span": bool(has_directional_span),
+            "previous_green": bool(previous_green),
+            "reversal_pct": round(reversal_pct, 8),
         }
+
+        if not previous_green:
+            return _decision("PENDING", "entry_confirmation_prev_not_green", retryable=True, details=details)
+        if not has_directional_span:
+            return _decision("PENDING", "entry_confirmation_no_directional_span", retryable=True, details=details)
+        if retrace_ratio >= reject_retrace_ratio:
+            return _decision("REJECT", "entry_confirmation_strong_reversal", retryable=False, details=details)
+        if (
+            not direction_support
+            or reversal_pct < float(self.short_current_reversal_min_pct)
+            or retrace_ratio >= max_retrace_ratio
+            or body_ratio < min_body_ratio
+            or entry_quality < min_quality
+        ):
+            return _decision("PENDING", "entry_confirmation_wait", retryable=True, details=details)
+
+        return _decision("READY", "entry_confirmation_ready", retryable=False, details=details)
+
 
     def _build_short_entry_market_context(
         self,
