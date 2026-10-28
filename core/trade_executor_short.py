@@ -3734,6 +3734,33 @@ class TradeExecutorShort:
         final_min_score = float(score_gate["final_min_score"])
         extra0 = score_gate["extra"]
 
+        # HARD SHORT + contra confirmed LONG build is a timing-risk setup, not an
+        # automatic directional reject. Master marks this only in dry-run research.
+        # Force it through the existing PENDING REVALIDATION path so the next
+        # eligible sniper window must pass quality Entry Confirmation before open.
+        canonical_ctx = self._extract_short_canonical_market_context(extra0)
+        canonical_regime = dict(canonical_ctx.get("regime") or {}) if isinstance(canonical_ctx, dict) else {}
+        hard_contra_pending = bool(canonical_regime.get("hard_contra_pending_revalidation", False))
+        if hard_contra_pending:
+            try:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][HARD-CONTRA-PENDING] symbol=%s score=%.6f min=%.6f build=%s",
+                        sym_u, signal_score, final_min_score,
+                        str(canonical_regime.get("build_direction") or "none"),
+                    )
+            except Exception:
+                pass
+            self._store_short_pending_from_stage(
+                symbol=sym_u,
+                signal_score=signal_score,
+                min_score=final_min_score,
+                price=price,
+                market_context=market_context,
+                extra=extra0,
+            )
+            return
+
         sniper = self._evaluate_short_sniper_stage(
             symbol=sym_u,
             signal_score=signal_score,

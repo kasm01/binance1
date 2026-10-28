@@ -390,6 +390,25 @@ class MasterExecutor:
         )
         context["regime"]["contra_candidate"] = contra_build
         if self.context_contra_build_reject and contra_build:
+            hard_contra_pending_enable = _env_bool("MASTER_SHORT_HARD_CONTRA_PENDING_ENABLE", False)
+            hard_contra_pending_dryrun_only = _env_bool("MASTER_SHORT_HARD_CONTRA_PENDING_DRYRUN_ONLY", True)
+            dry_run_now = _env_bool("DRY_RUN", True)
+            hard_short_override = bool(
+                side == "short"
+                and float(ranking_score) >= float(self.min_trade_score)
+                and hard_contra_pending_enable
+                and ((not hard_contra_pending_dryrun_only) or dry_run_now)
+            )
+            if hard_short_override:
+                context["regime"]["hard_contra_pending_revalidation"] = True
+                context["regime"]["hard_contra_pending_threshold"] = float(self.min_trade_score)
+                return {
+                    "state": "READY",
+                    "reason": "hard_short_contra_pending_revalidation",
+                    "context": context,
+                    "ranking_score": float(ranking_score),
+                    "symbol": symbol, "interval": interval, "side": side,
+                }
             return {"state": "REJECT", "reason": "contra_confirmed_build", "context": context}
         if money_flow_exhaustion:
             return {"state": "REJECT", "reason": "short_money_flow_exhaustion", "context": context}
