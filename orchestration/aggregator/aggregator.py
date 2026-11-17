@@ -130,6 +130,12 @@ class Aggregator:
 
     def _normalize_event(self, mid: str, evt: Dict[str, Any]) -> Dict[str, Any]:
         e = dict(evt)
+        # Preserve explicit field existence BEFORE normalizing absent data
+        # to 0/none. Required for SHORT1 Master fail-closed checks.
+        from orchestration.context.short1_strict_market_contract import FIELDS
+        e["_short1_source_field_presence"] = [
+            k for k in FIELDS if k in evt and evt.get(k) is not None
+        ]
 
         sym = str(e.get("symbol", "") or "").upper().strip()
         e["symbol"] = sym
@@ -185,6 +191,10 @@ class Aggregator:
 
         payload: Dict[str, Any] = {
             "candidate_id": str(uuid.uuid4()),
+            "source_signal_event_id": str(evt.get("event_id") or ""),
+            "source_completed_close_ms": int(
+                (evt.get("meta") or {}).get("completed_close_time") or 0
+            ) if isinstance(evt.get("meta"), dict) else 0,
             "ts_utc": ts_utc,
             "symbol": sym,
             "interval": itv,
@@ -192,6 +202,11 @@ class Aggregator:
             "price": float(price),
             "model_score": float(_clamp01(evt.get("model_score", 0.0))),
             "model_provider": str(evt.get("model_provider") or "hybrid_coin_specific"),
+            "model_target": str(evt.get("model_target") or (evt.get("meta") or {}).get("model_target") or ""),
+            "model_probability_threshold": evt.get("model_probability_threshold"),
+            "model_promotion_authorized": False,
+            "source_field_presence": list(evt.get("_short1_source_field_presence") or []),
+            "whale_observation_status": str(evt.get("whale_observation_status") or ""),
             "risk_tags": list(evt.get("_risk_tags", []) or []),
             "reason_codes": list(evt.get("_reason_codes", []) or []),
             "source": src,

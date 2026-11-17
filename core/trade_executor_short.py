@@ -977,7 +977,9 @@ class TradeExecutorShort:
                     except Exception:
                         tick = 0.0
                     break
-        price = self._ceil_to_step(float(trigger_price), float(tick))
+        # SHORT protective BUY stop: rounding UP widens loss beyond the target.
+        # Round down to the nearest valid tick, preserving the loss cap.
+        price = self._floor_to_step(float(trigger_price), float(tick))
         try:
             pp = int(info.get("pricePrecision") or 8)
             price = round(float(price), pp)
@@ -1527,8 +1529,8 @@ class TradeExecutorShort:
         native_order = native_stop0.get("order") if isinstance(native_stop0.get("order"), dict) else {}
         pos["native_stop_price"] = float(self._clip_float(native_stop0.get("stop_price"), 0.0) or 0.0)
         pos["native_stop_status"] = str(native_stop0.get("status") or "")
-        pos["native_stop_order_id"] = native_order.get("orderId")
-        pos["native_stop_client_order_id"] = native_order.get("clientOrderId")
+        pos["native_stop_order_id"] = native_order.get("algoId") or native_order.get("orderId")
+        pos["native_stop_client_order_id"] = native_order.get("clientAlgoId") or native_order.get("clientOrderId")
         pos["model_provider"] = str(meta0.get("model_provider") or "short_coin_specific")
         pos["signal_score"] = float(self._clip_float(meta0.get("signal_score"), 0.0) or 0.0)
         pos["open_min_score"] = float(self._clip_float(meta0.get("open_min_score"), 0.0) or 0.0)
@@ -1607,6 +1609,23 @@ class TradeExecutorShort:
             return {
                 "status": "skip",
                 "reason": "short_only",
+            }
+
+        # Unique strategy ownership remains explicit even when coins differ.
+        # No unassigned ticker may be opened by this SHORT engine.
+        from core.strategy_symbol_policy import validate_assignment
+        assignment_ok, assignment_reason = validate_assignment(self.strategy_id, sym_u)
+        if not assignment_ok:
+            return {"status": "skip", "reason": assignment_reason, "symbol": sym_u}
+
+        # The active central gate is ENFORCE_DRY_RUN and explicitly rejects
+        # production requests. Prevent a future accidental DRY_RUN=0 toggle
+        # from bypassing the shared portfolio authority.
+        if not self.dry_run:
+            return {
+                "status": "skip",
+                "reason": "central_risk_live_not_authorized",
+                "symbol": sym_u,
             }
 
         now_ts = time.time()
@@ -1725,6 +1744,10 @@ class TradeExecutorShort:
             )
 
             try:
+                if not self.dry_run:
+                    verified_fill=self._verify_short_exchange_open_fill(symbol=sym_u)
+                    qty=float(verified_fill["qty"])
+                    order_price=float(verified_fill["entry_price"])
                 native_stop = self._place_native_short_stop(
                     symbol=sym_u,
                     entry_price=order_price,
@@ -1810,6 +1833,35 @@ class TradeExecutorShort:
     # SHORT CLOSE
     # =========================================================
 
+    def _verify_short_exchange_open_fill(self, *, symbol: str) -> Dict[str, float]:
+        """Actual hedge SHORT entry and size, fail closed on incomplete exchange data.
+
+        Never use a model/cached order price as the native STOP calculation basis.
+        """
+        sym=str(symbol or "").strip().upper()
+        if sym!="INJUSDT":
+            raise RuntimeError("short_fill_unassigned_coin")
+        last_error=None
+        for attempt in range(5):
+            try:
+                rows=_futures_v3_position_risk(sym)
+                matching=[
+                    row for row in rows if isinstance(row,dict)
+                    and str(row.get("symbol") or "").upper()==sym
+                    and str(row.get("positionSide") or "").upper()=="SHORT"
+                    and float(row.get("positionAmt") or 0.0)<0.0
+                ]
+                if len(matching)==1:
+                    qty=abs(float(matching[0].get("positionAmt") or 0.0))
+                    entry=float(matching[0].get("entryPrice") or 0.0)
+                    if qty>0.0 and entry>0.0 and math.isfinite(entry) and math.isfinite(qty):
+                        return {"qty":qty,"entry_price":entry}
+            except Exception as exc:
+                last_error=exc
+            if attempt<4:
+                time.sleep(0.3)
+        raise RuntimeError("short_exchange_fill_not_confirmed:"+str(type(last_error).__name__ if last_error else "missing_fill"))
+
     def _place_native_short_stop(
         self,
         *,
@@ -1854,17 +1906,15 @@ class TradeExecutorShort:
                 "payload": payload,
             }
 
-        fn = getattr(self.client, "futures_create_order", None)
-        if not callable(fn):
-            raise RuntimeError("futures_create_order unavailable for native stop")
-        out = fn(**payload)
-        return {
-            "status": "placed",
-            "symbol": sym_u,
-            "stop_price": float(stop_price),
-            "order": out,
-            "payload": payload,
-        }
+        # Conditional stops moved to the Binance USD-M Algo API.
+        # The legacy futures_create_order(STOP_MARKET) path is not used.
+        from core.short_native_algo_stop import place as _place_algo_stop
+        return _place_algo_stop(
+            sym_u,
+            float(stop_price),
+            working_type=self.short_native_stop_working_type,
+            price_protect=bool(self.short_native_stop_price_protect),
+        )
 
     def _cancel_native_short_stop(self, *, symbol: str, position: Dict[str, Any]) -> None:
         if self.dry_run or not isinstance(position, dict):
@@ -1872,20 +1922,18 @@ class TradeExecutorShort:
         order_id = position.get("native_stop_order_id")
         if order_id in (None, ""):
             return
-        fn = getattr(self.client, "futures_cancel_order", None)
-        if not callable(fn):
-            return
+        from core.short_native_algo_stop import cancel_owned as _cancel_owned_algo_stop
         try:
-            fn(symbol=str(symbol or "").upper().strip(), orderId=order_id)
+            _cancel_owned_algo_stop(
+                symbol=str(symbol or "").upper().strip(),
+                algo_id=order_id,
+            )
         except Exception as exc:
-            msg = str(exc)
-            if "-2011" in msg or "Unknown order" in msg or "already" in msg.lower():
-                return
             try:
                 if self.logger:
                     self.logger.warning(
-                        "[EXEC-SHORT][NATIVE-STOP][CANCEL-WARN] symbol=%s order_id=%s err=%s",
-                        symbol, order_id, msg[:180],
+                        "[EXEC-SHORT][NATIVE-STOP][CANCEL-WARN] symbol=%s algo_id=%s err=%s",
+                        symbol, order_id, str(exc)[:180],
                     )
             except Exception:
                 pass
@@ -2152,6 +2200,36 @@ class TradeExecutorShort:
             "order": order,
         }
 
+    def _verify_short_exchange_flat(self, symbol: str) -> bool:
+        """Exchange authority: never drop a native stop until SHORT qty is zero.
+
+        API unavailable, ambiguous side or still-open position all fail closed.
+        """
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return False
+        try:
+            rows = _futures_v3_position_risk(sym)
+            shorts = [
+                row for row in rows
+                if isinstance(row, dict) and
+                str(row.get("symbol") or "").upper() == sym and
+                str(row.get("positionSide") or "").upper() == "SHORT"
+            ]
+            if len(shorts) != 1:
+                return False
+            return abs(float(shorts[0].get("positionAmt") or 0.0)) < 1e-9
+        except Exception as exc:
+            try:
+                if self.logger:
+                    self.logger.warning(
+                        "[EXEC-SHORT][CLOSE][VERIFY-WARN] symbol=%s err=%s",
+                        sym, str(exc)[:140],
+                    )
+            except Exception:
+                pass
+            return False
+
     def close_position(
         self,
         symbol: str,
@@ -2197,6 +2275,30 @@ class TradeExecutorShort:
                 symbol=sym_u,
                 qty=float(qty),
             )
+            if not self.dry_run:
+                # Market order ACK != confirmed FILLED. Keep the Binance
+                # protection until the SHORT exchange position is flat.
+                is_flat = False
+                for retry in range(5):
+                    if self._verify_short_exchange_flat(sym_u):
+                        is_flat = True
+                        break
+                    if retry < 4:
+                        time.sleep(0.5)
+                if not is_flat:
+                    if self.logger:
+                        self.logger.error(
+                            "[EXEC-SHORT][CLOSE][UNVERIFIED] symbol=%s "
+                            "native_stop_retained=true local_position_retained=true",
+                            sym_u,
+                        )
+                    return {
+                        "status": "pending_exchange_flat_verification",
+                        "symbol": sym_u,
+                        "native_stop_retained": True,
+                        "order": order,
+                    }
+
             self._cancel_native_short_stop(
                 symbol=sym_u,
                 position=pos,
@@ -2355,7 +2457,14 @@ class TradeExecutorShort:
             self.sniper_entry_interval
         )
 
+        extra0 = (market_context or {}).get("extra") if isinstance(market_context,dict) else {}
+        extra0 = extra0 if isinstance(extra0,dict) else {}
         pending = {
+            "origin_intent_id": str(extra0.get("intent_id") or ""),
+            "origin_created_ms": int(time.time()*1000),
+            "origin_source_event_id": str(extra0.get("source_signal_event_id") or ""),
+            "origin_completed_close_ms": int(extra0.get("source_completed_close_ms") or 0),
+            "origin_model_provider": str(extra0.get("model_provider") or (market_context or {}).get("provider") or ""),
             "candle_id": int(candle_id),
             "interval": str(
                 self.sniper_entry_interval
@@ -2889,6 +2998,37 @@ class TradeExecutorShort:
         SHORT pending kaydını worker thread içinde
         açar ve sonucu pending yöneticisine iletir.
         """
+        # Existing PENDING can retry from saved model context. Until upstream
+        # supplies an INDEPENDENT new MODEL intent, prevent stale reentry.
+        # A new valid upstream signal can still take the normal direct path.
+        if self._env_bool("SHORT_PENDING_REQUIRE_NEW_MODEL_PROOF", True):
+            from core.short_pending_freshness_contract import check_independent_model_revalidation
+            original = dict(
+                intent_id=pending.get("origin_intent_id"),
+                source_signal_event_id=pending.get("origin_source_event_id"),
+                model_provider=pending.get("origin_model_provider"),
+                completed_close_ms=pending.get("origin_completed_close_ms"),
+            )
+            candidate = pending.get("fresh_model_proof")
+            ok, reason = check_independent_model_revalidation(
+                original,
+                candidate if isinstance(candidate,dict) else {},
+                now_ms=int(time.time()*1000),
+            )
+            if not ok:
+                if self.logger:
+                    self.logger.info(
+                        "[EXEC-SHORT][PENDING-FRESH-MODEL] action=REJECT symbol=%s reason=%s",
+                        symbol, reason,
+                    )
+                self._cancel_short_pending(
+                    symbol=symbol,
+                    reason="independent_new_model_required:"+reason,
+                    signal_score=float(pending.get("signal_score") or pending.get("score") or 0.0),
+                    min_score=float(pending.get("open_min_score") or pending.get("min_score") or 0.0),
+                )
+                return
+
         shadow_kline_rows = self.short_entry_candle_service.get_last_rows(
             symbol, self.entry_candle_dir_interval
         )
@@ -3033,6 +3173,19 @@ class TradeExecutorShort:
         ):
             if not isinstance(pending, dict):
                 self._pop_short_pending(psym)
+                continue
+
+            if self._env_bool("SHORT_PENDING_REQUIRE_NEW_MODEL_PROOF", True):
+                # Do not retry a saved MODEL score at the next 1m Sniper
+                # window. Await a NEW independent MODEL event through the
+                # normal execute_decision method; expire stale pending later.
+                age_ms=int(time.time()*1000)-int(pending.get("origin_created_ms") or 0)
+                if age_ms<0 or age_ms>15*60*1000:
+                    self._cancel_short_pending(
+                        symbol=psym,reason="model_provenance_pending_expired",
+                        signal_score=float(pending.get("score") or 0.0),
+                        min_score=float(pending.get("min_score") or 0.0),
+                    )
                 continue
 
             await self._process_single_short_pending_entry(
@@ -3670,6 +3823,51 @@ class TradeExecutorShort:
             "result": result,
         }
 
+    def _resolve_short_pending_by_fresh_model(
+        self, *, symbol: str, upstream: Dict[str, Any], score_state: str,
+    ) -> Dict[str, Any]:
+        """Link old PENDING to a NEW upstream READY intent, not an old score.
+
+        The new independent signal then passes the normal SNIPER, Entry
+        Confirmation, Execution Risk and Final Safety path again. No order
+        is created or score invented by this helper.
+        """
+        sym=str(symbol or "").upper().strip()
+        pending=self._pending_short_entries.get(sym)
+        if not isinstance(pending,dict):
+            return {"state":"NO_PENDING"}
+        if score_state!="READY":
+            return {"state":"PENDING","reason":"await_new_hard_model_ready"}
+        from core.short_pending_freshness_contract import check_independent_model_revalidation
+        origin=dict(
+            intent_id=pending.get("origin_intent_id"),
+            source_signal_event_id=pending.get("origin_source_event_id"),
+            model_provider=pending.get("origin_model_provider"),
+            completed_close_ms=pending.get("origin_completed_close_ms"),
+        )
+        candidate=dict(
+            intent_id=upstream.get("intent_id"),
+            source_signal_event_id=upstream.get("source_signal_event_id"),
+            completed_close_ms=upstream.get("source_completed_close_ms"),
+            model_provider=upstream.get("model_provider"),
+            model_score=upstream.get("model_score"),
+            model_score_gate_threshold=upstream.get("model_score_gate_threshold"),
+            model_score_gate_passed=upstream.get("model_score_gate_passed"),
+        )
+        ok,reason=check_independent_model_revalidation(
+            origin,candidate,now_ms=int(time.time()*1000))
+        if not ok:
+            if self.logger:
+                self.logger.info("[EXEC-SHORT][PENDING-FRESH-MODEL] action=PENDING symbol=%s reason=%s",sym,reason)
+            return {"state":"PENDING","reason":reason}
+        self._pop_short_pending(sym)
+        if self.logger:
+            self.logger.info(
+                "[EXEC-SHORT][PENDING-FRESH-MODEL] action=READY symbol=%s origin=%s new_intent=%s new_event=%s",
+                sym,origin.get("intent_id"),candidate.get("intent_id"),candidate.get("source_signal_event_id"),
+            )
+        return {"state":"READY_NEW_INTENT","reason":reason}
+
     async def execute_decision(
         self,
         signal: str,
@@ -3733,6 +3931,15 @@ class TradeExecutorShort:
         signal_score = float(score_gate["signal_score"])
         final_min_score = float(score_gate["final_min_score"])
         extra0 = score_gate["extra"]
+
+        if self._env_bool("SHORT_PENDING_REQUIRE_NEW_MODEL_PROOF", True):
+            fresh_pending=self._resolve_short_pending_by_fresh_model(
+                symbol=sym_u,upstream=extra0,score_state=str(score_gate["state"]),
+            )
+            if fresh_pending["state"]=="PENDING":
+                # Old PENDING cannot be promoted by another copy of itself.
+                # A separate valid hard-READY model signal is required.
+                return
 
         # HARD SHORT + contra confirmed LONG build is a timing-risk setup, not an
         # automatic directional reject. Master marks this only in dry-run research.

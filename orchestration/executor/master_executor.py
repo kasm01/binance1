@@ -606,6 +606,14 @@ class MasterExecutor:
         symbol0 = _safe_str(c.get("symbol", "")).upper()
         interval0 = _safe_str(c.get("interval", ""), "5m")
 
+        if symbol0 == "INJUSDT" and side == "short":
+            from orchestration.context.short1_strict_market_contract import check
+            ok, why = check(c)
+            if not ok:
+                # Fail before Master zero-default Market Context and before
+                # accepting a model score with the wrong target semantics.
+                return None
+
         market_context = self._evaluate_market_context_stage(
             candidate=c, symbol=symbol0, interval=interval0, side=side, ranking_score=ranking_score,
         )
@@ -763,6 +771,8 @@ class MasterExecutor:
             items_out.append(
                 {
                     "intent_id": it.intent_id,
+                    "source_signal_event_id": str(raw_copy.get("source_signal_event_id") or ""),
+                    "source_completed_close_ms": int(raw_copy.get("source_completed_close_ms") or 0),
                     "ts_utc": it.ts_utc,
                     "symbol": it.symbol,
                     "interval": it.interval,
@@ -772,6 +782,19 @@ class MasterExecutor:
                     "model_score": float(it.score),
                     "ranking_score": float(it.ranking_score),
                     "model_provider": str(raw_copy.get("model_provider") or ((raw_copy.get("raw") or {}).get("model_provider") if isinstance(raw_copy.get("raw"), dict) else "") or "hybrid_coin_specific"),
+                    "model_target": str(raw_copy.get("model_target") or ""),
+                    "model_probability_threshold": raw_copy.get("model_probability_threshold"),
+                    "model_promotion_authorized": bool(raw_copy.get("model_promotion_authorized", False)),
+                    "source_field_presence": list(raw_copy.get("source_field_presence") or []),
+                    "whale_observation_status": str(raw_copy.get("whale_observation_status") or ""),
+                    "money_flow_15m": raw_copy.get("money_flow_15m"),
+                    "money_flow_60m": raw_copy.get("money_flow_60m"),
+                    "price_return_15m": raw_copy.get("price_return_15m"),
+                    "whale_dir": raw_copy.get("whale_dir"),
+                    "whale_score": raw_copy.get("whale_score"),
+                    "spread_pct": raw_copy.get("spread_pct"),
+                    "atr_pct": raw_copy.get("atr_pct"),
+                    "liq_score": raw_copy.get("liq_score"),
                     "market_context_passed": True,
                     "market_context": dict(raw_copy.get("market_context") or {}),
                     "model_score_gate_state": str(raw_copy.get("model_score_gate_state") or "READY"),

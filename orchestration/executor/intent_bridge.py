@@ -364,6 +364,14 @@ class IntentBridge:
         interval = _safe_str(item.get("interval", "5m")).strip()
         side = self._norm_side(item)
         intent_id = _safe_str(item.get("intent_id", "")).strip()
+        if sym == "INJUSDT" and side == "short":
+            from orchestration.context.short1_strict_market_contract import check
+            ok, why = check(item)
+            if not ok:
+                # Defense in depth: do not forward a noncanonical research
+                # or default-filled SHORT1 candidate to executor events.
+                return None
+
         score = _safe_float(item.get("score", 0.0), 0.0)
         price = self._price_of(item)
 
@@ -375,6 +383,8 @@ class IntentBridge:
             "interval": interval,
             "side": side,
             "intent_id": intent_id,
+            "source_signal_event_id": str(item.get("source_signal_event_id") or ""),
+            "source_completed_close_ms": int(item.get("source_completed_close_ms") or 0),
             "score": float(score),
             "model_score": float(_safe_float(item.get("model_score", score), score)),
             "ranking_score": float(_safe_float(item.get("ranking_score", score), score)),
