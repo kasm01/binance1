@@ -25,6 +25,9 @@ class CentralRiskClient:
 
     def __init__(self, redis_client: Optional[redis.Redis] = None) -> None:
         self.enabled = _env_bool("CENTRAL_RISK_ENFORCE_DRY_RUN", False)
+        # Exact matching central reservation request ID, never a strategy-only
+        # release. A restart that loses this handle intentionally fails closed.
+        self._dry_reservation_owner_by_strategy: Dict[str, str] = {}
         self.request_stream = os.getenv("CENTRAL_RISK_REQUEST_STREAM", "central:risk:requests:v1")
         self.response_prefix = os.getenv("CENTRAL_RISK_RESPONSE_PREFIX", "central:risk:response:")
         self.timeout_sec = max(0.1, float(os.getenv("CENTRAL_RISK_REQUEST_TIMEOUT_SEC", "2.0") or 2.0))
@@ -79,19 +82,34 @@ class CentralRiskClient:
         market_context_multiplier: float,
         reserve: bool = True,
     ) -> Dict[str, Any]:
-        return self._ask({
+        strategy = str(strategy_id or "").upper().strip()
+        response = self._ask({
             "action": "EVALUATE_OPEN",
             "request_mode": "DRY_RUN",
-            "strategy_id": str(strategy_id or "").upper().strip(),
+            "strategy_id": strategy,
             "symbol": str(symbol or "").upper().strip(),
             "side": str(side or "").lower().strip(),
             "market_context_multiplier": float(market_context_multiplier),
             "reserve": bool(reserve),
         })
+        # Persist ownership only after a successful reserved response; never
+        # infer it from a caller-supplied request_id or READY without reserve.
+        if reserve and response.get("state") == "READY" and response.get("request_id"):
+            self._dry_reservation_owner_by_strategy[strategy] = str(response["request_id"])
+        return response
 
     def release(self, *, strategy_id: str) -> Dict[str, Any]:
-        return self._ask({
+        strategy = str(strategy_id or "").upper().strip()
+        owner = self._dry_reservation_owner_by_strategy.get(strategy)
+        if not owner:
+            return {"state": "REJECT", "reason": "reservation_owner_unknown",
+                    "strategy_id": strategy}
+        result = self._ask({
             "action": "RELEASE",
             "request_mode": "DRY_RUN",
-            "strategy_id": str(strategy_id or "").upper().strip(),
+            "strategy_id": strategy,
+            "reservation_owner_request_id": owner,
         })
+        if result.get("state") == "READY" and result.get("reason") == "reservation_released_by_owner":
+            self._dry_reservation_owner_by_strategy.pop(strategy, None)
+        return result
