@@ -1168,6 +1168,14 @@ class TradeExecutorShort:
                 "qty": float(qty),
             }
 
+        # Non-bypassable live OPEN defense, even if a caller skips executor.
+        from core.joint_risk_live_guard_v1 import check_new_open
+        shared_gate = check_new_open(
+            strategy_id="SHORT1",symbol=sym_u,side="short",dry_run=False,
+        )
+        if not shared_gate.allow:
+            raise RuntimeError(shared_gate.reason)
+
         fn = getattr(
             self.client,
             "futures_create_order",
@@ -1618,14 +1626,16 @@ class TradeExecutorShort:
         if not assignment_ok:
             return {"status": "skip", "reason": assignment_reason, "symbol": sym_u}
 
-        # The active central gate is ENFORCE_DRY_RUN and explicitly rejects
-        # production requests. Prevent a future accidental DRY_RUN=0 toggle
-        # from bypassing the shared portfolio authority.
-        if not self.dry_run:
+        # Same shared OPEN boundary as LONG1. Current live profile is
+        # intentionally closed; DRY_RUN retains the existing central shadow.
+        from core.joint_risk_live_guard_v1 import check_new_open
+        shared_gate = check_new_open(
+            strategy_id="SHORT1",symbol=sym_u,side=side_u,
+            dry_run=self.dry_run,
+        )
+        if not shared_gate.allow:
             return {
-                "status": "skip",
-                "reason": "central_risk_live_not_authorized",
-                "symbol": sym_u,
+                "status":"skip","reason":shared_gate.reason,"symbol":sym_u,
             }
 
         now_ts = time.time()
